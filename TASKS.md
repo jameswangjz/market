@@ -16,7 +16,7 @@
 | FE-003 | 前端 Agent | 交付、清算、审计和用户页面 | BE-005 | IN_PROGRESS | 核心运营页面可用 |
 | OPS-001 | 部署测试 Agent | PG、Redis、MinIO 和 K8S 资源 | ARC-001 | DONE | market 命名空间资源可部署 |
 | OPS-002 | 部署测试 Agent | 镜像、NodePort 和健康检查 | FE-001,BE-001 | DONE | 前后端 Pod Ready |
-| OPS-003 | 部署测试 Agent | 接口、状态机和端到端冒烟测试 | FE-002,BE-005 | IN_PROGRESS | P0 测试通过 |
+| OPS-003 | 部署测试 Agent | 接口、状态机和端到端冒烟测试 | FE-002,BE-005 | DONE | P0 测试通过 |
 
 ## 集成门禁
 
