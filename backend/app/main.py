@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any
+from urllib.parse import urlparse
 
 import jwt
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -174,6 +175,56 @@ class Product(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ApiGatewayRoute(Base):
+    __tablename__ = "api_gateway_routes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), unique=True, index=True)
+    route_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    upstream_url: Mapped[str] = mapped_column(String(500))
+    version: Mapped[str] = mapped_column(String(40), default="v1")
+    auth_mode: Mapped[str] = mapped_column(String(30), default="api_key")
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
+    daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
+    timeout_ms: Mapped[int] = mapped_column(Integer, default=30000)
+    strip_prefix: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ApiCredential(Base):
+    __tablename__ = "api_credentials"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120), default="默认 API 凭证")
+    key_prefix: Mapped[str] = mapped_column(String(24), default="")
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ApiUsage(Base):
+    __tablename__ = "api_usage"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
+    credential_id: Mapped[str] = mapped_column(ForeignKey("api_credentials.id"), index=True)
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    method: Mapped[str] = mapped_column(String(12))
+    path: Mapped[str] = mapped_column(String(500), default="")
+    status_code: Mapped[int] = mapped_column(Integer, default=200)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    request_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    response_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, index=True)
 
 
 class Order(Base):
@@ -449,6 +500,25 @@ class ProductBody(BaseModel):
 class ProductReviewBody(BaseModel):
     decision: str
     comment: str = ""
+
+
+class GatewayConfigBody(BaseModel):
+    upstream_url: str = Field(min_length=8, max_length=500)
+    route_key: str = Field(default="", max_length=100)
+    version: str = Field(default="v1", max_length=40)
+    auth_mode: str = "api_key"
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
+    daily_quota: int = Field(default=10000, ge=1, le=100000000)
+    timeout_ms: int = Field(default=30000, ge=100, le=120000)
+    strip_prefix: bool = True
+
+
+class GatewayCredentialBody(BaseModel):
+    name: str = "默认 API 凭证"
+    enterprise_id: str = ""
+    rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100000)
+    daily_quota: int | None = Field(default=None, ge=1, le=100000000)
+    expires_at: datetime | None = None
 
 
 class ProductFileMetadata(BaseModel):
@@ -1194,6 +1264,125 @@ def publish_product(product_id: str, user: User = Depends(current_user), db: Ses
     audit(db, user.email, "publish_product", "product", product.id)
     db.commit()
     return product_out(product)
+
+
+def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
+    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
+
+
+def gateway_product(product_id: str, db: Session) -> Product:
+    product = db.get(Product, product_id)
+    if not product or (product.product_type not in {"api", "model"} and product.delivery_method not in {"api", "model_api"}):
+        raise HTTPException(400, "只有 API 服务或模型 API 产品可以配置 API 网关")
+    return product
+
+
+@app.get("/api/products/{product_id}/gateway-config")
+def get_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        membership = current_membership(db, user, product.enterprise_id)
+        if membership.role not in {"super_admin", "enterprise_admin"}:
+            raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以查看网关配置")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    return {"item": gateway_route_out(route, product) if route else None}
+
+
+@app.put("/api/products/{product_id}/gateway-config")
+def save_gateway_config(product_id: str, body: GatewayConfigBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        membership = current_membership(db, user, product.enterprise_id)
+        if membership.role not in {"super_admin", "enterprise_admin"}:
+            raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以配置 API 网关")
+    parsed = urlparse(body.upstream_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(400, "后端服务地址必须是完整的 HTTP 或 HTTPS 地址")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route_key = body.route_key.strip() or f"{product.id[:12]}-{body.version.replace('.', '-') }"
+    existing_key = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.route_key == route_key, ApiGatewayRoute.product_id != product.id))
+    if existing_key:
+        raise HTTPException(409, "API 路由标识已被占用")
+    values = body.model_dump()
+    values.pop("route_key")
+    if route:
+        for key, value in values.items():
+            setattr(route, key, value)
+        route.route_key = route_key
+    else:
+        route = ApiGatewayRoute(product_id=product.id, route_key=route_key, created_by=user.email or user.phone or user.id, **values)
+        db.add(route)
+    audit(db, user.email or user.phone or user.id, "save_gateway_config", "api_gateway_route", product.id, route_key)
+    db.commit()
+    db.refresh(route)
+    return gateway_route_out(route, product)
+
+
+@app.post("/api/products/{product_id}/gateway-config/publish")
+def publish_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        membership = current_membership(db, user, product.enterprise_id)
+        if membership.role not in {"super_admin", "enterprise_admin"}:
+            raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以发布 API 网关路由")
+    if product.status != "published":
+        raise HTTPException(409, "产品必须先发布后才能启用 API 网关路由")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    if not route:
+        raise HTTPException(404, "请先保存 API 网关配置")
+    route.status = "active"
+    audit(db, user.email or user.phone or user.id, "publish_gateway_route", "api_gateway_route", route.id, route.route_key)
+    db.commit()
+    return gateway_route_out(route, product)
+
+
+@app.post("/api/products/{product_id}/gateway-credentials")
+def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id, ApiGatewayRoute.status == "active"))
+    if not route:
+        raise HTTPException(409, "API 网关路由尚未启用")
+    target_enterprise_id = body.enterprise_id or first_enterprise(db, user).id
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        require_enterprise_admin(db, user, target_enterprise_id)
+    else:
+        if not db.get(Enterprise, target_enterprise_id):
+            raise HTTPException(404, "目标企业不存在")
+    raw_key = "mk_" + secrets.token_urlsafe(30)
+    credential = ApiCredential(route_id=route.id, enterprise_id=target_enterprise_id, name=body.name.strip() or "默认 API 凭证", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    db.add(credential)
+    audit(db, user.email or user.phone or user.id, "create_api_credential", "api_credential", credential.id, route.route_key)
+    db.commit()
+    db.refresh(credential)
+    return {"id": credential.id, "name": credential.name, "key_prefix": credential.key_prefix, "api_key": raw_key, "route_key": route.route_key, "enterprise_id": credential.enterprise_id, "expires_at": credential.expires_at, "warning": "API Key 仅在本次响应中返回，请妥善保存"}
+
+
+@app.get("/api/products/{product_id}/gateway-credentials")
+def list_gateway_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    if not route:
+        return {"items": []}
+    target = first_enterprise(db, user).id
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        require_enterprise_admin(db, user, target)
+    items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == target).order_by(ApiCredential.created_at.desc())).all()
+    return {"items": [{"id": x.id, "name": x.name, "key_prefix": x.key_prefix, "status": x.status, "rate_limit_per_minute": x.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": x.daily_quota or route.daily_quota, "expires_at": x.expires_at, "last_used_at": x.last_used_at, "created_at": x.created_at} for x in items]}
+
+
+@app.get("/api/products/{product_id}/gateway-usage")
+def gateway_usage(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    membership = current_membership(db, user, product.enterprise_id)
+    if membership.role not in {"super_admin", "enterprise_admin"} and user.platform_role not in {"super_admin", "platform_operator"}:
+        raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以查看调用统计")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    if not route:
+        return {"summary": {"total": 0, "success": 0, "error": 0, "avg_latency_ms": 0}, "items": []}
+    rows = db.scalars(select(ApiUsage).where(ApiUsage.route_id == route.id).order_by(ApiUsage.created_at.desc()).limit(1000)).all()
+    total = len(rows)
+    success = sum(1 for x in rows if x.status_code < 400)
+    return {"summary": {"total": total, "success": success, "error": total - success, "avg_latency_ms": round(sum(x.latency_ms for x in rows) / total, 1) if total else 0}, "items": [{"method": x.method, "path": x.path, "status_code": x.status_code, "latency_ms": x.latency_ms, "request_bytes": x.request_bytes, "response_bytes": x.response_bytes, "created_at": x.created_at} for x in rows]}
 
 
 def order_out(o: Order) -> dict[str, Any]:

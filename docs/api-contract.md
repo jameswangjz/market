@@ -63,3 +63,17 @@ Product registration requires or supports the following metadata: catalog name, 
 - `GET /users`
 
 The connector and national data infrastructure external APIs are intentionally excluded from this version.
+
+## Unified API Gateway
+
+API products using `api` or `model_api` delivery are exposed through the unified gateway cluster. Each product has an independent route, upstream service, credential set, quota, policy and usage statistics, while the gateway data plane remains shared and independently scalable.
+
+- `PUT /products/{id}/gateway-config`：产品提供企业管理员配置后端服务地址、路由标识、认证方式、限流、每日配额和超时时间
+- `POST /products/{id}/gateway-config/publish`：发布网关路由；产品必须先完成产品发布
+- `POST /products/{id}/gateway-credentials`：为企业生成一次性返回的 API Key
+- `GET /products/{id}/gateway-credentials`：查看当前企业 API Key 的状态和配额，不返回密钥原文
+- `GET /products/{id}/gateway-usage`：查看最近调用量、成功率、错误数、耗时和请求路径
+- `GET /health` on `market-gateway`：网关健康检查
+- `/{gateway}/gateway/{route-key}/{path}`：网关统一转发入口，使用 `X-API-Key` 或 `Authorization: Bearer` 认证
+
+The Kubernetes deployment uses `market-gateway` as the shared gateway cluster service and deploys each API provider service independently behind its configured upstream URL. Redis provides distributed minute-rate and daily-quota counters; PostgreSQL stores route, credential and usage records.
