@@ -15,10 +15,13 @@ Base path: `/api`
 ## Products
 
 - `GET /products?status=&type=&q=`
+- `GET /product-directories`
 - `POST /products`
 - `GET /products/{id}`
 - `POST /products/{id}/submit`
 - `POST /products/{id}/publish`
+
+Product registration requires or supports the following metadata: catalog name, product/service name, product type, provider name/type, description, version, usage scenarios, delivery method, price, pricing strategy, security level, authorization conditions, data source statement, and compliance statement.
 
 ## Orders
 

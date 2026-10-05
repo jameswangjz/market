@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -75,13 +75,22 @@ class Product(Base):
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     name: Mapped[str] = mapped_column(String(220))
     product_type: Mapped[str] = mapped_column(String(50))
+    catalog_name: Mapped[str] = mapped_column(String(180), default="未分类", nullable=True)
+    provider_name: Mapped[str] = mapped_column(String(180), default="", nullable=True)
+    provider_type: Mapped[str] = mapped_column(String(60), default="企业", nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
+    usage_scenarios: Mapped[str] = mapped_column(Text, default="", nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
     delivery_method: Mapped[str] = mapped_column(String(80), default="file")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    pricing_strategy: Mapped[str] = mapped_column(Text, default="", nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="CNY")
     version: Mapped[str] = mapped_column(String(30), default="v1.0")
     quality_level: Mapped[str] = mapped_column(String(30), default="标准")
+    security_level: Mapped[str] = mapped_column(String(40), default="一般", nullable=True)
+    authorization_conditions: Mapped[str] = mapped_column(Text, default="", nullable=True)
+    data_source_statement: Mapped[str] = mapped_column(Text, default="", nullable=True)
+    compliance_statement: Mapped[str] = mapped_column(Text, default="", nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -254,10 +263,20 @@ class RegisterBody(BaseModel):
 class ProductBody(BaseModel):
     name: str
     product_type: str
+    catalog_name: str = "未分类"
+    provider_name: str = ""
+    provider_type: str = "企业"
     description: str = ""
+    usage_scenarios: str = ""
     delivery_method: str = "file"
     price: float = 0
+    pricing_strategy: str = ""
+    version: str = "v1.0"
     quality_level: str = "标准"
+    security_level: str = "一般"
+    authorization_conditions: str = ""
+    data_source_statement: str = ""
+    compliance_statement: str = ""
 
 
 class OrderBody(BaseModel):
@@ -361,9 +380,34 @@ TRANSITIONS: dict[str, tuple[str, str, str, str]] = {
 }
 
 
+def ensure_product_metadata_schema():
+    """Add product registration metadata to an existing development database."""
+    columns = {
+        "catalog_name": "VARCHAR(180)",
+        "provider_name": "VARCHAR(180)",
+        "provider_type": "VARCHAR(60)",
+        "usage_scenarios": "TEXT",
+        "pricing_strategy": "TEXT",
+        "security_level": "VARCHAR(40)",
+        "authorization_conditions": "TEXT",
+        "data_source_statement": "TEXT",
+        "compliance_statement": "TEXT",
+    }
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            existing = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(products)").fetchall()}
+            for name, sql_type in columns.items():
+                if name not in existing:
+                    connection.execute(text(f"ALTER TABLE products ADD COLUMN {name} {sql_type}"))
+        else:
+            for name, sql_type in columns.items():
+                connection.execute(text(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {name} {sql_type}"))
+
+
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(engine)
+    ensure_product_metadata_schema()
     with SessionLocal() as db:
         if not db.scalar(select(DevelopmentTask.id).limit(1)):
             seed_tasks = [
@@ -393,9 +437,9 @@ def startup():
         db.flush()
         db.add(Membership(user_id=admin.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider"))
         products = [
-            Product(enterprise_id=enterprise.id, name="矿山装备制造质量数据集", product_type="dataset", description="覆盖 IQC、IPQC、FQC/OQC 和质量追溯的示范数据集。", delivery_method="file", price=68000, quality_level="A级"),
-            Product(enterprise_id=enterprise.id, name="制造过程行业模型", product_type="model", description="支持设备状态分析、异常诊断和产能预测。", delivery_method="model_api", price=128000, quality_level="生产级"),
-            Product(enterprise_id=enterprise.id, name="数据治理咨询服务", product_type="consulting", description="面向企业数据资源盘点、标准体系和治理规则建设。", delivery_method="consulting", price=36000, quality_level="标准"),
+            Product(enterprise_id=enterprise.id, name="矿山装备制造质量数据集", product_type="dataset", catalog_name="行业数据集/产品质量", provider_name=enterprise.name, provider_type="企业", description="覆盖 IQC、IPQC、FQC/OQC 和质量追溯的示范数据集。", usage_scenarios="质量趋势分析、缺陷根因分析、质量追溯查询", delivery_method="file", price=68000, pricing_strategy="按授权周期计价，支持企业版年度授权", quality_level="A级", security_level="重要", authorization_conditions="仅限认证企业内部质量分析使用，不得转授权", data_source_statement="来源于企业质量管理和检测业务数据，已完成授权确认", compliance_statement="已完成数据来源、权属和脱敏合规声明"),
+            Product(enterprise_id=enterprise.id, name="制造过程行业模型", product_type="model", catalog_name="行业模型/制造过程", provider_name=enterprise.name, provider_type="企业", description="支持设备状态分析、异常诊断和产能预测。", usage_scenarios="制造异常诊断、设备状态分析、产能预测", delivery_method="model_api", price=128000, pricing_strategy="按模型服务周期和调用额度计价", quality_level="生产级", security_level="重要", authorization_conditions="认证企业可调用，禁止反向提取模型参数", data_source_statement="基于制造过程数据集训练形成", compliance_statement="已完成模型训练数据使用范围审核"),
+            Product(enterprise_id=enterprise.id, name="数据治理咨询服务", product_type="consulting", catalog_name="数据服务/培训咨询", provider_name=enterprise.name, provider_type="企业", description="面向企业数据资源盘点、标准体系和治理规则建设。", usage_scenarios="数据资源盘点、数据标准设计、治理规则制定", delivery_method="consulting", price=36000, pricing_strategy="按项目范围和里程碑报价", quality_level="标准", security_level="一般", authorization_conditions="交付成果仅限采购企业使用", data_source_statement="服务方法资产由平台运营方提供", compliance_statement="不直接处理客户原始数据，按项目授权实施"),
         ]
         db.add_all(products)
         db.flush()
@@ -458,7 +502,28 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "description": p.description, "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "currency": p.currency, "version": p.version, "quality_level": p.quality_level, "created_at": p.created_at}
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "created_at": p.created_at}
+
+
+PRODUCT_DIRECTORIES = [
+    {"value": "行业数据集/供需计划", "label": "行业数据集 · 供需计划"},
+    {"value": "行业数据集/产品工艺设计", "label": "行业数据集 · 产品工艺设计"},
+    {"value": "行业数据集/制造过程", "label": "行业数据集 · 制造过程"},
+    {"value": "行业数据集/产品质量", "label": "行业数据集 · 产品质量"},
+    {"value": "行业模型/供需计划", "label": "行业模型 · 供需计划"},
+    {"value": "行业模型/产品工艺设计", "label": "行业模型 · 产品工艺设计"},
+    {"value": "行业模型/制造过程", "label": "行业模型 · 制造过程"},
+    {"value": "行业模型/产品质量", "label": "行业模型 · 产品质量"},
+    {"value": "数据服务/数据治理", "label": "数据服务 · 数据治理"},
+    {"value": "数据服务/培训咨询", "label": "数据服务 · 培训咨询"},
+    {"value": "数据服务/定制开发", "label": "数据服务 · 定制开发"},
+    {"value": "其他", "label": "其他"},
+]
+
+
+@app.get("/api/product-directories")
+def product_directories(user: User = Depends(current_user)):
+    return {"items": PRODUCT_DIRECTORIES}
 
 
 @app.get("/api/products")
@@ -477,7 +542,9 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
 @app.post("/api/products")
 def create_product(body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
-    product = Product(enterprise_id=enterprise.id, **body.model_dump())
+    values = body.model_dump()
+    values["provider_name"] = values["provider_name"] or enterprise.name
+    product = Product(enterprise_id=enterprise.id, **values)
     db.add(product)
     db.flush()
     audit(db, user.email, "create_product", "product", product.id, product.name)
