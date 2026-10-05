@@ -1,0 +1,201 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: market
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: market-secrets
+  namespace: market
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: market-dev-password
+  JWT_SECRET: market-k8s-development-secret-change-me
+  MINIO_ROOT_USER: market
+  MINIO_ROOT_PASSWORD: market123456
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: market-config
+  namespace: market
+data:
+  DATABASE_URL: postgresql+psycopg://market:market-dev-password@market-postgres:5432/market
+  MINIO_ENDPOINT: market-minio:9000
+  MINIO_BUCKET: market-files
+  CORS_ORIGINS: '*'
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-postgres-data
+  namespace: market
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-postgres
+  namespace: market
+  labels: {app: market-postgres}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-postgres}}
+  template:
+    metadata: {labels: {app: market-postgres}}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 5432}]
+          env:
+            - {name: POSTGRES_DB, value: market}
+            - {name: POSTGRES_USER, value: market}
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: market-secrets, key: POSTGRES_PASSWORD}}}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+          readinessProbe: {exec: {command: ["sh", "-c", "pg_isready -U market -d market"]}, initialDelaySeconds: 8, periodSeconds: 5}
+          livenessProbe: {exec: {command: ["sh", "-c", "pg_isready -U market -d market"]}, initialDelaySeconds: 20, periodSeconds: 10}
+      volumes: [{name: data, persistentVolumeClaim: {claimName: market-postgres-data}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: market-postgres, namespace: market}
+spec:
+  selector: {app: market-postgres}
+  ports: [{name: postgres, port: 5432, targetPort: 5432}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-redis
+  namespace: market
+  labels: {app: market-redis}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-redis}}
+  template:
+    metadata: {labels: {app: market-redis}}
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 6379}]
+          readinessProbe: {exec: {command: ["redis-cli", "ping"]}, initialDelaySeconds: 5, periodSeconds: 5}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: market-redis, namespace: market}
+spec:
+  selector: {app: market-redis}
+  ports: [{name: redis, port: 6379, targetPort: 6379}]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-minio-data
+  namespace: market
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-minio
+  namespace: market
+  labels: {app: market-minio}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-minio}}
+  template:
+    metadata: {labels: {app: market-minio}}
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--console-address", ":9001"]
+          ports: [{name: api, containerPort: 9000}, {name: console, containerPort: 9001}]
+          env:
+            - {name: MINIO_ROOT_USER, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
+            - {name: MINIO_ROOT_PASSWORD, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+          volumeMounts: [{name: data, mountPath: /data}]
+          readinessProbe: {httpGet: {path: /minio/health/ready, port: 9000}, initialDelaySeconds: 8, periodSeconds: 5}
+      volumes: [{name: data, persistentVolumeClaim: {claimName: market-minio-data}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: market-minio, namespace: market}
+spec:
+  selector: {app: market-minio}
+  ports: [{name: api, port: 9000, targetPort: 9000}, {name: console, port: 9001, targetPort: 9001}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-api
+  namespace: market
+  labels: {app: market-api}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-api}}
+  template:
+    metadata: {labels: {app: market-api}}
+    spec:
+      containers:
+        - name: api
+          image: market-api:dev
+          imagePullPolicy: Never
+          ports: [{containerPort: 8000}]
+          envFrom: [{configMapRef: {name: market-config}}]
+          env:
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+            - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
+            - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+          readinessProbe: {httpGet: {path: /api/health, port: 8000}, initialDelaySeconds: 12, periodSeconds: 5}
+          livenessProbe: {httpGet: {path: /api/health, port: 8000}, initialDelaySeconds: 20, periodSeconds: 10}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: market-api, namespace: market}
+spec:
+  selector: {app: market-api}
+  ports: [{name: http, port: 8000, targetPort: 8000}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-web
+  namespace: market
+  labels: {app: market-web}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-web}}
+  template:
+    metadata: {labels: {app: market-web}}
+    spec:
+      containers:
+        - name: web
+          image: market-web:dev
+          imagePullPolicy: Never
+          ports: [{containerPort: 80}]
+          readinessProbe: {httpGet: {path: /, port: 80}, initialDelaySeconds: 5, periodSeconds: 5}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: market-web, namespace: market}
+spec:
+  type: NodePort
+  selector: {app: market-web}
+  ports: [{name: http, port: 80, targetPort: 80, nodePort: 30080}]
