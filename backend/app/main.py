@@ -144,6 +144,21 @@ class Payment(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class Refund(Base):
+    __tablename__ = "refunds"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    refund_no: Mapped[str] = mapped_column(String(60), unique=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    payment_id: Mapped[str] = mapped_column(ForeignKey("payments.id"), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    requested_by: Mapped[str] = mapped_column(String(180), default="")
+    completed_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class DeliveryTask(Base):
     __tablename__ = "delivery_tasks"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -175,6 +190,9 @@ class Settlement(Base):
     settlement_no: Mapped[str] = mapped_column(String(60), unique=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
     gross_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    refund_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    net_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    refund_recovery: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     platform_fee: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     provider_share: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     service_share: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
@@ -306,6 +324,7 @@ class OrderBody(BaseModel):
 class TransitionBody(BaseModel):
     action: str
     reason: str = ""
+    refund_amount: float | None = Field(default=None, gt=0)
 
 
 class DevelopmentTaskUpdate(BaseModel):
@@ -438,6 +457,11 @@ def ensure_review_and_file_schema():
             "version": "VARCHAR(30)",
             "description": "TEXT",
             "status": "VARCHAR(30)",
+        },
+        "settlements": {
+            "refund_amount": "NUMERIC(14,2)",
+            "net_amount": "NUMERIC(14,2)",
+            "refund_recovery": "NUMERIC(14,2)",
         },
     }
     with engine.begin() as connection:
@@ -710,7 +734,8 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
     logs = db.scalars(select(OrderStateLog).where(OrderStateLog.order_id == order.id).order_by(OrderStateLog.created_at)).all()
     payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
     task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
-    return {"order": order_out(order), "logs": [{"domain": x.domain, "from_status": x.from_status, "to_status": x.to_status, "action": x.action, "reason": x.reason, "operator": x.operator, "created_at": x.created_at} for x in logs], "payment": {"status": payment.status, "payment_no": payment.payment_no, "amount": float(payment.amount or 0), "proof": payment.proof} if payment else None, "delivery": {"status": task.status, "method": task.method, "assignee": task.assignee, "note": task.note} if task else None}
+    refunds = db.scalars(select(Refund).where(Refund.order_id == order.id).order_by(Refund.created_at.desc())).all()
+    return {"order": order_out(order), "logs": [{"domain": x.domain, "from_status": x.from_status, "to_status": x.to_status, "action": x.action, "reason": x.reason, "operator": x.operator, "created_at": x.created_at} for x in logs], "payment": {"status": payment.status, "payment_no": payment.payment_no, "amount": float(payment.amount or 0), "proof": payment.proof} if payment else None, "refunds": [{"id": x.id, "refund_no": x.refund_no, "amount": float(x.amount or 0), "status": x.status, "reason": x.reason, "requested_by": x.requested_by, "completed_by": x.completed_by, "created_at": x.created_at, "completed_at": x.completed_at} for x in refunds], "delivery": {"status": task.status, "method": task.method, "assignee": task.assignee, "note": task.note} if task else None}
 
 
 @app.post("/api/orders")
@@ -767,23 +792,36 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         if order.payment_status != "paid":
             raise HTTPException(409, "只有已支付订单可以发起退款")
         payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
-        if payment:
-            payment.status = "refunding"
+        if not payment:
+            raise HTTPException(400, "支付单不存在")
+        remaining = Decimal(str(order.paid_amount or order.amount or 0)) - Decimal(str(order.refunded_amount or 0))
+        refund_amount = Decimal(str(body.refund_amount or remaining)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if refund_amount <= 0 or refund_amount > remaining:
+            raise HTTPException(400, "退款金额必须大于 0 且不能超过可退款余额")
+        payment.status = "refunding"
+        db.add(Refund(refund_no="REF-" + secrets.token_hex(6).upper(), order_id=order.id, payment_id=payment.id, amount=refund_amount, reason=body.reason, requested_by=user.name))
         order.payment_status = "refunding"
         log_state(db, order, "payment", current, target, body.action, user, body.reason)
     elif body.action == "complete_refund":
         if order.payment_status != "refunding":
             raise HTTPException(409, "当前订单不在退款中")
         payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
-        if payment:
-            payment.status = "refunded"
-        order.payment_status = "refunded"
-        order.refunded_amount = order.amount
+        refund = db.scalar(select(Refund).where(Refund.order_id == order.id, Refund.status == "pending").order_by(Refund.created_at.desc()))
+        if not payment or not refund:
+            raise HTTPException(400, "退款单不存在")
+        refund.status = "completed"
+        refund.completed_by = user.name
+        refund.completed_at = now()
+        order.refunded_amount = Decimal(str(order.refunded_amount or 0)) + Decimal(str(refund.amount or 0))
+        fully_refunded = Decimal(str(order.refunded_amount or 0)) >= Decimal(str(order.paid_amount or order.amount or 0))
+        payment.status = "refunded" if fully_refunded else "paid"
+        refund_target = "refunded" if fully_refunded else "paid"
+        order.payment_status = refund_target
         if order.after_sales_status == "processing":
             old_after_sales = order.after_sales_status
             order.after_sales_status = "resolved"
             log_state(db, order, "after_sales", old_after_sales, "resolved", "退款完成", user, body.reason)
-        log_state(db, order, "payment", current, target, body.action, user, body.reason)
+        log_state(db, order, "payment", current, refund_target, body.action, user, body.reason)
     elif body.action == "create_task":
         if order.delivery_status != "not_started":
             raise HTTPException(400, "当前交付状态不能生成任务")
@@ -831,7 +869,7 @@ def after_sales(user: User = Depends(current_user), db: Session = Depends(db_ses
 @app.get("/api/settlements")
 def settlements(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(Settlement).order_by(Settlement.created_at.desc())).all()
-    return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "refund_amount": float(x.refund_amount or 0), "net_amount": float(x.net_amount or 0), "refund_recovery": float(x.refund_recovery or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
 
 
 @app.post("/api/settlements/generate/{order_id}")
@@ -844,13 +882,18 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
         raise HTTPException(409, "订单清算单已锁定")
     body = body or SettlementRuleBody()
     gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    platform_fee = (gross * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    service_share = (gross * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    expert_fee = (gross * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    tax_amount = (gross * Decimal(str(body.tax_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    provider_share = (gross - platform_fee - service_share - expert_fee - tax_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    refund_amount = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    net_amount = max(gross - refund_amount, Decimal("0.00"))
+    platform_fee = (net_amount * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    service_share = (net_amount * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    expert_fee = (net_amount * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    tax_amount = (net_amount * Decimal(str(body.tax_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    provider_share = (net_amount - platform_fee - service_share - expert_fee - tax_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     settlement = existing or Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id)
     settlement.gross_amount = gross
+    settlement.refund_amount = refund_amount
+    settlement.net_amount = net_amount
+    settlement.refund_recovery = refund_amount
     settlement.platform_fee = platform_fee
     settlement.service_share = service_share
     settlement.expert_fee = expert_fee
@@ -862,7 +905,7 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     audit(db, user.email, "generate_settlement", "settlement", settlement.settlement_no, f"platform={body.platform_rate} service={body.service_rate} expert={body.expert_rate} tax={body.tax_rate}")
     db.commit()
     db.refresh(settlement)
-    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "refund_amount": float(settlement.refund_amount), "net_amount": float(settlement.net_amount), "refund_recovery": float(settlement.refund_recovery), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
 
 
 @app.post("/api/settlements/{settlement_id}/adjust")

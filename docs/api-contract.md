@@ -32,13 +32,14 @@ Product registration requires or supports the following metadata: catalog name, 
 - `GET /orders?status=&q=`
 - `POST /orders`
 - `GET /orders/{id}`
-- `POST /orders/{id}/transition` body `{action,reason}`
+- `POST /orders/{id}/transition` body `{action,reason,refund_amount}`；`approve_refund` 支持部分退款，并记录独立退款单
 
 ## Operations
 
 - `GET /delivery-tasks`
 - `GET /after-sales`
 - `GET /settlements`
+- `POST /settlements/generate/{order_id}` 按实际退款金额计算退款追回、可分账净额和各方分账金额
 - `GET /audit-logs`
 - `GET /users`
 
