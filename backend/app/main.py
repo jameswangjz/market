@@ -42,11 +42,17 @@ def now() -> datetime:
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
-    email: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(180), unique=True, index=True, nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), unique=True, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     verified_status: Mapped[str] = mapped_column(String(30), default="pending")
+    phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    platform_role: Mapped[str] = mapped_column(String(60), default="")
+    temporary_password_hash: Mapped[str] = mapped_column(String(255), default="")
+    temporary_password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -55,7 +61,12 @@ class Enterprise(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     name: Mapped[str] = mapped_column(String(180), unique=True)
     credit_code: Mapped[str] = mapped_column(String(40), unique=True)
+    enterprise_type: Mapped[str] = mapped_column(String(100), default="")
+    legal_representative: Mapped[str] = mapped_column(String(120), default="")
+    license_file_id: Mapped[str] = mapped_column(String(36), default="")
     verification_status: Mapped[str] = mapped_column(String(30), default="verified")
+    verified_by: Mapped[str] = mapped_column(String(180), default="")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -66,6 +77,73 @@ class Membership(Base):
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     role: Mapped[str] = mapped_column(String(60), default="member")
     business_roles: Mapped[str] = mapped_column(String(255), default="provider,user")
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    invited_by: Mapped[str] = mapped_column(String(36), default="")
+    joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class IdentityVerification(Base):
+    __tablename__ = "identity_verifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    id_name: Mapped[str] = mapped_column(String(120))
+    id_number: Mapped[str] = mapped_column(String(40))
+    id_front_file_id: Mapped[str] = mapped_column(String(36), default="")
+    id_back_file_id: Mapped[str] = mapped_column(String(36), default="")
+    phone: Mapped[str] = mapped_column(String(30))
+    enterprise_id: Mapped[str] = mapped_column(String(36), default="")
+    enterprise_role: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    review_comment: Mapped[str] = mapped_column(Text, default="")
+    reviewed_by: Mapped[str] = mapped_column(String(180), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EnterpriseInvitation(Base):
+    __tablename__ = "enterprise_invitations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    inviter_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    invitee_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    target: Mapped[str] = mapped_column(String(180))
+    token: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class VerificationCode(Base):
+    __tablename__ = "verification_codes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    channel: Mapped[str] = mapped_column(String(20))
+    target: Mapped[str] = mapped_column(String(180), index=True)
+    code: Mapped[str] = mapped_column(String(20))
+    purpose: Mapped[str] = mapped_column(String(40))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    setting_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    setting_value: Mapped[str] = mapped_column(Text, default="")
+    is_secret: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_by: Mapped[str] = mapped_column(String(180), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ApplicationAccessGrant(Base):
+    __tablename__ = "application_access_grants"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    granted_by: Mapped[str] = mapped_column(String(180))
+    status: Mapped[str] = mapped_column(String(30), default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -277,14 +355,76 @@ def issue_token(user: User) -> str:
 
 
 class LoginBody(BaseModel):
-    email: str
+    identifier: str | None = None
+    email: str | None = None
     password: str
 
 
 class RegisterBody(BaseModel):
-    email: str
+    email: str | None = None
+    phone: str | None = None
     name: str
     password: str = Field(min_length=8)
+    verification_code: str = ""
+
+
+class CodeBody(BaseModel):
+    channel: str
+    target: str
+    purpose: str = "register"
+
+
+class PersonalVerificationBody(BaseModel):
+    id_name: str
+    id_number: str
+    id_front_file_id: str
+    id_back_file_id: str
+    phone: str
+    phone_code: str
+    enterprise_id: str = ""
+    enterprise_role: str = ""
+
+
+class VerificationReviewBody(BaseModel):
+    decision: str
+    comment: str = ""
+
+
+class EnterpriseVerificationBody(BaseModel):
+    license_file_id: str
+    enterprise_name: str
+    credit_code: str
+    enterprise_type: str
+    legal_representative: str
+
+
+class InviteMemberBody(BaseModel):
+    target: str
+
+
+class MembershipRoleBody(BaseModel):
+    role: str
+
+
+class NotificationSettingsBody(BaseModel):
+    sms_provider: str = ""
+    sms_endpoint: str = ""
+    email_host: str = "imap.263.net"
+    email_ssl: bool = False
+    email_port: int = 143
+    email_username: str = ""
+    email_password: str = ""
+
+
+class PlatformRoleAssignmentBody(BaseModel):
+    identifier: str
+    name: str = ""
+    role: str
+    channel: str = "email"
+
+
+class ApplicationAccessBody(BaseModel):
+    user_id: str
 
 
 class ProductBody(BaseModel):
@@ -348,7 +488,8 @@ class SettlementAdjustmentBody(BaseModel):
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
-    email: str
+    email: str | None
+    phone: str | None
     name: str
     verified_status: str
 
@@ -367,7 +508,7 @@ def db_session():
 
 
 def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = ""):
-    db.add(AuditLog(actor=actor, action=action, target_type=target_type, target_id=target_id, detail=detail))
+    db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail))
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(db_session)) -> User:
@@ -384,10 +525,43 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
 
 
 def first_enterprise(db: Session, user: User) -> Enterprise:
-    membership = db.scalar(select(Membership).where(Membership.user_id == user.id).order_by(Membership.created_at))
+    membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.status == "active").order_by(Membership.created_at))
     if not membership:
         raise HTTPException(400, "用户尚未加入企业")
     return db.get(Enterprise, membership.enterprise_id)
+
+
+def current_membership(db: Session, user: User, enterprise_id: str | None = None) -> Membership:
+    stmt = select(Membership).where(Membership.user_id == user.id, Membership.status == "active")
+    if enterprise_id:
+        stmt = stmt.where(Membership.enterprise_id == enterprise_id)
+    membership = db.scalar(stmt.order_by(Membership.created_at))
+    if not membership:
+        raise HTTPException(403, "用户尚未加入有效企业")
+    return membership
+
+
+def require_enterprise_admin(db: Session, user: User, enterprise_id: str | None = None) -> Membership:
+    membership = current_membership(db, user, enterprise_id)
+    if membership.role not in {"super_admin", "enterprise_admin"}:
+        raise HTTPException(403, "只有企业超级管理员或企业管理员可以执行此操作")
+    return membership
+
+
+def require_platform_admin(user: User):
+    if user.platform_role != "super_admin":
+        raise HTTPException(403, "只有平台超级管理员可以执行此操作")
+
+
+PLATFORM_ROLES = {
+    "platform_operator": "平台运营人员",
+    "product_manager": "数据产品经理",
+    "business_reviewer": "业务审核人员",
+    "quality_reviewer": "质量审核人员",
+    "security_compliance": "安全合规人员",
+    "delivery_monitor": "交付监控人员",
+    "finance_settlement": "财务清算人员",
+}
 
 
 def make_order_no() -> str:
@@ -416,6 +590,7 @@ TRANSITIONS: dict[str, tuple[str, str, str, str]] = {
     "submit_after_sales": ("after_sales", "none", "processing", "提交售后申请"),
     "close_after_sales": ("after_sales", "processing", "closed", "售后关闭"),
     "close_order": ("main", "completed", "closed", "清算/期满"),
+    "cancel_order": ("main", "cancelled", "cancelled", "取消订单"),
 }
 
 
@@ -445,6 +620,26 @@ def ensure_product_metadata_schema():
 
 def ensure_review_and_file_schema():
     tables = {
+        "users": {
+            "phone": "VARCHAR(30)",
+            "phone_verified": "BOOLEAN",
+            "email_verified": "BOOLEAN",
+            "platform_role": "VARCHAR(60)",
+            "temporary_password_hash": "VARCHAR(255)",
+            "temporary_password_expires_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "enterprises": {
+            "enterprise_type": "VARCHAR(100)",
+            "legal_representative": "VARCHAR(120)",
+            "license_file_id": "VARCHAR(36)",
+            "verified_by": "VARCHAR(180)",
+            "verified_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "memberships": {
+            "status": "VARCHAR(30)",
+            "invited_by": "VARCHAR(36)",
+            "joined_at": "TIMESTAMP WITH TIME ZONE",
+        },
         "products": {
             "review_comment": "TEXT",
             "reviewed_by": "VARCHAR(180)",
@@ -474,6 +669,11 @@ def ensure_review_and_file_schema():
             else:
                 for name, sql_type in columns.items():
                     connection.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {sql_type}"))
+        connection.execute(text("UPDATE memberships SET status = 'active' WHERE status IS NULL"))
+        connection.execute(text("UPDATE users SET phone_verified = FALSE WHERE phone_verified IS NULL"))
+        connection.execute(text("UPDATE users SET email_verified = FALSE WHERE email_verified IS NULL"))
+        if engine.dialect.name != "sqlite":
+            connection.execute(text("ALTER TABLE users ALTER COLUMN email DROP NOT NULL"))
 
 
 @app.on_event("startup")
@@ -501,10 +701,23 @@ def startup():
             for task in seed_tasks:
                 db.add(DevelopmentTask(code=task[0], owner=task[1], title=task[2], area=task[3], priority=task[4], status=task[5], dependencies=task[6], acceptance=task[7], progress=task[8]))
             db.commit()
+        followup_tasks = [
+            ("BE-006", "后端 Agent", "手机号/邮箱注册与个人实名认证", "身份认证", "P0", "done", "BE-001", "注册、验证码、身份证材料和人工审核可闭环", 100),
+            ("BE-007", "后端 Agent", "企业实名认证、邀请入企和企业角色权限", "租户权限", "P0", "done", "BE-006", "企业人工审核、邀请、成员角色和订单权限可验证", 100),
+            ("BE-008", "后端 Agent", "平台角色、临时密码和通知平台配置", "平台管理", "P1", "done", "BE-001", "7 类平台角色可分配，短信/邮件配置可保存", 100),
+            ("FE-004", "前端 Agent", "注册、实名认证和系统设置工作台", "前端", "P1", "done", "BE-006,BE-008", "首页注册、认证材料、通知配置和平台角色页面可用", 100),
+        ]
+        for task in followup_tasks:
+            if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
+                db.add(DevelopmentTask(code=task[0], owner=task[1], title=task[2], area=task[3], priority=task[4], status=task[5], dependencies=task[6], acceptance=task[7], progress=task[8]))
+        db.commit()
         admin = db.scalar(select(User).where(User.email == "admin@market.local"))
         if admin:
+            if not admin.platform_role:
+                admin.platform_role = "super_admin"
+                db.commit()
             return
-        admin = User(email="admin@market.local", name="平台管理员", password_hash=hash_password("Admin123!"), verified_status="verified")
+        admin = User(email="admin@market.local", name="平台管理员", password_hash=hash_password("Admin123!"), verified_status="verified", platform_role="super_admin", email_verified=True)
         enterprise = Enterprise(name="天地奔牛示范企业", credit_code="DEMO-20261004", verification_status="verified")
         db.add_all([admin, enterprise])
         db.flush()
@@ -536,20 +749,45 @@ def health():
 
 @app.post("/api/auth/login")
 def login(body: LoginBody, db: Session = Depends(db_session)):
-    user = db.scalar(select(User).where(User.email == body.email.lower().strip()))
-    if not user or not verify_password(body.password, user.password_hash):
+    identifier = (body.identifier or body.email or "").lower().strip()
+    user = db.scalar(select(User).where(or_(User.email == identifier, User.phone == identifier)))
+    valid_password = user and verify_password(body.password, user.password_hash)
+    if user and not valid_password and user.temporary_password_hash and user.temporary_password_expires_at and user.temporary_password_expires_at > now():
+        valid_password = verify_password(body.password, user.temporary_password_hash)
+    if not user or not valid_password:
         raise HTTPException(401, "邮箱或密码错误")
     audit(db, user.email, "login", "user", user.id)
     db.commit()
     return {"token": issue_token(user), "user": UserOut.model_validate(user).model_dump()}
 
 
+@app.post("/api/auth/send-code")
+def send_verification_code(body: CodeBody, db: Session = Depends(db_session)):
+    if body.channel not in {"sms", "email"}:
+        raise HTTPException(400, "验证码渠道必须是 sms 或 email")
+    if not body.target.strip():
+        raise HTTPException(400, "验证码目标不能为空")
+    item = VerificationCode(channel=body.channel, target=body.target.strip(), code="123456", purpose=body.purpose, expires_at=now() + timedelta(minutes=10 if body.channel == "sms" else 60))
+    db.add(item)
+    db.commit()
+    return {"channel": body.channel, "target": body.target, "expires_at": item.expires_at, "provider_configured": False, "development_hint": "当前为开发环境，验证码固定为 123456，未执行真实短信或邮件发送"}
+
+
 @app.post("/api/auth/register")
 def register(body: RegisterBody, db: Session = Depends(db_session)):
-    email = body.email.lower().strip()
-    if db.scalar(select(User).where(User.email == email)):
+    email = body.email.lower().strip() if body.email else None
+    phone = body.phone.strip() if body.phone else None
+    if not email and not phone:
+        raise HTTPException(400, "邮箱和手机号码至少填写一项")
+    if phone and not body.verification_code:
+        raise HTTPException(400, "手机注册需要填写开发环境验证码 123456")
+    if phone and body.verification_code != "123456":
+        raise HTTPException(400, "验证码错误")
+    if email and db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "邮箱已注册")
-    user = User(email=email, name=body.name, password_hash=hash_password(body.password))
+    if phone and db.scalar(select(User).where(User.phone == phone)):
+        raise HTTPException(409, "手机号码已注册")
+    user = User(email=email, phone=phone, name=body.name, password_hash=hash_password(body.password), phone_verified=bool(phone), email_verified=False)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -561,6 +799,217 @@ def me(user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
     membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == enterprise.id))
     return {"user": UserOut.model_validate(user), "enterprise": {"id": enterprise.id, "name": enterprise.name}, "role": membership.role if membership else "member", "business_roles": (membership.business_roles.split(",") if membership else [])}
+
+
+def personal_verification_out(item: IdentityVerification) -> dict[str, Any]:
+    return {"id": item.id, "user_id": item.user_id, "id_name": item.id_name, "id_number": item.id_number[-4:].rjust(len(item.id_number), "*") if item.id_number else "", "id_front_file_id": item.id_front_file_id, "id_back_file_id": item.id_back_file_id, "phone": item.phone, "enterprise_id": item.enterprise_id, "enterprise_role": item.enterprise_role, "status": item.status, "review_comment": item.review_comment, "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "created_at": item.created_at}
+
+
+@app.get("/api/verification/personal/me")
+def personal_verification_me(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.scalar(select(IdentityVerification).where(IdentityVerification.user_id == user.id).order_by(IdentityVerification.created_at.desc()))
+    return {"item": personal_verification_out(item) if item else None, "user_verified_status": user.verified_status}
+
+
+@app.post("/api/verification/personal")
+def submit_personal_verification(body: PersonalVerificationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if body.phone != user.phone:
+        raise HTTPException(400, "实名认证手机号必须与注册手机号一致")
+    if not user.phone_verified or body.phone_code != "123456":
+        raise HTTPException(400, "请先完成手机验证码验证")
+    if not body.id_front_file_id or not body.id_back_file_id:
+        raise HTTPException(400, "必须提交身份证正反面图片")
+    item = IdentityVerification(user_id=user.id, id_name=body.id_name, id_number=body.id_number, id_front_file_id=body.id_front_file_id, id_back_file_id=body.id_back_file_id, phone=body.phone, enterprise_id=body.enterprise_id, enterprise_role=body.enterprise_role)
+    user.verified_status = "pending_review"
+    db.add(item)
+    audit(db, user.email or user.phone or user.id, "submit_personal_verification", "identity_verification", item.id)
+    db.commit()
+    db.refresh(item)
+    return personal_verification_out(item)
+
+
+@app.get("/api/admin/verifications/personal")
+def personal_verifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    items = db.scalars(select(IdentityVerification).order_by(IdentityVerification.created_at.desc())).all()
+    return {"items": [personal_verification_out(item) for item in items]}
+
+
+@app.post("/api/admin/verifications/personal/{verification_id}/review")
+def review_personal_verification(verification_id: str, body: VerificationReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    item = db.get(IdentityVerification, verification_id)
+    if not item:
+        raise HTTPException(404, "实名认证申请不存在")
+    if body.decision not in {"approve", "reject"}:
+        raise HTTPException(400, "审核结论必须是 approve 或 reject")
+    if body.decision == "reject" and not body.comment.strip():
+        raise HTTPException(400, "驳回时必须填写原因")
+    item.status = "verified" if body.decision == "approve" else "rejected"
+    item.review_comment = body.comment.strip()
+    item.reviewed_by = user.email or user.phone or user.id
+    item.reviewed_at = now()
+    applicant = db.get(User, item.user_id)
+    if applicant:
+        applicant.verified_status = item.status
+    audit(db, user.email or user.phone or user.id, "review_personal_verification", "identity_verification", item.id, item.review_comment)
+    db.commit()
+    return personal_verification_out(item)
+
+
+@app.post("/api/verification/enterprise")
+def submit_enterprise_verification(body: EnterpriseVerificationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if user.verified_status != "verified":
+        raise HTTPException(403, "请先完成个人实名认证")
+    existing = db.scalar(select(Enterprise).where(Enterprise.credit_code == body.credit_code))
+    if existing:
+        raise HTTPException(409, "统一社会信用代码已存在")
+    enterprise = Enterprise(name=body.enterprise_name, credit_code=body.credit_code, enterprise_type=body.enterprise_type, legal_representative=body.legal_representative, license_file_id=body.license_file_id, verification_status="pending_review")
+    db.add(enterprise)
+    db.flush()
+    db.add(Membership(user_id=user.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider", status="active", joined_at=now()))
+    audit(db, user.email or user.phone or user.id, "submit_enterprise_verification", "enterprise", enterprise.id, enterprise.name)
+    db.commit()
+    return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "verification_status": enterprise.verification_status}
+
+
+@app.get("/api/verification/enterprise/me")
+def enterprise_verification_me(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = first_enterprise(db, user)
+    return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "verification_status": enterprise.verification_status}
+
+
+@app.get("/api/admin/verifications/enterprise")
+def enterprise_verifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    items = db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc())).all()
+    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at} for x in items]}
+
+
+@app.post("/api/admin/verifications/enterprise/{enterprise_id}/review")
+def review_enterprise_verification(enterprise_id: str, body: VerificationReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    enterprise = db.get(Enterprise, enterprise_id)
+    if not enterprise:
+        raise HTTPException(404, "企业认证申请不存在")
+    if body.decision not in {"approve", "reject"}:
+        raise HTTPException(400, "审核结论必须是 approve 或 reject")
+    if body.decision == "reject" and not body.comment.strip():
+        raise HTTPException(400, "驳回时必须填写原因")
+    enterprise.verification_status = "verified" if body.decision == "approve" else "rejected"
+    enterprise.verified_by = user.email or user.phone or user.id
+    enterprise.verified_at = now()
+    audit(db, user.email or user.phone or user.id, "review_enterprise_verification", "enterprise", enterprise.id, body.comment)
+    db.commit()
+    return {"id": enterprise.id, "verification_status": enterprise.verification_status, "verified_by": enterprise.verified_by, "verified_at": enterprise.verified_at}
+
+
+@app.post("/api/enterprise/invitations")
+def invite_member(body: InviteMemberBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    membership = require_enterprise_admin(db, user)
+    target = body.target.strip().lower()
+    invitee = db.scalar(select(User).where(or_(User.email == target, User.phone == target)))
+    if not invitee:
+        raise HTTPException(404, "被邀请用户尚未注册")
+    existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == membership.enterprise_id, Membership.status == "active"))
+    if existing:
+        raise HTTPException(409, "用户已经加入该企业")
+    invitation = EnterpriseInvitation(enterprise_id=membership.enterprise_id, inviter_id=user.id, invitee_id=invitee.id, target=target, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=7))
+    db.add(invitation)
+    audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
+    db.commit()
+    return {"id": invitation.id, "target": invitation.target, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": "邮件发送接口预留，当前返回开发环境邀请令牌"}
+
+
+@app.get("/api/enterprise/invitations")
+def enterprise_invitations(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    membership = require_enterprise_admin(db, user)
+    items = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.enterprise_id == membership.enterprise_id).order_by(EnterpriseInvitation.created_at.desc())).all()
+    return {"items": [{"id": x.id, "target": x.target, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/enterprise/invitations/{token}/accept")
+def accept_enterprise_invitation(token: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    invitation = db.scalar(select(EnterpriseInvitation).where(EnterpriseInvitation.token == token, EnterpriseInvitation.invitee_id == user.id))
+    if not invitation or invitation.status != "pending" or invitation.expires_at <= now():
+        raise HTTPException(400, "邀请不存在、已处理或已过期")
+    invitation.status = "accepted"
+    db.add(Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now()))
+    audit(db, user.email or user.phone or user.id, "accept_enterprise_invitation", "enterprise_invitation", invitation.id)
+    db.commit()
+    return {"status": invitation.status, "enterprise_id": invitation.enterprise_id, "role": "member"}
+
+
+@app.get("/api/enterprise/members")
+def enterprise_members(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    membership = current_membership(db, user)
+    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == membership.enterprise_id, Membership.status == "active")).all()
+    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "business_roles": m.business_roles.split(","), "verified_status": u.verified_status} for m, u in rows]}
+
+
+@app.patch("/api/enterprise/members/{membership_id}")
+def update_enterprise_member(membership_id: str, body: MembershipRoleBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    admin = require_enterprise_admin(db, user)
+    if body.role not in {"member", "enterprise_admin"}:
+        raise HTTPException(400, "企业成员角色只能是 member 或 enterprise_admin")
+    target = db.get(Membership, membership_id)
+    if not target or target.enterprise_id != admin.enterprise_id or target.status != "active":
+        raise HTTPException(404, "企业成员不存在")
+    target.role = body.role
+    audit(db, user.email or user.phone or user.id, "update_enterprise_member_role", "membership", target.id, body.role)
+    db.commit()
+    return {"membership_id": target.id, "role": target.role}
+
+
+@app.get("/api/admin/settings/notifications")
+def notification_settings(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    values = {item.setting_key: item.setting_value for item in db.scalars(select(SystemSetting)).all()}
+    return {"sms_provider": values.get("sms_provider", ""), "sms_endpoint": values.get("sms_endpoint", ""), "email_host": values.get("email_host", "imap.263.net"), "email_ssl": values.get("email_ssl", "false") == "true", "email_port": int(values.get("email_port", "143")), "email_username": values.get("email_username", ""), "email_password_configured": bool(values.get("email_password")), "email_password": ""}
+
+
+@app.patch("/api/admin/settings/notifications")
+def update_notification_settings(body: NotificationSettingsBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    values = body.model_dump()
+    for key, value in values.items():
+        if key == "email_password" and not value:
+            continue
+        item = db.scalar(select(SystemSetting).where(SystemSetting.setting_key == key))
+        if not item:
+            item = SystemSetting(setting_key=key, is_secret=key == "email_password")
+            db.add(item)
+        item.setting_value = str(value).lower() if isinstance(value, bool) else str(value)
+        item.updated_by = user.email or user.phone or user.id
+    audit(db, user.email or user.phone or user.id, "update_notification_settings", "system_setting")
+    db.commit()
+    return notification_settings(user, db)
+
+
+@app.get("/api/admin/platform-roles")
+def platform_roles(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    items = db.scalars(select(User).where(User.platform_role != "").order_by(User.created_at.desc())).all()
+    return {"roles": PLATFORM_ROLES, "items": [{"id": x.id, "name": x.name, "email": x.email, "phone": x.phone, "role": x.platform_role, "role_name": PLATFORM_ROLES.get(x.platform_role, x.platform_role)} for x in items]}
+
+
+@app.post("/api/admin/platform-roles")
+def assign_platform_role(body: PlatformRoleAssignmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    if body.role not in PLATFORM_ROLES:
+        raise HTTPException(400, "不支持的平台角色")
+    identifier = body.identifier.strip().lower()
+    target = db.scalar(select(User).where(or_(User.email == identifier, User.phone == identifier)))
+    if not target:
+        raise HTTPException(404, "用户不存在，请先完成注册")
+    temp_password = secrets.token_urlsafe(9)
+    target.name = body.name or target.name
+    target.platform_role = body.role
+    target.temporary_password_hash = hash_password(temp_password)
+    target.temporary_password_expires_at = now() + timedelta(minutes=10 if body.channel == "sms" else 60)
+    audit(db, user.email or user.phone or user.id, "assign_platform_role", "user", target.id, body.role)
+    db.commit()
+    return {"user_id": target.id, "role": body.role, "role_name": PLATFORM_ROLES[body.role], "delivery": f"{body.channel} 发送接口预留", "temporary_password": temp_password, "expires_at": target.temporary_password_expires_at}
 
 
 @app.get("/api/dashboard")
@@ -623,6 +1072,36 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
 @app.get("/api/products/{product_id}")
 def product_detail(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     return product_out(product_for_enterprise(product_id, user, db))
+
+
+@app.get("/api/products/{product_id}/access-grants")
+def access_grants(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if product.product_type != "saas":
+        raise HTTPException(400, "只有 SaaS 应用支持企业用户访问授权")
+    items = db.execute(select(ApplicationAccessGrant, User).join(User, User.id == ApplicationAccessGrant.user_id).where(ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.status == "active")).all()
+    return {"items": [{"id": grant.id, "user_id": member.id, "user_name": member.name, "user_email": member.email, "status": grant.status, "granted_by": grant.granted_by, "created_at": grant.created_at} for grant, member in items]}
+
+
+@app.post("/api/products/{product_id}/access-grants")
+def grant_application_access(product_id: str, body: ApplicationAccessBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if product.product_type != "saas":
+        raise HTTPException(400, "只有 SaaS 应用支持企业用户访问授权")
+    enterprise = first_enterprise(db, user)
+    require_enterprise_admin(db, user, enterprise.id)
+    member = db.scalar(select(Membership).where(Membership.user_id == body.user_id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
+    if not member:
+        raise HTTPException(404, "目标用户不是当前企业成员")
+    existing = db.scalar(select(ApplicationAccessGrant).where(ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.user_id == body.user_id, ApplicationAccessGrant.status == "active"))
+    if existing:
+        return {"id": existing.id, "status": existing.status, "user_id": existing.user_id}
+    grant = ApplicationAccessGrant(enterprise_id=enterprise.id, product_id=product.id, user_id=body.user_id, granted_by=user.email or user.phone or user.id)
+    db.add(grant)
+    audit(db, user.email or user.phone or user.id, "grant_saas_access", "application_access_grant", grant.id, product.name)
+    db.commit()
+    db.refresh(grant)
+    return {"id": grant.id, "status": grant.status, "user_id": grant.user_id, "product_id": grant.product_id}
 
 
 @app.post("/api/products")
@@ -741,6 +1220,7 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
 @app.post("/api/orders")
 def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     buyer = first_enterprise(db, user)
+    require_enterprise_admin(db, user, buyer.id)
     product = db.get(Product, body.product_id)
     if not product or product.status != "published":
         raise HTTPException(400, "产品不存在或尚未发布")
@@ -763,6 +1243,8 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if not item:
         raise HTTPException(400, "不支持的订单动作")
     domain, expected, target, label = item
+    if body.action in {"confirm_payment", "cancel_order"}:
+        require_enterprise_admin(db, user, order.buyer_enterprise_id)
     if domain == "main":
         current = order.main_status
     elif domain == "payment":
@@ -775,6 +1257,15 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         target = "pending_review"
     if body.action == "approve" and current == "pending_review":
         target = "pending_fulfillment"
+    if body.action == "cancel_order":
+        if order.main_status not in {"created", "pending_review", "pending_fulfillment"} or order.payment_status not in {"unpaid", "paying"}:
+            raise HTTPException(409, "当前订单状态不允许取消")
+        old_main = order.main_status
+        order.main_status = "cancelled"
+        log_state(db, order, "main", old_main, "cancelled", body.action, user, body.reason)
+        audit(db, user.email or user.phone or user.id, body.action, "order", order.id, body.reason)
+        db.commit()
+        return order_out(order)
     if body.action == "confirm_payment":
         payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
         if not payment:
