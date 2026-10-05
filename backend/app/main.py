@@ -5,6 +5,7 @@ import hmac
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any
 
@@ -172,6 +173,16 @@ class Settlement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SettlementAdjustment(Base):
+    __tablename__ = "settlement_adjustments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    settlement_id: Mapped[str] = mapped_column(ForeignKey("settlements.id"), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    reason: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(180))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -264,6 +275,18 @@ class DevelopmentTaskUpdate(BaseModel):
     note: str = ""
 
 
+class SettlementRuleBody(BaseModel):
+    platform_rate: float = Field(default=8, ge=0, le=100)
+    service_rate: float = Field(default=20, ge=0, le=100)
+    expert_rate: float = Field(default=5, ge=0, le=100)
+    tax_rate: float = Field(default=6, ge=0, le=100)
+
+
+class SettlementAdjustmentBody(BaseModel):
+    amount: float
+    reason: str = Field(min_length=2)
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -323,6 +346,8 @@ TRANSITIONS: dict[str, tuple[str, str, str, str]] = {
     "reject": ("main", "pending_review", "cancelled", "审核拒绝"),
     "start_payment": ("payment", "unpaid", "paying", "发起模拟支付"),
     "confirm_payment": ("payment", "paying", "paid", "人工确认支付"),
+    "approve_refund": ("payment", "paid", "refunding", "同意退款"),
+    "complete_refund": ("payment", "refunding", "refunded", "退款完成"),
     "create_task": ("delivery", "not_started", "preparing", "生成履约任务"),
     "start_delivery": ("main", "pending_fulfillment", "fulfilling", "开始履约"),
     "submit_delivery": ("delivery", "preparing", "pending_acceptance", "提交交付物"),
@@ -559,6 +584,27 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             old_main = order.main_status
             order.main_status = "pending_fulfillment"
             log_state(db, order, "main", old_main, order.main_status, "支付完成/生成任务", user, body.reason)
+    elif body.action == "approve_refund":
+        if order.payment_status != "paid":
+            raise HTTPException(409, "只有已支付订单可以发起退款")
+        payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
+        if payment:
+            payment.status = "refunding"
+        order.payment_status = "refunding"
+        log_state(db, order, "payment", current, target, body.action, user, body.reason)
+    elif body.action == "complete_refund":
+        if order.payment_status != "refunding":
+            raise HTTPException(409, "当前订单不在退款中")
+        payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
+        if payment:
+            payment.status = "refunded"
+        order.payment_status = "refunded"
+        order.refunded_amount = order.amount
+        if order.after_sales_status == "processing":
+            old_after_sales = order.after_sales_status
+            order.after_sales_status = "resolved"
+            log_state(db, order, "after_sales", old_after_sales, "resolved", "退款完成", user, body.reason)
+        log_state(db, order, "payment", current, target, body.action, user, body.reason)
     elif body.action == "create_task":
         if order.delivery_status != "not_started":
             raise HTTPException(400, "当前交付状态不能生成任务")
@@ -607,6 +653,64 @@ def after_sales(user: User = Depends(current_user), db: Session = Depends(db_ses
 def settlements(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(Settlement).order_by(Settlement.created_at.desc())).all()
     return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/settlements/generate/{order_id}")
+def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order = db.get(Order, order_id)
+    if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
+        raise HTTPException(400, "订单尚未满足清算条件")
+    existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id).order_by(Settlement.created_at.desc()))
+    if existing and existing.status == "locked":
+        raise HTTPException(409, "订单清算单已锁定")
+    body = body or SettlementRuleBody()
+    gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    platform_fee = (gross * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    service_share = (gross * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    expert_fee = (gross * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    tax_amount = (gross * Decimal(str(body.tax_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    provider_share = (gross - platform_fee - service_share - expert_fee - tax_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    settlement = existing or Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id)
+    settlement.gross_amount = gross
+    settlement.platform_fee = platform_fee
+    settlement.service_share = service_share
+    settlement.expert_fee = expert_fee
+    settlement.tax_amount = tax_amount
+    settlement.provider_share = provider_share
+    settlement.status = "pending"
+    if not existing:
+        db.add(settlement)
+    audit(db, user.email, "generate_settlement", "settlement", settlement.settlement_no, f"platform={body.platform_rate} service={body.service_rate} expert={body.expert_rate} tax={body.tax_rate}")
+    db.commit()
+    db.refresh(settlement)
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
+
+
+@app.post("/api/settlements/{settlement_id}/adjust")
+def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    settlement = db.get(Settlement, settlement_id)
+    if not settlement:
+        raise HTTPException(404, "清算单不存在")
+    if settlement.status == "locked":
+        raise HTTPException(409, "已锁定清算单不能直接调整")
+    adjustment = SettlementAdjustment(settlement_id=settlement.id, amount=body.amount, reason=body.reason, created_by=user.name)
+    settlement.adjustment = Decimal(str(settlement.adjustment or 0)) + Decimal(str(body.amount))
+    settlement.status = "adjusted"
+    db.add(adjustment)
+    audit(db, user.email, "adjust_settlement", "settlement", settlement.settlement_no, body.reason)
+    db.commit()
+    return {"settlement_no": settlement.settlement_no, "adjustment": float(settlement.adjustment), "status": settlement.status}
+
+
+@app.post("/api/settlements/{settlement_id}/lock")
+def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    settlement = db.get(Settlement, settlement_id)
+    if not settlement:
+        raise HTTPException(404, "清算单不存在")
+    settlement.status = "locked"
+    audit(db, user.email, "lock_settlement", "settlement", settlement.settlement_no)
+    db.commit()
+    return {"settlement_no": settlement.settlement_no, "status": settlement.status}
 
 
 @app.get("/api/audit-logs")

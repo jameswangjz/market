@@ -124,6 +124,8 @@ function nextActions(order) {
   if (order.main_status === 'pending_review') actions.push(['approve', '审核通过'])
   if (order.payment_status === 'unpaid') actions.push(['start_payment', '发起模拟支付'])
   if (order.payment_status === 'paying') actions.push(['confirm_payment', '模拟确认支付'])
+  if (order.payment_status === 'paid' && order.after_sales_status === 'processing') actions.push(['approve_refund', '同意退款'])
+  if (order.payment_status === 'refunding') actions.push(['complete_refund', '确认退款完成'])
   if (order.delivery_status === 'not_started') actions.push(['create_task', '生成履约任务'])
   if (order.main_status === 'pending_fulfillment') actions.push(['start_delivery', '开始履约'])
   if (order.delivery_status === 'preparing') actions.push(['submit_delivery', '提交交付物'])
