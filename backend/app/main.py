@@ -776,6 +776,8 @@ def startup():
             ("BE-007", "后端 Agent", "企业实名认证、邀请入企和企业角色权限", "租户权限", "P0", "done", "BE-006", "企业人工审核、邀请、成员角色和订单权限可验证", 100),
             ("BE-008", "后端 Agent", "平台角色、临时密码和通知平台配置", "平台管理", "P1", "done", "BE-001", "7 类平台角色可分配，短信/邮件配置可保存", 100),
             ("FE-004", "前端 Agent", "注册、实名认证和系统设置工作台", "前端", "P1", "done", "BE-006,BE-008", "首页注册、认证材料、通知配置和平台角色页面可用", 100),
+            ("BE-009", "后端 Agent", "统一 API 网关控制面、鉴权、配额和调用统计", "API 网关", "P0", "done", "BE-002,BE-007", "API 路由、API Key、限流、日配额和调用统计可用", 100),
+            ("OPS-004", "部署测试 Agent", "统一 API 网关集群和 API 服务独立部署", "部署", "P0", "done", "BE-009,OPS-001", "market-gateway Pod Ready，API 请求可转发", 100),
         ]
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
