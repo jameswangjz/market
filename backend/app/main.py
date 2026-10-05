@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any
 
 import jwt
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
@@ -91,6 +91,9 @@ class Product(Base):
     authorization_conditions: Mapped[str] = mapped_column(Text, default="", nullable=True)
     data_source_statement: Mapped[str] = mapped_column(Text, default="", nullable=True)
     compliance_statement: Mapped[str] = mapped_column(Text, default="", nullable=True)
+    review_comment: Mapped[str] = mapped_column(Text, default="", nullable=True)
+    reviewed_by: Mapped[str] = mapped_column(String(180), default="", nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -208,10 +211,16 @@ class FileObject(Base):
     __tablename__ = "file_objects"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), index=True, nullable=True)
     object_name: Mapped[str] = mapped_column(String(500))
     original_name: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
     size: Mapped[int] = mapped_column(Integer, default=0)
+    checksum: Mapped[str] = mapped_column(String(64), default="")
+    file_role: Mapped[str] = mapped_column(String(50), default="product_data")
+    version: Mapped[str] = mapped_column(String(30), default="v1.0")
+    description: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -277,6 +286,17 @@ class ProductBody(BaseModel):
     authorization_conditions: str = ""
     data_source_statement: str = ""
     compliance_statement: str = ""
+
+
+class ProductReviewBody(BaseModel):
+    decision: str
+    comment: str = ""
+
+
+class ProductFileMetadata(BaseModel):
+    file_role: str = "product_data"
+    version: str = "v1.0"
+    description: str = ""
 
 
 class OrderBody(BaseModel):
@@ -404,10 +424,39 @@ def ensure_product_metadata_schema():
                 connection.execute(text(f"ALTER TABLE products ADD COLUMN IF NOT EXISTS {name} {sql_type}"))
 
 
+def ensure_review_and_file_schema():
+    tables = {
+        "products": {
+            "review_comment": "TEXT",
+            "reviewed_by": "VARCHAR(180)",
+            "reviewed_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "file_objects": {
+            "product_id": "VARCHAR(36)",
+            "checksum": "VARCHAR(64)",
+            "file_role": "VARCHAR(50)",
+            "version": "VARCHAR(30)",
+            "description": "TEXT",
+            "status": "VARCHAR(30)",
+        },
+    }
+    with engine.begin() as connection:
+        for table, columns in tables.items():
+            if engine.dialect.name == "sqlite":
+                existing = {row[1] for row in connection.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()}
+                for name, sql_type in columns.items():
+                    if name not in existing:
+                        connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}"))
+            else:
+                for name, sql_type in columns.items():
+                    connection.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {sql_type}"))
+
+
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(engine)
     ensure_product_metadata_schema()
+    ensure_review_and_file_schema()
     with SessionLocal() as db:
         if not db.scalar(select(DevelopmentTask.id).limit(1)):
             seed_tasks = [
@@ -502,7 +551,15 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "created_at": p.created_at}
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+
+
+def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
+    enterprise = first_enterprise(db, user)
+    product = db.scalar(select(Product).where(Product.id == product_id, Product.enterprise_id == enterprise.id))
+    if not product:
+        raise HTTPException(404, "产品不存在")
+    return product
 
 
 PRODUCT_DIRECTORIES = [
@@ -539,6 +596,11 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
     return {"items": [product_out(x) for x in db.scalars(stmt.order_by(Product.updated_at.desc())).all()]}
 
 
+@app.get("/api/products/{product_id}")
+def product_detail(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    return product_out(product_for_enterprise(product_id, user, db))
+
+
 @app.post("/api/products")
 def create_product(body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
@@ -553,23 +615,73 @@ def create_product(body: ProductBody, user: User = Depends(current_user), db: Se
     return product_out(product)
 
 
+@app.put("/api/products/{product_id}")
+def update_product(product_id: str, body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if product.status not in {"draft", "rejected"}:
+        raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
+    values = body.model_dump()
+    values["provider_name"] = values["provider_name"] or first_enterprise(db, user).name
+    for name, value in values.items():
+        setattr(product, name, value)
+    product.review_comment = ""
+    audit(db, user.email, "update_product", "product", product.id, product.name)
+    db.commit()
+    db.refresh(product)
+    return product_out(product)
+
+
 @app.post("/api/products/{product_id}/submit")
 def submit_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = db.get(Product, product_id)
-    if not product:
-        raise HTTPException(404, "产品不存在")
+    product = product_for_enterprise(product_id, user, db)
+    required = {
+        "所属目录": product.catalog_name and product.catalog_name != "未分类",
+        "提供方": product.provider_name,
+        "描述": product.description,
+        "适用场景": product.usage_scenarios,
+        "价格策略": product.pricing_strategy,
+        "授权条件": product.authorization_conditions,
+        "数据来源声明": product.data_source_statement,
+        "合规声明": product.compliance_statement,
+    }
+    missing = [label for label, value in required.items() if not value]
+    if missing:
+        raise HTTPException(400, f"产品元数据不完整，请补充：{'、'.join(missing)}")
+    if product.status not in {"draft", "rejected"}:
+        raise HTTPException(409, "当前产品状态不允许提交审核")
     product.status = "pending_review"
+    product.review_comment = ""
     audit(db, user.email, "submit_product_review", "product", product.id)
+    db.commit()
+    return product_out(product)
+
+
+@app.post("/api/products/{product_id}/review")
+def review_product(product_id: str, body: ProductReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if product.status != "pending_review":
+        raise HTTPException(409, "只有待审核产品可以审核")
+    if body.decision not in {"approve", "reject"}:
+        raise HTTPException(400, "审核结论必须是 approve 或 reject")
+    if body.decision == "reject" and not body.comment.strip():
+        raise HTTPException(400, "驳回时必须填写审核意见")
+    product.status = "published" if body.decision == "approve" else "rejected"
+    product.review_comment = body.comment.strip()
+    product.reviewed_by = user.email
+    product.reviewed_at = now()
+    audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
     db.commit()
     return product_out(product)
 
 
 @app.post("/api/products/{product_id}/publish")
 def publish_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = db.get(Product, product_id)
-    if not product:
-        raise HTTPException(404, "产品不存在")
+    product = product_for_enterprise(product_id, user, db)
+    if product.status != "pending_review":
+        raise HTTPException(409, "只有待审核产品可以发布")
     product.status = "published"
+    product.reviewed_by = user.email
+    product.reviewed_at = now()
     audit(db, user.email, "publish_product", "product", product.id)
     db.commit()
     return product_out(product)
@@ -818,8 +930,29 @@ def update_development_task(code: str, body: DevelopmentTaskUpdate, user: User =
     return {"code": task.code, "status": task.status, "progress": task.progress, "updated_at": task.updated_at}
 
 
+def file_out(item: FileObject) -> dict[str, Any]:
+    return {"id": item.id, "product_id": item.product_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "created_at": item.created_at}
+
+
+@app.get("/api/products/{product_id}/files")
+def product_files(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product_for_enterprise(product_id, user, db)
+    items = db.scalars(select(FileObject).where(FileObject.product_id == product_id).order_by(FileObject.created_at.desc())).all()
+    return {"items": [file_out(item) for item in items]}
+
+
 @app.post("/api/files/upload")
-def upload_file(upload: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def upload_file(
+    upload: UploadFile = File(...),
+    product_id: str | None = Form(default=None),
+    file_role: str = Form(default="product_data"),
+    version: str = Form(default="v1.0"),
+    description: str = Form(default=""),
+    user: User = Depends(current_user),
+    db: Session = Depends(db_session),
+):
+    if product_id:
+        product_for_enterprise(product_id, user, db)
     content = upload.file.read()
     object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{upload.filename}"
     if MINIO_ENDPOINT:
@@ -828,8 +961,9 @@ def upload_file(upload: UploadFile = File(...), user: User = Depends(current_use
             client.make_bucket(MINIO_BUCKET)
         from io import BytesIO
         client.put_object(MINIO_BUCKET, object_name, BytesIO(content), length=len(content), content_type=upload.content_type or "application/octet-stream")
-    item = FileObject(owner_id=user.id, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content))
+    item = FileObject(owner_id=user.id, product_id=product_id, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version, description=description)
     db.add(item)
     audit(db, user.email, "upload_file", "file", item.id, item.original_name)
     db.commit()
-    return {"id": item.id, "object_name": object_name, "original_name": item.original_name, "size": len(content)}
+    db.refresh(item)
+    return file_out(item)

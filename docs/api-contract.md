@@ -17,9 +17,13 @@ Base path: `/api`
 - `GET /products?status=&type=&q=`
 - `GET /product-directories`
 - `POST /products`
+- `PUT /products/{id}`
 - `GET /products/{id}`
 - `POST /products/{id}/submit`
+- `POST /products/{id}/review` (`approve` / `reject`，驳回必须填写意见)
 - `POST /products/{id}/publish`
+- `GET /products/{id}/files`
+- `POST /files/upload`（可通过 `product_id`、`file_role`、`version`、`description` 绑定产品文件元数据）
 
 Product registration requires or supports the following metadata: catalog name, product/service name, product type, provider name/type, description, version, usage scenarios, delivery method, price, pricing strategy, security level, authorization conditions, data source statement, and compliance statement.
 
