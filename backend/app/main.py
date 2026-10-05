@@ -813,10 +813,16 @@ def personal_verification_me(user: User = Depends(current_user), db: Session = D
 
 @app.post("/api/verification/personal")
 def submit_personal_verification(body: PersonalVerificationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    if body.phone != user.phone:
+    if user.phone and body.phone != user.phone:
         raise HTTPException(400, "实名认证手机号必须与注册手机号一致")
-    if not user.phone_verified or body.phone_code != "123456":
+    if body.phone_code != "123456":
         raise HTTPException(400, "请先完成手机验证码验证")
+    if not user.phone:
+        existing_phone = db.scalar(select(User).where(User.phone == body.phone, User.id != user.id))
+        if existing_phone:
+            raise HTTPException(409, "该手机号已绑定其他用户")
+        user.phone = body.phone
+    user.phone_verified = True
     if not body.id_front_file_id or not body.id_back_file_id:
         raise HTTPException(400, "必须提交身份证正反面图片")
     item = IdentityVerification(user_id=user.id, id_name=body.id_name, id_number=body.id_number, id_front_file_id=body.id_front_file_id, id_back_file_id=body.id_back_file_id, phone=body.phone, enterprise_id=body.enterprise_id, enterprise_role=body.enterprise_role)
