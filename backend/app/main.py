@@ -549,8 +549,8 @@ def require_enterprise_admin(db: Session, user: User, enterprise_id: str | None 
 
 
 def require_platform_admin(user: User):
-    if user.platform_role != "super_admin":
-        raise HTTPException(403, "只有平台超级管理员可以执行此操作")
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        raise HTTPException(403, "只有系统管理员或平台运营管理员可以执行此操作")
 
 
 PLATFORM_ROLES = {
@@ -1441,7 +1441,14 @@ def audit_logs(user: User = Depends(current_user), db: Session = Depends(db_sess
 @app.get("/api/users")
 def users(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(User).order_by(User.created_at.desc())).all()
-    return {"items": [{"id": x.id, "name": x.name, "email": x.email, "verified_status": x.verified_status, "is_active": x.is_active, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "is_active": x.is_active, "platform_role": x.platform_role, "created_at": x.created_at} for x in items]}
+
+
+@app.get("/api/admin/enterprises")
+def admin_enterprises(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    items = db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc())).all()
+    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/development/tasks")
