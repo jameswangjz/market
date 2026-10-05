@@ -13,7 +13,7 @@
 | BE-005 | 后端 Agent | 清算分账和审计 | BE-004 | DONE | 金额可复核、流水可追踪 |
 | FE-001 | 前端 Agent | Vue 工作台、导航和登录 | ARC-001 | DONE | 可登录并加载首页 |
 | FE-002 | 前端 Agent | 产品、订单、状态时间轴 | BE-001 | DONE | 页面与 API 联通 |
-| FE-003 | 前端 Agent | 交付、清算、审计和用户页面 | BE-005 | IN_PROGRESS | 核心运营页面可用 |
+| FE-003 | 前端 Agent | 交付、清算、审计和用户页面 | BE-005 | DONE | 核心运营页面可用 |
 | OPS-001 | 部署测试 Agent | PG、Redis、MinIO 和 K8S 资源 | ARC-001 | DONE | market 命名空间资源可部署 |
 | OPS-002 | 部署测试 Agent | 镜像、NodePort 和健康检查 | FE-001,BE-001 | DONE | 前后端 Pod Ready |
 | OPS-003 | 部署测试 Agent | 接口、状态机和端到端冒烟测试 | FE-002,BE-005 | DONE | P0 测试通过 |
