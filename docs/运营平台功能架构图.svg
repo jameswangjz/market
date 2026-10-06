@@ -24,7 +24,7 @@
   <rect width="1800" height="1260" fill="#f8fafc"/>
   <rect x="0" y="0" width="1800" height="132" fill="url(#header)"/>
   <text x="72" y="58" class="title">数据集运营服务管理平台功能架构</text>
-  <text x="72" y="94" class="subtitle">围绕数据与服务登记、交易、交付、清算、审计和持续运营形成端到端闭环</text>
+  <text x="72" y="94" class="subtitle">七类核心业务功能 + 平台服务、对外接口及基础设施等扩展支撑能力</text>
   <text x="1640" y="78" text-anchor="end" class="subtitle">当前平台功能视图</text>
 
   <text x="72" y="178" class="layer">一、平台服务层</text>
@@ -51,7 +51,7 @@
     <text x="1510" y="301" class="small">回调、接口文档与审计</text>
   </g>
 
-  <text x="72" y="374" class="layer">二、核心业务功能层</text>
+  <text x="72" y="374" class="layer">二、核心业务功能层（七类核心功能及扩展模块）</text>
 
   <g filter="url(#shadow)">
     <rect x="72" y="400" width="504" height="250" rx="14" fill="#fff" stroke="#60a5fa" stroke-width="2"/>
