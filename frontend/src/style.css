@@ -11,3 +11,4 @@
 @media(max-width:900px){.two-column-panels{grid-template-columns:1fr}}
 @media(max-width:760px){.version-row{grid-template-columns:1fr 1fr}.version-row .version-description{grid-column:1 / -1}.version-row .icon-btn{justify-self:end}}
 .modal-card{width:min(720px,calc(100% - 32px));padding:30px}.product-modal{width:min(860px,calc(100% - 32px));max-height:92vh}
+.saas-sync-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}.saas-sync-item{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #f0f1f3;padding:8px 0;font-size:11px}.saas-order-panel .drawer-section-title .text-btn{float:right;font-size:10px;padding:0}.saas-order-panel .action-list{margin:12px 0}@media(max-width:760px){.saas-sync-grid{grid-template-columns:1fr}}

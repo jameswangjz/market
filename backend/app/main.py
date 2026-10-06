@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
@@ -355,6 +356,13 @@ class Order(Base):
     refunded_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     buyer_name: Mapped[str] = mapped_column(String(180))
     product_name: Mapped[str] = mapped_column(String(220))
+    product_version_id: Mapped[str] = mapped_column(String(36), default="")
+    product_version_code: Mapped[str] = mapped_column(String(60), default="")
+    product_version_name: Mapped[str] = mapped_column(String(120), default="")
+    billing_cycle: Mapped[str] = mapped_column(String(20), default="")
+    subscription_id: Mapped[str] = mapped_column(String(36), default="")
+    business_type: Mapped[str] = mapped_column(String(30), default="")
+    related_order_id: Mapped[str] = mapped_column(String(36), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -1494,9 +1502,22 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
     product.review_comment = body.comment.strip()
     product.reviewed_by = user.email
     product.reviewed_at = now()
+    generated_credentials = None
+    if body.decision == "approve" and product.product_type == "saas":
+        config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
+        if not config:
+            client_id = "market_" + secrets.token_urlsafe(12)
+            client_secret = secrets.token_urlsafe(32)
+            mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
+            config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
+            db.add(config)
+            generated_credentials = {"client_id": client_id, "client_secret": client_secret, "token_url": config.token_url, "base_url": config.base_url}
     audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
     db.commit()
-    return product_out(product)
+    result = product_out(product)
+    if generated_credentials:
+        result["oauth_credentials"] = generated_credentials
+    return result
 
 
 @app.post("/api/products/{product_id}/publish")
@@ -1715,20 +1736,25 @@ def execute_saas_operation(db: Session, subscription: SaaSSubscription, operatio
         db.add(record)
     record.status = "executing"
     db.commit()
-    try:
-        result = saas_call(config, operation, payload)
-        record.response_payload = json.dumps(result, ensure_ascii=False)
-        record.status = "succeeded"
-        record.completed_at = now()
-        record.error_message = ""
-        db.commit()
-        return result
-    except HTTPException as exc:
-        record.status = "failed"
-        record.retry_count = (record.retry_count or 0) + 1
-        record.error_message = str(exc.detail)
-        db.commit()
-        raise
+    last_error: HTTPException | None = None
+    for attempt in range(3):
+        try:
+            result = saas_call(config, operation, payload)
+            record.response_payload = json.dumps(result, ensure_ascii=False)
+            record.status = "succeeded"
+            record.completed_at = now()
+            record.error_message = ""
+            db.commit()
+            return result
+        except HTTPException as exc:
+            last_error = exc
+            record.retry_count = attempt + 1
+            record.error_message = str(exc.detail)
+            record.status = "retrying" if attempt < 2 else "failed"
+            db.commit()
+            if attempt < 2:
+                time.sleep(10)
+    raise last_error or HTTPException(502, "SaaS 接口调用失败")
 
 
 def add_saas_order(db: Session, subscription: SaaSSubscription, product: Product, version: SaaSProductVersion, amount: Decimal, business_type: str, related_order_id: str = "", paid: bool = False) -> Order:
@@ -1805,7 +1831,7 @@ def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: 
     subscription = SaaSSubscription(enterprise_id=enterprise.id, product_id=product.id, version_id=version.id, billing_cycle=body.billing_cycle, status="provisioning", starts_at=starts, expires_at=expires, created_by=user.email or user.phone or user.id)
     db.add(subscription)
     db.flush()
-    result = execute_saas_operation(db, subscription, "OPEN", {"product_id": product.id, "version": version.version_code, "billing_cycle": body.billing_cycle, "enterprise_id": enterprise.id, "enterprise_name": enterprise.name}, config, f"open:{subscription.id}")
+    result = execute_saas_operation(db, subscription, "OPEN", {"product_id": product.id, "subscription_id": subscription.id, "version": version.version_code, "billing_cycle": body.billing_cycle, "enterprise_id": enterprise.id, "enterprise_name": enterprise.name}, config, f"open:{subscription.id}")
     subscription.external_app_id = str(result.get("app_id", ""))
     subscription.external_tenant_id = str(result.get("tenant_id", result.get("app_id", "")))
     subscription.status = "active"
