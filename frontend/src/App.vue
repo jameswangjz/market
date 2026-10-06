@@ -21,6 +21,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Network,
   PackageCheck,
   PanelLeftClose,
   PanelLeftOpen,
@@ -65,6 +66,28 @@ const apiOrderState = ref({
   gateway_base_path: "",
 });
 const apiCredentialReveal = ref(null);
+const gatewayItems = ref([]);
+const gatewayOverview = ref({ summary: {}, apisix_enabled: false, metrics_url: "" });
+const gatewayAlerts = ref([]);
+const gatewaySelected = ref(null);
+const gatewayRevisions = ref([]);
+const gatewayUsage = ref({ summary: {}, items: [] });
+const gatewayTab = ref("routes");
+const gatewayForm = ref({
+  upstream_url: "",
+  route_key: "",
+  version: "v1",
+  auth_mode: "api_key",
+  rate_limit_per_minute: 60,
+  daily_quota: 10000,
+  monthly_quota: 0,
+  timeout_ms: 30000,
+  strip_prefix: true,
+  health_path: "/health",
+  health_method: "GET",
+  upstream_auth_mode: "oauth2",
+  upstream_scope: "resource.invoke",
+});
 const development = ref({
   total: 0,
   counts: {},
@@ -150,6 +173,7 @@ const nav = [
   { key: "delivery", label: "交付与售后", icon: PackageCheck },
   { key: "settlements", label: "清算分账", icon: BarChart3 },
   { key: "audit", label: "审计日志", icon: ShieldCheck },
+  { key: "gateway", label: "API 网关", icon: Network },
   { key: "users", label: "用户与企业", icon: Users },
   { key: "development", label: "开发进度", icon: Activity },
 ];
@@ -336,6 +360,17 @@ async function loadViewData(view) {
     const { data } = await api.get("/audit-logs");
     auditItems.value = data.items;
   }
+  if (view === "gateway") {
+    const [routes, overview, alerts] = await Promise.all([
+      api.get("/gateway/routes"),
+      api.get("/gateway/overview"),
+      api.get("/gateway/alerts"),
+    ]);
+    gatewayItems.value = routes.data.items;
+    gatewayOverview.value = overview.data;
+    gatewayAlerts.value = alerts.data.items;
+    if (gatewayItems.value.length) await selectGateway(gatewayItems.value[0]);
+  }
   if (view === "users") {
     const [usersData, enterpriseData, personalData] = await Promise.all([
       api.get("/users"),
@@ -377,6 +412,72 @@ async function loadViewData(view) {
         enterprise_type: enterprise.data.enterprise_type,
         legal_representative: enterprise.data.legal_representative,
       });
+  }
+}
+async function selectGateway(item) {
+  gatewaySelected.value = item;
+  try {
+    const [config, revisions, usage] = await Promise.all([
+      api.get(`/products/${item.product_id}/gateway-config`),
+      api.get(`/products/${item.product_id}/gateway-revisions`),
+      api.get(`/products/${item.product_id}/gateway-usage`),
+    ]);
+    gatewayForm.value = {
+      ...gatewayForm.value,
+      ...(config.data.item || {}),
+    };
+    gatewayRevisions.value = revisions.data.items;
+    gatewayUsage.value = usage.data;
+  } catch (error) {
+    notify(error.response?.data?.detail || "网关数据加载失败");
+  }
+}
+async function saveGatewayConfig() {
+  if (!gatewaySelected.value) return;
+  try {
+    await api.put(
+      `/products/${gatewaySelected.value.product_id}/gateway-config`,
+      gatewayForm.value,
+    );
+    notify("网关配置已保存");
+    await loadViewData("gateway");
+  } catch (error) {
+    notify(error.response?.data?.detail || "网关配置保存失败");
+  }
+}
+async function validateGatewayConfig() {
+  if (!gatewaySelected.value) return;
+  try {
+    const { data } = await api.post(
+      `/products/${gatewaySelected.value.product_id}/gateway-config/validate`,
+    );
+    notify(data.valid ? "网关配置校验通过" : "网关配置校验未通过");
+  } catch (error) {
+    notify(error.response?.data?.detail || "网关配置校验失败");
+  }
+}
+async function publishGatewayConfig() {
+  if (!gatewaySelected.value) return;
+  try {
+    await api.post(
+      `/products/${gatewaySelected.value.product_id}/gateway-config/publish`,
+    );
+    notify("网关路由已发布");
+    await loadViewData("gateway");
+  } catch (error) {
+    notify(error.response?.data?.detail || "网关路由发布失败");
+  }
+}
+async function rollbackGatewayConfig() {
+  if (!gatewaySelected.value || !window.confirm("确认回滚到上一稳定网关配置吗？")) return;
+  try {
+    await api.post(
+      `/products/${gatewaySelected.value.product_id}/gateway-config/rollback`,
+    );
+    notify("网关配置已回滚");
+    await loadViewData("gateway");
+  } catch (error) {
+    notify(error.response?.data?.detail || "网关回滚失败");
   }
 }
 function selectView(view) {
@@ -1209,6 +1310,63 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 <ShoppingCart :size="28" /><span>还没有订单数据</span>
               </div>
             </div>
+          </div></template
+        >
+        <template v-else-if="activeView === 'gateway'"
+          ><div class="page-heading">
+            <div>
+              <div class="eyebrow">APISIX · ROUTE CONTROL PLANE</div>
+              <h1>API 网关</h1>
+              <p>统一管理路由、版本策略、发布记录与调用运行状态。</p>
+            </div>
+            <button class="secondary-btn" @click="loadViewData('gateway')">
+              <RefreshCw :size="16" />刷新
+            </button>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-card"><div class="metric-icon orange"><Network :size="17" /></div><span>已登记路由</span><strong>{{ gatewayOverview.summary.routes || 0 }}</strong><small>{{ gatewayOverview.apisix_enabled ? 'APISIX 已接管' : '兼容网关模式' }}</small></div>
+            <div class="metric-card"><div class="metric-icon green"><CheckCircle2 :size="17" /></div><span>活跃路由</span><strong>{{ gatewayOverview.summary.active_routes || 0 }}</strong><small>自动发布与健康检查</small></div>
+            <div class="metric-card"><div class="metric-icon blue"><Activity :size="17" /></div><span>近期开调用</span><strong>{{ gatewayOverview.summary.requests || 0 }}</strong><small>最近 1000 条调用记录</small></div>
+            <div class="metric-card"><div class="metric-icon violet"><Clock3 :size="17" /></div><span>平均延迟</span><strong>{{ gatewayOverview.summary.avg_latency_ms || 0 }}<small> ms</small></strong><small>成功 {{ gatewayOverview.summary.success || 0 }} · 错误 {{ gatewayOverview.summary.errors || 0 }}</small></div>
+          </div>
+          <div class="gateway-layout">
+            <div class="panel">
+              <div class="panel-heading"><div><span class="section-kicker">ROUTES</span><h3>网关路由</h3></div><span class="muted">{{ gatewayItems.length }} 条</span></div>
+              <div v-if="gatewayItems.length" class="gateway-route-list">
+                <button v-for="item in gatewayItems" :key="item.id" :class="['gateway-route-item', { active: gatewaySelected?.id === item.id }]" @click="selectGateway(item)">
+                  <strong>{{ item.product_name || item.route_key }}</strong>
+                  <small>/gateway/{{ item.route_key }} · {{ item.version }} · {{ item.status }}</small>
+                  <small>{{ item.rate_limit_per_minute }}/分钟 · 日配额 {{ item.daily_quota || '不限' }}</small>
+                </button>
+              </div>
+              <div v-else class="empty-state"><Network :size="28" /><span>暂无网关路由</span></div>
+            </div>
+            <div class="panel">
+              <div class="panel-heading"><div><span class="section-kicker">CONFIGURATION</span><h3>路由与策略配置</h3></div><span v-if="gatewaySelected" class="status-pill status-done">{{ gatewaySelected.status }}</span></div>
+              <div v-if="gatewaySelected" class="gateway-form-grid">
+                <label class="wide">上游地址<input v-model="gatewayForm.upstream_url" /></label>
+                <label>路由标识<input v-model="gatewayForm.route_key" /></label>
+                <label>版本<input v-model="gatewayForm.version" /></label>
+                <label>入口认证<select v-model="gatewayForm.auth_mode"><option value="api_key">API Key</option><option value="oauth2">OAuth2</option></select></label>
+                <label>上游认证<select v-model="gatewayForm.upstream_auth_mode"><option value="oauth2">OAuth2</option><option value="none">无</option></select></label>
+                <label>上游 Scope<input v-model="gatewayForm.upstream_scope" /></label>
+                <label>每分钟限流<input v-model.number="gatewayForm.rate_limit_per_minute" type="number" min="1" /></label>
+                <label>每日配额<input v-model.number="gatewayForm.daily_quota" type="number" min="0" /></label>
+                <label>每月配额<input v-model.number="gatewayForm.monthly_quota" type="number" min="0" /></label>
+                <label>超时（毫秒）<input v-model.number="gatewayForm.timeout_ms" type="number" min="100" /></label>
+                <label>健康检查路径<input v-model="gatewayForm.health_path" /></label>
+                <label>健康检查方法<select v-model="gatewayForm.health_method"><option>GET</option><option>HEAD</option></select></label>
+                <label class="wide checkbox-line"><input v-model="gatewayForm.strip_prefix" type="checkbox" /> 转发时剥离网关前缀</label>
+              </div>
+              <div v-if="gatewaySelected" class="gateway-actions"><button class="secondary-btn" @click="saveGatewayConfig"><CheckCircle2 :size="15" />保存</button><button class="secondary-btn" @click="validateGatewayConfig"><CheckCircle2 :size="15" />校验</button><button class="primary-btn" @click="publishGatewayConfig"><ArrowUpRight :size="15" />发布</button><button class="secondary-btn" @click="rollbackGatewayConfig"><RefreshCw :size="15" />回滚</button></div>
+              <div v-else class="empty-state"><Network :size="28" /><span>请选择一条路由</span></div>
+            </div>
+          </div>
+          <div class="panel gateway-lower-panel">
+            <div class="panel-heading"><div><span class="section-kicker">OBSERVABILITY</span><h3>运行状态</h3></div><div class="settings-tabs"><button :class="{ active: gatewayTab === 'usage' }" @click="gatewayTab = 'usage'">调用统计</button><button :class="{ active: gatewayTab === 'revisions' }" @click="gatewayTab = 'revisions'">发布记录</button><button :class="{ active: gatewayTab === 'alerts' }" @click="gatewayTab = 'alerts'">告警</button></div></div>
+            <div v-if="gatewayTab === 'usage'" class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>API Key</th><th>状态码</th><th>延迟</th><th>版本</th></tr></thead><tbody><tr v-for="item in gatewayUsage.items" :key="item.id"><td>{{ fmtDate(item.created_at) }}</td><td>{{ item.api_key || '-' }}</td><td><span :class="['status-pill', item.status_code < 400 ? 'status-done' : 'status-blocked']">{{ item.status_code }}</span></td><td>{{ item.latency_ms }} ms</td><td>{{ item.version || '-' }}</td></tr><tr v-if="!gatewayUsage.items.length"><td colspan="5"><div class="empty-state">暂无调用数据</div></td></tr></tbody></table></div>
+            <div v-else-if="gatewayTab === 'revisions'" class="table-wrap"><table class="data-table"><thead><tr><th>版本</th><th>状态</th><th>操作人</th><th>时间</th><th>错误</th></tr></thead><tbody><tr v-for="item in gatewayRevisions" :key="item.id"><td>Revision {{ item.revision }}</td><td><span :class="['status-pill', item.status === 'published' ? 'status-done' : item.status === 'failed' ? 'status-blocked' : 'status-in_progress']">{{ item.status }}</span></td><td>{{ item.created_by }}</td><td>{{ fmtDate(item.created_at) }}</td><td>{{ item.error_message || '-' }}</td></tr><tr v-if="!gatewayRevisions.length"><td colspan="5"><div class="empty-state">暂无发布记录</div></td></tr></tbody></table></div>
+            <div v-else class="table-wrap"><table class="data-table"><thead><tr><th>等级</th><th>告警</th><th>说明</th><th>时间</th></tr></thead><tbody><tr v-for="item in gatewayAlerts" :key="item.id"><td><span class="status-pill status-blocked">{{ item.severity }}</span></td><td><strong>{{ item.title }}</strong></td><td>{{ item.message }}</td><td>{{ fmtDate(item.created_at) }}</td></tr><tr v-if="!gatewayAlerts.length"><td colspan="4"><div class="empty-state"><CheckCircle2 :size="22" />暂无未处理告警</div></td></tr></tbody></table></div>
           </div></template
         >
         <template v-else-if="activeView === 'development'"

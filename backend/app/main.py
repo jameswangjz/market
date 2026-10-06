@@ -1777,6 +1777,29 @@ def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) ->
     return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "upstream_auth_mode": route.upstream_auth_mode, "upstream_scope": route.upstream_scope, "upstream_oauth_configured": bool(route.upstream_client_id and route.upstream_client_secret), "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "apisix_enabled": os.getenv("APISIX_ENABLED", "false").lower() == "true", "created_at": route.created_at, "updated_at": route.updated_at}
 
 
+@app.get("/api/gateway/routes")
+def gateway_routes(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    rows = db.execute(select(ApiGatewayRoute, Product).join(Product, Product.id == ApiGatewayRoute.product_id).order_by(ApiGatewayRoute.updated_at.desc())).all()
+    return {"items": [gateway_route_out(route, product) for route, product in rows]}
+
+
+@app.get("/api/gateway/overview")
+def gateway_overview(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    routes = db.scalars(select(ApiGatewayRoute)).all()
+    usage = db.scalars(select(ApiUsage).order_by(ApiUsage.created_at.desc()).limit(1000)).all()
+    total = len(usage)
+    return {"summary": {"routes": len(routes), "active_routes": sum(1 for x in routes if x.status == "active"), "requests": total, "success": sum(1 for x in usage if x.status_code < 400), "errors": sum(1 for x in usage if x.status_code >= 400), "avg_latency_ms": round(sum(x.latency_ms for x in usage) / total, 1) if total else 0}, "apisix_enabled": apisix_enabled(), "metrics_url": "http://market-apisix-metrics:9091/apisix/prometheus/metrics"}
+
+
+@app.get("/api/gateway/alerts")
+def gateway_alerts(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    failed = db.scalars(select(GatewayPublishRecord).where(GatewayPublishRecord.status == "failed").order_by(GatewayPublishRecord.created_at.desc()).limit(20)).all()
+    return {"items": [{"id": x.id, "severity": "error", "title": "APISIX 路由发布失败", "message": x.error_message, "created_at": x.created_at, "status": "open"} for x in failed]}
+
+
 def apisix_enabled() -> bool:
     return os.getenv("APISIX_ENABLED", "false").lower() == "true"
 
