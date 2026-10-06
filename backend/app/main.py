@@ -197,6 +197,7 @@ class ProductReleaseVersion(Base):
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    product: Mapped[Product] = relationship(back_populates="versions")
 
 
 class ProductSecurityScan(Base):
