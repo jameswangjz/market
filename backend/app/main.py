@@ -347,6 +347,7 @@ class Order(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     order_no: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     buyer_enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    buyer_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), default="", index=True)
     provider_enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
     main_status: Mapped[str] = mapped_column(String(30), default="created", index=True)
@@ -914,6 +915,7 @@ def ensure_review_and_file_schema():
             "refund_recovery": "NUMERIC(14,2)",
         },
         "orders": {
+            "buyer_user_id": "VARCHAR(36)",
             "product_version_id": "VARCHAR(36)",
             "product_version_code": "VARCHAR(60)",
             "product_version_name": "VARCHAR(120)",
@@ -1573,6 +1575,31 @@ def gateway_product(product_id: str, db: Session) -> Product:
     return product
 
 
+def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Product, ApiGatewayRoute, str]:
+    order = db.get(Order, order_id)
+    if not order:
+        raise HTTPException(404, "订单不存在")
+    if order.payment_status != "paid":
+        raise HTTPException(409, "订单支付完成后才可以管理 API 凭据")
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        if order.buyer_user_id == user.id:
+            if user.verified_status != "verified":
+                raise HTTPException(403, "完成个人实名认证后才可以管理 API 凭据")
+        else:
+            require_enterprise_admin(db, user, order.buyer_enterprise_id)
+    product = gateway_product(order.product_id, db)
+    if product.status != "published":
+        raise HTTPException(409, "API 产品尚未发布")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id, ApiGatewayRoute.status == "active"))
+    if not route:
+        raise HTTPException(409, "API 网关路由尚未启用")
+    return order, product, route, order.buyer_enterprise_id
+
+
+def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+
+
 @app.get("/api/products/{product_id}/gateway-config")
 def get_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
@@ -1651,6 +1678,55 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
     db.commit()
     db.refresh(credential)
     return {"id": credential.id, "name": credential.name, "key_prefix": credential.key_prefix, "api_key": raw_key, "route_key": route.route_key, "enterprise_id": credential.enterprise_id, "expires_at": credential.expires_at, "warning": "API Key 仅在本次响应中返回，请妥善保存"}
+
+
+@app.get("/api/orders/{order_id}/api-credentials")
+def list_order_api_credentials(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order, product, route, enterprise_id = api_order_context(order_id, user, db)
+    items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id).order_by(ApiCredential.created_at.desc())).all()
+    return {"order_id": order.id, "product_id": product.id, "product_name": product.name, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "items": [api_credential_out(x, route) for x in items]}
+
+
+@app.post("/api/orders/{order_id}/api-credentials")
+def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order, product, route, enterprise_id = api_order_context(order_id, user, db)
+    raw_key = "mk_" + secrets.token_urlsafe(30)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    db.add(credential)
+    audit(db, user.email or user.phone or user.id, "create_order_api_credential", "api_credential", credential.id, order.order_no)
+    db.commit()
+    db.refresh(credential)
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": "API Key 仅在本次响应中返回，请妥善保存"}
+
+
+@app.post("/api/orders/{order_id}/api-credentials/{credential_id}/revoke")
+def revoke_order_api_credential(order_id: str, credential_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order, _, route, enterprise_id = api_order_context(order_id, user, db)
+    credential = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id))
+    if not credential:
+        raise HTTPException(404, "API 凭据不存在")
+    if credential.status != "active":
+        raise HTTPException(409, "API 凭据已经停用")
+    credential.status = "revoked"
+    audit(db, user.email or user.phone or user.id, "revoke_order_api_credential", "api_credential", credential.id, order.order_no)
+    db.commit()
+    return {"id": credential.id, "status": credential.status}
+
+
+@app.post("/api/orders/{order_id}/api-credentials/{credential_id}/regenerate")
+def regenerate_order_api_credential(order_id: str, credential_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order, product, route, enterprise_id = api_order_context(order_id, user, db)
+    old = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id))
+    if not old:
+        raise HTTPException(404, "API 凭据不存在")
+    old.status = "revoked"
+    raw_key = "mk_" + secrets.token_urlsafe(30)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    db.add(credential)
+    audit(db, user.email or user.phone or user.id, "regenerate_order_api_credential", "api_credential", credential.id, f"{order.order_no} from={old.id}")
+    db.commit()
+    db.refresh(credential)
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用，新 API Key 仅在本次响应中返回，请妥善保存"}
 
 
 @app.get("/api/products/{product_id}/gateway-credentials")
@@ -2035,7 +2111,7 @@ def remove_saas_department(subscription_id: str, department_id: str, user: User 
 
 
 def order_out(o: Order) -> dict[str, Any]:
-    return {"id": o.id, "order_no": o.order_no, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
 
 
 @app.get("/api/orders")
@@ -2064,11 +2140,12 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
 @app.post("/api/orders")
 def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     buyer = first_enterprise(db, user)
-    require_enterprise_admin(db, user, buyer.id)
+    if user.verified_status != "verified":
+        require_enterprise_admin(db, user, buyer.id)
     product = db.get(Product, body.product_id)
     if not product or product.status != "published":
         raise HTTPException(400, "产品不存在或尚未发布")
-    order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_name=product.name, buyer_name=buyer.name, amount=product.price, main_status="created")
+    order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_name=product.name, buyer_name=user.name if user.verified_status == "verified" else buyer.name, amount=product.price, main_status="created")
     db.add(order)
     db.flush()
     db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=product.price, status="unpaid"))

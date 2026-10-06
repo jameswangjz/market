@@ -101,6 +101,45 @@ Content-Type: application/json
 
 API Key 只在生成接口响应中返回一次。平台数据库只保存不可逆哈希，不保存密钥原文。
 
+### 3.4 订单页面管理 API 凭据
+
+购买订单的调用方可以在已支付订单的订单详情页管理该订单对应的 API 凭据，不需要调用后台管理接口。支持已完成个人实名认证的订单所有者，以及已完成企业实名认证的企业超级管理员；企业管理员权限也可以保留用于企业内部运维。接口会校验当前用户与订单所有者或购买企业的关系。
+
+查询凭据状态：
+
+```http
+GET /api/orders/{order_id}/api-credentials
+Authorization: Bearer <platform-token>
+```
+
+生成或获取凭据：
+
+```http
+POST /api/orders/{order_id}/api-credentials
+Authorization: Bearer <platform-token>
+Content-Type: application/json
+
+{"name":"质量分析生产凭据"}
+```
+
+成功响应中返回 `api_key` 原文、`route_key` 和网关路径。`api_key` 只在本次生成响应中返回，平台不会从数据库恢复已生成的密钥原文。
+
+停用凭据：
+
+```http
+POST /api/orders/{order_id}/api-credentials/{credential_id}/revoke
+Authorization: Bearer <platform-token>
+```
+
+重新生成凭据：
+
+```http
+POST /api/orders/{order_id}/api-credentials/{credential_id}/regenerate
+Authorization: Bearer <platform-token>
+```
+
+重新生成会立即停用旧凭据，并在响应中返回新的 `api_key`。API 调用方应在生成或重新生成后立即保存密钥，并在客户端配置新的凭据。订单未支付、API 路由未启用或凭据已停用时，网关不会允许调用。
+
 ## 4. API 服务端接入规范
 
 API 服务应提供标准 HTTP 接口，推荐使用 JSON 作为请求和响应格式。
