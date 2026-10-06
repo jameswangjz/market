@@ -32,6 +32,7 @@ data:
   APISIX_COMPAT_UPSTREAM: http://market-gateway:8100
   APISIX_NATIVE_AUTH: 'true'
   APISIX_NATIVE_UPSTREAM: 'true'
+  PRESIDIO_ANALYZER_URL: http://market-presidio-analyzer:3000/analyze
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -103,6 +104,36 @@ metadata: {name: market-redis, namespace: market}
 spec:
   selector: {app: market-redis}
   ports: [{name: redis, port: 6379, targetPort: 6379}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-presidio-analyzer
+  namespace: market
+  labels: {app: market-presidio-analyzer}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-presidio-analyzer}}
+  template:
+    metadata: {labels: {app: market-presidio-analyzer}}
+    spec:
+      containers:
+        - name: analyzer
+          image: ghcr.io/data-privacy-stack/presidio-analyzer:latest
+          imagePullPolicy: IfNotPresent
+          ports: [{name: http, containerPort: 3000}]
+          readinessProbe: {httpGet: {path: /health, port: 3000}, initialDelaySeconds: 30, periodSeconds: 10}
+          livenessProbe: {httpGet: {path: /health, port: 3000}, initialDelaySeconds: 60, periodSeconds: 20}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: market-presidio-analyzer, namespace: market}
+spec:
+  selector: {app: market-presidio-analyzer}
+  ports: [{name: http, port: 3000, targetPort: 3000}]
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

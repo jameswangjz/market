@@ -731,6 +731,16 @@ async function productAction(product, action) {
       notify(data.unpublished ? "安全策略检查发现问题，产品已自动下架" : "安全策略检查通过");
       await loadViewData("products");
       return;
+    } else if (action === "security_report") {
+      const { data } = await api.get(`/products/${product.id}/security-report`);
+      const report = data.security_report?.report || {};
+      const findings = (report.findings || []).map((item) => `${item.severity || "提示"} · ${item.message || item.entity}`).join("\n");
+      window.alert(`安全审核报告\n扫描引擎：${data.security_report?.engine}\n发现项：${data.security_report?.findings_count}\n高风险：${data.security_report?.high_risk_count}\n\n${findings || "未发现自动识别项"}`);
+      return;
+    } else if (action === "security_approve" || action === "security_reject") {
+      let comment = window.prompt(action === "security_approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", action === "security_approve" ? "安全审核通过" : "");
+      if (!comment) return;
+      await api.post(`/products/${product.id}/security-review`, { decision: action === "security_approve" ? "approve" : "reject", comment });
     } else if (action === "review") {
       const comment = window.prompt("请输入审核意见", "审核通过");
       if (comment === null) return;
@@ -1587,13 +1597,15 @@ onUnmounted(() => window.clearInterval(progressTimer));
                       <span
                         :class="[
                           'status-pill',
-                          `status-${product.status === 'published' ? 'done' : product.status === 'pending_review' ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
+                          `status-${product.status === 'published' ? 'done' : product.status === 'pending_review' || product.status === 'security_review' ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
                         ]"
                         >{{
                           product.status === "published"
                             ? "已发布"
                             : product.status === "pending_review"
                               ? "待审核"
+                              : product.status === "security_review"
+                                ? "安全审核中"
                               : product.status === "rejected"
                                 ? "已驳回"
                                 : product.status === "security_unpublished"
@@ -1613,6 +1625,24 @@ onUnmounted(() => window.clearInterval(progressTimer));
                           @click="productAction(product, 'submit')"
                         >
                           提交审核</button
+                        ><button
+                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
+                          class="text-btn"
+                          @click="productAction(product, 'security_report')"
+                        >
+                          查看安全报告</button
+                        ><button
+                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
+                          class="text-btn"
+                          @click="productAction(product, 'security_approve')"
+                        >
+                          安全通过</button
+                        ><button
+                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
+                          class="text-btn danger-text"
+                          @click="productAction(product, 'security_reject')"
+                        >
+                          安全驳回</button
                         ><button
                           v-if="product.status === 'pending_review'"
                           class="text-btn"

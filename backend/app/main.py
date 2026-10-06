@@ -4,8 +4,10 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
+from io import BytesIO
 from urllib.parse import parse_qs, quote
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -180,6 +182,7 @@ class Product(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
     versions: Mapped[list["ProductReleaseVersion"]] = relationship(back_populates="product", cascade="all, delete-orphan", order_by="ProductReleaseVersion.created_at")
+    security_scans: Mapped[list["ProductSecurityScan"]] = relationship(back_populates="product", cascade="all, delete-orphan", order_by="ProductSecurityScan.scanned_at.desc()")
 
 
 class ProductReleaseVersion(Base):
@@ -194,8 +197,23 @@ class ProductReleaseVersion(Base):
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ProductSecurityScan(Base):
+    __tablename__ = "product_security_scans"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    engine: Mapped[str] = mapped_column(String(80), default="presidio+market-policy")
+    status: Mapped[str] = mapped_column(String(30), default="manual_review", index=True)
+    report_json: Mapped[str] = mapped_column(Text, default="{}")
+    findings_count: Mapped[int] = mapped_column(Integer, default=0)
+    high_risk_count: Mapped[int] = mapped_column(Integer, default=0)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    reviewed_by: Mapped[str] = mapped_column(String(180), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_comment: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-    product: Mapped[Product] = relationship(back_populates="versions")
+    product: Mapped[Product] = relationship(back_populates="security_scans")
 
 
 class SaaSProductVersion(Base):
@@ -696,6 +714,11 @@ class ProductReviewBody(BaseModel):
 
 class ProductUnpublishBody(BaseModel):
     reason: str = Field(min_length=2, max_length=500)
+
+
+class ProductSecurityReviewBody(BaseModel):
+    decision: str
+    comment: str = ""
 
 
 class SaaSVersionBody(BaseModel):
@@ -1728,6 +1751,15 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
         raise HTTPException(400, "审核结论必须是 approve 或 reject")
     if body.decision == "reject" and not body.comment.strip():
         raise HTTPException(400, "驳回时必须填写审核意见")
+    if body.decision == "approve" and product.product_type == "dataset":
+        scan = run_product_security_scan(product, db, user.email or user.phone or user.id)
+        product.status = "security_review"
+        product.review_comment = "业务审核通过，等待安全合规人员确认"
+        product.reviewed_by = user.email or user.phone or user.id
+        product.reviewed_at = now()
+        audit(db, user.email or user.phone or user.id, "enter_product_security_review", "product", product.id, scan.id)
+        db.commit()
+        return product_out(product) | {"security_report": security_scan_out(scan)}
     product.status = "published" if body.decision == "approve" else "rejected"
     product.review_comment = body.comment.strip()
     product.reviewed_by = user.email
@@ -1758,6 +1790,47 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
     return product_out(product)
 
 
+@app.get("/api/products/{product_id}/security-report")
+def product_security_report(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_security_operator(user)
+    product = db.get(Product, product_id)
+    if not product or product.product_type != "dataset":
+        raise HTTPException(404, "数据集产品不存在")
+    scan = db.scalar(select(ProductSecurityScan).where(ProductSecurityScan.product_id == product.id).order_by(ProductSecurityScan.scanned_at.desc()))
+    if not scan:
+        raise HTTPException(404, "该数据集尚未生成安全审核报告")
+    return {"product": product_out(product), "security_report": security_scan_out(scan)}
+
+
+@app.post("/api/products/{product_id}/security-review")
+def review_product_security(product_id: str, body: ProductSecurityReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_security_operator(user)
+    product = db.get(Product, product_id)
+    if not product or product.product_type != "dataset":
+        raise HTTPException(404, "数据集产品不存在")
+    if product.status != "security_review":
+        raise HTTPException(409, "当前数据集不在安全审核环节")
+    if body.decision not in {"approve", "reject"}:
+        raise HTTPException(400, "安全审核结论必须是 approve 或 reject")
+    if body.decision == "reject" and not body.comment.strip():
+        raise HTTPException(400, "安全审核驳回时必须填写原因")
+    scan = db.scalar(select(ProductSecurityScan).where(ProductSecurityScan.product_id == product.id).order_by(ProductSecurityScan.scanned_at.desc()))
+    if not scan:
+        raise HTTPException(409, "安全审核报告不存在")
+    actor = user.email or user.phone or user.id
+    scan.status = "approved" if body.decision == "approve" else "rejected"
+    scan.reviewed_by = actor
+    scan.reviewed_at = now()
+    scan.review_comment = body.comment.strip()
+    product.status = "published" if body.decision == "approve" else "rejected"
+    product.review_comment = body.comment.strip() or "安全审核通过"
+    product.reviewed_by = actor
+    product.reviewed_at = now()
+    audit(db, actor, "approve_product_security" if body.decision == "approve" else "reject_product_security", "product", product.id, body.comment.strip())
+    db.commit()
+    return product_out(product) | {"security_report": security_scan_out(scan)}
+
+
 def product_security_policy_violations(product: Product) -> list[str]:
     required = {
         "所属目录": product.catalog_name and product.catalog_name != "未分类",
@@ -1770,6 +1843,89 @@ def product_security_policy_violations(product: Product) -> list[str]:
         "合规声明": product.compliance_statement,
     }
     return [label for label, value in required.items() if not value]
+
+
+def security_scan_out(scan: ProductSecurityScan | None) -> dict[str, Any] | None:
+    if not scan:
+        return None
+    try:
+        report = json.loads(scan.report_json or "{}")
+    except json.JSONDecodeError:
+        report = {"raw": scan.report_json}
+    return {"id": scan.id, "product_id": scan.product_id, "engine": scan.engine, "status": scan.status, "findings_count": scan.findings_count, "high_risk_count": scan.high_risk_count, "scanned_at": scan.scanned_at, "reviewed_by": scan.reviewed_by, "reviewed_at": scan.reviewed_at, "review_comment": scan.review_comment, "report": report}
+
+
+def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
+    """Call the in-cluster Presidio Analyzer; no data leaves Kubernetes."""
+    if not text_value.strip():
+        return [], "empty"
+    url = os.getenv("PRESIDIO_ANALYZER_URL", "http://market-presidio-analyzer:3000/analyze")
+    try:
+        response = httpx.post(url, json={"text": text_value[:200000], "language": "en"}, timeout=30)
+        response.raise_for_status()
+        items = response.json()
+        return [{"entity": item.get("entity_type", "UNKNOWN"), "score": item.get("score", 0), "start": item.get("start"), "end": item.get("end"), "source": "presidio"} for item in items if isinstance(item, dict)], "available"
+    except (httpx.HTTPError, ValueError) as exc:
+        return [{"entity": "PRESIDIO_UNAVAILABLE", "severity": "medium", "message": str(exc)[:240], "source": "platform"}], "unavailable"
+
+
+def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
+    patterns = [
+        ("CHINA_ID_NUMBER", r"(?<!\d)\d{17}[0-9Xx](?!\d)", "high", "疑似身份证号码"),
+        ("PHONE_NUMBER", r"(?<!\d)1[3-9]\d{9}(?!\d)", "medium", "疑似手机号码"),
+        ("EMAIL_ADDRESS", r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "medium", "疑似邮箱地址"),
+        ("BANK_ACCOUNT", r"(?<!\d)\d{16,19}(?!\d)", "high", "疑似银行卡或长数字敏感标识"),
+    ]
+    findings = []
+    for entity, pattern, severity, message in patterns:
+        matches = list(re.finditer(pattern, text_value))
+        if matches:
+            findings.append({"entity": entity, "severity": severity, "count": len(matches), "message": message, "source": "market-policy"})
+    return findings
+
+
+def read_product_sample(file_item: FileObject) -> str:
+    if not MINIO_ENDPOINT or file_item.size <= 0:
+        return ""
+    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml"))):
+        return ""
+    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+    response = client.get_object(MINIO_BUCKET, file_item.object_name)
+    try:
+        return response.read(2_000_000).decode("utf-8", errors="ignore")
+    finally:
+        response.close()
+        response.release_conn()
+
+
+def run_product_security_scan(product: Product, db: Session, actor: str) -> ProductSecurityScan:
+    metadata_text = json.dumps({"name": product.name, "description": product.description, "usage_scenarios": product.usage_scenarios, "authorization_conditions": product.authorization_conditions, "data_source_statement": product.data_source_statement, "compliance_statement": product.compliance_statement}, ensure_ascii=False)
+    text_parts = [metadata_text]
+    files = db.scalars(select(FileObject).where(FileObject.product_id == product.id, FileObject.status != "deleted")).all()
+    file_reports = []
+    for item in files:
+        try:
+            sample = read_product_sample(item)
+            if sample:
+                text_parts.append(sample)
+            file_reports.append({"file_id": item.id, "name": item.original_name, "sample_scanned": bool(sample), "size": item.size})
+        except Exception as exc:
+            file_reports.append({"file_id": item.id, "name": item.original_name, "sample_scanned": False, "error": str(exc)[:240]})
+    combined = "\n".join(text_parts)
+    presidio_findings, presidio_status = presidio_analyze(combined)
+    findings = market_sensitive_patterns(combined) + presidio_findings
+    metadata_violations = product_security_policy_violations(product)
+    if metadata_violations:
+        findings.append({"entity": "PRODUCT_METADATA", "severity": "high", "message": "登记元数据缺少：" + "、".join(metadata_violations), "source": "market-policy"})
+    if not files:
+        findings.append({"entity": "NO_SAMPLE_FILE", "severity": "medium", "message": "未发现可供自动扫描的数据集样本或数据文件，需安全审核人员人工确认", "source": "market-policy"})
+    high_risk = sum(1 for item in findings if item.get("severity") == "high" or item.get("entity") in {"CHINA_ID_NUMBER", "BANK_ACCOUNT"})
+    report = {"engine": "Presidio Analyzer + market-policy", "presidio_status": presidio_status, "policy_version": "2026.10", "product_id": product.id, "files": file_reports, "findings": findings, "recommendation": "必须由安全合规人员结合原始数据授权、分类分级和脱敏证明进行人工确认。"}
+    scan = ProductSecurityScan(product_id=product.id, engine="presidio+market-policy", status="manual_review_high_risk" if high_risk else "manual_review", report_json=json.dumps(report, ensure_ascii=False), findings_count=len(findings), high_risk_count=high_risk, scanned_at=now())
+    db.add(scan)
+    db.flush()
+    audit(db, actor, "run_product_security_scan", "product_security_scan", scan.id, f"findings={len(findings)}, high_risk={high_risk}, presidio={presidio_status}")
+    return scan
 
 
 def remove_product_delivery(product: Product, db: Session, actor: str) -> None:
