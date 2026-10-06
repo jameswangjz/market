@@ -137,6 +137,8 @@ const verificationFiles = ref({ front: null, back: null, license: null });
 const developmentFilter = ref("all");
 const search = ref("");
 const showProductForm = ref(false);
+const productDetailMode = ref(false);
+const selectedProductId = ref("");
 const emptyProductVersion = () => ({
   version_code: "v1.0",
   description: "",
@@ -702,6 +704,39 @@ async function createProduct() {
     await loadViewData("products");
   } catch (error) {
     notify(error.response?.data?.detail || "创建失败");
+  }
+}
+function openNewProduct() {
+  productDetailMode.value = false;
+  selectedProductId.value = "";
+  productForm.value = {
+    ...emptyProductForm(),
+    catalog_name: productDirectories.value[0]?.value || "",
+  };
+  showProductForm.value = true;
+}
+function openProductDetail(product) {
+  selectedProductId.value = product.id;
+  productDetailMode.value = product.status !== "draft";
+  productForm.value = JSON.parse(JSON.stringify({
+    ...emptyProductForm(),
+    ...product,
+    versions: product.versions?.length ? product.versions : [emptyProductVersion()],
+  }));
+  showProductForm.value = true;
+}
+async function saveProductEdit() {
+  if (!selectedProductId.value || productDetailMode.value) return;
+  try {
+    await api.put(`/products/${selectedProductId.value}`, {
+      ...productForm.value,
+      catalog_name: productForm.value.catalog_name || "未分类",
+    });
+    showProductForm.value = false;
+    notify("产品信息已保存");
+    await loadViewData("products");
+  } catch (error) {
+    notify(error.response?.data?.detail || "产品信息保存失败");
   }
 }
 function addProductVersion() {
@@ -1540,7 +1575,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
               <h1>数据与服务</h1>
               <p>登记产品所属目录和完整运营元数据，再进入审核发布流程。</p>
             </div>
-            <button class="primary-btn" @click="showProductForm = true">
+            <button class="primary-btn" @click="openNewProduct">
               <FileText :size="16" />新建产品
             </button>
           </div>
@@ -1569,7 +1604,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 <tbody>
                   <tr v-for="product in filteredProducts" :key="product.id">
                     <td>
-                      <strong>{{ product.name }}</strong
+                      <button class="product-link" @click="openProductDetail(product)">{{ product.name }}</button
                       ><small
                         >{{ product.version }} ·
                         {{ product.description }}</small
@@ -2720,13 +2755,16 @@ onUnmounted(() => window.clearInterval(progressTimer));
     >
       <form
         class="modal-card product-modal"
-        @submit.prevent="createProduct"
+        @submit.prevent="productDetailMode ? saveProductEdit() : createProduct()"
         @click.stop
       >
         <div class="drawer-head">
           <div>
             <span class="eyebrow">PRODUCT REGISTRATION</span>
-            <h2>登记数据或服务</h2>
+            <h2>{{ productDetailMode ? "产品信息" : "登记数据或服务" }}</h2>
+            <p v-if="productDetailMode" class="modal-status-line">
+              当前状态：{{ productForm.status === "published" ? "已发布" : productForm.status === "pending_review" ? "待审核" : productForm.status === "security_review" ? "安全审核中" : productForm.status === "security_unpublished" ? "安全下架" : productForm.status === "rejected" ? "已驳回" : "草稿" }} · {{ productForm.review_comment || "暂无审核意见" }}
+            </p>
           </div>
           <button
             type="button"
@@ -2736,6 +2774,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <X :size="19" />
           </button>
         </div>
+        <fieldset :disabled="productDetailMode" class="product-fieldset">
         <div class="form-section-title">基础元数据</div>
         <label
           >产品或服务名称<input
@@ -2812,12 +2851,12 @@ onUnmounted(() => window.clearInterval(progressTimer));
               <strong>版本与价格</strong
               ><small>每个版本单独定义版本号、简要介绍和销售价格</small>
             </div>
-            <button type="button" class="text-btn" @click="addProductVersion">
+            <button v-if="!productDetailMode" type="button" class="text-btn" @click="addProductVersion">
               新增版本
             </button>
           </div>
           <div
-            v-for="(version, index) in productForm.versions"
+              v-for="(version, index) in productForm.versions"
             :key="index"
             class="version-row"
             :class="{ 'api-version-row': productForm.product_type === 'api' }"
@@ -2843,7 +2882,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 rows="2"
                 placeholder="说明该版本的功能范围、能力差异或适用对象"
               ></textarea></label
-            ><button
+            ><button v-if="!productDetailMode"
               type="button"
               class="icon-btn"
               title="删除版本"
@@ -2931,8 +2970,9 @@ onUnmounted(() => window.clearInterval(progressTimer));
             >下载文档</a
           >
         </div>
-        <button class="primary-btn full-btn" type="submit">
-          保存产品登记草稿 <ArrowUpRight :size="16" />
+        </fieldset>
+        <button v-if="!productDetailMode" class="primary-btn full-btn" type="submit">
+          {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
       </form>
     </div>
