@@ -350,12 +350,14 @@ async function loadViewData(view) {
     development.value = data;
   }
   if (view === "products") {
-    const [productData, directoryData] = await Promise.all([
+    const [productData, directoryData, ruleData] = await Promise.all([
       api.get("/products"),
       api.get("/product-directories"),
+      api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
     ]);
     products.value = productData.data.items;
     productDirectories.value = directoryData.data.items;
+    settlementRules.value = ruleData.data.items;
     if (!productForm.value.catalog_name && productDirectories.value.length)
       productForm.value.catalog_name = productDirectories.value[0].value;
   }
