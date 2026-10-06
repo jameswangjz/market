@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -1378,6 +1378,10 @@ def ensure_review_and_file_schema():
         connection.execute(text("UPDATE users SET email_verified = FALSE WHERE email_verified IS NULL"))
         if engine.dialect.name != "sqlite":
             connection.execute(text("ALTER TABLE users ALTER COLUMN email DROP NOT NULL"))
+        # Keep one global default rule active. Older development data may have
+        # multiple active rows from before activation was made exclusive.
+        connection.execute(text("UPDATE settlement_rules SET status = 'disabled' WHERE status = 'active' AND id NOT IN (SELECT id FROM settlement_rules WHERE status = 'active' ORDER BY created_at DESC LIMIT 1)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_settlement_rules_one_active ON settlement_rules(status) WHERE status = 'active'"))
 
 
 @app.on_event("startup")
@@ -3541,6 +3545,8 @@ def decide_settlement_rule(rule_id: str, body: SettlementRuleDecisionBody, user:
     if body.decision not in {"approve", "reject", "activate", "disable"}:
         raise HTTPException(400, "不支持的规则动作")
     before = {"status": item.status}
+    if body.decision == "activate":
+        db.execute(update(SettlementRule).where(SettlementRule.status == "active", SettlementRule.id != item.id).values(status="disabled"))
     item.status = {"approve": "approved", "activate": "active", "reject": "rejected", "disable": "disabled"}[body.decision]
     if body.decision in {"approve", "activate"}:
         item.approved_by = user.email or user.name
