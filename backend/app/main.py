@@ -192,6 +192,8 @@ class ProductReleaseVersion(Base):
     version_code: Mapped[str] = mapped_column(String(60))
     description: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    cost: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    cost_type: Mapped[str] = mapped_column(String(30), default="per_order")
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
     daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
@@ -228,6 +230,8 @@ class SaaSProductVersion(Base):
     quarterly_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     annual_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     perpetual_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    cost: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    cost_type: Mapped[str] = mapped_column(String(30), default="per_subscription")
     max_users: Mapped[int] = mapped_column(Integer, default=0)
     max_departments: Mapped[int] = mapped_column(Integer, default=0)
     max_storage_gb: Mapped[int] = mapped_column(Integer, default=0)
@@ -517,6 +521,8 @@ class Settlement(Base):
     gross_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     refund_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     net_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    cost_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    profit_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     refund_recovery: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     platform_fee: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     provider_share: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
@@ -562,6 +568,7 @@ class SettlementBatch(Base):
     rule_id: Mapped[str] = mapped_column(String(36), default="")
     status: Mapped[str] = mapped_column(String(30), default="generated", index=True)
     total_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    total_profit: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     exception_count: Mapped[int] = mapped_column(Integer, default=0)
     idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -811,6 +818,8 @@ class ProductVersionBody(BaseModel):
     version_code: str = Field(min_length=1, max_length=60)
     description: str = ""
     price: float = Field(default=0, ge=0)
+    cost: float = Field(default=0, ge=0)
+    cost_type: str = Field(default="per_order", pattern="^(per_order|per_subscription|per_period|one_time)$")
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
     daily_quota: int = Field(default=10000, ge=1, le=100000000)
     monthly_quota: int = Field(default=0, ge=0, le=3000000000)
@@ -843,6 +852,8 @@ class SaaSVersionBody(BaseModel):
     quarterly_price: float = Field(default=0, ge=0)
     annual_price: float = Field(default=0, ge=0)
     perpetual_price: float = Field(default=0, ge=0)
+    cost: float = Field(default=0, ge=0)
+    cost_type: str = Field(default="per_subscription", pattern="^(per_order|per_subscription|per_period|one_time)$")
     max_users: int = Field(default=0, ge=0)
     max_departments: int = Field(default=0, ge=0)
     max_storage_gb: int = Field(default=0, ge=0)
@@ -955,7 +966,7 @@ class SettlementRuleCreateBody(BaseModel):
     version: str = Field(default="v1", min_length=1, max_length=40)
     scope: dict[str, Any] = Field(default_factory=dict)
     platform_rate: float = Field(default=8, ge=0, le=100)
-    provider_rate: float = Field(default=61, ge=0, le=100)
+    provider_rate: float = Field(default=67, ge=0, le=100)
     service_rate: float = Field(default=20, ge=0, le=100)
     expert_rate: float = Field(default=5, ge=0, le=100)
     channel_rate: float = Field(default=0, ge=0, le=100)
@@ -1115,6 +1126,18 @@ def make_order_no() -> str:
     return "ORD-" + now().strftime("%y%m%d%H%M%S") + secrets.token_hex(2).upper()
 
 
+def order_cost(db: Session, order: Order) -> tuple[Decimal, str]:
+    """Resolve the independently configured cost of the purchased product version."""
+    product = db.get(Product, order.product_id)
+    if product and product.product_type == "saas":
+        version = db.get(SaaSProductVersion, order.product_version_id)
+    else:
+        version = db.get(ProductReleaseVersion, order.product_version_id)
+    if not version:
+        return Decimal("0.00"), "missing"
+    return Decimal(str(getattr(version, "cost", 0) or 0)).quantize(Decimal("0.01")), getattr(version, "cost_type", "per_order")
+
+
 def log_state(db: Session, order: Order, domain: str, old: str, new: str, action: str, user: User, reason: str):
     db.add(OrderStateLog(order_id=order.id, domain=domain, from_status=old, to_status=new, action=action, operator=user.name, reason=reason))
 
@@ -1204,6 +1227,19 @@ def ensure_review_and_file_schema():
             "refund_amount": "NUMERIC(14,2)",
             "net_amount": "NUMERIC(14,2)",
             "refund_recovery": "NUMERIC(14,2)",
+            "cost_amount": "NUMERIC(14,2) DEFAULT 0",
+            "profit_amount": "NUMERIC(14,2) DEFAULT 0",
+        },
+        "settlement_batches": {
+            "total_profit": "NUMERIC(14,2) DEFAULT 0",
+        },
+        "product_release_versions": {
+            "cost": "NUMERIC(14,2) DEFAULT 0",
+            "cost_type": "VARCHAR(30) DEFAULT 'per_order'",
+        },
+        "saas_product_versions": {
+            "cost": "NUMERIC(14,2) DEFAULT 0",
+            "cost_type": "VARCHAR(30) DEFAULT 'per_subscription'",
         },
         "audit_logs": {
             "category": "VARCHAR(40) DEFAULT 'ops'",
@@ -1258,6 +1294,8 @@ def ensure_review_and_file_schema():
             "rate_limit_per_minute": "INTEGER DEFAULT 60",
             "daily_quota": "INTEGER DEFAULT 10000",
             "monthly_quota": "INTEGER DEFAULT 0",
+            "cost": "NUMERIC(14,2) DEFAULT 0",
+            "cost_type": "VARCHAR(30) DEFAULT 'per_order'",
         },
     }
     with engine.begin() as connection:
@@ -1694,7 +1732,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
+    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "cost_type": x.cost_type, "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
     return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
@@ -1841,7 +1879,7 @@ def add_product_version(product_id: str, body: ProductVersionBody, user: User = 
     db.add(version)
     db.commit()
     db.refresh(version)
-    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "rate_limit_per_minute": version.rate_limit_per_minute, "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota, "status": version.status}
+    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "cost": float(version.cost or 0), "cost_type": version.cost_type, "rate_limit_per_minute": version.rate_limit_per_minute, "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota, "status": version.status}
 
 
 @app.put("/api/products/{product_id}/versions/{version_id}")
@@ -1862,7 +1900,7 @@ def update_product_version(product_id: str, version_id: str, body: ProductVersio
         product.price = version.price
     db.commit()
     db.refresh(version)
-    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "rate_limit_per_minute": version.rate_limit_per_minute, "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota, "status": version.status}
+    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "cost": float(version.cost or 0), "cost_type": version.cost_type, "rate_limit_per_minute": version.rate_limit_per_minute, "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota, "status": version.status}
 
 
 @app.post("/api/products/{product_id}/submit")
@@ -2731,7 +2769,7 @@ _saas_tokens: dict[str, tuple[str, datetime]] = {}
 
 
 def saas_version_out(item: SaaSProductVersion) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "version_code": item.version_code, "name": item.name, "description": item.description, "monthly_price": float(item.monthly_price or 0), "quarterly_price": float(item.quarterly_price or 0), "annual_price": float(item.annual_price or 0), "perpetual_price": float(item.perpetual_price or 0), "max_users": item.max_users, "max_departments": item.max_departments, "max_storage_gb": item.max_storage_gb, "status": item.status, "created_at": item.created_at, "updated_at": item.updated_at}
+    return {"id": item.id, "product_id": item.product_id, "version_code": item.version_code, "name": item.name, "description": item.description, "monthly_price": float(item.monthly_price or 0), "quarterly_price": float(item.quarterly_price or 0), "annual_price": float(item.annual_price or 0), "perpetual_price": float(item.perpetual_price or 0), "cost": float(item.cost or 0), "cost_type": item.cost_type, "max_users": item.max_users, "max_departments": item.max_departments, "max_storage_gb": item.max_storage_gb, "status": item.status, "created_at": item.created_at, "updated_at": item.updated_at}
 
 
 def saas_subscription_out(item: SaaSSubscription, version: SaaSProductVersion | None = None) -> dict[str, Any]:
@@ -3266,7 +3304,7 @@ def after_sales(user: User = Depends(current_user), db: Session = Depends(db_ses
 def settlements(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
     items = db.scalars(select(Settlement).order_by(Settlement.created_at.desc())).all()
-    return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "refund_amount": float(x.refund_amount or 0), "net_amount": float(x.net_amount or 0), "refund_recovery": float(x.refund_recovery or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "refund_amount": float(x.refund_amount or 0), "net_amount": float(x.net_amount or 0), "cost_amount": float(x.cost_amount or 0), "profit_amount": float(x.profit_amount or 0), "refund_recovery": float(x.refund_recovery or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
 
 
 @app.post("/api/settlements/generate/{order_id}")
@@ -3282,16 +3320,23 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     refund_amount = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     net_amount = max(gross - refund_amount, Decimal("0.00"))
-    platform_fee = (net_amount * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    service_share = (net_amount * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    expert_fee = (net_amount * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    tax_amount = (net_amount * Decimal(str(body.tax_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    provider_share = (net_amount - platform_fee - service_share - expert_fee - tax_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    cost_amount, cost_type = order_cost(db, order)
+    profit_amount = (net_amount - cost_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    distributable = max(profit_amount, Decimal("0.00"))
+    platform_fee = (distributable * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    service_share = (distributable * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    expert_fee = (distributable * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    # Tax is borne and declared by the relevant participants; it is not a
+    # standalone deduction from the profit allocation base.
+    tax_amount = Decimal("0.00")
+    provider_share = (distributable - platform_fee - service_share - expert_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     settlement = existing or Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id)
     settlement.gross_amount = gross
     settlement.refund_amount = refund_amount
     settlement.net_amount = net_amount
     settlement.refund_recovery = refund_amount
+    settlement.cost_amount = cost_amount
+    settlement.profit_amount = profit_amount
     settlement.platform_fee = platform_fee
     settlement.service_share = service_share
     settlement.expert_fee = expert_fee
@@ -3300,10 +3345,10 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     settlement.status = "pending"
     if not existing:
         db.add(settlement)
-    audit(db, user.email, "generate_settlement", "settlement", settlement.settlement_no, f"platform={body.platform_rate} service={body.service_rate} expert={body.expert_rate} tax={body.tax_rate}")
+    audit(db, user.email, "generate_settlement", "settlement", settlement.settlement_no, f"cost={cost_amount} profit={profit_amount} cost_type={cost_type}", category="settlement", business_domain="settlement", order_id=order.id, after={"cost_amount": float(cost_amount), "profit_amount": float(profit_amount), "distributable_profit": float(distributable)})
     db.commit()
     db.refresh(settlement)
-    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "refund_amount": float(settlement.refund_amount), "net_amount": float(settlement.net_amount), "refund_recovery": float(settlement.refund_recovery), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "refund_amount": float(settlement.refund_amount), "net_amount": float(settlement.net_amount), "cost_amount": float(settlement.cost_amount), "profit_amount": float(settlement.profit_amount), "refund_recovery": float(settlement.refund_recovery), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
 
 
 @app.post("/api/settlements/{settlement_id}/adjust")
@@ -3350,10 +3395,10 @@ def settlement_rules(user: User = Depends(current_user), db: Session = Depends(d
 @app.post("/api/settlement-rules")
 def create_settlement_rule(body: SettlementRuleCreateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
-    total = sum(Decimal(str(x)) for x in [body.platform_rate, body.provider_rate, body.service_rate, body.expert_rate, body.channel_rate, body.tax_rate])
+    total = sum(Decimal(str(x)) for x in [body.platform_rate, body.provider_rate, body.service_rate, body.expert_rate, body.channel_rate])
     if total > Decimal("100"):
         raise HTTPException(400, "分配比例和税费比例不能超过 100%")
-    item = SettlementRule(rule_no="RULE-" + secrets.token_hex(5).upper(), name=body.name, version=body.version, scope_json=json.dumps(body.scope, ensure_ascii=False), formula_json=json.dumps({"basis": "net_paid", "rounding": "0.01"}, ensure_ascii=False), platform_rate=body.platform_rate, provider_rate=body.provider_rate, service_rate=body.service_rate, expert_rate=body.expert_rate, channel_rate=body.channel_rate, tax_rate=body.tax_rate, effective_at=body.effective_at, expires_at=body.expires_at, change_reason=body.change_reason, created_by=user.email or user.phone or user.name)
+    item = SettlementRule(rule_no="RULE-" + secrets.token_hex(5).upper(), name=body.name, version=body.version, scope_json=json.dumps(body.scope, ensure_ascii=False), formula_json=json.dumps({"basis": "net_paid_minus_version_cost", "tax": "participant_profile"}, ensure_ascii=False), platform_rate=body.platform_rate, provider_rate=body.provider_rate, service_rate=body.service_rate, expert_rate=body.expert_rate, channel_rate=body.channel_rate, tax_rate=0, effective_at=body.effective_at, expires_at=body.expires_at, change_reason=body.change_reason, created_by=user.email or user.phone or user.name)
     db.add(item)
     audit(db, user.email, "create_settlement_rule", "settlement_rule", item.rule_no, body.change_reason, category="settlement_rule", business_domain="settlement")
     db.commit()
@@ -3432,7 +3477,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         return {"id": existing.id, "batch_no": existing.batch_no, "status": existing.status, "idempotent": True}
     rule = db.get(SettlementRule, body.rule_id) if body.rule_id else db.scalar(select(SettlementRule).where(SettlementRule.status == "active").order_by(SettlementRule.created_at.desc()))
     if not rule:
-        rule = SettlementRule(rule_no="RULE-DEFAULT", version="v1", name="默认清算规则", status="active", platform_rate=8, provider_rate=61, service_rate=20, expert_rate=5, tax_rate=6, created_by="system")
+        rule = SettlementRule(rule_no="RULE-DEFAULT", version="v1", name="默认清算规则", status="active", platform_rate=8, provider_rate=67, service_rate=20, expert_rate=5, tax_rate=0, created_by="system")
         db.add(rule)
         db.flush()
     order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.after_sales_status.in_(["none", "closed"])).limit(100)).all()]
@@ -3440,6 +3485,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
     db.add(batch)
     db.flush()
     total = Decimal("0")
+    total_profit = Decimal("0")
     exceptions = 0
     for order_id in order_ids:
         order = db.get(Order, order_id)
@@ -3449,26 +3495,36 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"))
         refund = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"))
         net = max(gross - refund, Decimal("0.00"))
-        settlement = Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id, gross_amount=gross, refund_amount=refund, net_amount=net, refund_recovery=refund, platform_fee=(net * Decimal(str(rule.platform_rate)) / 100).quantize(Decimal("0.01")), provider_share=(net * Decimal(str(rule.provider_rate)) / 100).quantize(Decimal("0.01")), service_share=(net * Decimal(str(rule.service_rate)) / 100).quantize(Decimal("0.01")), expert_fee=(net * Decimal(str(rule.expert_rate)) / 100).quantize(Decimal("0.01")), tax_amount=(net * Decimal(str(rule.tax_rate)) / 100).quantize(Decimal("0.01")), status="pending")
+        cost_amount, cost_type = order_cost(db, order)
+        profit = (net - cost_amount).quantize(Decimal("0.01"))
+        distributable = max(profit, Decimal("0.00"))
+        platform_fee = (distributable * Decimal(str(rule.platform_rate)) / 100).quantize(Decimal("0.01"))
+        service_share = (distributable * Decimal(str(rule.service_rate)) / 100).quantize(Decimal("0.01"))
+        expert_fee = (distributable * Decimal(str(rule.expert_rate)) / 100).quantize(Decimal("0.01"))
+        tax_amount = Decimal("0.00")
+        provider_share = (distributable - platform_fee - service_share - expert_fee).quantize(Decimal("0.01"))
+        settlement = Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id, gross_amount=gross, refund_amount=refund, net_amount=net, cost_amount=cost_amount, profit_amount=profit, refund_recovery=refund, platform_fee=platform_fee, provider_share=provider_share, service_share=service_share, expert_fee=expert_fee, tax_amount=tax_amount, status="pending")
         db.add(settlement)
         db.flush()
         db.add_all([SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="platform", participant_name="平台运营方", amount=settlement.platform_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="provider", participant_id=order.provider_enterprise_id, participant_name="数据/服务提供方", amount=settlement.provider_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="service", participant_name="数据服务方", amount=settlement.service_share)])
         total += net
-        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={rule.version}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=rule.version, after={"net_amount": float(net)})
+        total_profit += profit
+        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={rule.version} cost_type={cost_type}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=rule.version, after={"net_amount": float(net), "cost_amount": float(cost_amount), "profit_amount": float(profit), "distributable_profit": float(distributable)})
     batch.total_amount = total
+    batch.total_profit = total_profit
     batch.exception_count = exceptions
     if exceptions:
         batch.status = "exception"
     audit(db, user.email, "create_settlement_batch", "settlement_batch", batch.batch_no, f"orders={len(order_ids)} exceptions={exceptions}", category="settlement", business_domain="settlement", batch_no=batch.batch_no, rule_version=rule.version)
     db.commit()
-    return {"id": batch.id, "batch_no": batch.batch_no, "total_amount": float(total), "exception_count": exceptions, "status": batch.status, "rule_version": rule.version}
+    return {"id": batch.id, "batch_no": batch.batch_no, "total_amount": float(total), "total_profit": float(total_profit), "exception_count": exceptions, "status": batch.status, "rule_version": rule.version}
 
 
 @app.get("/api/settlement-batches")
 def settlement_batches(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
     items = db.scalars(select(SettlementBatch).order_by(SettlementBatch.created_at.desc()).limit(200)).all()
-    return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "total_profit": float(x.total_profit or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/settlement-batches/{batch_id}/lines")
@@ -3656,10 +3712,10 @@ def settlement_reports(status: str | None = None, user: User = Depends(current_u
     if status:
         stmt = stmt.where(Settlement.status == status)
     items = db.scalars(stmt.order_by(Settlement.created_at.desc()).limit(2000)).all()
-    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "tax_amount": 0.0, "count": len(items)}
+    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "cost_amount": 0.0, "profit_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "tax_amount": 0.0, "count": len(items)}
     rows = []
     for x in items:
-        fields = ["gross_amount", "refund_amount", "net_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "tax_amount"]
+        fields = ["gross_amount", "refund_amount", "net_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "tax_amount"]
         values = {field: float(getattr(x, field) or 0) for field in fields}
         for field in fields:
             summary[field] += values[field]

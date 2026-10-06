@@ -100,7 +100,7 @@ const settlementItems = ref([]);
 const settlementRules = ref([]);
 const settlementBatches = ref([]);
 const settlementTab = ref("settlements");
-const settlementRuleForm = ref({ name: "", version: "v1", platform_rate: 8, provider_rate: 61, service_rate: 20, expert_rate: 5, channel_rate: 0, tax_rate: 6, change_reason: "" });
+const settlementRuleForm = ref({ name: "", version: "v1", platform_rate: 8, provider_rate: 67, service_rate: 20, expert_rate: 5, channel_rate: 0, change_reason: "" });
 const settlementReconciliations = ref([]);
 const settlementCorrections = ref([]);
 const settlementReport = ref({ summary: {}, items: [] });
@@ -155,6 +155,8 @@ const emptyProductVersion = () => ({
   version_code: "v1.0",
   description: "",
   price: 0,
+  cost: 0,
+  cost_type: "per_order",
   rate_limit_per_minute: 60,
   daily_quota: 10000,
   monthly_quota: 0,
@@ -2075,7 +2077,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <div>
               <div class="eyebrow">财务运营 · 可核对分账</div>
               <h1>清算分账</h1>
-              <p>退款追回单独记录，可分账净额和各方收益可复核。</p>
+              <p>按订单版本成本计算利润，再依据利润进行分账；税费单独核算。</p>
             </div>
             <button class="secondary-btn" @click="loadViewData('settlements')">
               <RefreshCw :size="16" />刷新
@@ -2101,16 +2103,15 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 <label>数据服务方 %<input v-model.number="settlementRuleForm.service_rate" type="number" min="0" max="100" /></label>
                 <label>专家费用 %<input v-model.number="settlementRuleForm.expert_rate" type="number" min="0" max="100" /></label>
                 <label>渠道费用 %<input v-model.number="settlementRuleForm.channel_rate" type="number" min="0" max="100" /></label>
-                <label>税费 %<input v-model.number="settlementRuleForm.tax_rate" type="number" min="0" max="100" /></label>
               </div>
               <div class="gateway-actions"><button class="primary-btn" @click="createSettlementRule">保存规则</button></div>
             </div>
-            <div class="panel"><div class="panel-heading"><div><span class="section-kicker">RULE VERSIONS</span><h3>规则版本</h3></div></div><div class="settlement-rule-list"><div v-for="rule in settlementRules" :key="rule.id" class="settlement-rule-item"><div><strong>{{ rule.name }} · {{ rule.version }}</strong><small>平台 {{ rule.platform_rate }}% · 提供方 {{ rule.provider_rate }}% · 税费 {{ rule.tax_rate }}%</small></div><div class="table-actions"><span class="status-pill" :class="rule.status === 'active' ? 'status-done' : 'status-review'">{{ rule.status }}</span><button v-if="rule.status === 'draft'" class="text-btn" @click="decideSettlementRule(rule, 'approve')">审批</button><button v-if="rule.status === 'approved'" class="text-btn" @click="decideSettlementRule(rule, 'activate')">启用</button><button class="text-btn" @click="simulateSettlementRule(rule)">试算</button></div></div></div><div v-if="!settlementRules.length" class="empty-state">暂无清算规则</div></div>
+            <div class="panel"><div class="panel-heading"><div><span class="section-kicker">RULE VERSIONS</span><h3>规则版本</h3></div></div><div class="settlement-rule-list"><div v-for="rule in settlementRules" :key="rule.id" class="settlement-rule-item"><div><strong>{{ rule.name }} · {{ rule.version }}</strong><small>平台 {{ rule.platform_rate }}% · 提供方 {{ rule.provider_rate }}% · 数据服务方 {{ rule.service_rate }}% · 专家 {{ rule.expert_rate }}%</small></div><div class="table-actions"><span class="status-pill" :class="rule.status === 'active' ? 'status-done' : 'status-review'">{{ rule.status }}</span><button v-if="rule.status === 'draft'" class="text-btn" @click="decideSettlementRule(rule, 'approve')">审批</button><button v-if="rule.status === 'approved'" class="text-btn" @click="decideSettlementRule(rule, 'activate')">启用</button><button class="text-btn" @click="simulateSettlementRule(rule)">试算</button></div></div></div><div v-if="!settlementRules.length" class="empty-state">暂无清算规则</div></div>
           </div>
           <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>异常</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td>{{ batch.exception_count }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : batch.status === 'exception' || batch.status === 'disputed' ? 'status-blocked' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'generated'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'generated' || batch.status === 'confirmed'" class="text-btn danger-text" @click="batchAction(batch, 'dispute')">提出异议</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
           <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div></div>
           <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REVERSAL AND RECOVERY</span><h3>退款、冲正与清算调整</h3></div><span class="muted">原始清算结果保持不变</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td><td><button v-if="item.status === 'pending'" class="text-btn" @click="approveCorrection(item)">审批</button></td></tr><tr v-if="!settlementCorrections.length && settlementItems.length"><td colspan="7"><div class="empty-state"><button class="primary-btn" @click="createCorrection(settlementItems[0])">从最近清算单发起冲正</button></div></td></tr></tbody></table></div><div v-if="!settlementCorrections.length && !settlementItems.length" class="empty-state">暂无清算调整记录</div></div>
-          <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3></div><button class="secondary-btn" @click="exportSettlementReport"><FileText :size="15" />导出 CSV</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>清算单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>可分账净额</span><strong>{{ fmtMoney(settlementReport.summary.net_amount) }}</strong></div><div class="metric-card"><span>平台服务费</span><strong>{{ fmtMoney(settlementReport.summary.platform_fee) }}</strong></div><div class="metric-card"><span>退款金额</span><strong>{{ fmtMoney(settlementReport.summary.refund_amount) }}</strong></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>状态</th><th>净额</th><th>提供方</th><th>服务方</th><th>创建时间</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.status }}</td><td>{{ fmtMoney(item.net_amount) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div></div>
+          <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3></div><button class="secondary-btn" @click="exportSettlementReport"><FileText :size="15" />导出 CSV</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>清算单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>净收入</span><strong>{{ fmtMoney(settlementReport.summary.net_amount) }}</strong></div><div class="metric-card"><span>确认成本</span><strong>{{ fmtMoney(settlementReport.summary.cost_amount) }}</strong></div><div class="metric-card"><span>可分配利润</span><strong>{{ fmtMoney(settlementReport.summary.profit_amount) }}</strong></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>状态</th><th>净收入</th><th>成本</th><th>利润</th><th>提供方</th><th>服务方</th><th>创建时间</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.status }}</td><td>{{ fmtMoney(item.net_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div></div>
           <div v-else-if="settlementTab === 'measurements'" class="panel"><div class="panel-heading"><div><span class="section-kicker">MEASUREMENT AND BILLING</span><h3>计量计费数据</h3></div><button class="primary-btn" @click="createMeasurement">登记计量</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>计量类型</th><th>数量</th><th>单位</th><th>来源</th><th>校验状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementMeasurements" :key="item.id"><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.measurement_type }}</td><td>{{ item.quantity }}</td><td>{{ item.unit }}</td><td>{{ item.source }}</td><td><span class="status-pill status-done">{{ item.validation_status }}</span></td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div><div v-if="!settlementMeasurements.length" class="empty-state">暂无计量数据</div></div>
           <div v-else class="panel">
             <div class="panel-heading">
@@ -2134,7 +2135,9 @@ onUnmounted(() => window.clearInterval(progressTimer));
                     <th>订单</th>
                     <th>原始金额</th>
                     <th>退款追回</th>
-                    <th>可分账净额</th>
+                    <th>净收入</th>
+                    <th>版本成本</th>
+                    <th>利润</th>
                     <th>平台服务费</th>
                     <th>提供方</th>
                     <th>服务方</th>
@@ -2158,6 +2161,8 @@ onUnmounted(() => window.clearInterval(progressTimer));
                     <td>
                       <strong>{{ fmtMoney(item.net_amount) }}</strong>
                     </td>
+                    <td>{{ fmtMoney(item.cost_amount) }}</td>
+                    <td><strong>{{ fmtMoney(item.profit_amount) }}</strong></td>
                     <td>{{ fmtMoney(item.platform_fee) }}</td>
                     <td>{{ fmtMoney(item.provider_share) }}</td>
                     <td>{{ fmtMoney(item.service_share) }}</td>
@@ -3068,7 +3073,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
           <div class="version-editor-head">
             <div>
               <strong>版本与价格</strong
-              ><small>每个版本单独定义版本号、简要介绍和销售价格</small>
+              ><small>每个版本单独定义销售价格、成本和简要介绍，清算按版本利润计算</small>
             </div>
             <button v-if="!productDetailMode" type="button" class="text-btn" @click="addProductVersion">
               新增版本
@@ -3089,6 +3094,15 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 min="0"
                 step="0.01"
                 required /></label
+            ><label
+              >版本成本<input
+                v-model.number="version.cost"
+                type="number"
+                min="0"
+                step="0.01"
+                required /></label
+            ><label
+              >成本口径<select v-model="version.cost_type"><option value="per_order">每订单</option><option value="per_subscription">每订阅</option><option value="per_period">每周期</option><option value="one_time">一次性</option></select></label
             ><label v-if="productForm.product_type === 'api'" title="该版本每分钟允许的最大调用次数"
               >每分钟限流<input v-model.number="version.rate_limit_per_minute" type="number" min="1" required /></label
             ><label v-if="productForm.product_type === 'api'" title="该版本每日允许的最大调用次数"
