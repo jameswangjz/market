@@ -176,6 +176,9 @@ class Product(Base):
     authorization_conditions: Mapped[str] = mapped_column(Text, default="", nullable=True)
     data_source_statement: Mapped[str] = mapped_column(Text, default="", nullable=True)
     compliance_statement: Mapped[str] = mapped_column(Text, default="", nullable=True)
+    settlement_rule_mode: Mapped[str] = mapped_column(String(20), default="global")
+    settlement_rule_id: Mapped[str] = mapped_column(String(36), default="")
+    settlement_rule_json: Mapped[str] = mapped_column(Text, default="{}")
     review_comment: Mapped[str] = mapped_column(Text, default="", nullable=True)
     reviewed_by: Mapped[str] = mapped_column(String(180), default="", nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -815,6 +818,9 @@ class ProductBody(BaseModel):
     authorization_conditions: str = ""
     data_source_statement: str = ""
     compliance_statement: str = ""
+    settlement_rule_mode: str = Field(default="global", pattern="^(global|custom)$")
+    settlement_rule_id: str = ""
+    settlement_rule: dict[str, Any] = Field(default_factory=dict)
     versions: list["ProductVersionBody"] = Field(default_factory=list)
 
 
@@ -1156,6 +1162,18 @@ def order_cost(db: Session, order: Order) -> Decimal:
     return cost.quantize(Decimal("0.01"))
 
 
+def settlement_values_for_order(db: Session, order: Order, fallback: SettlementRule) -> tuple[dict[str, Decimal], str]:
+    product = db.get(Product, order.product_id)
+    if product and product.settlement_rule_mode == "custom":
+        custom = json.loads(product.settlement_rule_json or "{}")
+        return ({key: Decimal(str(custom.get(key, 0) or 0)) for key in ("platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate")}, f"product:{product.id}")
+    if product and product.settlement_rule_id:
+        selected = db.get(SettlementRule, product.settlement_rule_id)
+        if selected:
+            return ({key: Decimal(str(getattr(selected, key, 0) or 0)) for key in ("platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate")}, f"global:{selected.version}")
+    return ({key: Decimal(str(getattr(fallback, key, 0) or 0)) for key in ("platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate")}, f"global:{fallback.version}")
+
+
 def log_state(db: Session, order: Order, domain: str, old: str, new: str, action: str, user: User, reason: str):
     db.add(OrderStateLog(order_id=order.id, domain=domain, from_status=old, to_status=new, action=action, operator=user.name, reason=reason))
 
@@ -1253,6 +1271,9 @@ def ensure_review_and_file_schema():
             "review_comment": "TEXT",
             "reviewed_by": "VARCHAR(180)",
             "reviewed_at": "TIMESTAMP WITH TIME ZONE",
+            "settlement_rule_mode": "VARCHAR(20) DEFAULT 'global'",
+            "settlement_rule_id": "VARCHAR(36) DEFAULT ''",
+            "settlement_rule_json": "TEXT DEFAULT '{}'",
         },
         "file_objects": {
             "product_id": "VARCHAR(36)",
@@ -1777,7 +1798,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 def product_out(p: Product) -> dict[str, Any]:
     versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
@@ -1862,11 +1883,27 @@ def grant_application_access(product_id: str, body: ApplicationAccessBody, user:
     return {"id": grant.id, "status": grant.status, "user_id": grant.user_id, "product_id": grant.product_id}
 
 
+def validate_product_settlement_rule(values: dict[str, Any], db: Session) -> None:
+    mode = values.get("settlement_rule_mode", "global")
+    rule_id = values.get("settlement_rule_id", "")
+    custom = values.get("settlement_rule", {}) or {}
+    if mode == "global":
+        if rule_id and not db.get(SettlementRule, rule_id):
+            raise HTTPException(400, "所选全局清算规则不存在")
+        return
+    rates = [custom.get(key, 0) for key in ("platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate")]
+    if any(float(rate) < 0 or float(rate) > 100 for rate in rates) or sum(float(rate) for rate in rates) > 100:
+        raise HTTPException(400, "产品专属清算规则的分配比例必须在 0-100% 之间且合计不超过 100%")
+
+
 @app.post("/api/products")
 def create_product(body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
     values = body.model_dump()
     versions = values.pop("versions", [])
+    custom_rule = values.pop("settlement_rule", {}) or {}
+    validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
+    values["settlement_rule_json"] = json.dumps(custom_rule, ensure_ascii=False)
     values["provider_name"] = values["provider_name"] or enterprise.name
     if not versions:
         versions = [{"version_code": values["version"], "description": values["description"], "price": values["price"], "status": "active"}]
@@ -1890,6 +1927,9 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
     values = body.model_dump()
     versions = values.pop("versions", [])
+    custom_rule = values.pop("settlement_rule", {}) or {}
+    validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
+    values["settlement_rule_json"] = json.dumps(custom_rule, ensure_ascii=False)
     values["provider_name"] = values["provider_name"] or first_enterprise(db, user).name
     if versions:
         values["version"] = versions[0]["version_code"]
@@ -3584,9 +3624,10 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         cost_amount = order_cost(db, order)
         profit = (net - cost_amount).quantize(Decimal("0.01"))
         distributable = max(profit, Decimal("0.00"))
-        platform_fee = (distributable * Decimal(str(rule.platform_rate)) / 100).quantize(Decimal("0.01"))
-        service_share = (distributable * Decimal(str(rule.service_rate)) / 100).quantize(Decimal("0.01"))
-        expert_fee = (distributable * Decimal(str(rule.expert_rate)) / 100).quantize(Decimal("0.01"))
+        rates, matched_rule_version = settlement_values_for_order(db, order, rule)
+        platform_fee = (distributable * rates["platform_rate"] / 100).quantize(Decimal("0.01"))
+        service_share = (distributable * rates["service_rate"] / 100).quantize(Decimal("0.01"))
+        expert_fee = (distributable * rates["expert_rate"] / 100).quantize(Decimal("0.01"))
         tax_amount = Decimal("0.00")
         provider_share = (distributable - platform_fee - service_share - expert_fee).quantize(Decimal("0.01"))
         settlement = Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id, gross_amount=gross, refund_amount=refund, net_amount=net, cost_amount=cost_amount, profit_amount=profit, refund_recovery=refund, platform_fee=platform_fee, provider_share=provider_share, service_share=service_share, expert_fee=expert_fee, tax_amount=tax_amount, status="pending")
@@ -3595,7 +3636,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         db.add_all([SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="platform", participant_name="平台运营方", amount=settlement.platform_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="provider", participant_id=order.provider_enterprise_id, participant_name="数据/服务提供方", amount=settlement.provider_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="service", participant_name="数据服务方", amount=settlement.service_share)])
         total += net
         total_profit += profit
-        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={rule.version}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=rule.version, after={"net_amount": float(net), "cost_amount": float(cost_amount), "profit_amount": float(profit), "distributable_profit": float(distributable)})
+        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={matched_rule_version}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=matched_rule_version, after={"net_amount": float(net), "cost_amount": float(cost_amount), "profit_amount": float(profit), "distributable_profit": float(distributable)})
     batch.total_amount = total
     batch.total_profit = total_profit
     batch.exception_count = exceptions

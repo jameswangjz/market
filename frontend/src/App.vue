@@ -177,6 +177,9 @@ const emptyProductForm = () => ({
   authorization_conditions: "",
   data_source_statement: "",
   compliance_statement: "",
+  settlement_rule_mode: "global",
+  settlement_rule_id: "",
+  settlement_rule: { platform_rate: 8, provider_rate: 67, service_rate: 20, expert_rate: 5, channel_rate: 0 },
 });
 const productForm = ref(emptyProductForm());
 let progressTimer;
@@ -3165,6 +3168,25 @@ onUnmounted(() => window.clearInterval(progressTimer));
             placeholder="说明分类分级、脱敏和合规审核情况"
           ></textarea>
         </label>
+        <div class="form-section-title">清算规则</div>
+        <div class="form-grid">
+          <label>规则来源<select v-model="productForm.settlement_rule_mode">
+            <option value="global">平台全局默认规则</option>
+            <option value="custom">产品专属规则</option>
+          </select></label>
+          <label v-if="productForm.settlement_rule_mode === 'global'">全局规则<select v-model="productForm.settlement_rule_id">
+            <option value="">审核时使用当前启用规则</option>
+            <option v-for="rule in settlementRules.filter((item) => item.status === 'active')" :key="rule.id" :value="rule.id">{{ rule.name }} · {{ rule.version }}</option>
+          </select></label>
+        </div>
+        <div v-if="productForm.settlement_rule_mode === 'custom'" class="form-grid settlement-product-rule">
+          <label>平台服务费 (%)<input v-model.number="productForm.settlement_rule.platform_rate" type="number" min="0" max="100" step="0.01" /></label>
+          <label>提供方分成 (%)<input v-model.number="productForm.settlement_rule.provider_rate" type="number" min="0" max="100" step="0.01" /></label>
+          <label>数据服务方分成 (%)<input v-model.number="productForm.settlement_rule.service_rate" type="number" min="0" max="100" step="0.01" /></label>
+          <label>专家费用 (%)<input v-model.number="productForm.settlement_rule.expert_rate" type="number" min="0" max="100" step="0.01" /></label>
+          <label>渠道费用 (%)<input v-model.number="productForm.settlement_rule.channel_rate" type="number" min="0" max="100" step="0.01" /></label>
+        </div>
+        <p class="muted settlement-rule-hint">清算规则随产品提交审核，审核通过后用于该产品订单；税费不在此处作为分配项。</p>
         <div class="form-grid">
           <label>质量等级<input v-model="productForm.quality_level" /></label>
         </div>
