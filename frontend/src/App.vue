@@ -97,6 +97,10 @@ const development = ref({
 const deliveryItems = ref([]);
 const afterSalesItems = ref([]);
 const settlementItems = ref([]);
+const settlementRules = ref([]);
+const settlementBatches = ref([]);
+const settlementTab = ref("settlements");
+const settlementRuleForm = ref({ name: "", version: "v1", platform_rate: 8, provider_rate: 61, service_rate: 20, expert_rate: 5, channel_rate: 0, tax_rate: 6, change_reason: "" });
 const auditItems = ref([]);
 const auditCategories = ref([]);
 const auditSelectedCategory = ref("");
@@ -359,8 +363,14 @@ async function loadViewData(view) {
     afterSalesItems.value = afterSales.data.items;
   }
   if (view === "settlements") {
-    const { data } = await api.get("/settlements");
-    settlementItems.value = data.items;
+    const [settlements, rules, batches] = await Promise.all([
+      api.get("/settlements"),
+      api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
+      api.get("/settlement-batches").catch(() => ({ data: { items: [] } })),
+    ]);
+    settlementItems.value = settlements.data.items;
+    settlementRules.value = rules.data.items;
+    settlementBatches.value = batches.data.items;
   }
   if (view === "audit") {
     await loadAuditLogs();
@@ -917,6 +927,52 @@ async function lockSettlement(item) {
     await loadViewData("settlements");
   } catch (error) {
     notify(error.response?.data?.detail || "清算锁定失败");
+  }
+}
+async function createSettlementRule() {
+  if (!settlementRuleForm.value.name) return notify("请填写清算规则名称");
+  try {
+    await api.post("/settlement-rules", settlementRuleForm.value);
+    notify("清算规则已保存");
+    settlementRuleForm.value.name = "";
+    await loadViewData("settlements");
+  } catch (error) {
+    notify(error.response?.data?.detail || "清算规则保存失败");
+  }
+}
+async function decideSettlementRule(rule, decision) {
+  try {
+    await api.post(`/settlement-rules/${rule.id}/decision`, { decision, comment: "工作台操作" });
+    notify("清算规则状态已更新");
+    await loadViewData("settlements");
+  } catch (error) {
+    notify(error.response?.data?.detail || "清算规则操作失败");
+  }
+}
+async function simulateSettlementRule(rule) {
+  try {
+    const { data } = await api.post(`/settlement-rules/${rule.id}/simulate`, { cycle: "manual" });
+    notify(`试算完成，共 ${data.total} 条订单`);
+  } catch (error) {
+    notify(error.response?.data?.detail || "清算规则试算失败");
+  }
+}
+async function generateSettlementBatch() {
+  try {
+    await api.post("/settlement-batches", { cycle: "manual", rule_id: settlementRules.value.find((x) => x.status === "active")?.id || "" });
+    notify("清算批次已生成");
+    await loadViewData("settlements");
+  } catch (error) {
+    notify(error.response?.data?.detail || "清算批次生成失败");
+  }
+}
+async function batchAction(batch, action) {
+  try {
+    await api.post(`/settlement-batches/${batch.id}/${action}`, { comment: "工作台操作" });
+    notify(action === "pay" ? "批次已完成模拟付款" : "批次已确认");
+    await loadViewData("settlements");
+  } catch (error) {
+    notify(error.response?.data?.detail || "清算批次操作失败");
   }
 }
 async function saveNotificationSettings() {
@@ -1952,6 +2008,29 @@ onUnmounted(() => window.clearInterval(progressTimer));
               <RefreshCw :size="16" />刷新
             </button>
           </div>
+          <div class="tabs settlement-tabs">
+            <button :class="{ active: settlementTab === 'settlements' }" @click="settlementTab = 'settlements'">清算单 {{ settlementItems.length }}</button>
+            <button :class="{ active: settlementTab === 'rules' }" @click="settlementTab = 'rules'">规则与试算 {{ settlementRules.length }}</button>
+            <button :class="{ active: settlementTab === 'batches' }" @click="settlementTab = 'batches'">清算批次 {{ settlementBatches.length }}</button>
+          </div>
+          <div v-if="settlementTab === 'rules'" class="settlement-management-grid">
+            <div class="panel">
+              <div class="panel-heading"><div><span class="section-kicker">RULE CONFIGURATION</span><h3>新增清算规则</h3></div></div>
+              <div class="gateway-form-grid">
+                <label class="wide">规则名称<input v-model="settlementRuleForm.name" placeholder="例如：API服务年度分账规则" /></label>
+                <label>版本<input v-model="settlementRuleForm.version" /></label>
+                <label>平台服务费 %<input v-model.number="settlementRuleForm.platform_rate" type="number" min="0" max="100" /></label>
+                <label>提供方分成 %<input v-model.number="settlementRuleForm.provider_rate" type="number" min="0" max="100" /></label>
+                <label>数据服务方 %<input v-model.number="settlementRuleForm.service_rate" type="number" min="0" max="100" /></label>
+                <label>专家费用 %<input v-model.number="settlementRuleForm.expert_rate" type="number" min="0" max="100" /></label>
+                <label>渠道费用 %<input v-model.number="settlementRuleForm.channel_rate" type="number" min="0" max="100" /></label>
+                <label>税费 %<input v-model.number="settlementRuleForm.tax_rate" type="number" min="0" max="100" /></label>
+              </div>
+              <div class="gateway-actions"><button class="primary-btn" @click="createSettlementRule">保存规则</button></div>
+            </div>
+            <div class="panel"><div class="panel-heading"><div><span class="section-kicker">RULE VERSIONS</span><h3>规则版本</h3></div></div><div class="settlement-rule-list"><div v-for="rule in settlementRules" :key="rule.id" class="settlement-rule-item"><div><strong>{{ rule.name }} · {{ rule.version }}</strong><small>平台 {{ rule.platform_rate }}% · 提供方 {{ rule.provider_rate }}% · 税费 {{ rule.tax_rate }}%</small></div><div class="table-actions"><span class="status-pill" :class="rule.status === 'active' ? 'status-done' : 'status-review'">{{ rule.status }}</span><button v-if="rule.status === 'draft'" class="text-btn" @click="decideSettlementRule(rule, 'approve')">审批</button><button v-if="rule.status === 'approved'" class="text-btn" @click="decideSettlementRule(rule, 'activate')">启用</button><button class="text-btn" @click="simulateSettlementRule(rule)">试算</button></div></div></div><div v-if="!settlementRules.length" class="empty-state">暂无清算规则</div></div>
+          </div>
+          <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>异常</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td>{{ batch.exception_count }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : batch.status === 'exception' ? 'status-blocked' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'generated'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
           <div class="panel">
             <div class="panel-heading">
               <h3>
