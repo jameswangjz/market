@@ -213,6 +213,9 @@ const filteredTasks = computed(() =>
       developmentFilter.value === "all" || t.status === developmentFilter.value,
   ),
 );
+const selectedProductSettlementRule = computed(() =>
+  settlementRules.value.find((rule) => rule.id === productForm.value.settlement_rule_id) || null,
+);
 
 const statusLabels = {
   created: "创建",
@@ -3180,6 +3183,18 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <option value="">审核时使用当前启用规则</option>
             <option v-for="rule in settlementRules.filter((item) => item.status === 'active')" :key="rule.id" :value="rule.id">{{ rule.name }} · {{ rule.version }}</option>
           </select></label>
+        </div>
+        <div v-if="productForm.settlement_rule_mode === 'global' && selectedProductSettlementRule" class="settlement-rule-preview">
+          <div class="settlement-rule-preview-head"><strong>{{ selectedProductSettlementRule.name }} · {{ selectedProductSettlementRule.version }}</strong><span class="status-pill status-done">{{ selectedProductSettlementRule.status }}</span></div>
+          <div class="settlement-rule-preview-grid">
+            <span>平台服务费 <b>{{ selectedProductSettlementRule.platform_rate }}%</b></span>
+            <span>提供方分成 <b>{{ selectedProductSettlementRule.provider_rate }}%</b></span>
+            <span>数据服务方 <b>{{ selectedProductSettlementRule.service_rate }}%</b></span>
+            <span>专家费用 <b>{{ selectedProductSettlementRule.expert_rate }}%</b></span>
+            <span>渠道费用 <b>{{ selectedProductSettlementRule.channel_rate || 0 }}%</b></span>
+            <span>规则生效 <b>{{ selectedProductSettlementRule.effective_at ? fmtDate(selectedProductSettlementRule.effective_at) : "立即" }}</b></span>
+          </div>
+          <small v-if="selectedProductSettlementRule.change_reason">变更说明：{{ selectedProductSettlementRule.change_reason }}</small>
         </div>
         <div v-if="productForm.settlement_rule_mode === 'custom'" class="form-grid settlement-product-rule">
           <label>平台服务费 (%)<input v-model.number="productForm.settlement_rule.platform_rate" type="number" min="0" max="100" step="0.01" /></label>
