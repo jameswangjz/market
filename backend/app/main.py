@@ -302,6 +302,7 @@ class ApiGatewayRoute(Base):
     auth_mode: Mapped[str] = mapped_column(String(30), default="api_key")
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
     daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
+    monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     timeout_ms: Mapped[int] = mapped_column(Integer, default=30000)
     strip_prefix: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
@@ -315,12 +316,14 @@ class ApiCredential(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    order_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     name: Mapped[str] = mapped_column(String(120), default="默认 API 凭证")
     key_prefix: Mapped[str] = mapped_column(String(24), default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(180), default="")
@@ -695,6 +698,7 @@ class GatewayConfigBody(BaseModel):
     auth_mode: str = "api_key"
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
     daily_quota: int = Field(default=10000, ge=1, le=100000000)
+    monthly_quota: int = Field(default=0, ge=0, le=3000000000)
     timeout_ms: int = Field(default=30000, ge=100, le=120000)
     strip_prefix: bool = True
 
@@ -704,6 +708,7 @@ class GatewayCredentialBody(BaseModel):
     enterprise_id: str = ""
     rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100000)
     daily_quota: int | None = Field(default=None, ge=1, le=100000000)
+    monthly_quota: int | None = Field(default=None, ge=1, le=3000000000)
     expires_at: datetime | None = None
 
 
@@ -926,6 +931,13 @@ def ensure_review_and_file_schema():
         },
         "saas_integration_configs": {
             "credentials_revealed_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "api_gateway_routes": {
+            "monthly_quota": "INTEGER DEFAULT 0",
+        },
+        "api_credentials": {
+            "order_id": "VARCHAR(36) DEFAULT ''",
+            "monthly_quota": "INTEGER",
         },
     }
     with engine.begin() as connection:
@@ -1565,7 +1577,7 @@ def publish_product(product_id: str, user: User = Depends(current_user), db: Ses
 
 
 def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
-    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
+    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
 
 
 def gateway_product(product_id: str, db: Session) -> Product:
@@ -1597,7 +1609,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -1672,7 +1684,7 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
         if not db.get(Enterprise, target_enterprise_id):
             raise HTTPException(404, "目标企业不存在")
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=target_enterprise_id, name=body.name.strip() or "默认 API 凭证", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=target_enterprise_id, name=body.name.strip() or "默认 API 凭证", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     audit(db, user.email or user.phone or user.id, "create_api_credential", "api_credential", credential.id, route.route_key)
     db.commit()
@@ -1691,7 +1703,7 @@ def list_order_api_credentials(order_id: str, user: User = Depends(current_user)
 def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     audit(db, user.email or user.phone or user.id, "create_order_api_credential", "api_credential", credential.id, order.order_no)
     db.commit()
@@ -1721,7 +1733,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     audit(db, user.email or user.phone or user.id, "regenerate_order_api_credential", "api_credential", credential.id, f"{order.order_no} from={old.id}")
     db.commit()
@@ -1739,7 +1751,7 @@ def list_gateway_credentials(product_id: str, user: User = Depends(current_user)
     if user.platform_role not in {"super_admin", "platform_operator"}:
         require_enterprise_admin(db, user, target)
     items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == target).order_by(ApiCredential.created_at.desc())).all()
-    return {"items": [{"id": x.id, "name": x.name, "key_prefix": x.key_prefix, "status": x.status, "rate_limit_per_minute": x.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": x.daily_quota or route.daily_quota, "expires_at": x.expires_at, "last_used_at": x.last_used_at, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "name": x.name, "key_prefix": x.key_prefix, "status": x.status, "rate_limit_per_minute": x.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": x.daily_quota or route.daily_quota, "monthly_quota": x.monthly_quota or route.monthly_quota, "expires_at": x.expires_at, "last_used_at": x.last_used_at, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/products/{product_id}/gateway-usage")

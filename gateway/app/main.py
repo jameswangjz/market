@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import redis
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -26,6 +26,13 @@ class Product(Base):
     status: Mapped[str] = mapped_column(String(40))
 
 
+class Order(Base):
+    __tablename__ = "orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    payment_status: Mapped[str] = mapped_column(String(30))
+    main_status: Mapped[str] = mapped_column(String(30))
+
+
 class ApiGatewayRoute(Base):
     __tablename__ = "api_gateway_routes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -36,6 +43,7 @@ class ApiGatewayRoute(Base):
     auth_mode: Mapped[str] = mapped_column(String(30))
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer)
     daily_quota: Mapped[int] = mapped_column(Integer)
+    monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     timeout_ms: Mapped[int] = mapped_column(Integer)
     strip_prefix: Mapped[bool] = mapped_column(Boolean)
     status: Mapped[str] = mapped_column(String(30), index=True)
@@ -46,10 +54,12 @@ class ApiCredential(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
     enterprise_id: Mapped[str] = mapped_column(String(36), index=True)
+    order_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    monthly_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -93,23 +103,29 @@ def extract_key(request: Request) -> str:
 def check_quota(credential: ApiCredential, route: ApiGatewayRoute):
     minute_limit = credential.rate_limit_per_minute or route.rate_limit_per_minute
     daily_limit = credential.daily_quota or route.daily_quota
+    monthly_limit = credential.monthly_quota or route.monthly_quota
     now_epoch = int(time.time())
     minute_key = f"market:gateway:minute:{credential.id}:{now_epoch // 60}"
     day_key = f"market:gateway:day:{credential.id}:{datetime.now(timezone.utc).date().isoformat()}"
+    month_key = f"market:gateway:month:{credential.id}:{datetime.now(timezone.utc).strftime('%Y-%m')}"
     try:
         pipe = redis_client.pipeline()
         pipe.incr(minute_key)
         pipe.expire(minute_key, 70)
         pipe.incr(day_key)
         pipe.expire(day_key, 86400)
+        pipe.incr(month_key)
+        pipe.expire(month_key, 2678400)
         result = pipe.execute()
-        minute_count, daily_count = int(result[0]), int(result[2])
+        minute_count, daily_count, monthly_count = int(result[0]), int(result[2]), int(result[4])
     except redis.RedisError:
         raise HTTPException(503, "API 网关限流服务暂不可用")
     if minute_count > minute_limit:
         raise HTTPException(429, "超过 API 每分钟调用频率限制")
     if daily_count > daily_limit:
         raise HTTPException(429, "超过 API 每日调用配额")
+    if monthly_limit and monthly_count > monthly_limit:
+        raise HTTPException(429, "超过 API 每月调用配额")
 
 
 def record_usage(db: Session, route: ApiGatewayRoute, credential: ApiCredential, request: Request, status_code: int, latency_ms: int, request_bytes: int, response_bytes: int):
@@ -142,6 +158,11 @@ async def proxy(route_key: str, path: str, request: Request):
         if not credential or (credential.expires_at and credential.expires_at < datetime.now(timezone.utc)):
             db.close()
             raise HTTPException(401, "API Key 无效或已过期")
+        if credential and credential.order_id:
+            order = db.get(Order, credential.order_id)
+            if not order or order.payment_status != "paid" or order.main_status in {"cancelled", "closed"}:
+                db.close()
+                raise HTTPException(403, "订单授权已失效")
         check_quota(credential, route)
     else:
         credential = db.scalar(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.status == "active").limit(1))
@@ -152,6 +173,37 @@ async def proxy(route_key: str, path: str, request: Request):
     if credential:
         headers["x-market-enterprise-id"] = credential.enterprise_id
         headers["x-market-route-key"] = route.route_key
+    stream_requested = request.headers.get("x-market-stream", "").lower() == "true" or "text/event-stream" in request.headers.get("accept", "")
+    if stream_requested:
+        client = httpx.AsyncClient(timeout=route.timeout_ms / 1000)
+        upstream_request = client.build_request(request.method, target, params=request.query_params, content=body, headers=headers)
+        try:
+            upstream = await client.send(upstream_request, stream=True)
+        except httpx.TimeoutException:
+            await client.aclose()
+            db.close()
+            raise HTTPException(504, "API 后端服务响应超时")
+        except httpx.HTTPError:
+            await client.aclose()
+            db.close()
+            raise HTTPException(502, "API 后端服务不可用")
+        response_headers = {key: value for key, value in upstream.headers.items() if key.lower() not in {"content-length", "transfer-encoding", "connection", "keep-alive"}}
+        started_stream = time.perf_counter()
+
+        async def stream_body():
+            response_bytes = 0
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    response_bytes += len(chunk)
+                    yield chunk
+            finally:
+                await upstream.aclose()
+                await client.aclose()
+                if credential:
+                    record_usage(db, route, credential, request, upstream.status_code, int((time.perf_counter() - started_stream) * 1000), len(body), response_bytes)
+                db.close()
+
+        return StreamingResponse(stream_body(), status_code=upstream.status_code, headers=response_headers, media_type=upstream.headers.get("content-type"))
     status_code = 502
     response_bytes = 0
     try:
