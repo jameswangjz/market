@@ -177,6 +177,20 @@ class Product(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    versions: Mapped[list["ProductReleaseVersion"]] = relationship(back_populates="product", cascade="all, delete-orphan", order_by="ProductReleaseVersion.created_at")
+
+
+class ProductReleaseVersion(Base):
+    __tablename__ = "product_release_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    version_code: Mapped[str] = mapped_column(String(60))
+    description: Mapped[str] = mapped_column(Text, default="")
+    price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    product: Mapped[Product] = relationship(back_populates="versions")
 
 
 class SaaSProductVersion(Base):
@@ -593,6 +607,18 @@ class ProductBody(BaseModel):
     authorization_conditions: str = ""
     data_source_statement: str = ""
     compliance_statement: str = ""
+    versions: list["ProductVersionBody"] = Field(default_factory=list)
+
+
+class ProductVersionBody(BaseModel):
+    version_code: str = Field(min_length=1, max_length=60)
+    description: str = ""
+    price: float = Field(default=0, ge=0)
+    status: str = "active"
+
+
+class ProductVersionUpdateBody(ProductVersionBody):
+    pass
 
 
 class ProductReviewBody(BaseModel):
@@ -910,6 +936,10 @@ def startup():
     ensure_product_metadata_schema()
     ensure_review_and_file_schema()
     with SessionLocal() as db:
+        for product in db.scalars(select(Product)).all():
+            if not product.versions:
+                db.add(ProductReleaseVersion(product_id=product.id, version_code=product.version or "v1.0", description=product.description or "", price=product.price or 0, status="active"))
+        db.commit()
         if not db.scalar(select(DevelopmentTask.id).limit(1)):
             seed_tasks = [
                 ("ARC-001", "主 Agent", "需求、数据模型、接口边界和状态机固化", "架构", "P0", "done", "已确认需求", "文档与代码契约一致", 100),
@@ -1260,7 +1290,8 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "status": x.status, "created_at": x.created_at, "updated_at": x.updated_at} for x in (p.versions or [])]
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
@@ -1344,10 +1375,17 @@ def grant_application_access(product_id: str, body: ApplicationAccessBody, user:
 def create_product(body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
     values = body.model_dump()
+    versions = values.pop("versions", [])
     values["provider_name"] = values["provider_name"] or enterprise.name
+    if not versions:
+        versions = [{"version_code": values["version"], "description": values["description"], "price": values["price"], "status": "active"}]
+    values["version"] = versions[0]["version_code"]
+    values["price"] = versions[0]["price"]
     product = Product(enterprise_id=enterprise.id, **values)
     db.add(product)
     db.flush()
+    for item in versions:
+        db.add(ProductReleaseVersion(product_id=product.id, **item))
     audit(db, user.email, "create_product", "product", product.id, product.name)
     db.commit()
     db.refresh(product)
@@ -1360,7 +1398,14 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
     if product.status not in {"draft", "rejected"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
     values = body.model_dump()
+    versions = values.pop("versions", [])
     values["provider_name"] = values["provider_name"] or first_enterprise(db, user).name
+    if versions:
+        values["version"] = versions[0]["version_code"]
+        values["price"] = versions[0]["price"]
+        product.versions.clear()
+        for item in versions:
+            product.versions.append(ProductReleaseVersion(**item))
     for name, value in values.items():
         setattr(product, name, value)
     product.review_comment = ""
@@ -1368,6 +1413,47 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
     db.commit()
     db.refresh(product)
     return product_out(product)
+
+
+@app.get("/api/products/{product_id}/versions")
+def list_product_versions(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    return {"items": product_out(product)["versions"]}
+
+
+@app.post("/api/products/{product_id}/versions")
+def add_product_version(product_id: str, body: ProductVersionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if product.status not in {"draft", "rejected"}:
+        raise HTTPException(409, "只有草稿或被驳回的产品可以增加版本")
+    if db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == body.version_code)):
+        raise HTTPException(409, "该版本号已存在")
+    version = ProductReleaseVersion(product_id=product.id, **body.model_dump())
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "status": version.status}
+
+
+@app.put("/api/products/{product_id}/versions/{version_id}")
+def update_product_version(product_id: str, version_id: str, body: ProductVersionUpdateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if product.status not in {"draft", "rejected"}:
+        raise HTTPException(409, "只有草稿或被驳回的产品可以编辑版本")
+    version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product.id))
+    if not version:
+        raise HTTPException(404, "产品版本不存在")
+    duplicate = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == body.version_code, ProductReleaseVersion.id != version.id))
+    if duplicate:
+        raise HTTPException(409, "该版本号已存在")
+    for key, value in body.model_dump().items():
+        setattr(version, key, value)
+    if product.versions and version.id == product.versions[0].id:
+        product.version = version.version_code
+        product.price = version.price
+    db.commit()
+    db.refresh(version)
+    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "status": version.status}
 
 
 @app.post("/api/products/{product_id}/submit")
