@@ -2607,6 +2607,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
             v-for="(version, index) in productForm.versions"
             :key="index"
             class="version-row"
+            :class="{ 'api-version-row': productForm.product_type === 'api' }"
           >
             <label
               >版本号<input v-model="version.version_code" required /></label
