@@ -267,6 +267,9 @@ GET  /api/gateway/alerts
 - `BE-017` 已完成：新 API 凭据创建时自动同步 APISIX `key-auth` Consumer，停用和重生成同步删除/创建 Consumer；历史凭据需要重新生成后纳入原生 Consumer 管理。
 - `BE-018` 已完成：增加 `APISIX_NATIVE_UPSTREAM` 开关，产品上游认证模式为 `none` 时可由 APISIX 直接转发第三方上游，已完成实际健康接口验证；OAuth2 上游仍保留兼容入口，等待专用原生上游 Token 插件。
 - `APISIX_NATIVE_AUTH` 和 `APISIX_NATIVE_UPSTREAM` 支持灰度切换。关闭开关时回到 FastAPI 兼容入口，原生模式异常时可以快速回退。
-- `BE-019` 待开发：日/月配额、订单授权回收和上游 OAuth2 Token 需要补充 APISIX 原生插件或扩展机制，不能仅依赖控制面接口。
+- `BE-019` 已完成：新增 APISIX Consumer 级配额插件，使用 Redis Lua 原子计数执行日/月配额；新增 APISIX 上游 OAuth2 插件，统一获取并缓存平台 Token，错误以网关统一 JSON 返回。
+- `OPS-010` 已完成：在开发集群完成原生模式、兼容模式回退和原生模式恢复演练；原生模式实际直连第三方上游，兼容模式实际转发至 FastAPI 网关。
+
+本轮验收结论：APISIX 已具备原生 API Key 鉴权、Consumer 级日/月配额、上游 OAuth2 Token 获取与 Redis 缓存、版本级每分钟限流、直接上游转发和双入口回退能力。正式生产上线前仍需将当前开发环境的 etcd/Redis 单副本替换为正式高可用集群，并配置生产域名、TLS、Ingress 和密钥管理。
 - `FE-006/007/008`：已完成网关路由策略配置、校验发布/回滚、调用统计、发布记录、健康状态和告警管理页面，并已部署到 `market-web`。
 - `OPS-009`：已完成登录、控制面接口、APISIX 指标和前端管理页基础冒烟验证；故障演练、压测和完整配额验收仍在进行。

@@ -171,7 +171,8 @@ spec:
             - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
             - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
             - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
-          readinessProbe: {httpGet: {path: /api/health, port: 8000}, initialDelaySeconds: 12, periodSeconds: 5}
+          startupProbe: {httpGet: {path: /api/health, port: 8000}, periodSeconds: 5, timeoutSeconds: 2, failureThreshold: 36}
+          readinessProbe: {httpGet: {path: /api/health, port: 8000}, initialDelaySeconds: 5, periodSeconds: 5}
           livenessProbe: {httpGet: {path: /api/health, port: 8000}, initialDelaySeconds: 20, periodSeconds: 10}
 ---
 apiVersion: v1

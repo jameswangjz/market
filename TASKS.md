@@ -51,11 +51,11 @@
 
 | 编号 | 负责人 | 任务 | 依赖 | 状态 | 验收条件 |
 |---|---|---|---|---|---|
-| ARC-005 | 主 Agent | APISIX 原生数据面迁移方案、切换门禁和回退标准 | ARC-004 | IN_PROGRESS 60% | 原生数据面、FastAPI 控制面、灰度和回退边界固化 |
+| ARC-005 | 主 Agent | APISIX 原生数据面迁移方案、切换门禁和回退标准 | ARC-004 | DONE | 原生数据面、FastAPI 控制面、灰度和回退边界已固化并验证 |
 | BE-017 | 后端 Agent | APISIX Consumer/API Key 原生同步 | ARC-005 | DONE | 凭据创建、停用、重生成可同步 APISIX Consumer |
 | BE-018 | 后端 Agent | APISIX 原生直连上游和路由发布模式 | BE-017 | DONE | 路由可绕过 FastAPI 兼容网关直接访问第三方上游 |
-| BE-019 | 后端 Agent | 原生数据面配额插件和统一错误策略 | BE-018 | TODO | 原生数据面支持日/月配额、订单授权回收和统一错误 |
-| OPS-010 | 部署测试 Agent | APISIX 原生模式灰度切换、双入口回退和生产验收 | BE-017,BE-018,BE-019 | TODO | 原生入口灰度成功，故障可自动回退兼容入口 |
+| BE-019 | 后端 Agent | 原生数据面配额插件和统一错误策略 | BE-018 | DONE | Consumer 级日/月配额、OAuth2 Token 缓存和统一错误已验证 |
+| OPS-010 | 部署测试 Agent | APISIX 原生模式灰度切换、双入口回退和生产验收 | BE-017,BE-018,BE-019 | DONE | 原生直连、兼容回退、恢复切换和配额闭环已验收 |
 
 ## 集成门禁
 

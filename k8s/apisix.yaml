@@ -80,6 +80,13 @@ data:
           ip: 0.0.0.0
           port: 9091
         refresh_interval: 15
+    plugins:
+      - key-auth
+      - limit-count
+      - proxy-rewrite
+      - prometheus
+      - market-gateway-quota
+      - market-gateway-oauth
     nginx_config:
       error_log: "/dev/stderr"
       error_log_level: "warn"
@@ -117,7 +124,10 @@ spec:
             - {name: proxy, containerPort: 9080}
             - {name: admin, containerPort: 9180}
             - {name: metrics, containerPort: 9091}
-          volumeMounts: [{name: config, mountPath: /usr/local/apisix/conf/config.yaml, subPath: config.yaml}]
+          volumeMounts:
+            - {name: config, mountPath: /usr/local/apisix/conf/config.yaml, subPath: config.yaml}
+            - {name: policy-plugin, mountPath: /usr/local/apisix/apisix/plugins/market-gateway-quota.lua, subPath: market-gateway-quota.lua}
+            - {name: policy-plugin, mountPath: /usr/local/apisix/apisix/plugins/market-gateway-oauth.lua, subPath: market-gateway-oauth.lua}
           readinessProbe:
             tcpSocket: {port: 9080}
             initialDelaySeconds: 12
@@ -126,7 +136,9 @@ spec:
             tcpSocket: {port: 9080}
             initialDelaySeconds: 25
             periodSeconds: 10
-      volumes: [{name: config, configMap: {name: market-apisix-config}}]
+      volumes:
+        - {name: config, configMap: {name: market-apisix-config}}
+        - {name: policy-plugin, configMap: {name: market-apisix-policy-plugin}}
 ---
 apiVersion: v1
 kind: Service

@@ -1847,7 +1847,7 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     rate_limit = version.rate_limit_per_minute if version else route.rate_limit_per_minute
     daily_quota = version.daily_quota if version else route.daily_quota
     monthly_quota = version.monthly_quota if version else route.monthly_quota
-    use_native_upstream = apisix_native_upstream() and route.upstream_auth_mode == "none"
+    use_native_upstream = apisix_native_upstream()
     target_upstream = route.upstream_url.rstrip("/") if use_native_upstream else compat_upstream
     plugins = {
         "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
@@ -1855,6 +1855,14 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     }
     if apisix_native_auth():
         plugins["key-auth"] = {"header": "X-API-Key", "query": "api_key"}
+    if apisix_native_upstream():
+        plugins["market-gateway-oauth"] = {
+            "product_id": route.product_id,
+            "token_url": platform_oauth_token_url(),
+            "client_id": route.upstream_client_id,
+            "client_secret": route.upstream_client_secret,
+            "scope": route.upstream_scope,
+        }
     return {
         "name": f"market-{route.route_key}",
         "uri": f"/gateway/{route.route_key}/*",
@@ -1865,7 +1873,7 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     }
 
 
-def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None) -> bool:
+def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, route: ApiGatewayRoute | None = None) -> bool:
     """Synchronize a credential to APISIX key-auth without exposing Admin API to clients."""
     if not apisix_enabled():
         return True
@@ -1873,7 +1881,10 @@ def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None) 
         credential.apisix_consumer_name = f"market-consumer-{credential.id}"
     if not raw_key:
         raise RuntimeError("历史 API 凭据没有可用于 APISIX 同步的明文密钥，请重新生成")
-    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}}})
+    route_key = route.route_key if route else "unknown"
+    daily_quota = credential.daily_quota if credential.daily_quota is not None else (route.daily_quota if route else 0)
+    monthly_quota = credential.monthly_quota if credential.monthly_quota is not None else (route.monthly_quota if route else 0)
+    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}, "market-gateway-quota": {"route_key": route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0}}})
     return True
 
 
@@ -2119,7 +2130,7 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
     db.add(credential)
     db.flush()
     try:
-        sync_apisix_consumer(credential, raw_key)
+        sync_apisix_consumer(credential, raw_key, route)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
@@ -2144,7 +2155,7 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     db.add(credential)
     db.flush()
     try:
-        sync_apisix_consumer(credential, raw_key)
+        sync_apisix_consumer(credential, raw_key, route)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
@@ -2186,7 +2197,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     db.flush()
     try:
         remove_apisix_consumer(old)
-        sync_apisix_consumer(credential, raw_key)
+        sync_apisix_consumer(credential, raw_key, route)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据重生成同步 APISIX Consumer 失败：{exc}") from exc
