@@ -150,6 +150,7 @@ const developmentFilter = ref("all");
 const search = ref("");
 const showProductForm = ref(false);
 const productDetailMode = ref(false);
+const productReadOnlyMode = ref(false);
 const selectedProductId = ref("");
 const emptyProductVersion = () => ({
   version_code: "v1.0",
@@ -787,6 +788,7 @@ async function createProduct() {
 }
 function openNewProduct() {
   productDetailMode.value = false;
+  productReadOnlyMode.value = false;
   selectedProductId.value = "";
   productForm.value = {
     ...emptyProductForm(),
@@ -796,7 +798,8 @@ function openNewProduct() {
 }
 function openProductDetail(product) {
   selectedProductId.value = product.id;
-  productDetailMode.value = product.status !== "draft";
+  productDetailMode.value = true;
+  productReadOnlyMode.value = product.status !== "draft";
   productForm.value = JSON.parse(JSON.stringify({
     ...emptyProductForm(),
     ...product,
@@ -805,7 +808,7 @@ function openProductDetail(product) {
   showProductForm.value = true;
 }
 async function saveProductEdit() {
-  if (!selectedProductId.value || productDetailMode.value) return;
+  if (!selectedProductId.value || productReadOnlyMode.value) return;
   try {
     await api.put(`/products/${selectedProductId.value}`, {
       ...productForm.value,
@@ -3012,7 +3015,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <X :size="19" />
           </button>
         </div>
-        <fieldset :disabled="productDetailMode" class="product-fieldset">
+        <fieldset :disabled="productReadOnlyMode" class="product-fieldset">
         <div class="form-section-title">基础元数据</div>
         <label
           >产品或服务名称<input
@@ -3089,7 +3092,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
               <strong>版本与价格</strong
               ><small>每个版本单独定义销售价格、成本和简要介绍；SaaS版本成本按月计，订单成本按订阅周期自动计算</small>
             </div>
-            <button v-if="!productDetailMode" type="button" class="text-btn" @click="addProductVersion">
+            <button v-if="!productReadOnlyMode" type="button" class="text-btn" @click="addProductVersion">
               新增版本
             </button>
           </div>
@@ -3127,7 +3130,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 rows="2"
                 placeholder="说明该版本的功能范围、能力差异或适用对象"
               ></textarea></label
-            ><button v-if="!productDetailMode"
+            ><button v-if="!productReadOnlyMode"
               type="button"
               class="icon-btn"
               title="删除版本"
@@ -3247,7 +3250,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
           >
         </div>
         </fieldset>
-        <button v-if="!productDetailMode" class="primary-btn full-btn" type="submit">
+        <button v-if="!productReadOnlyMode" class="primary-btn full-btn" type="submit">
           {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
       </form>
