@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlparse
 
+import httpx
 import jwt
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -175,6 +177,102 @@ class Product(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SaaSProductVersion(Base):
+    __tablename__ = "saas_product_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    version_code: Mapped[str] = mapped_column(String(60))
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    monthly_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    quarterly_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    annual_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    perpetual_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    max_users: Mapped[int] = mapped_column(Integer, default=0)
+    max_departments: Mapped[int] = mapped_column(Integer, default=0)
+    max_storage_gb: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SaaSIntegrationConfig(Base):
+    __tablename__ = "saas_integration_configs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), unique=True, index=True)
+    base_url: Mapped[str] = mapped_column(String(500), default="")
+    operation_path: Mapped[str] = mapped_column(String(240), default="/isv.php")
+    token_url: Mapped[str] = mapped_column(String(500), default="")
+    client_id: Mapped[str] = mapped_column(String(180), default="")
+    client_secret: Mapped[str] = mapped_column(Text, default="")
+    scope: Mapped[str] = mapped_column(String(255), default="")
+    auth_mode: Mapped[str] = mapped_column(String(30), default="oauth2")
+    timeout_ms: Mapped[int] = mapped_column(Integer, default=30000)
+    retention_days: Mapped[int] = mapped_column(Integer, default=30)
+    status: Mapped[str] = mapped_column(String(30), default="draft")
+    updated_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SaaSSubscription(Base):
+    __tablename__ = "saas_subscriptions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("saas_product_versions.id"), index=True)
+    billing_cycle: Mapped[str] = mapped_column(String(20), default="annual")
+    external_tenant_id: Mapped[str] = mapped_column(String(180), default="", index=True)
+    external_app_id: Mapped[str] = mapped_column(String(180), default="")
+    status: Mapped[str] = mapped_column(String(30), default="provisioning", index=True)
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    recover_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SaaSDepartment(Base):
+    __tablename__ = "saas_departments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    subscription_id: Mapped[str] = mapped_column(ForeignKey("saas_subscriptions.id"), index=True)
+    platform_department_id: Mapped[str] = mapped_column(String(36), default="")
+    external_department_id: Mapped[str] = mapped_column(String(180), default="")
+    name: Mapped[str] = mapped_column(String(180))
+    parent_id: Mapped[str] = mapped_column(String(36), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SaaSUserMapping(Base):
+    __tablename__ = "saas_user_mappings"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    subscription_id: Mapped[str] = mapped_column(ForeignKey("saas_subscriptions.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    department_id: Mapped[str] = mapped_column(String(36), default="")
+    external_user_id: Mapped[str] = mapped_column(String(180), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SaaSOperation(Base):
+    __tablename__ = "saas_operations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    subscription_id: Mapped[str] = mapped_column(ForeignKey("saas_subscriptions.id"), index=True)
+    operation: Mapped[str] = mapped_column(String(50), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    request_payload: Mapped[str] = mapped_column(Text, default="")
+    response_payload: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(30), default="executing", index=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ApiGatewayRoute(Base):
@@ -502,6 +600,57 @@ class ProductReviewBody(BaseModel):
     comment: str = ""
 
 
+class SaaSVersionBody(BaseModel):
+    version_code: str = Field(min_length=1, max_length=60)
+    name: str = Field(min_length=1, max_length=120)
+    description: str = ""
+    monthly_price: float = Field(default=0, ge=0)
+    quarterly_price: float = Field(default=0, ge=0)
+    annual_price: float = Field(default=0, ge=0)
+    perpetual_price: float = Field(default=0, ge=0)
+    max_users: int = Field(default=0, ge=0)
+    max_departments: int = Field(default=0, ge=0)
+    max_storage_gb: int = Field(default=0, ge=0)
+    status: str = "draft"
+
+
+class SaaSIntegrationBody(BaseModel):
+    base_url: str = Field(min_length=8, max_length=500)
+    operation_path: str = "/isv.php"
+    token_url: str = ""
+    client_id: str
+    client_secret: str = ""
+    scope: str = ""
+    auth_mode: str = "oauth2"
+    timeout_ms: int = Field(default=30000, ge=100, le=120000)
+    retention_days: int = Field(default=30, ge=30, le=3650)
+
+
+class SaaSSubscriptionBody(BaseModel):
+    version_id: str
+    billing_cycle: str = "annual"
+
+
+class SaaSChangeBody(BaseModel):
+    version_id: str
+    billing_cycle: str = "annual"
+
+
+class SaaSRenewBody(BaseModel):
+    billing_cycle: str = "annual"
+
+
+class SaaSUserBody(BaseModel):
+    user_id: str
+    department_id: str = ""
+
+
+class SaaSDepartmentBody(BaseModel):
+    name: str
+    parent_id: str = ""
+    platform_department_id: str = ""
+
+
 class GatewayConfigBody(BaseModel):
     upstream_url: str = Field(min_length=8, max_length=500)
     route_key: str = Field(default="", max_length=100)
@@ -727,6 +876,15 @@ def ensure_review_and_file_schema():
             "refund_amount": "NUMERIC(14,2)",
             "net_amount": "NUMERIC(14,2)",
             "refund_recovery": "NUMERIC(14,2)",
+        },
+        "orders": {
+            "product_version_id": "VARCHAR(36)",
+            "product_version_code": "VARCHAR(60)",
+            "product_version_name": "VARCHAR(120)",
+            "billing_cycle": "VARCHAR(20)",
+            "subscription_id": "VARCHAR(36)",
+            "business_type": "VARCHAR(30)",
+            "related_order_id": "VARCHAR(36)",
         },
     }
     with engine.begin() as connection:
@@ -1387,8 +1545,356 @@ def gateway_usage(product_id: str, user: User = Depends(current_user), db: Sessi
     return {"summary": {"total": total, "success": success, "error": total - success, "avg_latency_ms": round(sum(x.latency_ms for x in rows) / total, 1) if total else 0}, "items": [{"method": x.method, "path": x.path, "status_code": x.status_code, "latency_ms": x.latency_ms, "request_bytes": x.request_bytes, "response_bytes": x.response_bytes, "created_at": x.created_at} for x in rows]}
 
 
+SAAS_CYCLES = {"monthly": 30, "quarterly": 90, "annual": 365, "perpetual": None}
+SAAS_CYCLE_LABELS = {"monthly": "月付", "quarterly": "季付", "annual": "年付", "perpetual": "永久"}
+_saas_tokens: dict[str, tuple[str, datetime]] = {}
+
+
+def saas_version_out(item: SaaSProductVersion) -> dict[str, Any]:
+    return {"id": item.id, "product_id": item.product_id, "version_code": item.version_code, "name": item.name, "description": item.description, "monthly_price": float(item.monthly_price or 0), "quarterly_price": float(item.quarterly_price or 0), "annual_price": float(item.annual_price or 0), "perpetual_price": float(item.perpetual_price or 0), "max_users": item.max_users, "max_departments": item.max_departments, "max_storage_gb": item.max_storage_gb, "status": item.status, "created_at": item.created_at, "updated_at": item.updated_at}
+
+
+def saas_subscription_out(item: SaaSSubscription, version: SaaSProductVersion | None = None) -> dict[str, Any]:
+    return {"id": item.id, "enterprise_id": item.enterprise_id, "product_id": item.product_id, "version_id": item.version_id, "version_code": version.version_code if version else "", "version_name": version.name if version else "", "billing_cycle": item.billing_cycle, "billing_cycle_label": SAAS_CYCLE_LABELS.get(item.billing_cycle, item.billing_cycle), "external_tenant_id": item.external_tenant_id, "external_app_id": item.external_app_id, "status": item.status, "starts_at": item.starts_at, "expires_at": item.expires_at, "closed_at": item.closed_at, "recover_until": item.recover_until, "last_error": item.last_error, "created_at": item.created_at, "updated_at": item.updated_at}
+
+
+def saas_product(product_id: str, db: Session) -> Product:
+    product = db.get(Product, product_id)
+    if not product or product.product_type != "saas" or product.delivery_method != "tenant_access":
+        raise HTTPException(400, "只有 SaaS 类型且交付方式为租户/权限开通的产品支持 SaaS 接口")
+    return product
+
+
+def saas_cycle_price(version: SaaSProductVersion, cycle: str) -> Decimal:
+    if cycle not in SAAS_CYCLES:
+        raise HTTPException(400, "计费周期必须是 monthly、quarterly、annual 或 perpetual")
+    return Decimal(str(getattr(version, {"monthly": "monthly_price", "quarterly": "quarterly_price", "annual": "annual_price", "perpetual": "perpetual_price"}[cycle]) or 0))
+
+
+def saas_integration_out(config: SaaSIntegrationConfig | None) -> dict[str, Any] | None:
+    if not config:
+        return None
+    return {"id": config.id, "product_id": config.product_id, "base_url": config.base_url, "operation_path": config.operation_path, "token_url": config.token_url, "client_id": config.client_id, "scope": config.scope, "auth_mode": config.auth_mode, "timeout_ms": config.timeout_ms, "retention_days": config.retention_days, "status": config.status, "updated_at": config.updated_at}
+
+
+def saas_access_token(config: SaaSIntegrationConfig) -> str:
+    cached = _saas_tokens.get(config.id)
+    if cached and cached[1] > now() + timedelta(seconds=30):
+        return cached[0]
+    if not config.token_url or not config.client_id or not config.client_secret:
+        raise HTTPException(400, "SaaS OAuth2 配置不完整")
+    try:
+        response = httpx.post(config.token_url, data={"grant_type": "client_credentials", "client_id": config.client_id, "client_secret": config.client_secret, **({"scope": config.scope} if config.scope else {})}, timeout=config.timeout_ms / 1000)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"获取 SaaS OAuth2 Token 失败：{exc}") from exc
+    token = payload.get("access_token")
+    if not token:
+        raise HTTPException(502, "SaaS OAuth2 响应缺少 access_token")
+    expires_in = int(payload.get("expires_in", 3600))
+    _saas_tokens[config.id] = (token, now() + timedelta(seconds=max(60, expires_in)))
+    return token
+
+
+def saas_call(config: SaaSIntegrationConfig, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+    body = {"type": operation, **payload}
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if config.auth_mode == "oauth2":
+        headers["Authorization"] = f"Bearer {saas_access_token(config)}"
+    elif config.auth_mode == "hmac":
+        path = urlparse(config.operation_path).path or "/isv.php"
+        canonical = "POST\n" + path + "\n" + "&".join(f"{key}={value}" for key, value in sorted(body.items()))
+        body["signature"] = __import__("urllib.parse", fromlist=["quote"]).quote(__import__("base64").b64encode(hmac.new(config.client_secret.encode(), canonical.encode(), hashlib.sha256).digest()).decode(), safe="")
+    else:
+        raise HTTPException(400, "不支持的 SaaS 认证模式")
+    url = config.base_url.rstrip("/") + "/" + config.operation_path.lstrip("/")
+    try:
+        response = httpx.post(url, json=body, headers=headers, timeout=config.timeout_ms / 1000)
+        response.raise_for_status()
+        result = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"SaaS 接口调用失败：{exc}") from exc
+    if result.get("ret") not in (None, 0):
+        raise HTTPException(502, result.get("msg", "SaaS 接口返回失败"))
+    return result
+
+
+def execute_saas_operation(db: Session, subscription: SaaSSubscription, operation: str, payload: dict[str, Any], config: SaaSIntegrationConfig, idempotency_key: str) -> dict[str, Any]:
+    existing = db.scalar(select(SaaSOperation).where(SaaSOperation.idempotency_key == idempotency_key))
+    if existing and existing.status == "succeeded":
+        return json.loads(existing.response_payload or "{}")
+    record = existing or SaaSOperation(subscription_id=subscription.id, operation=operation, idempotency_key=idempotency_key, request_payload=json.dumps(payload, ensure_ascii=False))
+    if not existing:
+        db.add(record)
+    record.status = "executing"
+    db.commit()
+    try:
+        result = saas_call(config, operation, payload)
+        record.response_payload = json.dumps(result, ensure_ascii=False)
+        record.status = "succeeded"
+        record.completed_at = now()
+        record.error_message = ""
+        db.commit()
+        return result
+    except HTTPException as exc:
+        record.status = "failed"
+        record.retry_count = (record.retry_count or 0) + 1
+        record.error_message = str(exc.detail)
+        db.commit()
+        raise
+
+
+def add_saas_order(db: Session, subscription: SaaSSubscription, product: Product, version: SaaSProductVersion, amount: Decimal, business_type: str, related_order_id: str = "", paid: bool = False) -> Order:
+    enterprise = db.get(Enterprise, subscription.enterprise_id)
+    order = Order(order_no=make_order_no(), buyer_enterprise_id=subscription.enterprise_id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.name, billing_cycle=subscription.billing_cycle, subscription_id=subscription.id, business_type=business_type, related_order_id=related_order_id, product_name=product.name, buyer_name=enterprise.name if enterprise else "", amount=amount, paid_amount=amount if paid else 0, main_status="completed" if paid else "created", payment_status="paid" if paid else "unpaid")
+    db.add(order)
+    db.flush()
+    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid"))
+    return order
+
+
+@app.get("/api/products/{product_id}/saas-versions")
+def list_saas_versions(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    current_membership(db, user, product.enterprise_id)
+    return {"items": [saas_version_out(x) for x in db.scalars(select(SaaSProductVersion).where(SaaSProductVersion.product_id == product.id).order_by(SaaSProductVersion.created_at)).all()]}
+
+
+@app.post("/api/products/{product_id}/saas-versions")
+def create_saas_version(product_id: str, body: SaaSVersionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    require_enterprise_admin(db, user, product.enterprise_id)
+    if db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.product_id == product.id, SaaSProductVersion.version_code == body.version_code)):
+        raise HTTPException(409, "SaaS 版本编号已存在")
+    version = SaaSProductVersion(product_id=product.id, **body.model_dump())
+    db.add(version)
+    audit(db, user.email or user.phone or user.id, "create_saas_version", "saas_version", version.id, version.version_code)
+    db.commit()
+    db.refresh(version)
+    return saas_version_out(version)
+
+
+@app.get("/api/products/{product_id}/saas-integration")
+def get_saas_integration(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    current_membership(db, user, product.enterprise_id)
+    return {"item": saas_integration_out(db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id)))}
+
+
+@app.put("/api/products/{product_id}/saas-integration")
+def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    require_enterprise_admin(db, user, product.enterprise_id)
+    if body.auth_mode == "oauth2" and not body.token_url:
+        raise HTTPException(400, "OAuth2 模式必须配置 Token 地址")
+    config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
+    values = body.model_dump()
+    if config:
+        if not values.get("client_secret"):
+            values["client_secret"] = config.client_secret
+        for key, value in values.items(): setattr(config, key, value)
+    else:
+        config = SaaSIntegrationConfig(product_id=product.id, updated_by=user.email or user.phone or user.id, **values)
+        db.add(config)
+    config.status = "active"
+    config.updated_by = user.email or user.phone or user.id
+    db.commit()
+    db.refresh(config)
+    return saas_integration_out(config)
+
+
+@app.post("/api/products/{product_id}/saas-subscriptions")
+def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    enterprise = first_enterprise(db, user)
+    require_enterprise_admin(db, user, enterprise.id)
+    version = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
+    config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
+    if not version or not config:
+        raise HTTPException(400, "SaaS 版本或第三方接口配置不可用")
+    saas_cycle_price(version, body.billing_cycle)
+    starts = now()
+    expires = None if body.billing_cycle == "perpetual" else starts + timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    subscription = SaaSSubscription(enterprise_id=enterprise.id, product_id=product.id, version_id=version.id, billing_cycle=body.billing_cycle, status="provisioning", starts_at=starts, expires_at=expires, created_by=user.email or user.phone or user.id)
+    db.add(subscription)
+    db.flush()
+    result = execute_saas_operation(db, subscription, "OPEN", {"product_id": product.id, "version": version.version_code, "billing_cycle": body.billing_cycle, "enterprise_id": enterprise.id, "enterprise_name": enterprise.name}, config, f"open:{subscription.id}")
+    subscription.external_app_id = str(result.get("app_id", ""))
+    subscription.external_tenant_id = str(result.get("tenant_id", result.get("app_id", "")))
+    subscription.status = "active"
+    add_saas_order(db, subscription, product, version, saas_cycle_price(version, body.billing_cycle), "purchase", paid=True)
+    db.commit()
+    return saas_subscription_out(subscription, version)
+
+
+@app.get("/api/saas-subscriptions")
+def list_saas_subscriptions(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = first_enterprise(db, user)
+    rows = db.scalars(select(SaaSSubscription).where(SaaSSubscription.enterprise_id == enterprise.id).order_by(SaaSSubscription.created_at.desc())).all()
+    return {"items": [saas_subscription_out(row, db.get(SaaSProductVersion, row.version_id)) for row in rows]}
+
+
+def subscription_context(subscription_id: str, user: User, db: Session) -> tuple[SaaSSubscription, Product, SaaSProductVersion, SaaSIntegrationConfig]:
+    subscription = db.get(SaaSSubscription, subscription_id)
+    if not subscription:
+        raise HTTPException(404, "SaaS 订阅不存在")
+    require_enterprise_admin(db, user, subscription.enterprise_id)
+    product = saas_product(subscription.product_id, db)
+    version = db.get(SaaSProductVersion, subscription.version_id)
+    config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
+    if not version or not config:
+        raise HTTPException(400, "SaaS 订阅版本或接口配置不存在")
+    return subscription, product, version, config
+
+
+@app.post("/api/saas-subscriptions/{subscription_id}/renew")
+def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, product, version, config = subscription_context(subscription_id, user, db)
+    amount = saas_cycle_price(version, body.billing_cycle)
+    result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}")
+    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at += timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    elif body.billing_cycle != "perpetual": subscription.expires_at = now() + timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    else: subscription.expires_at = None
+    add_saas_order(db, subscription, product, version, amount, "renew", paid=True)
+    db.commit()
+    return {"subscription": saas_subscription_out(subscription, version), "provider_result": result}
+
+
+@app.post("/api/saas-subscriptions/{subscription_id}/change-version")
+def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, product, current_version, config = subscription_context(subscription_id, user, db)
+    target = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
+    if not target or target.id == current_version.id:
+        raise HTTPException(400, "目标 SaaS 版本无效")
+    current_price = saas_cycle_price(current_version, subscription.billing_cycle)
+    target_price = saas_cycle_price(target, body.billing_cycle)
+    remaining_days = max(0, (subscription.expires_at - now()).days) if subscription.expires_at else 0
+    total_days = SAAS_CYCLES.get(subscription.billing_cycle) or 365
+    prorated_current = (current_price * Decimal(str(remaining_days)) / Decimal(str(total_days))).quantize(Decimal("0.01"))
+    prorated_target = (target_price * Decimal(str(remaining_days)) / Decimal(str(total_days))).quantize(Decimal("0.01"))
+    difference = (prorated_target - prorated_current).quantize(Decimal("0.01"))
+    if difference >= 0:
+        order = add_saas_order(db, subscription, product, target, difference, "upgrade", paid=False)
+        db.commit()
+        return {"change_type": "upgrade", "difference": float(difference), "order_id": order.id, "requires_payment": True, "subscription": saas_subscription_out(subscription, current_version)}
+    refund = abs(difference)
+    result = execute_saas_operation(db, subscription, "CHANGE", {"tenant_id": subscription.external_tenant_id, "from_version": current_version.version_code, "to_version": target.version_code, "change_type": "downgrade"}, config, f"downgrade:{subscription.id}:{target.id}:{subscription.expires_at}")
+    subscription.version_id = target.id
+    order = add_saas_order(db, subscription, product, target, refund, "downgrade", paid=True)
+    order.refunded_amount = refund
+    order.payment_status = "refunded"
+    subscription.status = "active"
+    db.commit()
+    return {"change_type": "downgrade", "refund_amount": float(refund), "order_id": order.id, "refunded": True, "provider_result": result, "subscription": saas_subscription_out(subscription, target)}
+
+
+@app.post("/api/saas-subscriptions/{subscription_id}/close")
+def close_saas_subscription(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, product, version, config = subscription_context(subscription_id, user, db)
+    result = execute_saas_operation(db, subscription, "CLOSE", {"tenant_id": subscription.external_tenant_id}, config, f"close:{subscription.id}")
+    subscription.status = "closed"
+    subscription.closed_at = now()
+    subscription.recover_until = now() + timedelta(days=30)
+    db.commit()
+    return {"subscription": saas_subscription_out(subscription, version), "provider_result": result}
+
+
+@app.post("/api/saas-subscriptions/{subscription_id}/restore")
+def restore_saas_subscription(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, product, version, config = subscription_context(subscription_id, user, db)
+    if subscription.status != "closed" or not subscription.recover_until or subscription.recover_until < now():
+        raise HTTPException(409, "SaaS 租户已超过可恢复期限")
+    result = execute_saas_operation(db, subscription, "OPEN", {"tenant_id": subscription.external_tenant_id, "version": version.version_code, "enterprise_id": subscription.enterprise_id}, config, f"restore:{subscription.id}")
+    subscription.status = "active"
+    subscription.closed_at = None
+    db.commit()
+    return {"subscription": saas_subscription_out(subscription, version), "provider_result": result}
+
+
+@app.get("/api/saas-subscriptions/{subscription_id}/operations")
+def list_saas_operations(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, _ = subscription_context(subscription_id, user, db)
+    rows = db.scalars(select(SaaSOperation).where(SaaSOperation.subscription_id == subscription.id).order_by(SaaSOperation.created_at.desc())).all()
+    return {"items": [{"id": x.id, "operation": x.operation, "status": x.status, "retry_count": x.retry_count, "error_message": x.error_message, "created_at": x.created_at, "completed_at": x.completed_at} for x in rows]}
+
+
+@app.get("/api/saas-subscriptions/{subscription_id}/users")
+def list_saas_users(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, _ = subscription_context(subscription_id, user, db)
+    rows = db.scalars(select(SaaSUserMapping).where(SaaSUserMapping.subscription_id == subscription.id).order_by(SaaSUserMapping.created_at)).all()
+    return {"items": [{"id": x.id, "user_id": x.user_id, "department_id": x.department_id, "external_user_id": x.external_user_id, "status": x.status} for x in rows]}
+
+
+@app.post("/api/saas-subscriptions/{subscription_id}/users")
+def assign_saas_user(subscription_id: str, body: SaaSUserBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, config = subscription_context(subscription_id, user, db)
+    target = db.get(User, body.user_id)
+    membership = db.scalar(select(Membership).where(Membership.user_id == body.user_id, Membership.enterprise_id == subscription.enterprise_id, Membership.status == "active"))
+    if not target or not membership:
+        raise HTTPException(400, "用户不是该企业的有效成员")
+    mapping = db.scalar(select(SaaSUserMapping).where(SaaSUserMapping.subscription_id == subscription.id, SaaSUserMapping.user_id == target.id))
+    if mapping and mapping.status == "active":
+        return {"id": mapping.id, "status": mapping.status, "external_user_id": mapping.external_user_id}
+    payload = {"tenant_id": subscription.external_tenant_id, "user_id": target.id, "username": target.email or target.phone or target.id, "name": target.name, "department_id": body.department_id}
+    result = execute_saas_operation(db, subscription, "USER_ASSIGN", payload, config, f"user-assign:{subscription.id}:{target.id}:{body.department_id}")
+    external_id = str(result.get("user_id", result.get("external_user_id", target.id)))
+    if not mapping:
+        mapping = SaaSUserMapping(subscription_id=subscription.id, user_id=target.id)
+        db.add(mapping)
+    mapping.department_id = body.department_id
+    mapping.external_user_id = external_id
+    mapping.status = "active"
+    db.commit()
+    return {"id": mapping.id, "user_id": mapping.user_id, "department_id": mapping.department_id, "external_user_id": mapping.external_user_id, "status": mapping.status, "provider_result": result}
+
+
+@app.delete("/api/saas-subscriptions/{subscription_id}/users/{user_id}")
+def remove_saas_user(subscription_id: str, user_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, config = subscription_context(subscription_id, user, db)
+    mapping = db.scalar(select(SaaSUserMapping).where(SaaSUserMapping.subscription_id == subscription.id, SaaSUserMapping.user_id == user_id, SaaSUserMapping.status == "active"))
+    if not mapping:
+        raise HTTPException(404, "SaaS 用户映射不存在")
+    result = execute_saas_operation(db, subscription, "USER_UNASSIGN", {"tenant_id": subscription.external_tenant_id, "user_id": mapping.external_user_id or user_id}, config, f"user-unassign:{subscription.id}:{user_id}:{mapping.id}")
+    mapping.status = "deleted"
+    db.commit()
+    return {"id": mapping.id, "status": mapping.status, "provider_result": result}
+
+
+@app.get("/api/saas-subscriptions/{subscription_id}/departments")
+def list_saas_departments(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, _ = subscription_context(subscription_id, user, db)
+    rows = db.scalars(select(SaaSDepartment).where(SaaSDepartment.subscription_id == subscription.id).order_by(SaaSDepartment.created_at)).all()
+    return {"items": [{"id": x.id, "name": x.name, "parent_id": x.parent_id, "platform_department_id": x.platform_department_id, "external_department_id": x.external_department_id, "status": x.status} for x in rows]}
+
+
+@app.post("/api/saas-subscriptions/{subscription_id}/departments")
+def create_saas_department(subscription_id: str, body: SaaSDepartmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, config = subscription_context(subscription_id, user, db)
+    department = SaaSDepartment(subscription_id=subscription.id, platform_department_id=body.platform_department_id, name=body.name, parent_id=body.parent_id, status="syncing")
+    db.add(department)
+    db.flush()
+    result = execute_saas_operation(db, subscription, "DEPT_CREATE", {"tenant_id": subscription.external_tenant_id, "department_id": department.id, "parent_id": body.parent_id, "name": body.name}, config, f"dept-create:{subscription.id}:{department.id}")
+    department.external_department_id = str(result.get("department_id", result.get("external_department_id", department.id)))
+    department.status = "active"
+    db.commit()
+    return {"id": department.id, "name": department.name, "parent_id": department.parent_id, "platform_department_id": department.platform_department_id, "external_department_id": department.external_department_id, "status": department.status, "provider_result": result}
+
+
+@app.delete("/api/saas-subscriptions/{subscription_id}/departments/{department_id}")
+def remove_saas_department(subscription_id: str, department_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    subscription, _, _, config = subscription_context(subscription_id, user, db)
+    department = db.scalar(select(SaaSDepartment).where(SaaSDepartment.id == department_id, SaaSDepartment.subscription_id == subscription.id, SaaSDepartment.status == "active"))
+    if not department:
+        raise HTTPException(404, "SaaS 部门映射不存在")
+    result = execute_saas_operation(db, subscription, "DEPT_REMOVE", {"tenant_id": subscription.external_tenant_id, "department_id": department.external_department_id or department.id}, config, f"dept-remove:{subscription.id}:{department.id}")
+    department.status = "deleted"
+    db.commit()
+    return {"id": department.id, "status": department.status, "provider_result": result}
+
+
 def order_out(o: Order) -> dict[str, Any]:
-    return {"id": o.id, "order_no": o.order_no, "buyer_name": o.buyer_name, "product_name": o.product_name, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+    return {"id": o.id, "order_no": o.order_no, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
 
 
 @app.get("/api/orders")
@@ -1467,6 +1973,17 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
         if not payment:
             raise HTTPException(400, "支付单不存在")
+        if order.business_type == "upgrade" and order.subscription_id and order.product_version_id:
+            subscription = db.get(SaaSSubscription, order.subscription_id)
+            target_version = db.get(SaaSProductVersion, order.product_version_id)
+            config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == order.product_id, SaaSIntegrationConfig.status == "active"))
+            if not subscription or not target_version or not config:
+                raise HTTPException(409, "SaaS 升级订单缺少有效订阅、版本或接口配置")
+            current_version = db.get(SaaSProductVersion, subscription.version_id)
+            if current_version and current_version.id != target_version.id:
+                execute_saas_operation(db, subscription, "CHANGE", {"tenant_id": subscription.external_tenant_id, "from_version": current_version.version_code, "to_version": target_version.version_code, "change_type": "upgrade"}, config, f"upgrade:{subscription.id}:{target_version.id}:{order.id}")
+                subscription.version_id = target_version.id
+                subscription.status = "active"
         payment.status = "paid"
         payment.confirmed_by = user.name
         order.payment_status = "paid"

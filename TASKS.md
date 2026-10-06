@@ -23,6 +23,11 @@
 | FE-004 | 前端 Agent | 注册、实名认证和系统设置工作台 | BE-006,BE-008 | DONE | 首页注册、认证材料、通知配置和平台角色页面可用 |
 | BE-009 | 后端 Agent | 统一 API 网关控制面、鉴权、配额和调用统计 | BE-002,BE-007 | DONE | API 路由、API Key、限流、日配额和调用统计可用 |
 | OPS-004 | 部署测试 Agent | 统一 API 网关集群和 API 服务独立部署 | BE-009,OPS-001 | DONE | market-gateway Pod Ready，API 请求可转发 |
+| ARC-003 | 主 Agent | SaaS 需求、接口规范、计费与生命周期设计 | 已确认 SaaS 规则和参考源码 | DONE | 需求计划与实现边界文档完成 |
+| BE-010 | 后端 Agent | SaaS 版本、OAuth2 适配、订阅和生命周期 | ARC-003 | DONE | 开通、续费、版本变更、关闭和恢复接口可用 |
+| BE-011 | 后端 Agent | SaaS 用户/部门同步、幂等台账和升级支付联动 | BE-010 | DONE | 用户、部门、支付后 CHANGE 操作可追踪 |
+| FE-005 | 前端 Agent | SaaS 接口规范下载入口和订单版本展示 | BE-010 | DONE | SaaS 产品登记可下载接口文档 |
+| OPS-005 | 部署测试 Agent | SaaS 版本部署、编译、健康检查和回归验证 | BE-010,BE-011,FE-005 | DONE | K8S Pod Ready，API 健康检查通过 |
 
 ## 集成门禁
 
