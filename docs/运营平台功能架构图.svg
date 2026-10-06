@@ -39,9 +39,16 @@
     <rect x="878" y="218" width="360" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
     <text x="902" y="249" class="module-title">统一 API 网关</text>
     <text x="902" y="274" class="item">OAuth2、API Key、路由、限流、配额、统计</text>
-    <rect x="1266" y="218" width="432" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
-    <text x="1290" y="249" class="module-title">通知与配置中心</text>
-    <text x="1290" y="274" class="item">短信/邮件配置、平台角色、消息通知、参数管理</text>
+    <rect x="1266" y="218" width="204" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
+    <text x="1282" y="246" class="module-title" style="font-size:17px">通知与配置中心</text>
+    <text x="1282" y="267" class="small">短信/邮件平台配置</text>
+    <text x="1282" y="284" class="small">平台角色与消息通知</text>
+    <text x="1282" y="301" class="small">系统参数管理</text>
+    <rect x="1494" y="218" width="204" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
+    <text x="1510" y="246" class="module-title" style="font-size:17px">对外接口服务</text>
+    <text x="1510" y="267" class="small">接入连接器适配</text>
+    <text x="1510" y="284" class="small">资源发布与鉴权</text>
+    <text x="1510" y="301" class="small">回调、接口文档与审计</text>
   </g>
 
   <text x="72" y="374" class="layer">二、核心业务功能层</text>
