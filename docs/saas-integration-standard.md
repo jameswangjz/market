@@ -25,7 +25,7 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}
 ```
 
-平台签发的 Token 使用 `aud=market-resource`，并包含产品标识、客户端标识和作用域。第三方 SaaS 可以调用平台 `POST /oauth/introspect` 校验，也可以使用平台发布的 JWT 公钥/JWKS 本地校验。
+平台签发的 Token 使用 `aud=market-resource`，并包含产品标识、客户端标识和作用域。当前版本第三方 SaaS 应调用平台 `POST /oauth/introspect` 校验；JWKS 本地校验作为后续增强能力。
 
 成功响应：
 

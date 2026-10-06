@@ -127,7 +127,7 @@ Content-Type: application/x-www-form-urlencoded
 grant_type=client_credentials&client_id=<platform-client-id>&client_secret=<platform-client-secret>&scope=resource.invoke
 ```
 
-提供方服务应从 `Authorization: Bearer <platform-access-token>` 读取令牌，并通过平台 `POST /oauth/introspect` 校验，或使用平台发布的 JWT 公钥/JWKS 在本地校验。平台 Token 的 `aud` 为 `market-resource`，并包含产品标识、客户端标识和作用域。
+提供方服务应从 `Authorization: Bearer <platform-access-token>` 读取令牌，并通过平台 `POST /oauth/introspect` 校验。当前版本以 introspection 为标准校验方式；平台后续可增加 JWKS 公钥校验方式。平台 Token 的 `aud` 为 `market-resource`，并包含产品标识、客户端标识和作用域。
 
 产品审核通过后，产品所有者可在产品页面下载统一 OAuth2 接入配置文件：
 
