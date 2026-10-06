@@ -98,6 +98,10 @@ const deliveryItems = ref([]);
 const afterSalesItems = ref([]);
 const settlementItems = ref([]);
 const auditItems = ref([]);
+const auditCategories = ref([]);
+const auditSelectedCategory = ref("");
+const auditSelected = ref(null);
+const auditFilters = ref({ q: "", actor: "", order_id: "", batch_no: "", rule_version: "", risk_level: "", start: "", end: "", page: 1, page_size: 50, total: 0, pages: 0 });
 const userItems = ref([]);
 const enterpriseItems = ref([]);
 const personalVerificationItems = ref([]);
@@ -359,8 +363,7 @@ async function loadViewData(view) {
     settlementItems.value = data.items;
   }
   if (view === "audit") {
-    const { data } = await api.get("/audit-logs");
-    auditItems.value = data.items;
+    await loadAuditLogs();
   }
   if (view === "gateway") {
     const [routes, overview, alerts] = await Promise.all([
@@ -415,6 +418,50 @@ async function loadViewData(view) {
         legal_representative: enterprise.data.legal_representative,
       });
   }
+}
+
+const auditCategoryLabels = {
+  "": "全部审计",
+  auth: "用户与权限",
+  product: "产品与服务",
+  order: "订单状态",
+  payment_refund: "支付与退款",
+  delivery: "交付与售后",
+  data_access: "数据访问/API",
+  settlement: "清算全链路",
+  settlement_rule: "清算规则与试算",
+  measurement: "计量计费",
+  settlement_payment: "分账与付款",
+  reconciliation: "对账差异",
+  security: "配置与安全",
+  ops: "运维与任务",
+};
+async function loadAuditLogs() {
+  const params = { ...auditFilters.value };
+  delete params.total;
+  delete params.pages;
+  if (auditSelectedCategory.value) params.category = auditSelectedCategory.value;
+  const { data } = await api.get("/audit-logs", { params });
+  auditItems.value = data.items;
+  auditFilters.value = { ...auditFilters.value, total: data.total, pages: data.pages, page: data.page };
+  const categoryData = await api.get("/audit-logs/categories");
+  auditCategories.value = categoryData.data.items;
+}
+function selectAuditCategory(category) {
+  auditSelectedCategory.value = category;
+  auditFilters.value.page = 1;
+  loadAuditLogs().catch(() => notify("审计日志加载失败"));
+}
+function resetAuditFilters() {
+  auditFilters.value = { q: "", actor: "", order_id: "", batch_no: "", rule_version: "", risk_level: "", start: "", end: "", page: 1, page_size: 50, total: 0, pages: 0 };
+  auditSelectedCategory.value = "";
+  loadAuditLogs().catch(() => notify("审计日志加载失败"));
+}
+function auditPage(delta) {
+  const next = auditFilters.value.page + delta;
+  if (next < 1 || (auditFilters.value.pages && next > auditFilters.value.pages)) return;
+  auditFilters.value.page = next;
+  loadAuditLogs().catch(() => notify("审计日志加载失败"));
 }
 async function selectGateway(item) {
   gatewaySelected.value = item;
@@ -1994,52 +2041,64 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <div>
               <div class="eyebrow">可信运营 · 全链路留痕</div>
               <h1>审计日志</h1>
-              <p>登录、权限、产品、订单、清算和任务状态变化均保留操作记录。</p>
+              <p>按业务分类、订单、清算批次和规则版本快速定位审计事件。</p>
             </div>
             <button class="secondary-btn" @click="loadViewData('audit')">
               <RefreshCw :size="16" />刷新
             </button>
           </div>
-          <div class="panel">
-            <div class="panel-heading">
-              <h3>最近操作</h3>
-              <span class="muted">最多展示最近 100 条</span>
+          <div class="audit-category-bar">
+            <button
+              v-for="(labelText, category) in auditCategoryLabels"
+              :key="category || 'all'"
+              class="audit-category-btn"
+              :class="{ active: auditSelectedCategory === category }"
+              @click="selectAuditCategory(category)"
+            >
+              {{ labelText }}
+              <small v-if="category">{{ auditCategories.find((x) => x.category === category)?.count || 0 }}</small>
+            </button>
+          </div>
+          <div class="panel audit-panel">
+            <div class="audit-filter-grid">
+              <label>关键词<input v-model="auditFilters.q" placeholder="动作、对象或说明" @keyup.enter="loadAuditLogs" /></label>
+              <label>操作人<input v-model="auditFilters.actor" placeholder="用户名/邮箱" @keyup.enter="loadAuditLogs" /></label>
+              <label>订单号<input v-model="auditFilters.order_id" placeholder="订单 ID" @keyup.enter="loadAuditLogs" /></label>
+              <label>清算批次<input v-model="auditFilters.batch_no" placeholder="批次号" @keyup.enter="loadAuditLogs" /></label>
+              <label>规则版本<input v-model="auditFilters.rule_version" placeholder="如 v1" @keyup.enter="loadAuditLogs" /></label>
+              <label>风险级别<select v-model="auditFilters.risk_level"><option value="">全部</option><option value="normal">正常</option><option value="high">高风险</option></select></label>
+            </div>
+            <div class="audit-filter-actions">
+              <button class="primary-btn" @click="auditFilters.page = 1; loadAuditLogs()"><Search :size="15" />检索</button>
+              <button class="secondary-btn" @click="resetAuditFilters">清空条件</button>
+              <span class="muted">共 {{ auditFilters.total }} 条，当前第 {{ auditFilters.page }} / {{ auditFilters.pages || 1 }} 页</span>
+            </div>
+            <div class="panel-heading audit-list-heading">
+              <h3>{{ auditCategoryLabels[auditSelectedCategory] || "审计事件" }}</h3>
+              <span class="muted">点击行查看变更摘要和关联链</span>
             </div>
             <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>时间</th>
-                    <th>操作人</th>
-                    <th>动作</th>
-                    <th>对象</th>
-                    <th>结果</th>
-                    <th>说明</th>
-                  </tr>
-                </thead>
+              <table class="data-table audit-table">
+                <thead><tr><th>时间</th><th>分类</th><th>操作人</th><th>动作</th><th>业务关联</th><th>结果</th><th>说明</th></tr></thead>
                 <tbody>
-                  <tr v-for="item in auditItems" :key="item.id">
+                  <tr v-for="item in auditItems" :key="item.id" @click="auditSelected = item">
                     <td>{{ fmtDate(item.created_at) }}</td>
+                    <td><span class="quality-tag">{{ auditCategoryLabels[item.category] || item.category }}</span></td>
                     <td>{{ item.actor }}</td>
-                    <td>
-                      <span class="task-code">{{ item.action }}</span>
-                    </td>
-                    <td>
-                      {{ item.target_type }} /
-                      {{ item.target_id?.slice(0, 12) }}
-                    </td>
-                    <td>
-                      <span class="status-pill status-done">{{
-                        item.result
-                      }}</span>
-                    </td>
+                    <td><span class="task-code">{{ item.action }}</span></td>
+                    <td><strong v-if="item.order_id">订单 {{ item.order_id.slice(0, 10) }}</strong><small v-if="item.batch_no">批次 {{ item.batch_no }}</small><small v-if="item.rule_version">规则 {{ item.rule_version }}</small></td>
+                    <td><span class="status-pill" :class="item.risk_level === 'high' ? 'status-blocked' : 'status-done'">{{ item.risk_level === 'high' ? '高风险' : item.result }}</span></td>
                     <td>{{ item.detail || "-" }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
-          </div></template
-        >
+            <div v-if="!auditItems.length" class="empty-state"><ShieldCheck :size="28" /><span>暂无符合条件的审计事件</span></div>
+            <div class="audit-pagination"><button class="secondary-btn" :disabled="auditFilters.page <= 1" @click="auditPage(-1)">上一页</button><button class="secondary-btn" :disabled="auditFilters.pages && auditFilters.page >= auditFilters.pages" @click="auditPage(1)">下一页</button></div>
+          </div>
+          <div v-if="auditSelected" class="drawer-scrim" @click.self="auditSelected = null"><aside class="order-drawer audit-drawer"><div class="drawer-head"><div><div class="eyebrow">AUDIT EVENT</div><h2>{{ auditSelected.action }}</h2></div><button class="icon-btn" @click="auditSelected = null"><X :size="18" /></button></div><div class="drawer-summary"><strong>{{ auditCategoryLabels[auditSelected.category] || auditSelected.category }}</strong><span>{{ fmtDate(auditSelected.created_at) }} · {{ auditSelected.actor }}</span><span>{{ auditSelected.detail || "无补充说明" }}</span></div><div class="drawer-section"><div class="drawer-section-title">业务关联</div><div class="state-grid"><div><small>对象</small><strong>{{ auditSelected.target_type }} / {{ auditSelected.target_id }}</strong></div><div><small>订单</small><strong>{{ auditSelected.order_id || "-" }}</strong></div><div><small>清算批次</small><strong>{{ auditSelected.batch_no || "-" }}</strong></div><div><small>规则版本</small><strong>{{ auditSelected.rule_version || "-" }}</strong></div><div><small>请求号</small><strong>{{ auditSelected.request_id || "-" }}</strong></div><div><small>风险级别</small><strong>{{ auditSelected.risk_level }}</strong></div></div></div><div class="drawer-section"><div class="drawer-section-title">变更前后摘要</div><pre class="audit-json">{{ JSON.stringify(auditSelected.before || {}, null, 2) }}
+{{ JSON.stringify(auditSelected.after || {}, null, 2) }}</pre></div></aside></div>
+        </template>
         <template v-else-if="activeView === 'users'"
           ><div class="page-heading">
             <div>

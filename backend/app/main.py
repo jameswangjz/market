@@ -528,6 +528,92 @@ class Settlement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SettlementRule(Base):
+    __tablename__ = "settlement_rules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    rule_no: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    version: Mapped[str] = mapped_column(String(40), default="v1")
+    name: Mapped[str] = mapped_column(String(180))
+    scope_json: Mapped[str] = mapped_column(Text, default="{}")
+    formula_json: Mapped[str] = mapped_column(Text, default="{}")
+    platform_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=8)
+    provider_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=61)
+    service_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=20)
+    expert_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=5)
+    channel_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=0)
+    tax_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=6)
+    effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    approved_by: Mapped[str] = mapped_column(String(180), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    change_reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SettlementBatch(Base):
+    __tablename__ = "settlement_batches"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    batch_no: Mapped[str] = mapped_column(String(60), unique=True, index=True)
+    cycle: Mapped[str] = mapped_column(String(30), default="manual")
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    rule_id: Mapped[str] = mapped_column(String(36), default="")
+    status: Mapped[str] = mapped_column(String(30), default="generated", index=True)
+    total_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    exception_count: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SettlementLine(Base):
+    __tablename__ = "settlement_lines"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    batch_id: Mapped[str] = mapped_column(ForeignKey("settlement_batches.id"), index=True)
+    settlement_id: Mapped[str] = mapped_column(ForeignKey("settlements.id"), index=True)
+    participant_type: Mapped[str] = mapped_column(String(40))
+    participant_id: Mapped[str] = mapped_column(String(36), default="")
+    participant_name: Mapped[str] = mapped_column(String(180), default="")
+    amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    payment_no: Mapped[str] = mapped_column(String(80), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SettlementMeasurement(Base):
+    __tablename__ = "settlement_measurements"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    measurement_type: Mapped[str] = mapped_column(String(50))
+    quantity: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
+    unit: Mapped[str] = mapped_column(String(30), default="count")
+    source: Mapped[str] = mapped_column(String(120), default="platform")
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validation_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    validation_message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SettlementReconciliation(Base):
+    __tablename__ = "settlement_reconciliations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    batch_id: Mapped[str] = mapped_column(ForeignKey("settlement_batches.id"), index=True)
+    ledger_type: Mapped[str] = mapped_column(String(30))
+    expected_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    actual_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    difference_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    status: Mapped[str] = mapped_column(String(30), default="matched", index=True)
+    resolution: Mapped[str] = mapped_column(Text, default="")
+    closed_by: Mapped[str] = mapped_column(String(180), default="")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class SettlementAdjustment(Base):
     __tablename__ = "settlement_adjustments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -547,6 +633,16 @@ class AuditLog(Base):
     target_id: Mapped[str] = mapped_column(String(80), default="")
     result: Mapped[str] = mapped_column(String(30), default="success")
     detail: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(40), default="ops", index=True)
+    business_domain: Mapped[str] = mapped_column(String(50), default="")
+    tenant_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    order_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    batch_no: Mapped[str] = mapped_column(String(60), default="", index=True)
+    rule_version: Mapped[str] = mapped_column(String(40), default="")
+    request_id: Mapped[str] = mapped_column(String(80), default="")
+    risk_level: Mapped[str] = mapped_column(String(20), default="normal")
+    before_json: Mapped[str] = mapped_column(Text, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -837,6 +933,55 @@ class SettlementAdjustmentBody(BaseModel):
     reason: str = Field(min_length=2)
 
 
+class SettlementRuleCreateBody(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    version: str = Field(default="v1", min_length=1, max_length=40)
+    scope: dict[str, Any] = Field(default_factory=dict)
+    platform_rate: float = Field(default=8, ge=0, le=100)
+    provider_rate: float = Field(default=61, ge=0, le=100)
+    service_rate: float = Field(default=20, ge=0, le=100)
+    expert_rate: float = Field(default=5, ge=0, le=100)
+    channel_rate: float = Field(default=0, ge=0, le=100)
+    tax_rate: float = Field(default=6, ge=0, le=100)
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+    change_reason: str = ""
+
+
+class SettlementRuleDecisionBody(BaseModel):
+    decision: str
+    comment: str = ""
+
+
+class SettlementMeasurementBody(BaseModel):
+    order_id: str
+    measurement_type: str = Field(min_length=2, max_length=50)
+    quantity: float = Field(ge=0)
+    unit: str = "count"
+    source: str = "platform"
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+
+
+class SettlementBatchBody(BaseModel):
+    cycle: str = "manual"
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    rule_id: str = ""
+    order_ids: list[str] = Field(default_factory=list)
+    idempotency_key: str = ""
+
+
+class SettlementReconciliationBody(BaseModel):
+    ledger_type: str = Field(pattern="^(platform|payment|bank|split)$")
+    actual_amount: float
+    resolution: str = ""
+
+
+class SettlementActionBody(BaseModel):
+    comment: str = ""
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -859,8 +1004,9 @@ def db_session():
         db.close()
 
 
-def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = ""):
-    db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail))
+def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = "", *, category: str = "", business_domain: str = "", tenant_id: str = "", order_id: str = "", batch_no: str = "", rule_version: str = "", request_id: str = "", risk_level: str = "normal", before: Any | None = None, after: Any | None = None):
+    inferred = category or ("settlement" if target_type in {"settlement", "settlement_batch", "settlement_rule", "reconciliation"} or "settlement" in action else "payment_refund" if target_type in {"payment", "refund"} or "payment" in action or "refund" in action else "order" if target_type in {"order", "order_state"} or "order" in action else "product" if target_type in {"product", "product_review"} or "product" in action else "auth" if target_type in {"user", "membership", "identity"} or "login" in action or "register" in action else "ops")
+    db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail, category=inferred, business_domain=business_domain, tenant_id=tenant_id, order_id=order_id, batch_no=batch_no, rule_version=rule_version, request_id=request_id, risk_level=risk_level, before_json=json.dumps(before or {}, ensure_ascii=False, default=str), after_json=json.dumps(after or {}, ensure_ascii=False, default=str)))
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(db_session)) -> User:
@@ -908,6 +1054,11 @@ def require_platform_admin(user: User):
 def require_security_operator(user: User):
     if user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
         raise HTTPException(403, "只有平台管理员或安全合规人员可以执行安全策略检查")
+
+
+def require_settlement_operator(user: User):
+    if user.platform_role not in {"super_admin", "platform_operator", "finance_settlement"}:
+        raise HTTPException(403, "只有平台管理员、平台运营或财务清算人员可以执行清算操作")
 
 
 PLATFORM_ROLES = {
@@ -1014,6 +1165,18 @@ def ensure_review_and_file_schema():
             "refund_amount": "NUMERIC(14,2)",
             "net_amount": "NUMERIC(14,2)",
             "refund_recovery": "NUMERIC(14,2)",
+        },
+        "audit_logs": {
+            "category": "VARCHAR(40) DEFAULT 'ops'",
+            "business_domain": "VARCHAR(50) DEFAULT ''",
+            "tenant_id": "VARCHAR(36) DEFAULT ''",
+            "order_id": "VARCHAR(36) DEFAULT ''",
+            "batch_no": "VARCHAR(60) DEFAULT ''",
+            "rule_version": "VARCHAR(40) DEFAULT ''",
+            "request_id": "VARCHAR(80) DEFAULT ''",
+            "risk_level": "VARCHAR(20) DEFAULT 'normal'",
+            "before_json": "TEXT DEFAULT '{}'",
+            "after_json": "TEXT DEFAULT '{}'",
         },
         "orders": {
             "buyer_user_id": "VARCHAR(36)",
@@ -1159,6 +1322,12 @@ def startup():
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
                 db.add(DevelopmentTask(code=task[0], owner=task[1], title=task[2], area=task[3], priority=task[4], status=task[5], dependencies=task[6], acceptance=task[7], progress=task[8]))
+        active_wave = {"BE-020": 25, "BE-028": 15, "BE-029": 10, "FE-013": 5, "OPS-011": 5}
+        for code, progress in active_wave.items():
+            task = db.scalar(select(DevelopmentTask).where(DevelopmentTask.code == code))
+            if task and task.status == "todo":
+                task.status = "in_progress"
+                task.progress = progress
         db.commit()
         admin = db.scalar(select(User).where(User.email == "admin@market.local"))
         if admin:
@@ -3123,10 +3292,225 @@ def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: 
     return {"settlement_no": settlement.settlement_no, "status": settlement.status}
 
 
+def settlement_rule_out(item: SettlementRule) -> dict[str, Any]:
+    return {"id": item.id, "rule_no": item.rule_no, "name": item.name, "version": item.version, "scope": json.loads(item.scope_json or "{}"), "platform_rate": float(item.platform_rate or 0), "provider_rate": float(item.provider_rate or 0), "service_rate": float(item.service_rate or 0), "expert_rate": float(item.expert_rate or 0), "channel_rate": float(item.channel_rate or 0), "tax_rate": float(item.tax_rate or 0), "effective_at": item.effective_at, "expires_at": item.expires_at, "status": item.status, "approved_by": item.approved_by, "approved_at": item.approved_at, "change_reason": item.change_reason, "created_by": item.created_by, "created_at": item.created_at}
+
+
+@app.get("/api/settlement-rules")
+def settlement_rules(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    items = db.scalars(select(SettlementRule).order_by(SettlementRule.created_at.desc())).all()
+    return {"items": [settlement_rule_out(x) for x in items]}
+
+
+@app.post("/api/settlement-rules")
+def create_settlement_rule(body: SettlementRuleCreateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    total = sum(Decimal(str(x)) for x in [body.platform_rate, body.provider_rate, body.service_rate, body.expert_rate, body.channel_rate, body.tax_rate])
+    if total > Decimal("100"):
+        raise HTTPException(400, "分配比例和税费比例不能超过 100%")
+    item = SettlementRule(rule_no="RULE-" + secrets.token_hex(5).upper(), name=body.name, version=body.version, scope_json=json.dumps(body.scope, ensure_ascii=False), formula_json=json.dumps({"basis": "net_paid", "rounding": "0.01"}, ensure_ascii=False), platform_rate=body.platform_rate, provider_rate=body.provider_rate, service_rate=body.service_rate, expert_rate=body.expert_rate, channel_rate=body.channel_rate, tax_rate=body.tax_rate, effective_at=body.effective_at, expires_at=body.expires_at, change_reason=body.change_reason, created_by=user.email or user.phone or user.name)
+    db.add(item)
+    audit(db, user.email, "create_settlement_rule", "settlement_rule", item.rule_no, body.change_reason, category="settlement_rule", business_domain="settlement")
+    db.commit()
+    db.refresh(item)
+    return settlement_rule_out(item)
+
+
+@app.post("/api/settlement-rules/{rule_id}/decision")
+def decide_settlement_rule(rule_id: str, body: SettlementRuleDecisionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    item = db.get(SettlementRule, rule_id)
+    if not item:
+        raise HTTPException(404, "清算规则不存在")
+    if body.decision not in {"approve", "reject", "activate", "disable"}:
+        raise HTTPException(400, "不支持的规则动作")
+    before = {"status": item.status}
+    item.status = {"approve": "approved", "activate": "active", "reject": "rejected", "disable": "disabled"}[body.decision]
+    if body.decision in {"approve", "activate"}:
+        item.approved_by = user.email or user.name
+        item.approved_at = now()
+    audit(db, user.email, f"{body.decision}_settlement_rule", "settlement_rule", item.rule_no, body.comment, category="settlement_rule", business_domain="settlement", rule_version=item.version, before=before, after={"status": item.status})
+    db.commit()
+    return settlement_rule_out(item)
+
+
+@app.post("/api/settlement-rules/{rule_id}/simulate")
+def simulate_settlement_rule(rule_id: str, body: SettlementBatchBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    rule = db.get(SettlementRule, rule_id)
+    if not rule:
+        raise HTTPException(404, "清算规则不存在")
+    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"])).limit(20)).all()]
+    rows = []
+    for order_id in order_ids:
+        order = db.get(Order, order_id)
+        if not order:
+            continue
+        gross = Decimal(str(order.paid_amount or order.amount or 0))
+        refund = min(Decimal(str(order.refunded_amount or 0)), gross)
+        net = max(gross - refund, Decimal("0"))
+        rows.append({"order_id": order.id, "order_no": order.order_no, "net_amount": float(net), "platform_fee": float((net * Decimal(str(rule.platform_rate)) / 100).quantize(Decimal("0.01"))), "provider_share": float((net * Decimal(str(rule.provider_rate)) / 100).quantize(Decimal("0.01"))), "service_share": float((net * Decimal(str(rule.service_rate)) / 100).quantize(Decimal("0.01"))), "expert_fee": float((net * Decimal(str(rule.expert_rate)) / 100).quantize(Decimal("0.01"))), "tax_amount": float((net * Decimal(str(rule.tax_rate)) / 100).quantize(Decimal("0.01")))})
+    audit(db, user.email, "simulate_settlement_rule", "settlement_rule", rule.rule_no, f"orders={len(rows)}", category="settlement_rule", business_domain="settlement", rule_version=rule.version)
+    db.commit()
+    return {"rule": settlement_rule_out(rule), "items": rows, "total": len(rows)}
+
+
+@app.post("/api/settlement-measurements")
+def create_settlement_measurement(body: SettlementMeasurementBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order = db.get(Order, body.order_id)
+    if not order:
+        raise HTTPException(404, "订单不存在")
+    item = SettlementMeasurement(order_id=body.order_id, measurement_type=body.measurement_type, quantity=body.quantity, unit=body.unit, source=body.source, period_start=body.period_start, period_end=body.period_end, validation_status="validated")
+    db.add(item)
+    audit(db, user.email, "create_settlement_measurement", "measurement", item.id, body.measurement_type, category="measurement", business_domain="settlement", order_id=body.order_id, after={"quantity": body.quantity, "unit": body.unit})
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "order_id": item.order_id, "measurement_type": item.measurement_type, "quantity": float(item.quantity), "unit": item.unit, "validation_status": item.validation_status, "created_at": item.created_at}
+
+
+@app.get("/api/settlement-measurements")
+def settlement_measurements(order_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    stmt = select(SettlementMeasurement).order_by(SettlementMeasurement.created_at.desc())
+    if order_id:
+        stmt = stmt.where(SettlementMeasurement.order_id == order_id)
+    items = db.scalars(stmt.limit(500)).all()
+    return {"items": [{"id": x.id, "order_id": x.order_id, "measurement_type": x.measurement_type, "quantity": float(x.quantity or 0), "unit": x.unit, "source": x.source, "validation_status": x.validation_status, "validation_message": x.validation_message, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/settlement-batches")
+def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    key = body.idempotency_key or f"{body.cycle}:{body.period_start}:{body.period_end}:{','.join(sorted(body.order_ids))}"
+    existing = db.scalar(select(SettlementBatch).where(SettlementBatch.idempotency_key == key))
+    if existing:
+        return {"id": existing.id, "batch_no": existing.batch_no, "status": existing.status, "idempotent": True}
+    rule = db.get(SettlementRule, body.rule_id) if body.rule_id else db.scalar(select(SettlementRule).where(SettlementRule.status == "active").order_by(SettlementRule.created_at.desc()))
+    if not rule:
+        rule = SettlementRule(rule_no="RULE-DEFAULT", version="v1", name="默认清算规则", status="active", platform_rate=8, provider_rate=61, service_rate=20, expert_rate=5, tax_rate=6, created_by="system")
+        db.add(rule)
+        db.flush()
+    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.after_sales_status.in_(["none", "closed"])).limit(100)).all()]
+    batch = SettlementBatch(batch_no="BATCH-" + secrets.token_hex(6).upper(), cycle=body.cycle, period_start=body.period_start, period_end=body.period_end, rule_id=rule.id, status="generated", idempotency_key=key, created_by=user.email or user.name)
+    db.add(batch)
+    db.flush()
+    total = Decimal("0")
+    exceptions = 0
+    for order_id in order_ids:
+        order = db.get(Order, order_id)
+        if not order or order.payment_status not in {"paid", "refunded"} or order.after_sales_status not in {"none", "closed"}:
+            exceptions += 1
+            continue
+        gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"))
+        refund = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"))
+        net = max(gross - refund, Decimal("0.00"))
+        settlement = Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id, gross_amount=gross, refund_amount=refund, net_amount=net, refund_recovery=refund, platform_fee=(net * Decimal(str(rule.platform_rate)) / 100).quantize(Decimal("0.01")), provider_share=(net * Decimal(str(rule.provider_rate)) / 100).quantize(Decimal("0.01")), service_share=(net * Decimal(str(rule.service_rate)) / 100).quantize(Decimal("0.01")), expert_fee=(net * Decimal(str(rule.expert_rate)) / 100).quantize(Decimal("0.01")), tax_amount=(net * Decimal(str(rule.tax_rate)) / 100).quantize(Decimal("0.01")), status="pending")
+        db.add(settlement)
+        db.flush()
+        db.add_all([SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="platform", participant_name="平台运营方", amount=settlement.platform_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="provider", participant_id=order.provider_enterprise_id, participant_name="数据/服务提供方", amount=settlement.provider_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="service", participant_name="数据服务方", amount=settlement.service_share)])
+        total += net
+        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={rule.version}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=rule.version, after={"net_amount": float(net)})
+    batch.total_amount = total
+    batch.exception_count = exceptions
+    if exceptions:
+        batch.status = "exception"
+    audit(db, user.email, "create_settlement_batch", "settlement_batch", batch.batch_no, f"orders={len(order_ids)} exceptions={exceptions}", category="settlement", business_domain="settlement", batch_no=batch.batch_no, rule_version=rule.version)
+    db.commit()
+    return {"id": batch.id, "batch_no": batch.batch_no, "total_amount": float(total), "exception_count": exceptions, "status": batch.status, "rule_version": rule.version}
+
+
+@app.get("/api/settlement-batches")
+def settlement_batches(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    items = db.scalars(select(SettlementBatch).order_by(SettlementBatch.created_at.desc()).limit(200)).all()
+    return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/settlement-batches/{batch_id}/confirm")
+def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    batch = db.get(SettlementBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "清算批次不存在")
+    if batch.status == "exception":
+        raise HTTPException(409, "批次存在未处理异常，不能确认")
+    batch.status = "confirmed"
+    batch.confirmed_at = now()
+    audit(db, user.email, "confirm_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement", business_domain="settlement", batch_no=batch.batch_no)
+    db.commit()
+    return {"batch_no": batch.batch_no, "status": batch.status, "confirmed_at": batch.confirmed_at}
+
+
+@app.post("/api/settlement-batches/{batch_id}/pay")
+def pay_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    batch = db.get(SettlementBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "清算批次不存在")
+    if batch.status != "confirmed":
+        raise HTTPException(409, "只有已确认批次可以付款")
+    batch.status = "paid"
+    batch.paid_at = now()
+    for line in db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id)).all():
+        line.status = "paid"
+        line.payment_no = "SIM-PAY-" + secrets.token_hex(5).upper()
+    audit(db, user.email, "pay_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement_payment", business_domain="settlement", batch_no=batch.batch_no)
+    db.commit()
+    return {"batch_no": batch.batch_no, "status": batch.status, "paid_at": batch.paid_at}
+
+
+@app.post("/api/settlement-batches/{batch_id}/reconcile")
+def reconcile_settlement_batch(batch_id: str, body: SettlementReconciliationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    batch = db.get(SettlementBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "清算批次不存在")
+    expected = Decimal(str(batch.total_amount or 0))
+    actual = Decimal(str(body.actual_amount))
+    difference = (actual - expected).quantize(Decimal("0.01"))
+    item = SettlementReconciliation(batch_id=batch.id, ledger_type=body.ledger_type, expected_amount=expected, actual_amount=actual, difference_amount=difference, status="matched" if difference == 0 else "difference", resolution=body.resolution)
+    db.add(item)
+    if difference != 0:
+        batch.status = "recon_exception"
+    audit(db, user.email, "reconcile_settlement_batch", "reconciliation", item.id, body.resolution, category="reconciliation", business_domain="settlement", batch_no=batch.batch_no, risk_level="high" if difference != 0 else "normal", after={"difference": float(difference), "ledger_type": body.ledger_type})
+    db.commit()
+    db.refresh(item)
+    return {"id": item.id, "batch_no": batch.batch_no, "ledger_type": item.ledger_type, "expected_amount": float(expected), "actual_amount": float(actual), "difference_amount": float(difference), "status": item.status}
+
+
 @app.get("/api/audit-logs")
-def audit_logs(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    items = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(100)).all()
-    return {"items": [{"id": x.id, "actor": x.actor, "action": x.action, "target_type": x.target_type, "target_id": x.target_id, "result": x.result, "detail": x.detail, "created_at": x.created_at} for x in items]}
+def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: datetime | None = None, end: datetime | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
+    filters = []
+    if category:
+        filters.append(AuditLog.category == category)
+    if q:
+        pattern = f"%{q}%"
+        filters.append(or_(AuditLog.action.ilike(pattern), AuditLog.target_type.ilike(pattern), AuditLog.target_id.ilike(pattern), AuditLog.detail.ilike(pattern)))
+    if actor:
+        filters.append(AuditLog.actor.ilike(f"%{actor}%"))
+    if order_id:
+        filters.append(AuditLog.order_id == order_id)
+    if batch_no:
+        filters.append(AuditLog.batch_no == batch_no)
+    if rule_version:
+        filters.append(AuditLog.rule_version == rule_version)
+    if risk_level:
+        filters.append(AuditLog.risk_level == risk_level)
+    if start:
+        filters.append(AuditLog.created_at >= start)
+    if end:
+        filters.append(AuditLog.created_at <= end)
+    stmt = stmt.where(*filters)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    items = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()
+    audit_items = [{"id": x.id, "actor": x.actor, "action": x.action, "target_type": x.target_type, "target_id": x.target_id, "result": x.result, "detail": x.detail, "category": x.category, "business_domain": x.business_domain, "tenant_id": x.tenant_id, "order_id": x.order_id, "batch_no": x.batch_no, "rule_version": x.rule_version, "request_id": x.request_id, "risk_level": x.risk_level, "before": json.loads(x.before_json or "{}"), "after": json.loads(x.after_json or "{}"), "created_at": x.created_at} for x in items]
+    return {"items": audit_items, "total": total, "page": page, "page_size": page_size, "pages": (total + page_size - 1) // page_size}
+
+
+@app.get("/api/audit-logs/categories")
+def audit_log_categories(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    rows = db.execute(select(AuditLog.category, func.count(AuditLog.id)).group_by(AuditLog.category).order_by(func.count(AuditLog.id).desc())).all()
+    return {"items": [{"category": row[0] or "ops", "count": row[1]} for row in rows]}
 
 
 @app.get("/api/users")
