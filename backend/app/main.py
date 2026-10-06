@@ -1496,6 +1496,7 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
 @app.post("/api/products/{product_id}/review")
 def review_product(product_id: str, body: ProductReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
+    require_enterprise_admin(db, user, product.enterprise_id)
     if product.status != "pending_review":
         raise HTTPException(409, "只有待审核产品可以审核")
     if body.decision not in {"approve", "reject"}:
