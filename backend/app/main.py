@@ -189,6 +189,9 @@ class ProductReleaseVersion(Base):
     version_code: Mapped[str] = mapped_column(String(60))
     description: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
+    daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
+    monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -305,6 +308,9 @@ class ApiGatewayRoute(Base):
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     timeout_ms: Mapped[int] = mapped_column(Integer, default=30000)
     strip_prefix: Mapped[bool] = mapped_column(Boolean, default=True)
+    health_path: Mapped[str] = mapped_column(String(240), default="/health")
+    health_method: Mapped[str] = mapped_column(String(10), default="GET")
+    health_message: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
     created_by: Mapped[str] = mapped_column(String(180), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -317,6 +323,7 @@ class ApiCredential(Base):
     route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     order_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    product_version_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     name: Mapped[str] = mapped_column(String(120), default="默认 API 凭证")
     key_prefix: Mapped[str] = mapped_column(String(24), default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
@@ -628,6 +635,9 @@ class ProductVersionBody(BaseModel):
     version_code: str = Field(min_length=1, max_length=60)
     description: str = ""
     price: float = Field(default=0, ge=0)
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
+    daily_quota: int = Field(default=10000, ge=1, le=100000000)
+    monthly_quota: int = Field(default=0, ge=0, le=3000000000)
     status: str = "active"
 
 
@@ -701,6 +711,8 @@ class GatewayConfigBody(BaseModel):
     monthly_quota: int = Field(default=0, ge=0, le=3000000000)
     timeout_ms: int = Field(default=30000, ge=100, le=120000)
     strip_prefix: bool = True
+    health_path: str = Field(default="/health", max_length=240)
+    health_method: str = Field(default="GET", pattern="^(GET|HEAD)$")
 
 
 class GatewayCredentialBody(BaseModel):
@@ -720,6 +732,7 @@ class ProductFileMetadata(BaseModel):
 
 class OrderBody(BaseModel):
     product_id: str
+    product_version_id: str = ""
 
 
 class TransitionBody(BaseModel):
@@ -934,10 +947,19 @@ def ensure_review_and_file_schema():
         },
         "api_gateway_routes": {
             "monthly_quota": "INTEGER DEFAULT 0",
+            "health_path": "VARCHAR(240) DEFAULT '/health'",
+            "health_method": "VARCHAR(10) DEFAULT 'GET'",
+            "health_message": "TEXT DEFAULT ''",
         },
         "api_credentials": {
             "order_id": "VARCHAR(36) DEFAULT ''",
+            "product_version_id": "VARCHAR(36) DEFAULT ''",
             "monthly_quota": "INTEGER",
+        },
+        "product_release_versions": {
+            "rate_limit_per_minute": "INTEGER DEFAULT 60",
+            "daily_quota": "INTEGER DEFAULT 10000",
+            "monthly_quota": "INTEGER DEFAULT 0",
         },
     }
     with engine.begin() as connection:
@@ -1317,7 +1339,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "status": x.status, "created_at": x.created_at, "updated_at": x.updated_at} for x in (p.versions or [])]
+    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "status": x.status, "created_at": x.created_at, "updated_at": x.updated_at} for x in (p.versions or [])]
     return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
@@ -1459,7 +1481,7 @@ def add_product_version(product_id: str, body: ProductVersionBody, user: User = 
     db.add(version)
     db.commit()
     db.refresh(version)
-    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "status": version.status}
+    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "rate_limit_per_minute": version.rate_limit_per_minute, "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota, "status": version.status}
 
 
 @app.put("/api/products/{product_id}/versions/{version_id}")
@@ -1480,7 +1502,7 @@ def update_product_version(product_id: str, version_id: str, body: ProductVersio
         product.price = version.price
     db.commit()
     db.refresh(version)
-    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "status": version.status}
+    return {"id": version.id, "product_id": version.product_id, "version_code": version.version_code, "description": version.description, "price": float(version.price or 0), "rate_limit_per_minute": version.rate_limit_per_minute, "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota, "status": version.status}
 
 
 @app.post("/api/products/{product_id}/submit")
@@ -1530,6 +1552,12 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
             config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
             db.add(config)
+    if body.decision == "approve" and product.product_type in {"api", "model"}:
+        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+        if route:
+            gateway_auto_publish(route, product, db, user.email or user.phone or user.id)
+        else:
+            audit(db, user.email or user.phone or user.id, "gateway_route_pending_config", "product", product.id, "产品已审核，但尚未保存网关配置")
     audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
     db.commit()
     return product_out(product)
@@ -1577,7 +1605,31 @@ def publish_product(product_id: str, user: User = Depends(current_user), db: Ses
 
 
 def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
-    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
+    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
+
+
+def gateway_auto_publish(route: ApiGatewayRoute, product: Product, db: Session, actor: str) -> bool:
+    """Only expose a route after its configured upstream passes a health check."""
+    route.status = "pending_health"
+    route.health_message = "正在执行审核后的后端健康检查"
+    health_path = route.health_path or "/health"
+    if not health_path.startswith("/"):
+        health_path = "/" + health_path
+    health_url = route.upstream_url.rstrip("/") + health_path
+    try:
+        with httpx.Client(follow_redirects=False, timeout=max(route.timeout_ms / 1000, 1.0)) as client:
+            response = client.request(route.health_method or "GET", health_url)
+        if response.status_code < 200 or response.status_code >= 300:
+            raise RuntimeError(f"健康检查返回 HTTP {response.status_code}")
+        route.status = "active"
+        route.health_message = f"健康检查通过（HTTP {response.status_code}）"
+        audit(db, actor, "auto_publish_gateway_route", "api_gateway_route", route.id, health_url)
+        return True
+    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+        route.status = "publish_failed"
+        route.health_message = str(exc)[:500]
+        audit(db, actor, "auto_publish_gateway_route_failed", "api_gateway_route", route.id, f"{health_url}: {route.health_message}")
+        return False
 
 
 def gateway_product(product_id: str, db: Session) -> Product:
@@ -1609,7 +1661,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -1644,6 +1696,8 @@ def save_gateway_config(product_id: str, body: GatewayConfigBody, user: User = D
         for key, value in values.items():
             setattr(route, key, value)
         route.route_key = route_key
+        route.status = "draft"
+        route.health_message = "网关配置已更新，等待产品审核或重新发布"
     else:
         route = ApiGatewayRoute(product_id=product.id, route_key=route_key, created_by=user.email or user.phone or user.id, **values)
         db.add(route)
@@ -1665,9 +1719,27 @@ def publish_gateway_config(product_id: str, user: User = Depends(current_user), 
     route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
     if not route:
         raise HTTPException(404, "请先保存 API 网关配置")
-    route.status = "active"
-    audit(db, user.email or user.phone or user.id, "publish_gateway_route", "api_gateway_route", route.id, route.route_key)
+    if not gateway_auto_publish(route, product, db, user.email or user.phone or user.id):
+        db.commit()
+        raise HTTPException(409, f"网关后端健康检查失败：{route.health_message}")
     db.commit()
+    return gateway_route_out(route, product)
+
+
+@app.post("/api/products/{product_id}/gateway-config/health-check")
+def check_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        membership = current_membership(db, user, product.enterprise_id)
+        if membership.role not in {"super_admin", "enterprise_admin"}:
+            raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以检查 API 网关")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    if not route:
+        raise HTTPException(404, "请先保存 API 网关配置")
+    passed = gateway_auto_publish(route, product, db, user.email or user.phone or user.id)
+    db.commit()
+    if not passed:
+        raise HTTPException(409, f"网关后端健康检查失败：{route.health_message}")
     return gateway_route_out(route, product)
 
 
@@ -1703,7 +1775,7 @@ def list_order_api_credentials(order_id: str, user: User = Depends(current_user)
 def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=order.product_version_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     audit(db, user.email or user.phone or user.id, "create_order_api_credential", "api_credential", credential.id, order.order_no)
     db.commit()
@@ -1733,7 +1805,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=old.product_version_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     audit(db, user.email or user.phone or user.id, "regenerate_order_api_credential", "api_credential", credential.id, f"{order.order_no} from={old.id}")
     db.commit()
@@ -2157,10 +2229,13 @@ def create_order(body: OrderBody, user: User = Depends(current_user), db: Sessio
     product = db.get(Product, body.product_id)
     if not product or product.status != "published":
         raise HTTPException(400, "产品不存在或尚未发布")
-    order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_name=product.name, buyer_name=user.name if user.verified_status == "verified" else buyer.name, amount=product.price, main_status="created")
+    version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.status == "active", ProductReleaseVersion.id == body.product_version_id)) if body.product_version_id else db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.status == "active").order_by(ProductReleaseVersion.created_at))
+    if not version:
+        raise HTTPException(400, "产品版本不存在或未启用")
+    order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.description, product_name=product.name, buyer_name=user.name if user.verified_status == "verified" else buyer.name, amount=version.price, main_status="created")
     db.add(order)
     db.flush()
-    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=product.price, status="unpaid"))
+    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=version.price, status="unpaid"))
     db.add(OrderStateLog(order_id=order.id, domain="main", from_status="", to_status="created", action="提交订单", operator=user.name, reason="用户提交"))
     audit(db, user.email, "create_order", "order", order.id, order.order_no)
     db.commit()

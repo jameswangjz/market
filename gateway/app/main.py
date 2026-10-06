@@ -26,6 +26,16 @@ class Product(Base):
     status: Mapped[str] = mapped_column(String(40))
 
 
+class ProductReleaseVersion(Base):
+    __tablename__ = "product_release_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
+    daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
+    monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+
+
 class Order(Base):
     __tablename__ = "orders"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -55,6 +65,7 @@ class ApiCredential(Base):
     route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
     enterprise_id: Mapped[str] = mapped_column(String(36), index=True)
     order_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    product_version_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(30), index=True)
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -100,10 +111,10 @@ def extract_key(request: Request) -> str:
     return ""
 
 
-def check_quota(credential: ApiCredential, route: ApiGatewayRoute):
-    minute_limit = credential.rate_limit_per_minute or route.rate_limit_per_minute
-    daily_limit = credential.daily_quota or route.daily_quota
-    monthly_limit = credential.monthly_quota or route.monthly_quota
+def check_quota(credential: ApiCredential, route: ApiGatewayRoute, version: ProductReleaseVersion | None = None):
+    minute_limit = credential.rate_limit_per_minute or (version.rate_limit_per_minute if version else route.rate_limit_per_minute)
+    daily_limit = credential.daily_quota or (version.daily_quota if version else route.daily_quota)
+    monthly_limit = credential.monthly_quota if credential.monthly_quota is not None else (version.monthly_quota if version else route.monthly_quota)
     now_epoch = int(time.time())
     minute_key = f"market:gateway:minute:{credential.id}:{now_epoch // 60}"
     day_key = f"market:gateway:day:{credential.id}:{datetime.now(timezone.utc).date().isoformat()}"
@@ -163,7 +174,8 @@ async def proxy(route_key: str, path: str, request: Request):
             if not order or order.payment_status != "paid" or order.main_status in {"cancelled", "closed"}:
                 db.close()
                 raise HTTPException(403, "订单授权已失效")
-        check_quota(credential, route)
+        version = db.get(ProductReleaseVersion, credential.product_version_id) if credential.product_version_id else None
+        check_quota(credential, route, version)
     else:
         credential = db.scalar(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.status == "active").limit(1))
     target = route.upstream_url.rstrip("/")

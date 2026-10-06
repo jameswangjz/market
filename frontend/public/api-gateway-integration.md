@@ -46,7 +46,7 @@ API 提供方的业务 API 不要求部署在数据集运营服务管理平台�
 - 文件或流式响应约定；
 - 限流、每日配额和月度配额建议值。
 
-产品完成审核发布后，由平台运营/集成管理员配置并发布网关路由。具备平台授权的产品提供企业管理员可以调用以下控制面接口完成配置，但第三方 API 应用本身不需要实现这些接口。
+产品完成审核发布后，平台会对已保存的网关后端地址执行健康检查；检查通过后自动发布网关路由，状态为 `active`。检查失败时状态为 `publish_failed`，产品仍可审核通过，但不会对外转发；修正配置后可重新执行检查。具备平台授权的产品提供企业管理员可以调用以下控制面接口完成配置，但第三方 API 应用本身不需要实现这些接口。
 
 所有平台控制面接口基础路径为 `/api`，需要平台登录令牌。
 
@@ -70,7 +70,9 @@ Content-Type: application/json
   "daily_quota": 100000,
   "monthly_quota": 3000000,
   "timeout_ms": 30000,
-  "strip_prefix": true
+  "strip_prefix": true,
+  "health_path": "/health",
+  "health_method": "GET"
 }
 ```
 
@@ -87,6 +89,8 @@ Content-Type: application/json
 | `monthly_quota` | 否 | 单个 API Key 每月最大请求数；`0` 表示不单独限制，使用每日配额 |
 | `timeout_ms` | 否 | 网关等待后端响应的最大时间，范围 100 至 120000 毫秒 |
 | `strip_prefix` | 否 | 是否只将路由后的路径转发给后端服务 |
+| `health_path` | 否 | 审核后健康检查路径，默认 `/health` |
+| `health_method` | 否 | 健康检查方法，仅支持 `GET` 或 `HEAD` |
 
 ### 3.2 发布网关路由
 
@@ -96,6 +100,15 @@ Authorization: Bearer <platform-token>
 ```
 
 产品必须已经完成产品审核并处于“已发布”状态，网关路由才可以启用。
+
+### 3.3 审核后自动健康检查
+
+```http
+POST /api/products/{product_id}/gateway-config/health-check
+Authorization: Bearer <platform-token>
+```
+
+平台审核接口在审核结论为通过时会自动执行同样的健康检查。健康检查返回 2xx 后，路由自动变为 `active`；检查中为 `pending_health`，失败为 `publish_failed`。产品版本可以分别定义 `rate_limit_per_minute`、`daily_quota`、`monthly_quota`，订单凭据按购买版本继承对应策略，凭据自身配置不为空时优先使用凭据策略。
 
 ## 4. API 服务端接入规范
 
