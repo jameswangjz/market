@@ -614,6 +614,23 @@ class SettlementReconciliation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SettlementCorrection(Base):
+    __tablename__ = "settlement_corrections"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    settlement_id: Mapped[str] = mapped_column(ForeignKey("settlements.id"), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    correction_type: Mapped[str] = mapped_column(String(30))
+    amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    reason: Mapped[str] = mapped_column(Text)
+    source_ref: Mapped[str] = mapped_column(String(100), default="")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    recovery_mode: Mapped[str] = mapped_column(String(30), default="future_offset")
+    approved_by: Mapped[str] = mapped_column(String(180), default="")
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class SettlementAdjustment(Base):
     __tablename__ = "settlement_adjustments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -980,6 +997,18 @@ class SettlementReconciliationBody(BaseModel):
 
 class SettlementActionBody(BaseModel):
     comment: str = ""
+
+
+class SettlementCorrectionBody(BaseModel):
+    correction_type: str = Field(pattern="^(refund|reversal|supplement|recovery)$")
+    amount: float = Field(gt=0)
+    reason: str = Field(min_length=2)
+    source_ref: str = ""
+    recovery_mode: str = Field(default="future_offset", pattern="^(original_route|future_offset|manual)$")
+
+
+class ReconciliationCloseBody(BaseModel):
+    resolution: str = Field(min_length=2)
 
 
 class UserOut(BaseModel):
@@ -3475,6 +3504,105 @@ def reconcile_settlement_batch(batch_id: str, body: SettlementReconciliationBody
     db.commit()
     db.refresh(item)
     return {"id": item.id, "batch_no": batch.batch_no, "ledger_type": item.ledger_type, "expected_amount": float(expected), "actual_amount": float(actual), "difference_amount": float(difference), "status": item.status}
+
+
+@app.get("/api/settlement-reconciliations")
+def settlement_reconciliations(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    stmt = select(SettlementReconciliation).order_by(SettlementReconciliation.created_at.desc())
+    if status:
+        stmt = stmt.where(SettlementReconciliation.status == status)
+    items = db.scalars(stmt.limit(500)).all()
+    return {"items": [{"id": x.id, "batch_id": x.batch_id, "ledger_type": x.ledger_type, "expected_amount": float(x.expected_amount or 0), "actual_amount": float(x.actual_amount or 0), "difference_amount": float(x.difference_amount or 0), "status": x.status, "resolution": x.resolution, "closed_by": x.closed_by, "closed_at": x.closed_at, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/settlement-reconciliations/{reconciliation_id}/close")
+def close_settlement_reconciliation(reconciliation_id: str, body: ReconciliationCloseBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    item = db.get(SettlementReconciliation, reconciliation_id)
+    if not item:
+        raise HTTPException(404, "对账记录不存在")
+    if item.status == "closed":
+        return {"id": item.id, "status": item.status}
+    item.status = "closed"
+    item.resolution = body.resolution
+    item.closed_by = user.email or user.name
+    item.closed_at = now()
+    batch = db.get(SettlementBatch, item.batch_id)
+    if batch and not db.scalar(select(SettlementReconciliation.id).where(SettlementReconciliation.batch_id == batch.id, SettlementReconciliation.status.in_(["difference", "exception"]))):
+        if batch.status == "recon_exception":
+            batch.status = "generated"
+    audit(db, user.email, "close_reconciliation_difference", "reconciliation", item.id, body.resolution, category="reconciliation", business_domain="settlement", batch_no=batch.batch_no if batch else "")
+    db.commit()
+    return {"id": item.id, "status": item.status, "closed_by": item.closed_by, "closed_at": item.closed_at}
+
+
+@app.get("/api/settlement-corrections")
+def settlement_corrections(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    stmt = select(SettlementCorrection).order_by(SettlementCorrection.created_at.desc())
+    if status:
+        stmt = stmt.where(SettlementCorrection.status == status)
+    items = db.scalars(stmt.limit(500)).all()
+    return {"items": [{"id": x.id, "settlement_id": x.settlement_id, "order_id": x.order_id, "correction_type": x.correction_type, "amount": float(x.amount or 0), "reason": x.reason, "source_ref": x.source_ref, "status": x.status, "recovery_mode": x.recovery_mode, "approved_by": x.approved_by, "approved_at": x.approved_at, "created_by": x.created_by, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/settlements/{settlement_id}/corrections")
+def create_settlement_correction(settlement_id: str, body: SettlementCorrectionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    settlement = db.get(Settlement, settlement_id)
+    if not settlement:
+        raise HTTPException(404, "清算单不存在")
+    if body.amount > float(settlement.net_amount or 0) and body.correction_type == "refund":
+        raise HTTPException(400, "退款金额不能超过清算净额")
+    correction = SettlementCorrection(settlement_id=settlement.id, order_id=settlement.order_id, correction_type=body.correction_type, amount=body.amount, reason=body.reason, source_ref=body.source_ref, recovery_mode=body.recovery_mode, status="pending", created_by=user.email or user.name)
+    db.add(correction)
+    audit(db, user.email, "create_settlement_correction", "settlement_correction", correction.id, body.reason, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, after={"type": body.correction_type, "amount": body.amount, "recovery_mode": body.recovery_mode}, risk_level="high" if body.correction_type in {"refund", "reversal"} else "normal")
+    db.commit()
+    db.refresh(correction)
+    return {"id": correction.id, "settlement_id": correction.settlement_id, "order_id": correction.order_id, "correction_type": correction.correction_type, "amount": float(correction.amount), "status": correction.status, "recovery_mode": correction.recovery_mode, "created_at": correction.created_at}
+
+
+@app.post("/api/settlement-corrections/{correction_id}/approve")
+def approve_settlement_correction(correction_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    correction = db.get(SettlementCorrection, correction_id)
+    if not correction:
+        raise HTTPException(404, "清算调整不存在")
+    if correction.status != "pending":
+        raise HTTPException(409, "当前调整不处于待审批状态")
+    correction.status = "approved"
+    correction.approved_by = user.email or user.name
+    correction.approved_at = now()
+    audit(db, user.email, "approve_settlement_correction", "settlement_correction", correction.id, body.comment, category="settlement_adjustment", business_domain="settlement", order_id=correction.order_id)
+    db.commit()
+    return {"id": correction.id, "status": correction.status, "approved_by": correction.approved_by, "approved_at": correction.approved_at}
+
+
+@app.get("/api/settlement-reports")
+def settlement_reports(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    stmt = select(Settlement)
+    if status:
+        stmt = stmt.where(Settlement.status == status)
+    items = db.scalars(stmt.order_by(Settlement.created_at.desc()).limit(2000)).all()
+    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "tax_amount": 0.0, "count": len(items)}
+    rows = []
+    for x in items:
+        fields = ["gross_amount", "refund_amount", "net_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "tax_amount"]
+        values = {field: float(getattr(x, field) or 0) for field in fields}
+        for field in fields:
+            summary[field] += values[field]
+        rows.append({"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "status": x.status, "created_at": x.created_at, **values})
+    return {"summary": summary, "items": rows}
+
+
+@app.get("/api/settlement-reports/export")
+def export_settlement_report(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    data = settlement_reports(status=status, user=user, db=db)
+    lines = ["settlement_no,order_id,status,gross_amount,refund_amount,net_amount,platform_fee,provider_share,service_share,expert_fee,tax_amount,created_at"]
+    for item in data["items"]:
+        lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["settlement_no", "order_id", "status", "gross_amount", "refund_amount", "net_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "tax_amount", "created_at"]))
+    audit(db, user.email, "export_settlement_report", "settlement_report", "", f"status={status or 'all'} rows={len(data['items'])}", category="settlement_report", business_domain="settlement")
+    db.commit()
+    return Response(content="\ufeff" + "\n".join(lines), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=settlement-report.csv"})
 
 
 @app.get("/api/audit-logs")
