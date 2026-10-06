@@ -3454,6 +3454,15 @@ def settlement_batches(user: User = Depends(current_user), db: Session = Depends
     return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at} for x in items]}
 
 
+@app.get("/api/settlement-batches/{batch_id}/lines")
+def settlement_batch_lines(batch_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    batch = db.get(SettlementBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "清算批次不存在")
+    items = db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id).order_by(SettlementLine.participant_type, SettlementLine.created_at)).all()
+    return {"batch_no": batch.batch_no, "items": [{"id": x.id, "settlement_id": x.settlement_id, "participant_type": x.participant_type, "participant_id": x.participant_id, "participant_name": x.participant_name, "amount": float(x.amount or 0), "status": x.status, "payment_no": x.payment_no} for x in items]}
+
+
 @app.post("/api/settlement-batches/{batch_id}/confirm")
 def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
@@ -3467,6 +3476,20 @@ def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
     audit(db, user.email, "confirm_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement", business_domain="settlement", batch_no=batch.batch_no)
     db.commit()
     return {"batch_no": batch.batch_no, "status": batch.status, "confirmed_at": batch.confirmed_at}
+
+
+@app.post("/api/settlement-batches/{batch_id}/dispute")
+def dispute_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    batch = db.get(SettlementBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "清算批次不存在")
+    if batch.status not in {"generated", "confirmed"}:
+        raise HTTPException(409, "当前批次不能提出异议")
+    batch.status = "disputed"
+    audit(db, user.email, "dispute_settlement_batch", "settlement_batch", batch.batch_no, body.comment or "参与方提出清算异议", category="settlement", business_domain="settlement", batch_no=batch.batch_no, risk_level="high")
+    db.commit()
+    return {"batch_no": batch.batch_no, "status": batch.status}
 
 
 @app.post("/api/settlement-batches/{batch_id}/pay")
