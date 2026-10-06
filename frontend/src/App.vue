@@ -104,6 +104,7 @@ const settlementRuleForm = ref({ name: "", version: "v1", platform_rate: 8, prov
 const settlementReconciliations = ref([]);
 const settlementCorrections = ref([]);
 const settlementReport = ref({ summary: {}, items: [] });
+const settlementMeasurements = ref([]);
 const auditItems = ref([]);
 const auditCategories = ref([]);
 const auditSelectedCategory = ref("");
@@ -366,13 +367,14 @@ async function loadViewData(view) {
     afterSalesItems.value = afterSales.data.items;
   }
   if (view === "settlements") {
-    const [settlements, rules, batches, reconciliations, corrections, report] = await Promise.all([
+    const [settlements, rules, batches, reconciliations, corrections, report, measurements] = await Promise.all([
       api.get("/settlements"),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-batches").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-reconciliations").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-corrections").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-reports").catch(() => ({ data: { summary: {}, items: [] } })),
+      api.get("/settlement-measurements").catch(() => ({ data: { items: [] } })),
     ]);
     settlementItems.value = settlements.data.items;
     settlementRules.value = rules.data.items;
@@ -380,6 +382,7 @@ async function loadViewData(view) {
     settlementReconciliations.value = reconciliations.data.items;
     settlementCorrections.value = corrections.data.items;
     settlementReport.value = report.data;
+    settlementMeasurements.value = measurements.data.items;
   }
   if (view === "audit") {
     await loadAuditLogs();
@@ -1029,6 +1032,20 @@ async function exportSettlementReport() {
     notify("清算报表已导出");
   } catch (error) {
     notify(error.response?.data?.detail || "清算报表导出失败");
+  }
+}
+async function createMeasurement() {
+  const orderId = window.prompt("请输入订单 ID", orders.value[0]?.id || "");
+  if (!orderId) return;
+  const measurementType = window.prompt("计量类型，如 api_call、download、training_hours", "api_call");
+  const quantity = window.prompt("计量数量", "1");
+  if (!measurementType || !quantity || Number(quantity) < 0) return;
+  try {
+    await api.post("/settlement-measurements", { order_id: orderId, measurement_type: measurementType, quantity: Number(quantity), unit: "count", source: "运营工作台" });
+    notify("计量数据已登记");
+    await loadViewData("settlements");
+  } catch (error) {
+    notify(error.response?.data?.detail || "计量数据登记失败");
   }
 }
 async function saveNotificationSettings() {
@@ -2071,6 +2088,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <button :class="{ active: settlementTab === 'reconciliation' }" @click="settlementTab = 'reconciliation'">对账差异 {{ settlementReconciliations.filter((x) => x.status !== 'closed').length }}</button>
             <button :class="{ active: settlementTab === 'corrections' }" @click="settlementTab = 'corrections'">冲正调整 {{ settlementCorrections.length }}</button>
             <button :class="{ active: settlementTab === 'reports' }" @click="settlementTab = 'reports'">清算报表</button>
+            <button :class="{ active: settlementTab === 'measurements' }" @click="settlementTab = 'measurements'">计量计费 {{ settlementMeasurements.length }}</button>
           </div>
           <div v-if="settlementTab === 'rules'" class="settlement-management-grid">
             <div class="panel">
@@ -2093,6 +2111,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
           <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div></div>
           <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REVERSAL AND RECOVERY</span><h3>退款、冲正与清算调整</h3></div><span class="muted">原始清算结果保持不变</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td><td><button v-if="item.status === 'pending'" class="text-btn" @click="approveCorrection(item)">审批</button></td></tr><tr v-if="!settlementCorrections.length && settlementItems.length"><td colspan="7"><div class="empty-state"><button class="primary-btn" @click="createCorrection(settlementItems[0])">从最近清算单发起冲正</button></div></td></tr></tbody></table></div><div v-if="!settlementCorrections.length && !settlementItems.length" class="empty-state">暂无清算调整记录</div></div>
           <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3></div><button class="secondary-btn" @click="exportSettlementReport"><FileText :size="15" />导出 CSV</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>清算单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>可分账净额</span><strong>{{ fmtMoney(settlementReport.summary.net_amount) }}</strong></div><div class="metric-card"><span>平台服务费</span><strong>{{ fmtMoney(settlementReport.summary.platform_fee) }}</strong></div><div class="metric-card"><span>退款金额</span><strong>{{ fmtMoney(settlementReport.summary.refund_amount) }}</strong></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>状态</th><th>净额</th><th>提供方</th><th>服务方</th><th>创建时间</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.status }}</td><td>{{ fmtMoney(item.net_amount) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div></div>
+          <div v-else-if="settlementTab === 'measurements'" class="panel"><div class="panel-heading"><div><span class="section-kicker">MEASUREMENT AND BILLING</span><h3>计量计费数据</h3></div><button class="primary-btn" @click="createMeasurement">登记计量</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>计量类型</th><th>数量</th><th>单位</th><th>来源</th><th>校验状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementMeasurements" :key="item.id"><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.measurement_type }}</td><td>{{ item.quantity }}</td><td>{{ item.unit }}</td><td>{{ item.source }}</td><td><span class="status-pill status-done">{{ item.validation_status }}</span></td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div><div v-if="!settlementMeasurements.length" class="empty-state">暂无计量数据</div></div>
           <div v-else class="panel">
             <div class="panel-heading">
               <h3>
