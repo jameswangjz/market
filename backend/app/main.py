@@ -1090,6 +1090,16 @@ def require_settlement_operator(user: User):
         raise HTTPException(403, "只有平台管理员、平台运营或财务清算人员可以执行清算操作")
 
 
+def require_settlement_viewer(user: User):
+    if user.platform_role not in {"super_admin", "platform_operator", "finance_settlement", "security_compliance"}:
+        raise HTTPException(403, "只有平台运营、财务清算或安全审计人员可以查看清算数据")
+
+
+def require_audit_viewer(user: User):
+    if user.platform_role not in {"super_admin", "platform_operator", "finance_settlement", "security_compliance"}:
+        raise HTTPException(403, "当前角色无权查看平台审计日志")
+
+
 PLATFORM_ROLES = {
     "platform_operator": "平台运营人员",
     "product_manager": "数据产品经理",
@@ -3254,12 +3264,14 @@ def after_sales(user: User = Depends(current_user), db: Session = Depends(db_ses
 
 @app.get("/api/settlements")
 def settlements(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     items = db.scalars(select(Settlement).order_by(Settlement.created_at.desc())).all()
     return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "refund_amount": float(x.refund_amount or 0), "net_amount": float(x.net_amount or 0), "refund_recovery": float(x.refund_recovery or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
 
 
 @app.post("/api/settlements/generate/{order_id}")
 def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
     order = db.get(Order, order_id)
     if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
         raise HTTPException(400, "订单尚未满足清算条件")
@@ -3296,6 +3308,7 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
 
 @app.post("/api/settlements/{settlement_id}/adjust")
 def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
     settlement = db.get(Settlement, settlement_id)
     if not settlement:
         raise HTTPException(404, "清算单不存在")
@@ -3312,6 +3325,7 @@ def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: 
 
 @app.post("/api/settlements/{settlement_id}/lock")
 def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
     settlement = db.get(Settlement, settlement_id)
     if not settlement:
         raise HTTPException(404, "清算单不存在")
@@ -3327,6 +3341,7 @@ def settlement_rule_out(item: SettlementRule) -> dict[str, Any]:
 
 @app.get("/api/settlement-rules")
 def settlement_rules(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     require_settlement_operator(user)
     items = db.scalars(select(SettlementRule).order_by(SettlementRule.created_at.desc())).all()
     return {"items": [settlement_rule_out(x) for x in items]}
@@ -3400,6 +3415,7 @@ def create_settlement_measurement(body: SettlementMeasurementBody, user: User = 
 
 @app.get("/api/settlement-measurements")
 def settlement_measurements(order_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     stmt = select(SettlementMeasurement).order_by(SettlementMeasurement.created_at.desc())
     if order_id:
         stmt = stmt.where(SettlementMeasurement.order_id == order_id)
@@ -3450,12 +3466,14 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
 
 @app.get("/api/settlement-batches")
 def settlement_batches(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     items = db.scalars(select(SettlementBatch).order_by(SettlementBatch.created_at.desc()).limit(200)).all()
     return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/settlement-batches/{batch_id}/lines")
 def settlement_batch_lines(batch_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     batch = db.get(SettlementBatch, batch_id)
     if not batch:
         raise HTTPException(404, "清算批次不存在")
@@ -3488,6 +3506,21 @@ def dispute_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
         raise HTTPException(409, "当前批次不能提出异议")
     batch.status = "disputed"
     audit(db, user.email, "dispute_settlement_batch", "settlement_batch", batch.batch_no, body.comment or "参与方提出清算异议", category="settlement", business_domain="settlement", batch_no=batch.batch_no, risk_level="high")
+    db.commit()
+    return {"batch_no": batch.batch_no, "status": batch.status}
+
+
+@app.post("/api/settlement-batches/{batch_id}/rollback")
+def rollback_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    batch = db.get(SettlementBatch, batch_id)
+    if not batch:
+        raise HTTPException(404, "清算批次不存在")
+    if batch.status not in {"generated", "disputed", "recon_exception"}:
+        raise HTTPException(409, "只有未付款且未归档批次可以回滚")
+    before = {"status": batch.status}
+    batch.status = "rolled_back"
+    audit(db, user.email, "rollback_settlement_batch", "settlement_batch", batch.batch_no, body.comment or "异常回滚", category="settlement", business_domain="settlement", batch_no=batch.batch_no, risk_level="high", before=before, after={"status": batch.status})
     db.commit()
     return {"batch_no": batch.batch_no, "status": batch.status}
 
@@ -3531,6 +3564,7 @@ def reconcile_settlement_batch(batch_id: str, body: SettlementReconciliationBody
 
 @app.get("/api/settlement-reconciliations")
 def settlement_reconciliations(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     stmt = select(SettlementReconciliation).order_by(SettlementReconciliation.created_at.desc())
     if status:
         stmt = stmt.where(SettlementReconciliation.status == status)
@@ -3561,6 +3595,7 @@ def close_settlement_reconciliation(reconciliation_id: str, body: Reconciliation
 
 @app.get("/api/settlement-corrections")
 def settlement_corrections(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     stmt = select(SettlementCorrection).order_by(SettlementCorrection.created_at.desc())
     if status:
         stmt = stmt.where(SettlementCorrection.status == status)
@@ -3600,8 +3635,23 @@ def approve_settlement_correction(correction_id: str, body: SettlementActionBody
     return {"id": correction.id, "status": correction.status, "approved_by": correction.approved_by, "approved_at": correction.approved_at}
 
 
+@app.post("/api/settlement-corrections/{correction_id}/reject")
+def reject_settlement_correction(correction_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    correction = db.get(SettlementCorrection, correction_id)
+    if not correction:
+        raise HTTPException(404, "清算调整不存在")
+    if correction.status != "pending":
+        raise HTTPException(409, "当前调整不处于待审批状态")
+    correction.status = "rejected"
+    audit(db, user.email, "reject_settlement_correction", "settlement_correction", correction.id, body.comment or "调整依据不足", category="settlement_adjustment", business_domain="settlement", order_id=correction.order_id, risk_level="high")
+    db.commit()
+    return {"id": correction.id, "status": correction.status}
+
+
 @app.get("/api/settlement-reports")
 def settlement_reports(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
     stmt = select(Settlement)
     if status:
         stmt = stmt.where(Settlement.status == status)
@@ -3630,6 +3680,7 @@ def export_settlement_report(status: str | None = None, user: User = Depends(cur
 
 @app.get("/api/audit-logs")
 def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: datetime | None = None, end: datetime | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_audit_viewer(user)
     stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
     filters = []
     if category:
@@ -3660,6 +3711,7 @@ def audit_logs(category: str | None = None, q: str | None = None, actor: str | N
 
 @app.get("/api/audit-logs/categories")
 def audit_log_categories(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_audit_viewer(user)
     rows = db.execute(select(AuditLog.category, func.count(AuditLog.id)).group_by(AuditLog.category).order_by(func.count(AuditLog.id).desc())).all()
     return {"items": [{"category": row[0] or "ops", "count": row[1]} for row in rows]}
 
