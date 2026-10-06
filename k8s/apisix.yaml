@@ -91,7 +91,7 @@ metadata:
   namespace: market
   labels: {app: market-apisix}
 spec:
-  replicas: 2
+  replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
@@ -99,6 +99,7 @@ spec:
   template:
     metadata: {labels: {app: market-apisix}}
     spec:
+      terminationGracePeriodSeconds: 30
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -142,7 +143,7 @@ metadata:
   name: market-apisix-pdb
   namespace: market
 spec:
-  minAvailable: 1
+  minAvailable: 2
   selector: {matchLabels: {app: market-apisix}}
 ---
 apiVersion: v1

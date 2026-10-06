@@ -1137,6 +1137,13 @@ def health():
     return {"status": "ok", "service": "market-api", "time": now()}
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics():
+    """Small dependency-free Prometheus endpoint for the control plane."""
+    body = "# HELP market_api_up Control plane readiness\n# TYPE market_api_up gauge\nmarket_api_up 1\n"
+    return Response(content=body, media_type="text/plain; version=0.0.4")
+
+
 @app.post("/api/auth/login")
 def login(body: LoginBody, db: Session = Depends(db_session)):
     identifier = (body.identifier or body.email or "").lower().strip()

@@ -245,7 +245,7 @@ GET  /api/gateway/alerts
 已完成第一轮实际改造：
 
 - `market-etcd` 已部署到 `market` 命名空间；
-- APISIX 3.19 数据面已部署为 2 个 Kubernetes 副本；
+- APISIX 3.19 数据面已部署为 3 个 Kubernetes 副本，并配置 PodDisruptionBudget；
 - APISIX 公网测试入口为 NodePort `30082`，Admin API 仅通过 ClusterIP 提供给控制面；
 - FastAPI 已接入 APISIX Admin API，可执行配置校验、路由发布、发布记录查询和回滚；
 - 已使用“制造过程行业模型”完成保存配置、后端健康检查、APISIX 发布、API Key 调用和限流响应头验证；
@@ -254,8 +254,10 @@ GET  /api/gateway/alerts
 
 第二轮已开始：
 
-- `BE-014`：上游 OAuth Token 已改为 Redis 共享缓存，正在进行多副本和故障场景验证；
-- `BE-015`：APISIX `limit-count` 已使用 Redis 策略，按 `X-API-Key` 请求头分桶，版本限流值随发布配置下发；日/月配额暂由兼容控制链继续校验；
-- `OPS-007`：APISIX Prometheus 指标已在 `market-apisix-metrics:9091` 暴露，监控采集和告警规则尚待接入。
+- `BE-014`：上游 OAuth Token 已改为 Redis 共享缓存，并完成 OAuth2 调用和缓存键验证；
+- `BE-015`：APISIX `limit-count` 已使用 Redis 策略，按 `X-API-Key` 请求头分桶；日/月配额使用 Redis Lua 原子计数，已完成超额和并发验证；
+- `OPS-007`：已部署 Prometheus、Alertmanager 和三条核心告警规则，APISIX 与 market-api 采集目标均为 `up`；
+- `OPS-008/OPS-009`：已完成 APISIX Pod 故障、上游健康检查失败、恢复发布、40 并发和配额验收；
+- `OPS-006`：APISIX 已为三副本，开发集群 etcd 和 Redis 仍为单副本，生产级 etcd/Redis 高可用资源仍需结合正式基础设施落实。
 - `FE-006/007/008`：已完成网关路由策略配置、校验发布/回滚、调用统计、发布记录、健康状态和告警管理页面，并已部署到 `market-web`。
 - `OPS-009`：已完成登录、控制面接口、APISIX 指标和前端管理页基础冒烟验证；故障演练、压测和完整配额验收仍在进行。

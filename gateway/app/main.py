@@ -102,6 +102,25 @@ redis_client = redis.Redis.from_url(__import__("os").environ.get("REDIS_URL", "r
 app = FastAPI(title="Market Unified API Gateway", version="0.1.0")
 _upstream_tokens: dict[str, tuple[str, float]] = {}
 
+QUOTA_SCRIPT = """
+local minute = redis.call('INCR', KEYS[1])
+local day = redis.call('INCR', KEYS[2])
+local month = redis.call('INCR', KEYS[3])
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+redis.call('EXPIRE', KEYS[2], ARGV[2])
+redis.call('EXPIRE', KEYS[3], ARGV[3])
+local minute_limit = tonumber(ARGV[4])
+local day_limit = tonumber(ARGV[5])
+local month_limit = tonumber(ARGV[6])
+if minute > minute_limit or day > day_limit or (month_limit > 0 and month > month_limit) then
+  redis.call('DECR', KEYS[1])
+  redis.call('DECR', KEYS[2])
+  redis.call('DECR', KEYS[3])
+  return {0, minute, day, month}
+end
+return {1, minute, day, month}
+"""
+
 
 def new_id() -> str:
     import secrets
@@ -158,23 +177,29 @@ def check_quota(credential: ApiCredential, route: ApiGatewayRoute, version: Prod
     day_key = f"market:gateway:day:{credential.id}:{datetime.now(timezone.utc).date().isoformat()}"
     month_key = f"market:gateway:month:{credential.id}:{datetime.now(timezone.utc).strftime('%Y-%m')}"
     try:
-        pipe = redis_client.pipeline()
-        pipe.incr(minute_key)
-        pipe.expire(minute_key, 70)
-        pipe.incr(day_key)
-        pipe.expire(day_key, 86400)
-        pipe.incr(month_key)
-        pipe.expire(month_key, 2678400)
-        result = pipe.execute()
-        minute_count, daily_count, monthly_count = int(result[0]), int(result[2]), int(result[4])
+        result = redis_client.eval(
+            QUOTA_SCRIPT,
+            3,
+            minute_key,
+            day_key,
+            month_key,
+            70,
+            86400,
+            2678400,
+            minute_limit,
+            daily_limit,
+            monthly_limit or 0,
+        )
+        allowed, minute_count, daily_count, monthly_count = (int(value) for value in result)
     except redis.RedisError:
         raise HTTPException(503, "API 网关限流服务暂不可用")
-    if minute_count > minute_limit:
-        raise HTTPException(429, "超过 API 每分钟调用频率限制")
-    if daily_count > daily_limit:
-        raise HTTPException(429, "超过 API 每日调用配额")
-    if monthly_limit and monthly_count > monthly_limit:
-        raise HTTPException(429, "超过 API 每月调用配额")
+    if not allowed:
+        if minute_count > minute_limit:
+            raise HTTPException(429, "超过 API 每分钟调用频率限制")
+        if daily_count > daily_limit:
+            raise HTTPException(429, "超过 API 每日调用配额")
+        if monthly_limit and monthly_count > monthly_limit:
+            raise HTTPException(429, "超过 API 每月调用配额")
 
 
 def record_usage(db: Session, route: ApiGatewayRoute, credential: ApiCredential, request: Request, status_code: int, latency_ms: int, request_bytes: int, response_bytes: int):

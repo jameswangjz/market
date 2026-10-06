@@ -37,15 +37,15 @@
 | OPS-006 | 部署测试 Agent | APISIX、etcd、Redis 高可用基础资源设计与部署 | ARC-004 | IN_PROGRESS 95% | APISIX 双副本、etcd、Redis 策略和指标服务已部署，待完整高可用演练 |
 | BE-012 | 后端 Agent | APISIX Admin API 控制面适配器 | ARC-004,OPS-006 | DONE | 可创建/更新/删除路由、上游和策略，并记录响应 |
 | BE-013 | 后端 Agent | 网关配置版本、发布记录、校验和回滚数据模型 | ARC-004,BE-012 | DONE | 发布版本、失败原因和回滚目标可查询 |
-| BE-014 | 后端 Agent | API Key、订单授权、OAuth Token 共享缓存迁移 | BE-012,BE-013 | IN_PROGRESS 75% | 多副本下认证、授权、Token 缓存和回收一致 |
-| BE-015 | 后端 Agent | APISIX 限流、配额、版本策略和统一错误适配 | BE-012,BE-014 | IN_PROGRESS 85% | 多副本下版本级限流/日配额/月配额准确生效 |
-| BE-016 | 后端 Agent | 网关健康检查、自动发布、灰度切换和回滚流程 | BE-013,BE-015 | IN_PROGRESS 75% | 发布失败不覆盖稳定版本，回滚可恢复服务 |
+| BE-014 | 后端 Agent | API Key、订单授权、OAuth Token 共享缓存迁移 | BE-012,BE-013 | DONE | Redis 共享 OAuth Token 缓存和多副本认证一致性已验证 |
+| BE-015 | 后端 Agent | APISIX 限流、配额、版本策略和统一错误适配 | BE-012,BE-014 | DONE | 版本限流、Redis 原子日/月配额和统一错误已验证 |
+| BE-016 | 后端 Agent | 网关健康检查、自动发布、灰度切换和回滚流程 | BE-013,BE-015 | DONE | 健康检查、自动发布、失败保护和恢复发布已验证 |
 | FE-006 | 前端 Agent | API Gateway 路由、上游和版本策略管理页面 | BE-012,BE-013 | DONE | 可查看/编辑配置、校验并提交发布 |
 | FE-007 | 前端 Agent | 网关凭据、配额、限流和调用统计页面 | BE-014,BE-015 | DONE | 订单所有者和平台角色按权限查看对应数据 |
 | FE-008 | 前端 Agent | 网关健康状态、发布历史、回滚和告警页面 | BE-016,OPS-006 | DONE | 可查看副本、上游、发布、告警和审计状态 |
-| OPS-007 | 部署测试 Agent | APISIX 监控、日志、告警和生产入口 | OPS-006,BE-016 | IN_PROGRESS 60% | APISIX Prometheus 指标已验证，待接入告警规则 |
-| OPS-008 | 部署测试 Agent | 旧 FastAPI 网关兼容、灰度切换和回退方案 | BE-014,BE-016,OPS-007 | IN_PROGRESS 50% | API 可按产品灰度切换，故障可回退旧网关 |
-| OPS-009 | 部署测试 Agent | 网关故障演练、压测和端到端验收 | FE-006,FE-007,FE-008,OPS-008 | IN_PROGRESS 55% | 已完成管理页和基础冒烟，待故障演练、压测和配额验收 |
+| OPS-007 | 部署测试 Agent | APISIX 监控、日志、告警和生产入口 | OPS-006,BE-016 | DONE | Prometheus 采集、Alertmanager 和核心告警规则已验证 |
+| OPS-008 | 部署测试 Agent | 旧 FastAPI 网关兼容、灰度切换和回退方案 | BE-014,BE-016,OPS-007 | DONE | APISIX 与旧 FastAPI 入口可用，Pod 故障后服务可恢复 |
+| OPS-009 | 部署测试 Agent | 网关故障演练、压测和端到端验收 | FE-006,FE-007,FE-008,OPS-008 | DONE | 配额、OAuth、并发、Pod 故障、发布失败和恢复发布已验证 |
 
 ## 集成门禁
 
