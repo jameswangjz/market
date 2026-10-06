@@ -22,6 +22,8 @@ API 调用方
 
 网关地址：`http://<平台地址>:30081`。生产环境应通过 HTTPS 域名或 Ingress 暴露，不应直接使用 NodePort。
 
+API 提供方的业务 API 不要求部署在数据集运营服务管理平台所在的 Kubernetes 集群中。`upstream_url` 可以是第三方公网 HTTPS 地址、专用网络地址，或平台 Kubernetes 集群内的 Service 地址；前提是统一 API 网关所在网络能够访问该地址，并完成 TLS、访问控制和健康检查配置。
+
 ## 2. API 产品上架流程
 
 1. 在“登记数据或服务”中选择产品类型“API 服务”。
@@ -263,7 +265,9 @@ Authorization: Bearer mk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 统一 API 网关当前不自动重试业务请求，避免非幂等操作重复执行。订单取消、退款、关闭、授权到期或凭据停用后，网关每次请求都会重新校验订单授权并拒绝调用。
 
-## 6. Kubernetes 独立部署要求
+## 6. Kubernetes 部署示例（可选）
+
+API 提供方可以自行选择虚拟机、物理服务器、云主机或其他 Kubernetes 集群部署 API。以下仅是 API 服务部署在平台或可达 Kubernetes 环境中的示例，不构成强制部署要求。
 
 每个 API 应用独立部署为自己的 Deployment 和 Service，网关只配置 Service 地址。例如：
 
@@ -313,7 +317,7 @@ API 服务应配置 Readiness、Liveness、资源请求与限制，并支持至�
 
 联调步骤：
 
-1. API 提供方在平台登记 API 产品，配置测试后端 Service、路由和限流策略。
+1. API 提供方在平台登记 API 产品，提供可访问的测试后端地址，配置路由和限流策略。
 2. 产品审核发布并启用路由。
 3. 测试购买方完成模拟支付，在订单详情页生成测试 API Key；平台不提供固定公共密钥。
 4. 使用网关健康检查 `GET /health`、业务正常请求、无效凭据、停用凭据、过期凭据、超额、后端 502 和超时 504 场景进行验证。
@@ -332,7 +336,7 @@ API 服务应配置 Readiness、Liveness、资源请求与限制，并支持至�
 ## 10. 上架验收清单
 
 - 产品元数据完整并通过审核。
-- 后端 Service 在 Kubernetes 中 Ready。
+- 测试或生产后端地址可从统一 API 网关网络访问并通过健康检查。
 - 网关配置保存成功，路由标识唯一。
 - 未携带 API Key 的请求返回 `401`。
 - 无效或过期 API Key 返回 `401`。
