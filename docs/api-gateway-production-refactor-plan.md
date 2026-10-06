@@ -251,3 +251,9 @@ GET  /api/gateway/alerts
 - 已使用“制造过程行业模型”完成保存配置、后端健康检查、APISIX 发布、API Key 调用和限流响应头验证；
 - 当前采用兼容模式，APISIX 将请求转发至现有 `market-gateway`，因此旧的订单授权和 API Key 逻辑仍然有效；
 - API Key 原生 APISIX Consumer 同步、Redis 共享 OAuth Token、生产入口 TLS、监控告警和运营平台管理页面仍待后续任务完成。
+
+第二轮已开始：
+
+- `BE-014`：上游 OAuth Token 已改为 Redis 共享缓存，正在进行多副本和故障场景验证；
+- `BE-015`：APISIX `limit-count` 已使用 Redis 策略，按 `X-API-Key` 请求头分桶，版本限流值随发布配置下发；日/月配额暂由兼容控制链继续校验；
+- `OPS-007`：APISIX Prometheus 指标已在 `market-apisix-metrics:9091` 暴露，监控采集和告警规则尚待接入。

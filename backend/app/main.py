@@ -1795,16 +1795,20 @@ def apisix_admin_request(method: str, path: str, payload: dict[str, Any] | None 
         raise RuntimeError(f"APISIX Admin API 调用失败：{exc}") from exc
 
 
-def apisix_route_payload(route: ApiGatewayRoute) -> dict[str, Any]:
+def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None, db: Session | None = None) -> dict[str, Any]:
     """Publish a compatibility route first; native APISIX auth migration is BE-014."""
     compat_upstream = os.getenv("APISIX_COMPAT_UPSTREAM", "http://market-gateway:8100").rstrip("/")
+    version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == route.version, ProductReleaseVersion.status == "active")) if db and product else None
+    rate_limit = version.rate_limit_per_minute if version else route.rate_limit_per_minute
+    daily_quota = version.daily_quota if version else route.daily_quota
+    monthly_quota = version.monthly_quota if version else route.monthly_quota
     return {
         "name": f"market-{route.route_key}",
         "uri": f"/gateway/{route.route_key}/*",
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
         "upstream": {"type": "roundrobin", "nodes": {compat_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if compat_upstream.startswith("https://") else "http"},
-        "plugins": {"proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]}, "limit-count": {"count": route.rate_limit_per_minute, "time_window": 60, "rejected_code": 429, "key": "remote_addr"}},
-        "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_managed": "true"},
+        "plugins": {"proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]}, "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2}},
+        "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true"},
     }
 
 
@@ -1812,14 +1816,15 @@ def publish_apisix_route(route: ApiGatewayRoute, product: Product, db: Session, 
     if not apisix_enabled():
         return True
     previous = db.scalar(select(GatewayConfigRevision).where(GatewayConfigRevision.route_id == route.id).order_by(GatewayConfigRevision.revision.desc()))
-    revision = GatewayConfigRevision(route_id=route.id, product_id=product.id, revision=(previous.revision + 1 if previous else 1), config_json=json.dumps(apisix_route_payload(route), ensure_ascii=False), status="publishing", created_by=actor)
+    payload = apisix_route_payload(route, product, db)
+    revision = GatewayConfigRevision(route_id=route.id, product_id=product.id, revision=(previous.revision + 1 if previous else 1), config_json=json.dumps(payload, ensure_ascii=False), status="publishing", created_by=actor)
     db.add(revision)
     db.flush()
     record = GatewayPublishRecord(route_id=route.id, revision_id=revision.id, target="apisix", status="executing", created_by=actor)
     db.add(record)
     db.flush()
     try:
-        response = apisix_admin_request("PUT", f"/routes/{route.route_key}", apisix_route_payload(route))
+        response = apisix_admin_request("PUT", f"/routes/{route.route_key}", payload)
         revision.status = "active"
         record.status = "succeeded"
         record.response_json = json.dumps(response, ensure_ascii=False)[:10000]

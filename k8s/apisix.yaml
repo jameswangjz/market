@@ -74,6 +74,12 @@ data:
         - "http://market-etcd:2379"
       prefix: "/apisix"
       timeout: 30
+    plugin_attr:
+      prometheus:
+        export_addr:
+          ip: 0.0.0.0
+          port: 9091
+        refresh_interval: 15
     nginx_config:
       error_log: "/dev/stderr"
       error_log_level: "warn"
@@ -109,6 +115,7 @@ spec:
           ports:
             - {name: proxy, containerPort: 9080}
             - {name: admin, containerPort: 9180}
+            - {name: metrics, containerPort: 9091}
           volumeMounts: [{name: config, mountPath: /usr/local/apisix/conf/config.yaml, subPath: config.yaml}]
           readinessProbe:
             tcpSocket: {port: 9080}
@@ -147,6 +154,17 @@ spec:
   selector: {app: market-apisix}
   type: ClusterIP
   ports: [{name: admin, port: 9180, targetPort: 9180}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-apisix-metrics
+  namespace: market
+  labels: {app: market-apisix}
+spec:
+  selector: {app: market-apisix}
+  type: ClusterIP
+  ports: [{name: metrics, port: 9091, targetPort: 9091}]
 ---
 apiVersion: v1
 kind: Service

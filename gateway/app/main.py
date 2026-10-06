@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -120,9 +121,14 @@ def extract_key(request: Request) -> str:
 def upstream_access_token(route: ApiGatewayRoute) -> str:
     if route.upstream_auth_mode != "oauth2":
         return ""
-    cached = _upstream_tokens.get(route.product_id)
-    if cached and cached[1] > time.time() + 30:
-        return cached[0]
+    cache_key = f"market:gateway:oauth:{route.product_id}"
+    try:
+        cached_raw = redis_client.get(cache_key)
+        cached = json.loads(cached_raw) if cached_raw else None
+        if cached and cached.get("expires_at", 0) > time.time() + 30:
+            return cached["token"]
+    except (redis.RedisError, TypeError, ValueError, KeyError):
+        raise HTTPException(503, "API 网关 OAuth Token 缓存服务不可用")
     if not route.upstream_client_id or not route.upstream_client_secret:
         raise HTTPException(502, "API 提供方 OAuth 凭据未配置")
     token_url = os.environ.get("PLATFORM_OAUTH_TOKEN_URL", "http://market-api:8000/oauth/token")
@@ -135,7 +141,11 @@ def upstream_access_token(route: ApiGatewayRoute) -> str:
     token = payload.get("access_token")
     if not token:
         raise HTTPException(502, "平台 OAuth 响应缺少 access_token")
-    _upstream_tokens[route.product_id] = (token, time.time() + max(60, int(payload.get("expires_in", 3600))))
+    expires_at = time.time() + max(60, int(payload.get("expires_in", 3600)))
+    try:
+        redis_client.setex(cache_key, max(60, int(expires_at - time.time())), json.dumps({"token": token, "expires_at": expires_at}))
+    except redis.RedisError as exc:
+        raise HTTPException(503, "API 网关 OAuth Token 缓存服务不可用") from exc
     return token
 
 
