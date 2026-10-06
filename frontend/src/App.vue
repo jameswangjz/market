@@ -1176,7 +1176,7 @@ async function reviewEnterprise(item, decision) {
   }
 }
 function taskCount(key) {
-  return development.value.counts?.[key] || 0;
+  return development.value.items.filter((task) => task.status === key).length;
 }
 function nextActions(order) {
   const actions = [];

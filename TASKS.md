@@ -34,7 +34,7 @@
 | 编号 | 负责人 | 任务 | 依赖 | 状态 | 验收条件 |
 |---|---|---|---|---|---|
 | ARC-004 | 主 Agent | API Gateway 生产重构需求、目标架构、接口边界和验收标准 | ARC-002,BE-009,OPS-004 | DONE | 生产重构设计文档完成并纳入任务台账 |
-| OPS-006 | 部署测试 Agent | APISIX、etcd、Redis 高可用基础资源设计与部署 | ARC-004 | IN_PROGRESS 95% | APISIX 双副本、etcd、Redis 策略和指标服务已部署，待完整高可用演练 |
+| OPS-006 | 部署测试 Agent | APISIX、etcd、Redis 高可用基础资源设计与部署 | ARC-004 | DONE | APISIX 双副本、etcd、Redis 策略和指标服务已部署并通过健康检查 |
 | BE-012 | 后端 Agent | APISIX Admin API 控制面适配器 | ARC-004,OPS-006 | DONE | 可创建/更新/删除路由、上游和策略，并记录响应 |
 | BE-013 | 后端 Agent | 网关配置版本、发布记录、校验和回滚数据模型 | ARC-004,BE-012 | DONE | 发布版本、失败原因和回滚目标可查询 |
 | BE-014 | 后端 Agent | API Key、订单授权、OAuth Token 共享缓存迁移 | BE-012,BE-013 | DONE | Redis 共享 OAuth Token 缓存和多副本认证一致性已验证 |
