@@ -3073,7 +3073,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
           <div class="version-editor-head">
             <div>
               <strong>版本与价格</strong
-              ><small>每个版本单独定义销售价格、成本和简要介绍，清算按版本利润计算</small>
+              ><small>每个版本单独定义销售价格、成本和简要介绍，清算按版本利润计算；成本口径决定成本在订单中的归集方式</small>
             </div>
             <button v-if="!productDetailMode" type="button" class="text-btn" @click="addProductVersion">
               新增版本
@@ -3101,7 +3101,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 min="0"
                 step="0.01"
                 required /></label
-            ><label
+            ><label class="version-cost-type-field" title="每订单、每订阅、每周期或一次性成本的归集口径"
               >成本口径<select v-model="version.cost_type"><option value="per_order">每订单</option><option value="per_subscription">每订阅</option><option value="per_period">每周期</option><option value="one_time">一次性</option></select></label
             ><label v-if="productForm.product_type === 'api'" title="该版本每分钟允许的最大调用次数"
               >每分钟限流<input v-model.number="version.rate_limit_per_minute" type="number" min="1" required /></label
