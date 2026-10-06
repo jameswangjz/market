@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -56,6 +57,10 @@ class ApiGatewayRoute(Base):
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
     timeout_ms: Mapped[int] = mapped_column(Integer)
     strip_prefix: Mapped[bool] = mapped_column(Boolean)
+    upstream_auth_mode: Mapped[str] = mapped_column(String(30), default="oauth2")
+    upstream_scope: Mapped[str] = mapped_column(String(500), default="resource.invoke")
+    upstream_client_id: Mapped[str] = mapped_column(String(180), default="")
+    upstream_client_secret: Mapped[str] = mapped_column(String(500), default="")
     status: Mapped[str] = mapped_column(String(30), index=True)
 
 
@@ -94,6 +99,7 @@ engine = create_engine(__import__("os").environ.get("DATABASE_URL", "sqlite:///.
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 redis_client = redis.Redis.from_url(__import__("os").environ.get("REDIS_URL", "redis://market-redis:6379/1"), decode_responses=True)
 app = FastAPI(title="Market Unified API Gateway", version="0.1.0")
+_upstream_tokens: dict[str, tuple[str, float]] = {}
 
 
 def new_id() -> str:
@@ -109,6 +115,28 @@ def extract_key(request: Request) -> str:
     if authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
     return ""
+
+
+def upstream_access_token(route: ApiGatewayRoute) -> str:
+    if route.upstream_auth_mode != "oauth2":
+        return ""
+    cached = _upstream_tokens.get(route.product_id)
+    if cached and cached[1] > time.time() + 30:
+        return cached[0]
+    if not route.upstream_client_id or not route.upstream_client_secret:
+        raise HTTPException(502, "API 提供方 OAuth 凭据未配置")
+    token_url = os.environ.get("PLATFORM_OAUTH_TOKEN_URL", "http://market-api:8000/oauth/token")
+    try:
+        response = httpx.post(token_url, data={"grant_type": "client_credentials", "client_id": route.upstream_client_id, "client_secret": route.upstream_client_secret, "scope": route.upstream_scope}, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"获取平台 OAuth Token 失败：{exc}") from exc
+    token = payload.get("access_token")
+    if not token:
+        raise HTTPException(502, "平台 OAuth 响应缺少 access_token")
+    _upstream_tokens[route.product_id] = (token, time.time() + max(60, int(payload.get("expires_in", 3600))))
+    return token
 
 
 def check_quota(credential: ApiCredential, route: ApiGatewayRoute, version: ProductReleaseVersion | None = None):
@@ -185,6 +213,9 @@ async def proxy(route_key: str, path: str, request: Request):
     if credential:
         headers["x-market-enterprise-id"] = credential.enterprise_id
         headers["x-market-route-key"] = route.route_key
+    upstream_token = upstream_access_token(route)
+    if upstream_token:
+        headers["authorization"] = f"Bearer {upstream_token}"
     stream_requested = request.headers.get("x-market-stream", "").lower() == "true" or "text/event-stream" in request.headers.get("accept", "")
     if stream_requested:
         client = httpx.AsyncClient(timeout=route.timeout_ms / 1000)

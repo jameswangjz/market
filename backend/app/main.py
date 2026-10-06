@@ -6,7 +6,7 @@ import json
 import os
 import secrets
 import time
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
@@ -237,6 +237,18 @@ class SaaSIntegrationConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class OAuthClient(Base):
+    __tablename__ = "oauth_clients"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), unique=True, index=True)
+    client_id: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    client_secret: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(String(500), default="resource.invoke")
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
 class SaaSSubscription(Base):
     __tablename__ = "saas_subscriptions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -311,6 +323,10 @@ class ApiGatewayRoute(Base):
     health_path: Mapped[str] = mapped_column(String(240), default="/health")
     health_method: Mapped[str] = mapped_column(String(10), default="GET")
     health_message: Mapped[str] = mapped_column(Text, default="")
+    upstream_auth_mode: Mapped[str] = mapped_column(String(30), default="oauth2")
+    upstream_scope: Mapped[str] = mapped_column(String(500), default="resource.invoke")
+    upstream_client_id: Mapped[str] = mapped_column(String(180), default="")
+    upstream_client_secret: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
     created_by: Mapped[str] = mapped_column(String(180), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -713,6 +729,8 @@ class GatewayConfigBody(BaseModel):
     strip_prefix: bool = True
     health_path: str = Field(default="/health", max_length=240)
     health_method: str = Field(default="GET", pattern="^(GET|HEAD)$")
+    upstream_auth_mode: str = Field(default="oauth2", pattern="^(oauth2|none)$")
+    upstream_scope: str = Field(default="resource.invoke", max_length=500)
 
 
 class GatewayCredentialBody(BaseModel):
@@ -950,6 +968,18 @@ def ensure_review_and_file_schema():
             "health_path": "VARCHAR(240) DEFAULT '/health'",
             "health_method": "VARCHAR(10) DEFAULT 'GET'",
             "health_message": "TEXT DEFAULT ''",
+            "upstream_auth_mode": "VARCHAR(30) DEFAULT 'oauth2'",
+            "upstream_scope": "VARCHAR(500) DEFAULT 'resource.invoke'",
+            "upstream_client_id": "VARCHAR(180) DEFAULT ''",
+            "upstream_client_secret": "TEXT DEFAULT ''",
+        },
+        "oauth_clients": {
+            "client_id": "VARCHAR(180)",
+            "client_secret": "TEXT",
+            "scope": "VARCHAR(500) DEFAULT 'resource.invoke'",
+            "status": "VARCHAR(30) DEFAULT 'active'",
+            "created_at": "TIMESTAMP WITH TIME ZONE",
+            "updated_at": "TIMESTAMP WITH TIME ZONE",
         },
         "api_credentials": {
             "order_id": "VARCHAR(36) DEFAULT ''",
@@ -988,6 +1018,13 @@ def startup():
         for product in db.scalars(select(Product)).all():
             if not product.versions:
                 db.add(ProductReleaseVersion(product_id=product.id, version_code=product.version or "v1.0", description=product.description or "", price=product.price or 0, status="active"))
+        db.commit()
+        for product in db.scalars(select(Product).where(Product.product_type.in_(["api", "model", "saas"]), Product.status == "published")).all():
+            client = ensure_oauth_client(db, product)
+            route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+            if route and not route.upstream_client_id:
+                route.upstream_client_id = client.client_id
+                route.upstream_client_secret = client.client_secret
         db.commit()
         if not db.scalar(select(DevelopmentTask.id).limit(1)):
             seed_tasks = [
@@ -1531,6 +1568,83 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
 
 
 @app.post("/api/products/{product_id}/review")
+def platform_oauth_token_url() -> str:
+    return os.getenv("PLATFORM_OAUTH_TOKEN_URL", "http://market-api:8000/oauth/token")
+
+
+def platform_oauth_issuer() -> str:
+    return os.getenv("PLATFORM_OAUTH_ISSUER", "http://market-api:8000")
+
+
+def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.invoke") -> OAuthClient:
+    client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id))
+    if client:
+        existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
+        if existing_saas:
+            existing_saas.token_url = platform_oauth_token_url()
+            existing_saas.auth_mode = "oauth2"
+        return client
+    existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
+    client_id = existing_saas.client_id if existing_saas and existing_saas.client_id else "market_" + secrets.token_urlsafe(12)
+    client_secret = existing_saas.client_secret if existing_saas and existing_saas.client_secret else secrets.token_urlsafe(32)
+    client = OAuthClient(product_id=product.id, client_id=client_id, client_secret=client_secret, scope=scope, status="active")
+    db.add(client)
+    db.flush()
+    if existing_saas:
+        existing_saas.client_id = client_id
+        existing_saas.client_secret = client_secret
+        existing_saas.token_url = platform_oauth_token_url()
+        existing_saas.auth_mode = "oauth2"
+    return client
+
+
+@app.post("/oauth/token")
+async def platform_oauth_token(request: Request, db: Session = Depends(db_session)):
+    raw = (await request.body()).decode("utf-8")
+    parsed = parse_qs(raw, keep_blank_values=True)
+    form = {key: values[-1] for key, values in parsed.items()}
+    grant_type = form.get("grant_type") or request.query_params.get("grant_type", "") or "client_credentials"
+    client_id = form.get("client_id") or request.query_params.get("client_id", "")
+    client_secret = form.get("client_secret") or request.query_params.get("client_secret", "")
+    scope = form.get("scope") or request.query_params.get("scope", "")
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("basic "):
+        try:
+            import base64
+            decoded = base64.b64decode(authorization[6:]).decode()
+            client_id, client_secret = decoded.split(":", 1)
+        except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+            raise HTTPException(401, "invalid_client")
+    if grant_type != "client_credentials" or not client_id or not client_secret:
+        raise HTTPException(400, "grant_type 必须为 client_credentials，且必须提供客户端凭据")
+    client = db.scalar(select(OAuthClient).where(OAuthClient.client_id == client_id, OAuthClient.status == "active"))
+    if not client or not hmac.compare_digest(client.client_secret, client_secret):
+        raise HTTPException(401, "invalid_client")
+    requested_scope = scope.strip()
+    allowed = set(client.scope.split())
+    scopes = requested_scope.split() if requested_scope else sorted(allowed)
+    if not set(scopes).issubset(allowed):
+        raise HTTPException(400, "invalid_scope")
+    issued = int(now().timestamp())
+    expires = issued + 3600
+    token = jwt.encode({"iss": platform_oauth_issuer(), "sub": client.client_id, "client_id": client.client_id, "product_id": client.product_id, "scope": " ".join(scopes), "aud": "market-resource", "iat": issued, "exp": expires}, JWT_SECRET, algorithm="HS256")
+    return {"access_token": token, "token_type": "Bearer", "expires_in": 3600, "scope": " ".join(scopes)}
+
+
+@app.post("/oauth/introspect")
+async def platform_oauth_introspect(request: Request):
+    raw = (await request.body()).decode("utf-8")
+    parsed = parse_qs(raw, keep_blank_values=True)
+    token = (parsed.get("token", [""])[-1] if parsed else "") or request.query_params.get("token", "")
+    if not token:
+        return {"active": False}
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], audience="market-resource", issuer=platform_oauth_issuer())
+        return {"active": True, **claims}
+    except jwt.PyJWTError:
+        return {"active": False}
+
+
 def review_product(product_id: str, body: ProductReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
     require_enterprise_admin(db, user, product.enterprise_id)
@@ -1552,6 +1666,13 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
             config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
             db.add(config)
+    if body.decision == "approve" and product.product_type in {"api", "model", "saas"}:
+        client = ensure_oauth_client(db, product)
+        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+        if route:
+            route.upstream_client_id = client.client_id
+            route.upstream_client_secret = client.client_secret
+        audit(db, user.email or user.phone or user.id, "ensure_platform_oauth_client", "oauth_client", client.id, product.product_type)
     if body.decision == "approve" and product.product_type in {"api", "model"}:
         route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
         if route:
@@ -1563,31 +1684,35 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
     return product_out(product)
 
 
-@app.get("/api/products/{product_id}/saas-integration/credentials-download")
-def download_saas_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+@app.get("/api/products/{product_id}/oauth-credentials-download")
+def download_oauth_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
     require_enterprise_admin(db, user, product.enterprise_id)
-    if product.product_type != "saas" or product.status != "published":
-        raise HTTPException(409, "只有已审核通过的 SaaS 产品可以下载接入凭据")
+    if product.product_type not in {"api", "model", "saas"} or product.status != "published":
+        raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
+    client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id, OAuthClient.status == "active"))
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
-    if not config:
-        raise HTTPException(404, "SaaS 接口配置不存在")
+    if not client:
+        raise HTTPException(404, "平台 OAuth 客户端不存在")
     content = "\n".join([
-        "SaaS OAuth2 接入凭据",
+        "平台统一 OAuth2 接入配置",
         f"产品名称: {product.name}",
         f"产品 ID: {product.id}",
-        f"client_id: {config.client_id}",
-        f"client_secret: {config.client_secret}",
-        f"token_url: {config.token_url}",
-        f"base_url: {config.base_url}",
-        f"scope: {config.scope}",
+        f"client_id: {client.client_id}",
+        f"client_secret: {client.client_secret}",
+        f"token_url: {platform_oauth_token_url()}",
+        f"introspection_url: {platform_oauth_issuer()}/oauth/introspect",
+        f"issuer: {platform_oauth_issuer()}",
+        "audience: market-resource",
+        f"scope: {client.scope}",
+        f"business_url: {config.base_url if config else ''}",
         "认证模式: OAuth2 client_credentials",
-        "请妥善保存 client_secret，不要提交到前端代码或公开代码仓库。",
+        "请妥善保存 client_secret，不要提交到前端代码或公开代码仓库。资源服务应校验平台签发的 Token。",
         "",
     ])
-    filename = f"{product.name}-saas-oauth-credentials.txt"
+    filename = f"{product.name}-platform-oauth-credentials.txt"
     encoded_filename = quote(filename)
-    disposition = f'attachment; filename="saas-oauth-credentials.txt"; filename*=UTF-8\'\'{encoded_filename}'
+    disposition = f'attachment; filename="platform-oauth-credentials.txt"; filename*=UTF-8\'\'{encoded_filename}'
     return Response(content=content, media_type="text/plain; charset=utf-8", headers={"Content-Disposition": disposition})
 
 
@@ -1605,7 +1730,7 @@ def publish_product(product_id: str, user: User = Depends(current_user), db: Ses
 
 
 def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
-    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
+    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "upstream_auth_mode": route.upstream_auth_mode, "upstream_scope": route.upstream_scope, "upstream_oauth_configured": bool(route.upstream_client_id and route.upstream_client_secret), "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
 
 
 def gateway_auto_publish(route: ApiGatewayRoute, product: Product, db: Session, actor: str) -> bool:
@@ -1877,10 +2002,10 @@ def saas_access_token(config: SaaSIntegrationConfig) -> str:
     cached = _saas_tokens.get(config.id)
     if cached and cached[1] > now() + timedelta(seconds=30):
         return cached[0]
-    if not config.token_url or not config.client_id or not config.client_secret:
+    if not config.client_id or not config.client_secret:
         raise HTTPException(400, "SaaS OAuth2 配置不完整")
     try:
-        response = httpx.post(config.token_url, data={"grant_type": "client_credentials", "client_id": config.client_id, "client_secret": config.client_secret, **({"scope": config.scope} if config.scope else {})}, timeout=config.timeout_ms / 1000)
+        response = httpx.post(platform_oauth_token_url(), data={"grant_type": "client_credentials", "client_id": config.client_id, "client_secret": config.client_secret, **({"scope": config.scope or "resource.invoke"} if config.scope else {})}, timeout=config.timeout_ms / 1000)
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:

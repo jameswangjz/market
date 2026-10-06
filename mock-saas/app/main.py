@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+import os
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 
 app = FastAPI(title="Market Mock SaaS")
@@ -22,8 +24,15 @@ async def token(request: Request):
 
 @app.post("/isv.php")
 async def operation(request: Request, authorization: str = Header(default="")):
-    if authorization != "Bearer mock-token":
+    if not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "invalid_token")
+    try:
+        response = httpx.post(os.getenv("PLATFORM_OAUTH_INTROSPECTION_URL", "http://market-api:8000/oauth/introspect"), data={"token": authorization[7:].strip()}, timeout=5)
+        response.raise_for_status()
+        if not response.json().get("active"):
+            raise HTTPException(401, "invalid_token")
+    except httpx.HTTPError as exc:
+        raise HTTPException(503, "token introspection unavailable") from exc
     body = await request.json()
     operation_type = body.get("type")
     tenant_id = body.get("tenant_id") or "tenant-" + body.get("subscription_id", "unknown")[:12]

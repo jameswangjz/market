@@ -72,7 +72,9 @@ Content-Type: application/json
   "timeout_ms": 30000,
   "strip_prefix": true,
   "health_path": "/health",
-  "health_method": "GET"
+  "health_method": "GET",
+  "upstream_auth_mode": "oauth2",
+  "upstream_scope": "resource.invoke"
 }
 ```
 
@@ -91,6 +93,8 @@ Content-Type: application/json
 | `strip_prefix` | 否 | 是否只将路由后的路径转发给后端服务 |
 | `health_path` | 否 | 审核后健康检查路径，默认 `/health` |
 | `health_method` | 否 | 健康检查方法，仅支持 `GET` 或 `HEAD` |
+| `upstream_auth_mode` | 否 | 网关访问提供方服务的认证方式，默认 `oauth2`，也可为 `none` |
+| `upstream_scope` | 否 | 平台 Token 请求的作用域 |
 
 ### 3.2 发布网关路由
 
@@ -109,6 +113,32 @@ Authorization: Bearer <platform-token>
 ```
 
 平台审核接口在审核结论为通过时会自动执行同样的健康检查。健康检查返回 2xx 后，路由自动变为 `active`；检查中为 `pending_health`，失败为 `publish_failed`。产品版本可以分别定义 `rate_limit_per_minute`、`daily_quota`、`monthly_quota`，订单凭据按购买版本继承对应策略，凭据自身配置不为空时优先使用凭据策略。
+
+### 3.4 平台统一 OAuth2
+
+API 提供方和 SaaS 应用统一作为平台 OAuth2 资源服务。产品审核通过后，平台为产品生成 OAuth 客户端，并由统一网关或 SaaS 调用模块使用 `client_credentials` 获取平台访问令牌。提供方服务不再自行提供 Token 地址，也不使用调用方的 API Key 作为后端认证。
+
+平台 Token 接口：
+
+```http
+POST /oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=<platform-client-id>&client_secret=<platform-client-secret>&scope=resource.invoke
+```
+
+提供方服务应从 `Authorization: Bearer <platform-access-token>` 读取令牌，并通过平台 `POST /oauth/introspect` 校验，或使用平台发布的 JWT 公钥/JWKS 在本地校验。平台 Token 的 `aud` 为 `market-resource`，并包含产品标识、客户端标识和作用域。
+
+产品审核通过后，产品所有者可在产品页面下载统一 OAuth2 接入配置文件：
+
+```http
+GET /api/products/{product_id}/oauth-credentials-download
+Authorization: Bearer <platform-login-token>
+```
+
+下载文件包含 `client_id`、`client_secret`、Token 地址、校验地址、Issuer、Audience 和 Scope，产品提供方应仅在服务端安全保存敏感字段。
+
+网关转发到提供方时会自动获取、缓存和刷新 Token，并将 Token 放入上游请求的 `Authorization` 请求头；调用方传入的认证头不会直接转发。提供方服务应至少校验 Token 有效期、签发方、受众、产品标识和 `resource.invoke` 作用域。
 
 ## 4. API 服务端接入规范
 

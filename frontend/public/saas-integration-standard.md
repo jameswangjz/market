@@ -4,24 +4,28 @@
 
 ## 1. 参与方与凭据获取
 
-平台采用“运营平台主动调用第三方 SaaS”的方式。数据集运营服务管理平台为每个审核通过的 SaaS 产品生成 OAuth2 `client_id/client_secret`、Token 地址等接入信息，第三方应用所有者下载凭据文件并在其应用中完成配置；平台使用 OAuth2 `client_credentials` 获取访问令牌。
+平台采用“运营平台主动调用第三方 SaaS”的方式。API 和 SaaS 应用统一作为平台 OAuth2 资源服务，数据集运营服务管理平台为每个审核通过的产品生成 OAuth2 `client_id/client_secret`，平台调用服务使用 `client_credentials` 从平台统一授权服务器获取访问令牌。
 
 ### 1.1 产品登记时生成什么信息
 
 平台登记产品时会生成平台侧的 `product_id`，用于识别产品；创建订阅时会生成平台侧的 `subscription_id`，用于识别一次独立购买的租户。二者不是 OAuth2 的 `client_id`。
 
-当前实现方式是：SaaS 产品审核通过时，由数据集运营服务管理平台生成该产品的 `client_id`、`client_secret`、Token 地址、Scope 和业务 API 地址配置。产品所有者可以登录平台，在产品列表中重复下载 OAuth 凭据文件，并将其中的信息配置到第三方 SaaS 应用中。文件下载受企业管理员权限保护；测试和生产环境应使用不同客户端。
+当前实现方式是：SaaS 产品审核通过时，由数据集运营服务管理平台生成该产品的 `client_id`、`client_secret`、统一 Token 地址、Scope 和业务 API 地址配置。平台运营服务安全保存 `client_secret` 并获取访问 Token；第三方 SaaS 应用配置平台授权服务器的 `issuer`、Token 校验地址或 JWKS 地址、`audience` 和 Scope。产品所有者仍可登录平台重复下载接入配置文件，但不得将 `client_secret` 写入浏览器代码。
 
-因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 需要使用下载的凭据配置其 OAuth2 认证和后续业务接口认证，并按照本文档约定提供 Token 和业务接口。
+因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 按本文档校验平台签发的 Token，并提供租户、用户、部门等业务接口。
+
+产品审核通过后，产品所有者可通过 `GET /api/products/{product_id}/oauth-credentials-download` 下载统一 OAuth2 接入配置文件；该文件包含 Token 地址、校验地址、Issuer、Audience、Scope 以及平台分配的客户端信息。
 
 ### 1.2 获取 Token
 
 ```http
-POST {token_url}
+POST {platform_token_url}
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}
 ```
+
+平台签发的 Token 使用 `aud=market-resource`，并包含产品标识、客户端标识和作用域。第三方 SaaS 可以调用平台 `POST /oauth/introspect` 校验，也可以使用平台发布的 JWT 公钥/JWKS 本地校验。
 
 成功响应：
 

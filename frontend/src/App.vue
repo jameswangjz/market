@@ -653,13 +653,13 @@ async function productAction(product, action) {
 async function downloadSaasCredentials(product) {
   try {
     const { data } = await api.get(
-      `/products/${product.id}/saas-integration/credentials-download`,
+      `/products/${product.id}/oauth-credentials-download`,
       { responseType: "blob" },
     );
     const url = URL.createObjectURL(data);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${product.name}-saas-oauth-credentials.txt`;
+    link.download = `${product.name}-platform-oauth-credentials.txt`;
     link.click();
     URL.revokeObjectURL(url);
     notify("OAuth 凭据文件已下载");
@@ -1479,7 +1479,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                         ><button
                           v-if="
                             product.status === 'published' &&
-                            product.product_type === 'saas'
+                            ['api', 'model', 'saas'].includes(product.product_type)
                           "
                           class="text-btn"
                           @click="downloadSaasCredentials(product)"
