@@ -228,6 +228,7 @@ class SaaSIntegrationConfig(Base):
     retention_days: Mapped[int] = mapped_column(Integer, default=30)
     status: Mapped[str] = mapped_column(String(30), default="draft")
     updated_by: Mapped[str] = mapped_column(String(180), default="")
+    credentials_revealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -920,6 +921,9 @@ def ensure_review_and_file_schema():
             "business_type": "VARCHAR(30)",
             "related_order_id": "VARCHAR(36)",
         },
+        "saas_integration_configs": {
+            "credentials_revealed_at": "TIMESTAMP WITH TIME ZONE",
+        },
     }
     with engine.begin() as connection:
         for table, columns in tables.items():
@@ -1511,6 +1515,7 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
             config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
             db.add(config)
+            config.credentials_revealed_at = now()
             generated_credentials = {"client_id": client_id, "client_secret": client_secret, "token_url": config.token_url, "base_url": config.base_url}
     audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
     db.commit()
@@ -1518,6 +1523,22 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
     if generated_credentials:
         result["oauth_credentials"] = generated_credentials
     return result
+
+
+@app.post("/api/products/{product_id}/saas-integration/reveal-credentials")
+def reveal_saas_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    require_enterprise_admin(db, user, product.enterprise_id)
+    if product.product_type != "saas" or product.status != "published":
+        raise HTTPException(409, "只有已审核通过的 SaaS 产品可以获取接入凭据")
+    config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
+    if not config:
+        raise HTTPException(404, "SaaS 接口配置不存在")
+    if config.credentials_revealed_at:
+        raise HTTPException(409, "接入密钥已经展示过。如需继续使用，请联系平台管理员重新生成")
+    config.credentials_revealed_at = now()
+    db.commit()
+    return {"client_id": config.client_id, "client_secret": config.client_secret, "token_url": config.token_url, "base_url": config.base_url, "notice": "请立即保存 client_secret，关闭窗口后平台不再回显"}
 
 
 @app.post("/api/products/{product_id}/publish")
