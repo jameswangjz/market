@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1260" viewBox="0 0 1800 1260">
+  <defs>
+    <linearGradient id="header" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#172554"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#172554" flood-opacity=".12"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .title{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:34px;font-weight:700;fill:#fff}
+      .subtitle{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:15px;fill:#dbeafe}
+      .layer{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:18px;font-weight:700;fill:#334155}
+      .module-title{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:21px;font-weight:700;fill:#0f172a}
+      .module-sub{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:13px;fill:#64748b}
+      .item{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:14px;fill:#334155}
+      .small{font-family:"Microsoft YaHei","PingFang SC",Arial,sans-serif;font-size:13px;fill:#64748b}
+    </style>
+  </defs>
+
+  <rect width="1800" height="1260" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1800" height="132" fill="url(#header)"/>
+  <text x="72" y="58" class="title">数据集运营服务管理平台功能架构</text>
+  <text x="72" y="94" class="subtitle">围绕数据与服务登记、交易、交付、清算、审计和持续运营形成端到端闭环</text>
+  <text x="1640" y="78" text-anchor="end" class="subtitle">当前平台功能视图</text>
+
+  <text x="72" y="178" class="layer">一、平台服务层</text>
+  <rect x="72" y="198" width="1656" height="122" rx="14" fill="#eff6ff" stroke="#bfdbfe" stroke-width="2"/>
+  <g filter="url(#shadow)">
+    <rect x="102" y="218" width="360" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
+    <text x="126" y="249" class="module-title">用户与企业服务</text>
+    <text x="126" y="274" class="item">注册、实名认证、企业认证、成员与角色</text>
+    <rect x="490" y="218" width="360" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
+    <text x="514" y="249" class="module-title">统一权限与多租户</text>
+    <text x="514" y="274" class="item">企业主租户、平台 RBAC、数据隔离、操作授权</text>
+    <rect x="878" y="218" width="360" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
+    <text x="902" y="249" class="module-title">统一 API 网关</text>
+    <text x="902" y="274" class="item">OAuth2、API Key、路由、限流、配额、统计</text>
+    <rect x="1266" y="218" width="432" height="82" rx="10" fill="#fff" stroke="#93c5fd"/>
+    <text x="1290" y="249" class="module-title">通知与配置中心</text>
+    <text x="1290" y="274" class="item">短信/邮件配置、平台角色、消息通知、参数管理</text>
+  </g>
+
+  <text x="72" y="374" class="layer">二、核心业务功能层</text>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="400" width="504" height="250" rx="14" fill="#fff" stroke="#60a5fa" stroke-width="2"/>
+    <rect x="72" y="400" width="504" height="58" rx="14" fill="#dbeafe"/>
+    <rect x="72" y="442" width="504" height="16" fill="#dbeafe"/>
+    <text x="102" y="436" class="module-title">数据及服务管理</text>
+    <text x="102" y="488" class="item">• 数据集、模型、API、SaaS、报告及咨询服务登记</text>
+    <text x="102" y="526" class="item">• 目录、元数据、版本、价格和交付方式管理</text>
+    <text x="102" y="564" class="item">• 产品审核、质量审核、安全合规和上架发布</text>
+    <text x="102" y="602" class="item">• API/SaaS 对接规范、OAuth 凭据和网关配置</text>
+    <text x="102" y="632" class="module-sub">面向数据/服务提供方与平台运营人员</text>
+
+    <rect x="648" y="400" width="504" height="250" rx="14" fill="#fff" stroke="#8b5cf6" stroke-width="2"/>
+    <rect x="648" y="400" width="504" height="58" rx="14" fill="#ede9fe"/>
+    <rect x="648" y="442" width="504" height="16" fill="#ede9fe"/>
+    <text x="678" y="436" class="module-title">订单管理</text>
+    <text x="678" y="488" class="item">• 购物车、订单创建、取消、支付单和人工确认</text>
+    <text x="678" y="526" class="item">• 订单、支付、交付、售后四域状态机</text>
+    <text x="678" y="564" class="item">• 订阅开通、续费、升级/降级及差价计算</text>
+    <text x="678" y="602" class="item">• 退款、原路退回、订单授权和访问回收</text>
+    <text x="678" y="632" class="module-sub">面向已实名个人用户与企业租户</text>
+
+    <rect x="1224" y="400" width="504" height="250" rx="14" fill="#fff" stroke="#14b8a6" stroke-width="2"/>
+    <rect x="1224" y="400" width="504" height="58" rx="14" fill="#ccfbf1"/>
+    <rect x="1224" y="442" width="504" height="16" fill="#ccfbf1"/>
+    <text x="1254" y="436" class="module-title">数据及服务交付管理</text>
+    <text x="1254" y="488" class="item">• 文件下载、对象存储、API、模型 API 交付</text>
+    <text x="1254" y="526" class="item">• SaaS 租户开通、版本切换和权限开通</text>
+    <text x="1254" y="564" class="item">• 用户、部门与第三方 SaaS 系统同步</text>
+    <text x="1254" y="602" class="item">• 交付任务、验收确认、售后和交付状态跟踪</text>
+    <text x="1254" y="632" class="module-sub">支撑标准化、可追踪、可审计交付</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="72" y="704" width="504" height="250" rx="14" fill="#fff" stroke="#f59e0b" stroke-width="2"/>
+    <rect x="72" y="704" width="504" height="58" rx="14" fill="#fef3c7"/>
+    <rect x="72" y="746" width="504" height="16" fill="#fef3c7"/>
+    <text x="102" y="740" class="module-title">清算管理</text>
+    <text x="102" y="792" class="item">• 平台服务费、提供方分成和数据服务方分成</text>
+    <text x="102" y="830" class="item">• 专家费、渠道费、税费等多方费用计算</text>
+    <text x="102" y="868" class="item">• 订单支付、退款和分账追回/抵扣</text>
+    <text x="102" y="906" class="item">• 清算单、清算台账、调整、锁定和复核</text>
+    <text x="102" y="936" class="module-sub">确保交易金额可计算、可核对、可追溯</text>
+
+    <rect x="648" y="704" width="504" height="250" rx="14" fill="#fff" stroke="#64748b" stroke-width="2"/>
+    <rect x="648" y="704" width="504" height="58" rx="14" fill="#e2e8f0"/>
+    <rect x="648" y="746" width="504" height="16" fill="#e2e8f0"/>
+    <text x="678" y="740" class="module-title">审计管理</text>
+    <text x="678" y="792" class="item">• 登录、认证、权限、产品和订单操作留痕</text>
+    <text x="678" y="830" class="item">• 发布、凭据、交付、退款和清算审计</text>
+    <text x="678" y="868" class="item">• 按租户、用户、资源和时间检索审计记录</text>
+    <text x="678" y="906" class="item">• 异常访问、网关错误、失败发布和告警关联</text>
+    <text x="678" y="936" class="module-sub">形成业务、技术和安全合规证据链</text>
+
+    <rect x="1224" y="704" width="504" height="250" rx="14" fill="#fff" stroke="#ec4899" stroke-width="2"/>
+    <rect x="1224" y="704" width="504" height="58" rx="14" fill="#fce7f3"/>
+    <rect x="1224" y="746" width="504" height="16" fill="#fce7f3"/>
+    <text x="1254" y="740" class="module-title">运营平台服务</text>
+    <text x="1254" y="792" class="item">• 平台运营、审核、质量、安全和交付角色协同</text>
+    <text x="1254" y="830" class="item">• 数据产品、订单、交付、清算和审计工作台</text>
+    <text x="1254" y="868" class="item">• 网关路由、版本策略、凭据和调用统计管理</text>
+    <text x="1254" y="906" class="item">• 任务进度控制台、配置中心和运营数据看板</text>
+    <text x="1254" y="936" class="module-sub">提供统一运营入口和业务协同能力</text>
+  </g>
+
+  <text x="72" y="1010" class="layer">三、SLA 保障与基础设施层</text>
+  <rect x="72" y="1034" width="1656" height="164" rx="14" fill="#f0fdf4" stroke="#86efac" stroke-width="2"/>
+  <g filter="url(#shadow)">
+    <rect x="102" y="1060" width="370" height="108" rx="10" fill="#fff" stroke="#86efac"/>
+    <text x="126" y="1091" class="module-title">SLA 保障功能</text>
+    <text x="126" y="1118" class="item">• 健康检查、可用性监控、错误率与延迟</text>
+    <text x="126" y="1144" class="item">• 限流、配额、超时、重试和统一错误</text>
+    <text x="126" y="1170" class="item">• 告警、故障演练、灰度、回退和恢复</text>
+
+    <rect x="500" y="1060" width="370" height="108" rx="10" fill="#fff" stroke="#86efac"/>
+    <text x="524" y="1091" class="module-title">高可用与安全</text>
+    <text x="524" y="1118" class="item">• Kubernetes、APISIX 多副本和负载均衡</text>
+    <text x="524" y="1144" class="item">• OAuth2、API Key、国密密码机适配</text>
+    <text x="524" y="1170" class="item">• Redis 共享缓存、网络隔离和访问控制</text>
+
+    <rect x="898" y="1060" width="370" height="108" rx="10" fill="#fff" stroke="#86efac"/>
+    <text x="922" y="1091" class="module-title">数据与存储支撑</text>
+    <text x="922" y="1118" class="item">• PostgreSQL 业务数据和审计数据</text>
+    <text x="922" y="1144" class="item">• MinIO 文件、数据集和交付对象存储</text>
+    <text x="922" y="1170" class="item">• Redis 配额、Token 和分布式状态缓存</text>
+
+    <rect x="1296" y="1060" width="402" height="108" rx="10" fill="#fff" stroke="#86efac"/>
+    <text x="1320" y="1091" class="module-title">监控与运营保障</text>
+    <text x="1320" y="1118" class="item">• Prometheus 指标、Alertmanager 告警</text>
+    <text x="1320" y="1144" class="item">• APISIX 路由、发布、调用和运行日志</text>
+    <text x="1320" y="1170" class="item">• SLA 报表、审计追踪和运维响应闭环</text>
+  </g>
+
+  <g fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M282 320 L282 392"/>
+    <path d="M670 320 L670 392"/>
+    <path d="M1058 320 L1058 392"/>
+    <path d="M1448 320 L1448 392"/>
+    <path d="M576 525 L640 525"/>
+    <path d="M1152 525 L1216 525"/>
+    <path d="M900 650 L900 696"/>
+    <path d="M1220 650 L1220 696"/>
+    <path d="M576 829 L640 829"/>
+    <path d="M1152 829 L1216 829"/>
+    <path d="M324 962 L324 1026"/>
+    <path d="M900 962 L900 1026"/>
+    <path d="M1476 962 L1476 1026"/>
+  </g>
+  <text x="900" y="1240" text-anchor="middle" class="small">图：当前数据集运营服务管理平台功能架构图</text>
+</svg>
