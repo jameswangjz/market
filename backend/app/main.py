@@ -694,6 +694,10 @@ class ProductReviewBody(BaseModel):
     comment: str = ""
 
 
+class ProductUnpublishBody(BaseModel):
+    reason: str = Field(min_length=2, max_length=500)
+
+
 class SaaSVersionBody(BaseModel):
     version_code: str = Field(min_length=1, max_length=60)
     name: str = Field(min_length=1, max_length=120)
@@ -875,6 +879,11 @@ def require_enterprise_admin(db: Session, user: User, enterprise_id: str | None 
 def require_platform_admin(user: User):
     if user.platform_role not in {"super_admin", "platform_operator"}:
         raise HTTPException(403, "只有系统管理员或平台运营管理员可以执行此操作")
+
+
+def require_security_operator(user: User):
+    if user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
+        raise HTTPException(403, "只有平台管理员或安全合规人员可以执行安全策略检查")
 
 
 PLATFORM_ROLES = {
@@ -1439,8 +1448,11 @@ def product_out(p: Product) -> dict[str, Any]:
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
-    enterprise = first_enterprise(db, user)
-    product = db.scalar(select(Product).where(Product.id == product_id, Product.enterprise_id == enterprise.id))
+    if user.platform_role in {"super_admin", "platform_operator", "security_compliance"}:
+        product = db.get(Product, product_id)
+    else:
+        enterprise = first_enterprise(db, user)
+        product = db.scalar(select(Product).where(Product.id == product_id, Product.enterprise_id == enterprise.id))
     if not product:
         raise HTTPException(404, "产品不存在")
     return product
@@ -1469,8 +1481,10 @@ def product_directories(user: User = Depends(current_user)):
 
 @app.get("/api/products")
 def products(q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
-    stmt = select(Product).where(Product.enterprise_id == enterprise.id)
+    stmt = select(Product)
+    if user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
+        enterprise = first_enterprise(db, user)
+        stmt = stmt.where(Product.enterprise_id == enterprise.id)
     if q:
         stmt = stmt.where(or_(Product.name.ilike(f"%{q}%"), Product.description.ilike(f"%{q}%")))
     if status:
@@ -1539,7 +1553,7 @@ def create_product(body: ProductBody, user: User = Depends(current_user), db: Se
 @app.put("/api/products/{product_id}")
 def update_product(product_id: str, body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
-    if product.status not in {"draft", "rejected"}:
+    if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
     values = body.model_dump()
     versions = values.pop("versions", [])
@@ -1568,7 +1582,7 @@ def list_product_versions(product_id: str, user: User = Depends(current_user), d
 @app.post("/api/products/{product_id}/versions")
 def add_product_version(product_id: str, body: ProductVersionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
-    if product.status not in {"draft", "rejected"}:
+    if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以增加版本")
     if db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == body.version_code)):
         raise HTTPException(409, "该版本号已存在")
@@ -1582,7 +1596,7 @@ def add_product_version(product_id: str, body: ProductVersionBody, user: User = 
 @app.put("/api/products/{product_id}/versions/{version_id}")
 def update_product_version(product_id: str, version_id: str, body: ProductVersionUpdateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
-    if product.status not in {"draft", "rejected"}:
+    if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以编辑版本")
     version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product.id))
     if not version:
@@ -1616,7 +1630,7 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
     missing = [label for label, value in required.items() if not value]
     if missing:
         raise HTTPException(400, f"产品元数据不完整，请补充：{'、'.join(missing)}")
-    if product.status not in {"draft", "rejected"}:
+    if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "当前产品状态不允许提交审核")
     product.status = "pending_review"
     product.review_comment = ""
@@ -1625,7 +1639,6 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
     return product_out(product)
 
 
-@app.post("/api/products/{product_id}/review")
 def platform_oauth_token_url() -> str:
     return os.getenv("PLATFORM_OAUTH_TOKEN_URL", "http://market-api:8000/oauth/token")
 
@@ -1637,6 +1650,7 @@ def platform_oauth_issuer() -> str:
 def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.invoke") -> OAuthClient:
     client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id))
     if client:
+        client.status = "active"
         existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if existing_saas:
             existing_saas.token_url = platform_oauth_token_url()
@@ -1703,9 +1717,11 @@ async def platform_oauth_introspect(request: Request):
         return {"active": False}
 
 
+@app.post("/api/products/{product_id}/review")
 def review_product(product_id: str, body: ProductReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
-    require_enterprise_admin(db, user, product.enterprise_id)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        require_enterprise_admin(db, user, product.enterprise_id)
     if product.status != "pending_review":
         raise HTTPException(409, "只有待审核产品可以审核")
     if body.decision not in {"approve", "reject"}:
@@ -1742,11 +1758,101 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
     return product_out(product)
 
 
+def product_security_policy_violations(product: Product) -> list[str]:
+    required = {
+        "所属目录": product.catalog_name and product.catalog_name != "未分类",
+        "提供方": product.provider_name,
+        "描述": product.description,
+        "适用场景": product.usage_scenarios,
+        "价格策略": product.pricing_strategy,
+        "授权条件": product.authorization_conditions,
+        "数据来源声明": product.data_source_statement,
+        "合规声明": product.compliance_statement,
+    }
+    return [label for label, value in required.items() if not value]
+
+
+def remove_product_delivery(product: Product, db: Session, actor: str) -> None:
+    """Disable all delivery entry points before a product becomes unavailable."""
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    if route:
+        if apisix_enabled():
+            try:
+                apisix_admin_request("DELETE", f"/routes/{route.route_key}")
+            except RuntimeError as exc:
+                audit(db, actor, "unpublish_apisix_route_failed", "api_gateway_route", route.id, str(exc)[:500])
+        route.status = "disabled"
+        route.health_message = "产品已下架，网关路由已停用"
+    client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id))
+    if client:
+        client.status = "inactive"
+
+
+def unpublish_product(product: Product, db: Session, actor: str, reason: str, source: str = "manual") -> None:
+    if product.status != "published":
+        raise HTTPException(409, "只有已发布产品可以下架")
+    # Manual withdrawal only blocks new purchases. Existing paid orders and
+    # subscriptions keep their route, credentials and delivery state.
+    product.status = "draft" if source == "manual" else "security_unpublished"
+    product.review_comment = reason
+    product.reviewed_by = actor
+    product.reviewed_at = now()
+    if source == "security_policy":
+        remove_product_delivery(product, db, actor)
+    audit(db, actor, "auto_unpublish_product" if source == "security_policy" else "unpublish_product", "product", product.id, reason)
+
+
+@app.post("/api/products/{product_id}/unpublish")
+def unpublish_product_endpoint(product_id: str, body: ProductUnpublishBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        require_enterprise_admin(db, user, product.enterprise_id)
+    actor = user.email or user.phone or user.id
+    unpublish_product(product, db, actor, body.reason)
+    db.commit()
+    return product_out(product)
+
+
+@app.post("/api/products/{product_id}/security-check")
+def security_check_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_security_operator(user)
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "产品不存在")
+    violations = product_security_policy_violations(product)
+    unpublished = False
+    actor = user.email or user.phone or user.id
+    if product.status == "published" and violations:
+        unpublish_product(product, db, "系统安全策略自动下架：" + "、".join(violations), actor="system-security-policy", source="security_policy")
+        unpublished = True
+    audit(db, actor, "run_product_security_check", "product", product.id, "通过" if not violations else "；".join(violations))
+    db.commit()
+    return {"product": product_out(product), "passed": not violations, "unpublished": unpublished, "violations": violations}
+
+
+@app.post("/api/security/product-policy-check")
+def security_check_all_products(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_security_operator(user)
+    checked = 0
+    unpublished = 0
+    results = []
+    for product in db.scalars(select(Product).where(Product.status == "published")).all():
+        checked += 1
+        violations = product_security_policy_violations(product)
+        if violations:
+            unpublish_product(product, db, "系统安全策略自动下架：" + "、".join(violations), actor="system-security-policy", source="security_policy")
+            unpublished += 1
+            results.append({"id": product.id, "name": product.name, "status": "security_unpublished", "violations": violations})
+    audit(db, user.email or user.phone or user.id, "run_product_security_policy_scan", "product", "", f"检查{checked}个，下架{unpublished}个")
+    db.commit()
+    return {"checked": checked, "unpublished": unpublished, "items": results}
+
+
 @app.get("/api/products/{product_id}/oauth-credentials-download")
 def download_oauth_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
     require_enterprise_admin(db, user, product.enterprise_id)
-    if product.product_type not in {"api", "model", "saas"} or product.status != "published":
+    if product.product_type not in {"api", "model", "saas"} or product.status not in {"published", "draft"}:
         raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
     client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id, OAuthClient.status == "active"))
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
@@ -1970,8 +2076,8 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
         else:
             require_enterprise_admin(db, user, order.buyer_enterprise_id)
     product = gateway_product(order.product_id, db)
-    if product.status != "published":
-        raise HTTPException(409, "API 产品尚未发布")
+    if product.status not in {"published", "draft"}:
+        raise HTTPException(409, "API 产品已被安全策略下架")
     route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id, ApiGatewayRoute.status == "active"))
     if not route:
         raise HTTPException(409, "API 网关路由尚未启用")
@@ -2252,6 +2358,8 @@ def saas_product(product_id: str, db: Session) -> Product:
     product = db.get(Product, product_id)
     if not product or product.product_type != "saas" or product.delivery_method != "tenant_access":
         raise HTTPException(400, "只有 SaaS 类型且交付方式为租户/权限开通的产品支持 SaaS 接口")
+    if product.status == "security_unpublished":
+        raise HTTPException(409, "该 SaaS 产品已被安全策略下架，已售应用暂不可继续调用")
     return product
 
 

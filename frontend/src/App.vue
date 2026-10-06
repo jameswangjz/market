@@ -292,7 +292,7 @@ async function loadSession() {
   api.defaults.headers.common.Authorization = `Bearer ${token.value}`;
   try {
     const { data } = await api.get("/auth/me");
-    user.value = data.user;
+    user.value = { ...data.user, enterprise_role: data.role };
     enterprise.value = data.enterprise;
     await refreshData();
   } catch {
@@ -722,7 +722,16 @@ function removeProductVersion(index) {
 }
 async function productAction(product, action) {
   try {
-    if (action === "review") {
+    if (action === "unpublish") {
+      const reason = window.prompt("请输入下架原因", "产品提供方主动下架");
+      if (!reason) return;
+      await api.post(`/products/${product.id}/unpublish`, { reason });
+    } else if (action === "security_check") {
+      const { data } = await api.post(`/products/${product.id}/security-check`);
+      notify(data.unpublished ? "安全策略检查发现问题，产品已自动下架" : "安全策略检查通过");
+      await loadViewData("products");
+      return;
+    } else if (action === "review") {
       const comment = window.prompt("请输入审核意见", "审核通过");
       if (comment === null) return;
       await api.post(`/products/${product.id}/review`, {
@@ -740,8 +749,10 @@ async function productAction(product, action) {
       await api.post(`/products/${product.id}/submit`);
     }
     notify(
-      action === "submit"
-        ? "产品已提交审核"
+      action === "unpublish"
+        ? "产品已下架，已售应用继续按原授权提供服务"
+        : action === "submit"
+          ? "产品已提交审核"
         : action === "reject"
           ? "产品已驳回"
           : "产品已审核通过",
@@ -1576,7 +1587,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                       <span
                         :class="[
                           'status-pill',
-                          `status-${product.status === 'published' ? 'done' : product.status === 'pending_review' ? 'review' : product.status === 'rejected' ? 'blocked' : 'todo'}`,
+                          `status-${product.status === 'published' ? 'done' : product.status === 'pending_review' ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
                         ]"
                         >{{
                           product.status === "published"
@@ -1585,7 +1596,9 @@ onUnmounted(() => window.clearInterval(progressTimer));
                               ? "待审核"
                               : product.status === "rejected"
                                 ? "已驳回"
-                                : "草稿"
+                                : product.status === "security_unpublished"
+                                  ? "安全下架"
+                                  : "草稿"
                         }}</span
                       >
                     </td>
@@ -1612,6 +1625,18 @@ onUnmounted(() => window.clearInterval(progressTimer));
                           @click="productAction(product, 'reject')"
                         >
                           驳回</button
+                        ><button
+                          v-if="product.status === 'published' && (['super_admin', 'platform_operator'].includes(user?.platform_role) || ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role))"
+                          class="text-btn danger-text"
+                          @click="productAction(product, 'unpublish')"
+                        >
+                          下架</button
+                        ><button
+                          v-if="product.status === 'published' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
+                          class="text-btn"
+                          @click="productAction(product, 'security_check')"
+                        >
+                          安全检查</button
                         ><span
                           v-if="product.status === 'published'"
                           class="muted"
