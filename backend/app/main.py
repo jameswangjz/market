@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import time
+from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 
 import httpx
 import jwt
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
@@ -1507,7 +1508,6 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
     product.review_comment = body.comment.strip()
     product.reviewed_by = user.email
     product.reviewed_at = now()
-    generated_credentials = None
     if body.decision == "approve" and product.product_type == "saas":
         config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if not config:
@@ -1516,30 +1516,37 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
             config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
             db.add(config)
-            config.credentials_revealed_at = now()
-            generated_credentials = {"client_id": client_id, "client_secret": client_secret, "token_url": config.token_url, "base_url": config.base_url}
     audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
     db.commit()
-    result = product_out(product)
-    if generated_credentials:
-        result["oauth_credentials"] = generated_credentials
-    return result
+    return product_out(product)
 
 
-@app.post("/api/products/{product_id}/saas-integration/reveal-credentials")
-def reveal_saas_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+@app.get("/api/products/{product_id}/saas-integration/credentials-download")
+def download_saas_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
     require_enterprise_admin(db, user, product.enterprise_id)
     if product.product_type != "saas" or product.status != "published":
-        raise HTTPException(409, "只有已审核通过的 SaaS 产品可以获取接入凭据")
+        raise HTTPException(409, "只有已审核通过的 SaaS 产品可以下载接入凭据")
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
     if not config:
         raise HTTPException(404, "SaaS 接口配置不存在")
-    if config.credentials_revealed_at:
-        raise HTTPException(409, "接入密钥已经展示过。如需继续使用，请联系平台管理员重新生成")
-    config.credentials_revealed_at = now()
-    db.commit()
-    return {"client_id": config.client_id, "client_secret": config.client_secret, "token_url": config.token_url, "base_url": config.base_url, "notice": "请立即保存 client_secret，关闭窗口后平台不再回显"}
+    content = "\n".join([
+        "SaaS OAuth2 接入凭据",
+        f"产品名称: {product.name}",
+        f"产品 ID: {product.id}",
+        f"client_id: {config.client_id}",
+        f"client_secret: {config.client_secret}",
+        f"token_url: {config.token_url}",
+        f"base_url: {config.base_url}",
+        f"scope: {config.scope}",
+        "认证模式: OAuth2 client_credentials",
+        "请妥善保存 client_secret，不要提交到前端代码或公开代码仓库。",
+        "",
+    ])
+    filename = f"{product.name}-saas-oauth-credentials.txt"
+    encoded_filename = quote(filename)
+    disposition = f'attachment; filename="saas-oauth-credentials.txt"; filename*=UTF-8\'\'{encoded_filename}'
+    return Response(content=content, media_type="text/plain; charset=utf-8", headers={"Content-Disposition": disposition})
 
 
 @app.post("/api/products/{product_id}/publish")

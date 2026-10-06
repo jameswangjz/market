@@ -4,7 +4,7 @@
 
 平台产品登记生成 `product_id`，购买时生成 `subscription_id`。这两个 ID 用于平台业务识别，不是 OAuth2 客户端 ID。
 
-默认由第三方 SaaS 的 OAuth2 授权服务器生成 `client_id/client_secret`，并通过安全渠道交付给平台管理员。平台将 Token 地址、客户端 ID、密钥和 Scope 保存到 SaaS 产品接口配置中，密钥只在服务端使用，不在浏览器回显。若双方约定平台提供 OAuth2 授权服务器，也可以在登记时生成客户端凭据后交给第三方配置。
+由数据集运营服务管理平台在 SaaS 产品审核通过时生成 `client_id/client_secret`、Token 地址等接入信息。产品所有者可登录平台并重复下载 OAuth 凭据文件，然后将信息配置到第三方 SaaS 应用中，完成 OAuth 认证和后续接口认证。
 
 获取 Token：
 

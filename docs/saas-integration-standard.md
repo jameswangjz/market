@@ -4,15 +4,15 @@
 
 ## 1. 参与方与凭据获取
 
-平台采用“运营平台主动调用第三方 SaaS”的方式。第三方 SaaS 需要提供 OAuth2 Token 地址和一组 `client_id/client_secret`，平台使用 OAuth2 `client_credentials` 获取访问令牌。
+平台采用“运营平台主动调用第三方 SaaS”的方式。数据集运营服务管理平台为每个审核通过的 SaaS 产品生成 OAuth2 `client_id/client_secret`、Token 地址等接入信息，第三方应用所有者下载凭据文件并在其应用中完成配置；平台使用 OAuth2 `client_credentials` 获取访问令牌。
 
 ### 1.1 产品登记时生成什么信息
 
 平台登记产品时会生成平台侧的 `product_id`，用于识别产品；创建订阅时会生成平台侧的 `subscription_id`，用于识别一次独立购买的租户。二者不是 OAuth2 的 `client_id`。
 
-当前推荐方式是：第三方 SaaS 在自己的 OAuth2 授权服务器中创建一个面向本运营平台的机密客户端，将 `client_id`、`client_secret`、Token 地址、Scope 和业务 API 地址通过安全渠道交付给平台管理员。平台管理员在 SaaS 产品的接口配置中录入，保存后密钥只用于服务端调用，不在前端回显。测试和生产环境应使用不同客户端。
+当前实现方式是：SaaS 产品审核通过时，由数据集运营服务管理平台生成该产品的 `client_id`、`client_secret`、Token 地址、Scope 和业务 API 地址配置。产品所有者可以登录平台，在产品列表中重复下载 OAuth 凭据文件，并将其中的信息配置到第三方 SaaS 应用中。文件下载受企业管理员权限保护；测试和生产环境应使用不同客户端。
 
-因此，产品登记时应生成产品基础 ID 和接口配置记录；OAuth `client_id/client_secret` 应由实际提供 Token 服务的一方生成。如果双方约定由平台统一提供 OAuth2 授权服务器，则可由平台在登记时生成一组客户端凭据，再将凭据安全交给第三方配置。
+因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 需要使用下载的凭据配置其 OAuth2 认证和后续业务接口认证，并按照本文档约定提供 Token 和业务接口。
 
 ### 1.2 获取 Token
 
