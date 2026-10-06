@@ -370,6 +370,7 @@ class ApiCredential(Base):
     name: Mapped[str] = mapped_column(String(120), default="默认 API 凭证")
     key_prefix: Mapped[str] = mapped_column(String(24), default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    apisix_consumer_name: Mapped[str] = mapped_column(String(180), default="")
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -1016,6 +1017,7 @@ def ensure_review_and_file_schema():
             "order_id": "VARCHAR(36) DEFAULT ''",
             "product_version_id": "VARCHAR(36) DEFAULT ''",
             "monthly_quota": "INTEGER",
+            "apisix_consumer_name": "VARCHAR(180) DEFAULT ''",
         },
         "product_release_versions": {
             "rate_limit_per_minute": "INTEGER DEFAULT 60",
@@ -1096,6 +1098,11 @@ def startup():
             ("OPS-007", "部署测试 Agent", "APISIX 监控、日志、告警和生产入口", "部署", "P0", "todo", "OPS-006,BE-016", "Prometheus 指标、日志和核心告警可验证", 0),
             ("OPS-008", "部署测试 Agent", "旧 FastAPI 网关兼容、灰度切换和回退方案", "部署", "P1", "todo", "BE-014,BE-016,OPS-007", "API 可按产品灰度切换，故障可回退旧网关", 0),
             ("OPS-009", "部署测试 Agent", "网关故障演练、压测和端到端验收", "测试", "P0", "todo", "FE-006,FE-007,FE-008,OPS-008", "多副本、Redis、上游、发布回滚和配额测试通过", 0),
+            ("ARC-005", "主 Agent", "APISIX 原生数据面迁移方案、切换门禁和回退标准", "架构", "P0", "in_progress", "ARC-004", "原生数据面、FastAPI 控制面、灰度和回退边界固化", 60),
+            ("BE-017", "后端 Agent", "APISIX Consumer/API Key 原生同步", "后端", "P0", "done", "ARC-005", "凭据创建、停用、重生成可同步 APISIX Consumer", 100),
+            ("BE-018", "后端 Agent", "APISIX 原生直连上游和路由发布模式", "后端", "P0", "done", "BE-017", "路由可绕过 FastAPI 兼容网关直接访问第三方上游", 100),
+            ("BE-019", "后端 Agent", "原生数据面配额插件和统一错误策略", "后端", "P0", "todo", "BE-018", "原生数据面支持日/月配额、订单授权回收和统一错误", 0),
+            ("OPS-010", "部署测试 Agent", "APISIX 原生模式灰度切换、双入口回退和生产验收", "部署", "P0", "todo", "BE-017,BE-018,BE-019", "原生入口灰度成功，故障可自动回退兼容入口", 0),
         ]
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
@@ -1811,6 +1818,14 @@ def apisix_enabled() -> bool:
     return os.getenv("APISIX_ENABLED", "false").lower() == "true"
 
 
+def apisix_native_auth() -> bool:
+    return os.getenv("APISIX_NATIVE_AUTH", "false").lower() == "true"
+
+
+def apisix_native_upstream() -> bool:
+    return os.getenv("APISIX_NATIVE_UPSTREAM", "false").lower() == "true"
+
+
 def apisix_admin_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     base_url = os.getenv("APISIX_ADMIN_URL", "http://market-apisix-admin:9180/apisix/admin").rstrip("/")
     admin_key = os.getenv("APISIX_ADMIN_KEY", "")
@@ -1826,20 +1841,45 @@ def apisix_admin_request(method: str, path: str, payload: dict[str, Any] | None 
 
 
 def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None, db: Session | None = None) -> dict[str, Any]:
-    """Publish a compatibility route first; native APISIX auth migration is BE-014."""
+    """Build either the compatibility route or the native APISIX data-plane route."""
     compat_upstream = os.getenv("APISIX_COMPAT_UPSTREAM", "http://market-gateway:8100").rstrip("/")
     version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == route.version, ProductReleaseVersion.status == "active")) if db and product else None
     rate_limit = version.rate_limit_per_minute if version else route.rate_limit_per_minute
     daily_quota = version.daily_quota if version else route.daily_quota
     monthly_quota = version.monthly_quota if version else route.monthly_quota
+    use_native_upstream = apisix_native_upstream() and route.upstream_auth_mode == "none"
+    target_upstream = route.upstream_url.rstrip("/") if use_native_upstream else compat_upstream
+    plugins = {
+        "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
+        "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "consumer_name" if apisix_native_auth() else "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2},
+    }
+    if apisix_native_auth():
+        plugins["key-auth"] = {"header": "X-API-Key", "query": "api_key"}
     return {
         "name": f"market-{route.route_key}",
         "uri": f"/gateway/{route.route_key}/*",
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
-        "upstream": {"type": "roundrobin", "nodes": {compat_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if compat_upstream.startswith("https://") else "http"},
-        "plugins": {"proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]}, "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2}},
-        "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true"},
+        "upstream": {"type": "roundrobin", "nodes": {target_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if target_upstream.startswith("https://") else "http"},
+        "plugins": plugins,
+        "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"},
     }
+
+
+def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None) -> bool:
+    """Synchronize a credential to APISIX key-auth without exposing Admin API to clients."""
+    if not apisix_enabled():
+        return True
+    if not credential.apisix_consumer_name:
+        credential.apisix_consumer_name = f"market-consumer-{credential.id}"
+    if not raw_key:
+        raise RuntimeError("历史 API 凭据没有可用于 APISIX 同步的明文密钥，请重新生成")
+    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}}})
+    return True
+
+
+def remove_apisix_consumer(credential: ApiCredential) -> None:
+    if apisix_enabled() and credential.apisix_consumer_name:
+        apisix_admin_request("DELETE", f"/consumers/{credential.apisix_consumer_name}")
 
 
 def publish_apisix_route(route: ApiGatewayRoute, product: Product, db: Session, actor: str) -> bool:
@@ -2077,6 +2117,12 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
     raw_key = "mk_" + secrets.token_urlsafe(30)
     credential = ApiCredential(route_id=route.id, enterprise_id=target_enterprise_id, name=body.name.strip() or "默认 API 凭证", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
+    db.flush()
+    try:
+        sync_apisix_consumer(credential, raw_key)
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
     audit(db, user.email or user.phone or user.id, "create_api_credential", "api_credential", credential.id, route.route_key)
     db.commit()
     db.refresh(credential)
@@ -2096,6 +2142,12 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     raw_key = "mk_" + secrets.token_urlsafe(30)
     credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=order.product_version_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
+    db.flush()
+    try:
+        sync_apisix_consumer(credential, raw_key)
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
     audit(db, user.email or user.phone or user.id, "create_order_api_credential", "api_credential", credential.id, order.order_no)
     db.commit()
     db.refresh(credential)
@@ -2111,6 +2163,11 @@ def revoke_order_api_credential(order_id: str, credential_id: str, user: User = 
     if credential.status != "active":
         raise HTTPException(409, "API 凭据已经停用")
     credential.status = "revoked"
+    try:
+        remove_apisix_consumer(credential)
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(502, f"API 凭据从 APISIX Consumer 停用失败：{exc}") from exc
     audit(db, user.email or user.phone or user.id, "revoke_order_api_credential", "api_credential", credential.id, order.order_no)
     db.commit()
     return {"id": credential.id, "status": credential.status}
@@ -2126,6 +2183,13 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     raw_key = "mk_" + secrets.token_urlsafe(30)
     credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=old.product_version_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
+    db.flush()
+    try:
+        remove_apisix_consumer(old)
+        sync_apisix_consumer(credential, raw_key)
+    except RuntimeError as exc:
+        db.rollback()
+        raise HTTPException(502, f"API 凭据重生成同步 APISIX Consumer 失败：{exc}") from exc
     audit(db, user.email or user.phone or user.id, "regenerate_order_api_credential", "api_credential", credential.id, f"{order.order_no} from={old.id}")
     db.commit()
     db.refresh(credential)

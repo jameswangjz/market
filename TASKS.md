@@ -47,6 +47,16 @@
 | OPS-008 | 部署测试 Agent | 旧 FastAPI 网关兼容、灰度切换和回退方案 | BE-014,BE-016,OPS-007 | DONE | APISIX 与旧 FastAPI 入口可用，Pod 故障后服务可恢复 |
 | OPS-009 | 部署测试 Agent | 网关故障演练、压测和端到端验收 | FE-006,FE-007,FE-008,OPS-008 | DONE | 配额、OAuth、并发、Pod 故障、发布失败和恢复发布已验证 |
 
+## APISIX 原生数据面迁移任务
+
+| 编号 | 负责人 | 任务 | 依赖 | 状态 | 验收条件 |
+|---|---|---|---|---|---|
+| ARC-005 | 主 Agent | APISIX 原生数据面迁移方案、切换门禁和回退标准 | ARC-004 | IN_PROGRESS 60% | 原生数据面、FastAPI 控制面、灰度和回退边界固化 |
+| BE-017 | 后端 Agent | APISIX Consumer/API Key 原生同步 | ARC-005 | DONE | 凭据创建、停用、重生成可同步 APISIX Consumer |
+| BE-018 | 后端 Agent | APISIX 原生直连上游和路由发布模式 | BE-017 | DONE | 路由可绕过 FastAPI 兼容网关直接访问第三方上游 |
+| BE-019 | 后端 Agent | 原生数据面配额插件和统一错误策略 | BE-018 | TODO | 原生数据面支持日/月配额、订单授权回收和统一错误 |
+| OPS-010 | 部署测试 Agent | APISIX 原生模式灰度切换、双入口回退和生产验收 | BE-017,BE-018,BE-019 | TODO | 原生入口灰度成功，故障可自动回退兼容入口 |
+
 ## 集成门禁
 
 1. 后端 `python -m compileall app` 和接口测试通过；

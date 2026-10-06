@@ -259,5 +259,14 @@ GET  /api/gateway/alerts
 - `OPS-007`：已部署 Prometheus、Alertmanager 和三条核心告警规则，APISIX 与 market-api 采集目标均为 `up`；
 - `OPS-008/OPS-009`：已完成 APISIX Pod 故障、上游健康检查失败、恢复发布、40 并发和配额验收；
 - `OPS-006`：APISIX 已为三副本，开发集群 etcd 和 Redis 仍为单副本，生产级 etcd/Redis 高可用资源仍需结合正式基础设施落实。
+
+## 10. 原生数据面迁移进度
+
+本轮迁移采用“APISIX 原生数据面 + FastAPI 控制面”架构。FastAPI 继续负责产品、订单、凭据生命周期、审核发布和审计；APISIX 负责请求入口、API Key 原生鉴权、路由、限流和上游转发。
+
+- `BE-017` 已完成：新 API 凭据创建时自动同步 APISIX `key-auth` Consumer，停用和重生成同步删除/创建 Consumer；历史凭据需要重新生成后纳入原生 Consumer 管理。
+- `BE-018` 已完成：增加 `APISIX_NATIVE_UPSTREAM` 开关，产品上游认证模式为 `none` 时可由 APISIX 直接转发第三方上游，已完成实际健康接口验证；OAuth2 上游仍保留兼容入口，等待专用原生上游 Token 插件。
+- `APISIX_NATIVE_AUTH` 和 `APISIX_NATIVE_UPSTREAM` 支持灰度切换。关闭开关时回到 FastAPI 兼容入口，原生模式异常时可以快速回退。
+- `BE-019` 待开发：日/月配额、订单授权回收和上游 OAuth2 Token 需要补充 APISIX 原生插件或扩展机制，不能仅依赖控制面接口。
 - `FE-006/007/008`：已完成网关路由策略配置、校验发布/回滚、调用统计、发布记录、健康状态和告警管理页面，并已部署到 `market-web`。
 - `OPS-009`：已完成登录、控制面接口、APISIX 指标和前端管理页基础冒烟验证；故障演练、压测和完整配额验收仍在进行。

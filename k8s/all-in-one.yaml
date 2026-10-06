@@ -30,6 +30,8 @@ data:
   APISIX_ENABLED: 'true'
   APISIX_ADMIN_URL: http://market-apisix-admin:9180/apisix/admin
   APISIX_COMPAT_UPSTREAM: http://market-gateway:8100
+  APISIX_NATIVE_AUTH: 'true'
+  APISIX_NATIVE_UPSTREAM: 'true'
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
