@@ -14,6 +14,7 @@ stringData:
   JWT_SECRET: market-k8s-development-secret-change-me
   MINIO_ROOT_USER: market
   MINIO_ROOT_PASSWORD: market123456
+  APISIX_ADMIN_KEY: market-apisix-admin-dev-change-me
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -26,6 +27,9 @@ data:
   MINIO_BUCKET: market-files
   REDIS_URL: redis://market-redis:6379/0
   CORS_ORIGINS: '*'
+  APISIX_ENABLED: 'true'
+  APISIX_ADMIN_URL: http://market-apisix-admin:9180/apisix/admin
+  APISIX_COMPAT_UPSTREAM: http://market-gateway:8100
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -162,6 +166,7 @@ spec:
           envFrom: [{configMapRef: {name: market-config}}]
           env:
             - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+            - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
             - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
             - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
           readinessProbe: {httpGet: {path: /api/health, port: 8000}, initialDelaySeconds: 12, periodSeconds: 5}

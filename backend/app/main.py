@@ -333,6 +333,33 @@ class ApiGatewayRoute(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class GatewayConfigRevision(Base):
+    __tablename__ = "gateway_config_revisions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    config_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class GatewayPublishRecord(Base):
+    __tablename__ = "gateway_publish_records"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    route_id: Mapped[str] = mapped_column(ForeignKey("api_gateway_routes.id"), index=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("gateway_config_revisions.id"), index=True)
+    target: Mapped[str] = mapped_column(String(100), default="apisix")
+    status: Mapped[str] = mapped_column(String(30), default="executing", index=True)
+    response_json: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class ApiCredential(Base):
     __tablename__ = "api_credentials"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -740,6 +767,10 @@ class GatewayCredentialBody(BaseModel):
     daily_quota: int | None = Field(default=None, ge=1, le=100000000)
     monthly_quota: int | None = Field(default=None, ge=1, le=3000000000)
     expires_at: datetime | None = None
+
+
+class GatewayValidateBody(BaseModel):
+    publish: bool = False
 
 
 class ProductFileMetadata(BaseModel):
@@ -1743,7 +1774,66 @@ def publish_product(product_id: str, user: User = Depends(current_user), db: Ses
 
 
 def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
-    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "upstream_auth_mode": route.upstream_auth_mode, "upstream_scope": route.upstream_scope, "upstream_oauth_configured": bool(route.upstream_client_id and route.upstream_client_secret), "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "created_at": route.created_at, "updated_at": route.updated_at}
+    return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "upstream_auth_mode": route.upstream_auth_mode, "upstream_scope": route.upstream_scope, "upstream_oauth_configured": bool(route.upstream_client_id and route.upstream_client_secret), "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "apisix_enabled": os.getenv("APISIX_ENABLED", "false").lower() == "true", "created_at": route.created_at, "updated_at": route.updated_at}
+
+
+def apisix_enabled() -> bool:
+    return os.getenv("APISIX_ENABLED", "false").lower() == "true"
+
+
+def apisix_admin_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    base_url = os.getenv("APISIX_ADMIN_URL", "http://market-apisix-admin:9180/apisix/admin").rstrip("/")
+    admin_key = os.getenv("APISIX_ADMIN_KEY", "")
+    if not admin_key:
+        raise RuntimeError("APISIX_ADMIN_KEY 未配置")
+    headers = {"X-API-KEY": admin_key, "Content-Type": "application/json"}
+    try:
+        response = httpx.request(method, f"{base_url}{path}", json=payload, headers=headers, timeout=15)
+        response.raise_for_status()
+        return response.json() if response.content else {}
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RuntimeError(f"APISIX Admin API 调用失败：{exc}") from exc
+
+
+def apisix_route_payload(route: ApiGatewayRoute) -> dict[str, Any]:
+    """Publish a compatibility route first; native APISIX auth migration is BE-014."""
+    compat_upstream = os.getenv("APISIX_COMPAT_UPSTREAM", "http://market-gateway:8100").rstrip("/")
+    return {
+        "name": f"market-{route.route_key}",
+        "uri": f"/gateway/{route.route_key}/*",
+        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+        "upstream": {"type": "roundrobin", "nodes": {compat_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if compat_upstream.startswith("https://") else "http"},
+        "plugins": {"proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]}, "limit-count": {"count": route.rate_limit_per_minute, "time_window": 60, "rejected_code": 429, "key": "remote_addr"}},
+        "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_managed": "true"},
+    }
+
+
+def publish_apisix_route(route: ApiGatewayRoute, product: Product, db: Session, actor: str) -> bool:
+    if not apisix_enabled():
+        return True
+    previous = db.scalar(select(GatewayConfigRevision).where(GatewayConfigRevision.route_id == route.id).order_by(GatewayConfigRevision.revision.desc()))
+    revision = GatewayConfigRevision(route_id=route.id, product_id=product.id, revision=(previous.revision + 1 if previous else 1), config_json=json.dumps(apisix_route_payload(route), ensure_ascii=False), status="publishing", created_by=actor)
+    db.add(revision)
+    db.flush()
+    record = GatewayPublishRecord(route_id=route.id, revision_id=revision.id, target="apisix", status="executing", created_by=actor)
+    db.add(record)
+    db.flush()
+    try:
+        response = apisix_admin_request("PUT", f"/routes/{route.route_key}", apisix_route_payload(route))
+        revision.status = "active"
+        record.status = "succeeded"
+        record.response_json = json.dumps(response, ensure_ascii=False)[:10000]
+        record.completed_at = now()
+        audit(db, actor, "publish_apisix_route", "gateway_config_revision", revision.id, route.route_key)
+        return True
+    except RuntimeError as exc:
+        revision.status = "failed"
+        revision.error_message = str(exc)[:1000]
+        record.status = "failed"
+        record.error_message = str(exc)[:1000]
+        record.completed_at = now()
+        audit(db, actor, "publish_apisix_route_failed", "gateway_config_revision", revision.id, str(exc)[:500])
+        return False
 
 
 def gateway_auto_publish(route: ApiGatewayRoute, product: Product, db: Session, actor: str) -> bool:
@@ -1761,6 +1851,10 @@ def gateway_auto_publish(route: ApiGatewayRoute, product: Product, db: Session, 
             raise RuntimeError(f"健康检查返回 HTTP {response.status_code}")
         route.status = "active"
         route.health_message = f"健康检查通过（HTTP {response.status_code}）"
+        if not publish_apisix_route(route, product, db, actor):
+            route.status = "publish_failed"
+            route.health_message = "后端健康检查通过，但 APISIX 路由发布失败"
+            return False
         audit(db, actor, "auto_publish_gateway_route", "api_gateway_route", route.id, health_url)
         return True
     except (httpx.HTTPError, RuntimeError, ValueError) as exc:
@@ -1811,6 +1905,58 @@ def get_gateway_config(product_id: str, user: User = Depends(current_user), db: 
             raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以查看网关配置")
     route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
     return {"item": gateway_route_out(route, product) if route else None}
+
+
+def gateway_operator_allowed(product: Product, user: User, db: Session, action: str = "查看") -> None:
+    if user.platform_role in {"super_admin", "platform_operator"}:
+        return
+    membership = current_membership(db, user, product.enterprise_id)
+    if not membership or membership.role not in {"super_admin", "enterprise_admin"}:
+        raise HTTPException(403, f"只有平台管理员或产品企业管理员可以{action}网关配置")
+
+
+@app.get("/api/products/{product_id}/gateway-revisions")
+def gateway_revisions(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    gateway_operator_allowed(product, user, db)
+    rows = db.scalars(select(GatewayConfigRevision).where(GatewayConfigRevision.product_id == product.id).order_by(GatewayConfigRevision.revision.desc())).all()
+    return {"items": [{"id": x.id, "revision": x.revision, "status": x.status, "error_message": x.error_message, "created_by": x.created_by, "created_at": x.created_at} for x in rows]}
+
+
+@app.post("/api/products/{product_id}/gateway-config/validate")
+def validate_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    gateway_operator_allowed(product, user, db, "校验")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    if not route:
+        raise HTTPException(404, "请先保存 API 网关配置")
+    parsed = urlparse(route.upstream_url)
+    checks = {"upstream_url": parsed.scheme in {"http", "https"} and bool(parsed.netloc), "route_key": bool(route.route_key), "version": bool(route.version), "health_path": bool(route.health_path), "policy": route.rate_limit_per_minute > 0 and route.daily_quota > 0}
+    return {"valid": all(checks.values()), "checks": checks, "route": gateway_route_out(route, product)}
+
+
+@app.post("/api/products/{product_id}/gateway-config/rollback")
+def rollback_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = gateway_product(product_id, db)
+    gateway_operator_allowed(product, user, db, "回滚")
+    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    revisions = db.scalars(select(GatewayConfigRevision).where(GatewayConfigRevision.route_id == route.id, GatewayConfigRevision.status == "active").order_by(GatewayConfigRevision.revision.desc())).all() if route else []
+    if not route or len(revisions) < 2:
+        raise HTTPException(409, "没有可回滚的稳定网关版本")
+    target = json.loads(revisions[1].config_json)
+    try:
+        if apisix_enabled():
+            apisix_admin_request("PUT", f"/routes/{route.route_key}", target)
+        revision = GatewayConfigRevision(route_id=route.id, product_id=product.id, revision=revisions[0].revision + 1, config_json=json.dumps(target, ensure_ascii=False), status="active", created_by=user.email or user.phone or user.id)
+        db.add(revision)
+        db.flush()
+        db.add(GatewayPublishRecord(route_id=route.id, revision_id=revision.id, target="apisix" if apisix_enabled() else "legacy", status="succeeded", response_json=json.dumps({"rollback_from": revisions[0].id, "rollback_to": revisions[1].id}), created_by=user.email or user.phone or user.id, completed_at=now()))
+        audit(db, user.email, "rollback_gateway_route", "gateway_config_revision", revision.id, route.route_key)
+        db.commit()
+        return gateway_route_out(route, product) | {"rollback_revision": revision.revision}
+    except (RuntimeError, ValueError, TypeError) as exc:
+        db.rollback()
+        raise HTTPException(502, f"网关回滚失败：{exc}") from exc
 
 
 @app.put("/api/products/{product_id}/gateway-config")

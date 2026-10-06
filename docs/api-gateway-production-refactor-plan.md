@@ -239,3 +239,15 @@ GET  /api/gateway/alerts
 - 现有 API Key 哈希和订单授权数据必须保留，迁移期间不能直接重新生成全部凭据；
 - 生产切换采用灰度路由或按产品逐个切换，保留 FastAPI 网关回退入口；
 - 第一阶段优先建设自托管开源 APISIX 方案，暂不引入 Kong Enterprise 或商业控制台依赖。
+
+## 10. 当前实现进度
+
+已完成第一轮实际改造：
+
+- `market-etcd` 已部署到 `market` 命名空间；
+- APISIX 3.19 数据面已部署为 2 个 Kubernetes 副本；
+- APISIX 公网测试入口为 NodePort `30082`，Admin API 仅通过 ClusterIP 提供给控制面；
+- FastAPI 已接入 APISIX Admin API，可执行配置校验、路由发布、发布记录查询和回滚；
+- 已使用“制造过程行业模型”完成保存配置、后端健康检查、APISIX 发布、API Key 调用和限流响应头验证；
+- 当前采用兼容模式，APISIX 将请求转发至现有 `market-gateway`，因此旧的订单授权和 API Key 逻辑仍然有效；
+- API Key 原生 APISIX Consumer 同步、Redis 共享 OAuth Token、生产入口 TLS、监控告警和运营平台管理页面仍待后续任务完成。

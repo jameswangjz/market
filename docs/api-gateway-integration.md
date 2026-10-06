@@ -11,7 +11,7 @@
 API 提供方业务服务
     ^
     | HTTP/HTTPS 转发
-    统一 API 网关集群（market-gateway）
+    统一 API 网关集群（Apache APISIX）
     |
     | 按 route_key 路由
     +--> API 服务 A 独立 Service/Deployment
@@ -19,7 +19,7 @@ API 提供方业务服务
     +--> API 服务 C 独立 Service/Deployment
 ```
 
-网关地址：`http://<平台地址>:30081`。生产环境应通过 HTTPS 域名或 Ingress 暴露，不应直接使用 NodePort。
+网关地址：开发联调使用 `http://<平台地址>:30082`，对应 Apache APISIX 数据面；生产环境应通过 HTTPS 域名或 Ingress 暴露，不应直接使用 NodePort。`30081` 为迁移期间的旧 FastAPI 兼容入口，不作为新接入地址。
 
 API 提供方的业务 API 不要求部署在数据集运营服务管理平台所在的 Kubernetes 集群中。`upstream_url` 可以是第三方公网 HTTPS 地址、专用网络地址，或平台 Kubernetes 集群内的 Service 地址；前提是统一 API 网关所在网络能够访问该地址，并完成 TLS、访问控制和健康检查配置。
 
@@ -273,7 +273,7 @@ API 服务应配置 Readiness、Liveness、资源请求与限制，并支持至�
 
 ## 9. 测试环境与联调验收
 
-开发环境网关地址：`http://192.168.10.10:30081`。生产环境必须使用 HTTPS 域名或 Ingress。
+开发环境网关地址：`http://192.168.10.10:30082`。生产环境必须使用 HTTPS 域名或 Ingress；`30081` 仅用于旧网关回退验证。
 
 联调步骤：
 

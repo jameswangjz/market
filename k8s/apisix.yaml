@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-etcd
+  namespace: market
+spec:
+  selector: {app: market-etcd}
+  ports:
+    - {name: client, port: 2379, targetPort: 2379}
+    - {name: peer, port: 2380, targetPort: 2380}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-etcd
+  namespace: market
+  labels: {app: market-etcd}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: market-etcd}}
+  template:
+    metadata: {labels: {app: market-etcd}}
+    spec:
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.15
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/etcd"]
+          args:
+            - --name=etcd0
+            - --data-dir=/etcd-data
+            - --advertise-client-urls=http://0.0.0.0:2379
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --initial-advertise-peer-urls=http://127.0.0.1:2380
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-cluster=etcd0=http://127.0.0.1:2380
+            - --initial-cluster-state=new
+            - --initial-cluster-token=market-etcd-dev
+          ports: [{name: client, containerPort: 2379}, {name: peer, containerPort: 2380}]
+          readinessProbe:
+            httpGet: {path: /health, port: 2379}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: 2379}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          volumeMounts: [{name: data, mountPath: /etcd-data}]
+      volumes: [{name: data, emptyDir: {}}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: market-apisix-config
+  namespace: market
+data:
+  config.yaml: |
+    apisix:
+      node_listen: 9080
+      enable_ipv6: false
+    deployment:
+      role: traditional
+      role_traditional:
+        config_provider: etcd
+      admin:
+        admin_key:
+          - name: admin
+            role: admin
+            key: market-apisix-admin-dev-change-me
+        allow_admin:
+          - 0.0.0.0/0
+    etcd:
+      host:
+        - "http://market-etcd:2379"
+      prefix: "/apisix"
+      timeout: 30
+    nginx_config:
+      error_log: "/dev/stderr"
+      error_log_level: "warn"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-apisix
+  namespace: market
+  labels: {app: market-apisix}
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector: {matchLabels: {app: market-apisix}}
+  template:
+    metadata: {labels: {app: market-apisix}}
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: {matchLabels: {app: market-apisix}}
+      containers:
+        - name: apisix
+          image: apache/apisix:3.19.0-debian
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args: ["apisix init && apisix start -c /usr/local/apisix/conf/config.yaml && tail -f /dev/null"]
+          ports:
+            - {name: proxy, containerPort: 9080}
+            - {name: admin, containerPort: 9180}
+          volumeMounts: [{name: config, mountPath: /usr/local/apisix/conf/config.yaml, subPath: config.yaml}]
+          readinessProbe:
+            tcpSocket: {port: 9080}
+            initialDelaySeconds: 12
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: 9080}
+            initialDelaySeconds: 25
+            periodSeconds: 10
+      volumes: [{name: config, configMap: {name: market-apisix-config}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-apisix
+  namespace: market
+spec:
+  selector: {app: market-apisix}
+  ports: [{name: proxy, port: 9080, targetPort: 9080}]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: market-apisix-pdb
+  namespace: market
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: market-apisix}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-apisix-admin
+  namespace: market
+spec:
+  selector: {app: market-apisix}
+  type: ClusterIP
+  ports: [{name: admin, port: 9180, targetPort: 9180}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-apisix-public
+  namespace: market
+spec:
+  selector: {app: market-apisix}
+  type: NodePort
+  ports: [{name: proxy, port: 9080, targetPort: 9080, nodePort: 30082}]

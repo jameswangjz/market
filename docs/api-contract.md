@@ -73,7 +73,7 @@ API products using `api` or `model_api` delivery are exposed through the unified
 - `POST /products/{id}/gateway-credentials`：为企业生成一次性返回的 API Key
 - `GET /products/{id}/gateway-credentials`：查看当前企业 API Key 的状态和配额，不返回密钥原文
 - `GET /products/{id}/gateway-usage`：查看最近调用量、成功率、错误数、耗时和请求路径
-- `GET /health` on `market-gateway`：网关健康检查
+- `GET /health` on `market-gateway`：旧 FastAPI 兼容网关健康检查；生产数据面使用 Apache APISIX 的 Kubernetes Service
 - `/{gateway}/gateway/{route-key}/{path}`：网关统一转发入口，使用 `X-API-Key` 或 `Authorization: Bearer` 认证
 
-The Kubernetes deployment uses `market-gateway` as the shared gateway cluster service and deploys each API provider service independently behind its configured upstream URL. Redis provides distributed minute-rate and daily-quota counters; PostgreSQL stores route, credential and usage records.
+The Kubernetes deployment uses Apache APISIX as the shared production data plane and keeps `market-gateway` as the migration fallback. Each API provider service remains independently deployed behind its configured upstream URL. Redis provides distributed minute-rate and daily-quota counters; PostgreSQL stores route, credential, revision, publish and usage records.

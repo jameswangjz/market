@@ -12,7 +12,7 @@
 调用方应用 -> 统一 API 网关 -> API 提供方业务服务
 ```
 
-开发环境网关地址：`http://192.168.10.10:30081`。生产环境使用平台提供的 HTTPS 域名。
+开发环境网关地址：`http://192.168.10.10:30082`。生产环境使用平台提供的 HTTPS 域名；`30081` 仅用于旧网关回退验证。
 
 产品详情或订单中会提供以下信息：
 
@@ -172,7 +172,7 @@ Accept: text/event-stream
 
 ```bash
 curl -X GET \
-  'http://192.168.10.10:30081/gateway/quality-api/v1/quality-score?equipment_id=EQ-001' \
+  'http://192.168.10.10:30082/gateway/quality-api/v1/quality-score?equipment_id=EQ-001' \
   -H 'X-API-Key: <订单页面生成的 API Key>' \
   -H 'X-Request-Id: test-001' \
   -H 'Accept: application/json'
