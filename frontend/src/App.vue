@@ -228,6 +228,7 @@ const statusLabels = {
   not_started: "未开始",
   preparing: "准备中",
   in_delivery: "交付中",
+  retrying: "等待重试",
   pending_acceptance: "待验收",
   accepted: "验收通过",
   exception: "交付异常",
@@ -2011,7 +2012,10 @@ onUnmounted(() => window.clearInterval(progressTimer));
                       <th>任务</th>
                       <th>负责人</th>
                       <th>方式</th>
+                      <th>模式</th>
                       <th>状态</th>
+                      <th>重试</th>
+                      <th>SLA截止</th>
                       <th>说明</th>
                     </tr>
                   </thead>
@@ -2023,11 +2027,14 @@ onUnmounted(() => window.clearInterval(progressTimer));
                       </td>
                       <td>{{ item.assignee }}</td>
                       <td>{{ item.method }}</td>
+                      <td>{{ item.delivery_mode === "automatic" ? "自动交付" : "人工交付" }}</td>
                       <td>
-                        <span class="status-pill status-in_progress">{{
+                        <span :class="['status-pill', item.status === 'exception' ? 'status-blocked' : item.status === 'pending_acceptance' ? 'status-review' : 'status-in_progress']">{{
                           label(item.status)
                         }}</span>
                       </td>
+                      <td>{{ item.retry_count || 0 }} / {{ item.max_retries || 3 }}<small v-if="item.last_error" class="delivery-error">{{ item.last_error }}</small></td>
+                      <td>{{ item.sla_due_at ? fmtDate(item.sla_due_at) : "-" }}</td>
                       <td>{{ item.note || "-" }}</td>
                     </tr>
                   </tbody>

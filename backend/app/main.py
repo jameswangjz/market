@@ -492,7 +492,13 @@ class DeliveryTask(Base):
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
     assignee: Mapped[str] = mapped_column(String(180), default="运营交付团队")
     method: Mapped[str] = mapped_column(String(80))
+    delivery_mode: Mapped[str] = mapped_column(String(20), default="manual")
     status: Mapped[str] = mapped_column(String(30), default="preparing")
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -939,6 +945,11 @@ class TransitionBody(BaseModel):
     refund_amount: float | None = Field(default=None, gt=0)
 
 
+class DeliveryProcessBody(BaseModel):
+    success: bool = True
+    error: str = ""
+
+
 class DevelopmentTaskUpdate(BaseModel):
     status: str | None = None
     progress: int | None = Field(default=None, ge=0, le=100)
@@ -1097,6 +1108,11 @@ def require_settlement_operator(user: User):
         raise HTTPException(403, "只有平台管理员、平台运营或财务清算人员可以执行清算操作")
 
 
+def require_delivery_operator(user: User):
+    if user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
+        raise HTTPException(403, "只有平台管理员、平台运营或交付监控人员可以处理交付任务")
+
+
 def require_settlement_viewer(user: User):
     if user.platform_role not in {"super_admin", "platform_operator", "finance_settlement", "security_compliance"}:
         raise HTTPException(403, "只有平台运营、财务清算或安全审计人员可以查看清算数据")
@@ -1164,6 +1180,27 @@ TRANSITIONS: dict[str, tuple[str, str, str, str]] = {
     "close_order": ("main", "completed", "closed", "清算/期满"),
     "cancel_order": ("main", "cancelled", "cancelled", "取消订单"),
 }
+
+ONLINE_DELIVERY_METHODS = {"file", "object_storage", "api", "model_api", "tenant_access"}
+
+
+def delivery_task_config(db: Session, order: Order) -> tuple[str, str, str]:
+    product = db.get(Product, order.product_id)
+    method = product.delivery_method if product else "file"
+    mode = "automatic" if method in ONLINE_DELIVERY_METHODS else "manual"
+    return method, mode, "支付成功后进入自动交付" if mode == "automatic" else "等待交付人员处理"
+
+
+def create_delivery_task(db: Session, order: Order, actor: str = "") -> DeliveryTask:
+    method, mode, note = delivery_task_config(db, order)
+    task = DeliveryTask(order_id=order.id, method=method, delivery_mode=mode, status="in_delivery" if mode == "automatic" else "preparing", assignee="自动交付服务" if mode == "automatic" else "运营交付团队", next_retry_at=now() if mode == "automatic" else None, sla_due_at=now() + timedelta(hours=24), note=note)
+    db.add(task)
+    order.delivery_status = "in_delivery" if mode == "automatic" else "preparing"
+    if mode == "automatic":
+        order.main_status = "fulfilling"
+    if actor:
+        audit(db, actor, "create_delivery_task", "delivery_task", task.id, f"mode={mode} method={method}", category="delivery", business_domain="delivery", order_id=order.id)
+    return task
 
 
 def ensure_product_metadata_schema():
@@ -1262,6 +1299,14 @@ def ensure_review_and_file_schema():
             "subscription_id": "VARCHAR(36)",
             "business_type": "VARCHAR(30)",
             "related_order_id": "VARCHAR(36)",
+        },
+        "delivery_tasks": {
+            "delivery_mode": "VARCHAR(20) DEFAULT 'manual'",
+            "retry_count": "INTEGER DEFAULT 0",
+            "max_retries": "INTEGER DEFAULT 3",
+            "last_error": "TEXT DEFAULT ''",
+            "next_retry_at": "TIMESTAMP WITH TIME ZONE",
+            "sla_due_at": "TIMESTAMP WITH TIME ZONE",
         },
         "saas_integration_configs": {
             "credentials_revealed_at": "TIMESTAMP WITH TIME ZONE",
@@ -3221,6 +3266,8 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             old_main = order.main_status
             order.main_status = "pending_fulfillment"
             log_state(db, order, "main", old_main, order.main_status, "支付完成/生成任务", user, body.reason)
+        if not db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc())):
+            create_delivery_task(db, order, user.email or user.name)
     elif body.action == "approve_refund":
         if order.payment_status != "paid":
             raise HTTPException(409, "只有已支付订单可以发起退款")
@@ -3258,8 +3305,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     elif body.action == "create_task":
         if order.delivery_status != "not_started":
             raise HTTPException(400, "当前交付状态不能生成任务")
-        order.delivery_status = "preparing"
-        db.add(DeliveryTask(order_id=order.id, method="file", status="preparing", assignee="运营交付团队"))
+        create_delivery_task(db, order, user.email or user.name)
         log_state(db, order, "delivery", current, target, body.action, user, body.reason)
     elif body.action == "submit_after_sales":
         if order.after_sales_status != "none":
@@ -3282,15 +3328,56 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             order.main_status = "pending_confirmation"
         if body.action == "confirm_order":
             order.delivery_status = "accepted"
+        if body.action == "retry_delivery":
+            task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
+            if task:
+                task.status = "retrying" if task.delivery_mode == "automatic" else "preparing"
+                task.next_retry_at = now() if task.delivery_mode == "automatic" else None
+                task.last_error = ""
     audit(db, user.email, body.action, "order", order.id, body.reason)
     db.commit()
     return order_out(order)
 
 
+@app.post("/api/delivery-tasks/{task_id}/process")
+def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_delivery_operator(user)
+    task = db.get(DeliveryTask, task_id)
+    if not task:
+        raise HTTPException(404, "交付任务不存在")
+    order = db.get(Order, task.order_id)
+    if not order:
+        raise HTTPException(404, "关联订单不存在")
+    if task.status not in {"in_delivery", "retrying", "preparing"}:
+        raise HTTPException(409, "当前交付任务不允许处理")
+    if body.success:
+        task.status = "pending_acceptance"
+        task.next_retry_at = None
+        task.last_error = ""
+        order.delivery_status = "pending_acceptance"
+        order.main_status = "pending_confirmation"
+        audit(db, user.email, "delivery_succeeded", "delivery_task", task.id, "自动交付成功", category="delivery", business_domain="delivery", order_id=order.id, after={"retry_count": task.retry_count})
+    else:
+        task.retry_count += 1
+        task.last_error = body.error or "交付服务返回失败"
+        if task.retry_count < task.max_retries:
+            task.status = "retrying"
+            task.next_retry_at = now() + timedelta(seconds=10)
+            order.delivery_status = "in_delivery"
+        else:
+            task.status = "exception"
+            task.next_retry_at = None
+            order.delivery_status = "exception"
+            order.main_status = "fulfilling"
+        audit(db, user.email, "delivery_failed", "delivery_task", task.id, task.last_error, category="delivery", business_domain="delivery", order_id=order.id, risk_level="warning" if task.status != "exception" else "high", after={"retry_count": task.retry_count, "status": task.status, "next_retry_at": task.next_retry_at})
+    db.commit()
+    return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count, "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at, "sla_due_at": task.sla_due_at}, "order": order_out(order)}
+
+
 @app.get("/api/delivery-tasks")
 def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(DeliveryTask).order_by(DeliveryTask.created_at.desc())).all()
-    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "status": x.status, "note": x.note, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/after-sales")
