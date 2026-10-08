@@ -83,11 +83,25 @@ class Membership(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     role: Mapped[str] = mapped_column(String(60), default="member")
+    department_id: Mapped[str] = mapped_column(String(36), default="", index=True)
     business_roles: Mapped[str] = mapped_column(String(255), default="provider,user")
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     invited_by: Mapped[str] = mapped_column(String(36), default="")
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EnterpriseDepartment(Base):
+    __tablename__ = "enterprise_departments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    parent_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    code: Mapped[str] = mapped_column(String(60), default="")
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
 class IdentityVerification(Base):
@@ -471,6 +485,7 @@ class Payment(Base):
     amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     proof: Mapped[str] = mapped_column(Text, default="")
     confirmed_by: Mapped[str] = mapped_column(String(180), default="")
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -518,6 +533,8 @@ class AfterSalesTicket(Base):
     priority: Mapped[str] = mapped_column(String(20), default="normal")
     description: Mapped[str] = mapped_column(Text)
     owner: Mapped[str] = mapped_column(String(180), default="售后团队")
+    service_level_code: Mapped[str] = mapped_column(String(30), default="standard")
+    response_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -526,6 +543,9 @@ class Settlement(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     settlement_no: Mapped[str] = mapped_column(String(60), unique=True)
     order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    refund_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    reference_settlement_id: Mapped[str] = mapped_column(String(36), default="")
+    is_refund: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     gross_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     refund_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     net_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
@@ -536,6 +556,7 @@ class Settlement(Base):
     provider_share: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     service_share: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     expert_fee: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
+    channel_fee: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     tax_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     adjustment: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     status: Mapped[str] = mapped_column(String(30), default="pending")
@@ -656,6 +677,20 @@ class SettlementAdjustment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class SettlementAdjustmentProposal(Base):
+    __tablename__ = "settlement_adjustment_proposals"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    settlement_id: Mapped[str] = mapped_column(ForeignKey("settlements.id"), index=True)
+    proposed_by: Mapped[str] = mapped_column(String(180))
+    reason: Mapped[str] = mapped_column(Text)
+    values_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
+    reviewed_by: Mapped[str] = mapped_column(String(180), default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_comment: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -708,6 +743,84 @@ class DevelopmentTask(Base):
     acceptance: Mapped[str] = mapped_column(Text, default="")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class SLAProfile(Base):
+    __tablename__ = "sla_profiles"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    name: Mapped[str] = mapped_column(String(180), unique=True, index=True)
+    service_scope: Mapped[str] = mapped_column(String(40), default="platform")
+    product_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    evaluation_period: Mapped[str] = mapped_column(String(20), default="daily")
+    availability_target: Mapped[float] = mapped_column(Numeric(8, 4), default=99.9)
+    latency_target_ms: Mapped[int] = mapped_column(Integer, default=1000)
+    error_rate_target: Mapped[float] = mapped_column(Numeric(8, 4), default=1)
+    delivery_hours: Mapped[int] = mapped_column(Integer, default=24)
+    recovery_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    warning_margin: Mapped[float] = mapped_column(Numeric(8, 4), default=0.5)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ServiceLevel(Base):
+    __tablename__ = "service_levels"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    code: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    customer_scope: Mapped[str] = mapped_column(String(40), default="all")
+    support_days_per_week: Mapped[int] = mapped_column(Integer, default=5)
+    support_hours_per_day: Mapped[int] = mapped_column(Integer, default=8)
+    online_docs: Mapped[bool] = mapped_column(Boolean, default=True)
+    knowledge_base: Mapped[bool] = mapped_column(Boolean, default=True)
+    standard_api: Mapped[bool] = mapped_column(Boolean, default=True)
+    online_customer_service: Mapped[bool] = mapped_column(Boolean, default=True)
+    dedicated_manager: Mapped[bool] = mapped_column(Boolean, default=False)
+    technical_support: Mapped[bool] = mapped_column(Boolean, default=False)
+    initial_response_minutes: Mapped[int] = mapped_column(Integer, default=2880)
+    problem_response_hours: Mapped[int] = mapped_column(Integer, default=48)
+    quarterly_report: Mapped[bool] = mapped_column(Boolean, default=False)
+    annual_optimization: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(30), default="active", index=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+
+class ServiceLevelAssignment(Base):
+    __tablename__ = "service_level_assignments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    service_level_id: Mapped[str] = mapped_column(ForeignKey("service_levels.id"), index=True)
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    source: Mapped[str] = mapped_column(String(30), default="manual")
+    effective_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(180), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class SLAResult(Base):
+    __tablename__ = "sla_results"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    profile_id: Mapped[str] = mapped_column(ForeignKey("sla_profiles.id"), index=True)
+    product_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    availability: Mapped[float] = mapped_column(Numeric(8, 4), default=100)
+    avg_latency_ms: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    error_rate: Mapped[float] = mapped_column(Numeric(8, 4), default=0)
+    delivery_count: Mapped[int] = mapped_column(Integer, default=0)
+    delivery_on_time: Mapped[int] = mapped_column(Integer, default=0)
+    delivery_compliance: Mapped[float] = mapped_column(Numeric(8, 4), default=100)
+    status: Mapped[str] = mapped_column(String(30), default="met", index=True)
+    breach_reason: Mapped[str] = mapped_column(Text, default="")
+    calculated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
@@ -779,6 +892,16 @@ class InviteMemberBody(BaseModel):
 
 class MembershipRoleBody(BaseModel):
     role: str
+
+
+class EnterpriseDepartmentBody(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    code: str = Field(default="", max_length=60)
+    parent_id: str = ""
+
+
+class MemberDepartmentBody(BaseModel):
+    department_id: str = ""
 
 
 class NotificationSettingsBody(BaseModel):
@@ -963,16 +1086,75 @@ class DevelopmentTaskUpdate(BaseModel):
     note: str = ""
 
 
+class SLAProfileBody(BaseModel):
+    name: str = Field(min_length=2, max_length=180)
+    service_scope: str = Field(default="platform", pattern="^(platform|api|delivery|product)$")
+    product_id: str = ""
+    evaluation_period: str = Field(default="daily", pattern="^(hourly|daily|monthly)$")
+    availability_target: float = Field(default=99.9, ge=0, le=100)
+    latency_target_ms: int = Field(default=1000, ge=1, le=120000)
+    error_rate_target: float = Field(default=1, ge=0, le=100)
+    delivery_hours: int = Field(default=24, ge=1, le=8760)
+    recovery_minutes: int = Field(default=60, ge=1, le=10080)
+    warning_margin: float = Field(default=0.5, ge=0, le=20)
+    description: str = ""
+    status: str = Field(default="active", pattern="^(active|disabled)$")
+
+
+class SLAProfileUpdate(SLAProfileBody):
+    pass
+
+
+class ServiceLevelBody(BaseModel):
+    code: str = Field(min_length=2, max_length=30, pattern="^[a-z0-9_]+$")
+    name: str = Field(min_length=2, max_length=80)
+    description: str = ""
+    customer_scope: str = Field(default="all", pattern="^(all|paid|strategic)$")
+    support_days_per_week: int = Field(default=5, ge=1, le=7)
+    support_hours_per_day: int = Field(default=8, ge=1, le=24)
+    online_docs: bool = True
+    knowledge_base: bool = True
+    standard_api: bool = True
+    online_customer_service: bool = True
+    dedicated_manager: bool = False
+    technical_support: bool = False
+    initial_response_minutes: int = Field(default=2880, ge=1, le=525600)
+    problem_response_hours: int = Field(default=48, ge=1, le=8760)
+    quarterly_report: bool = False
+    annual_optimization: bool = False
+    status: str = Field(default="active", pattern="^(active|disabled)$")
+
+
+class ServiceLevelAssignmentBody(BaseModel):
+    enterprise_id: str
+    service_level_id: str
+    user_id: str = ""
+    expires_at: datetime | None = None
+
+
 class SettlementRuleBody(BaseModel):
     platform_rate: float = Field(default=8, ge=0, le=100)
     service_rate: float = Field(default=20, ge=0, le=100)
     expert_rate: float = Field(default=5, ge=0, le=100)
+    channel_rate: float = Field(default=0, ge=0, le=100)
     tax_rate: float = Field(default=6, ge=0, le=100)
 
 
 class SettlementAdjustmentBody(BaseModel):
-    amount: float
+    gross_amount: float = Field(ge=0)
+    cost_amount: float = Field(ge=0)
+    profit_amount: float = Field(ge=0)
+    platform_rate: float = Field(ge=0, le=100)
+    provider_rate: float = Field(ge=0, le=100)
+    service_rate: float = Field(ge=0, le=100)
+    expert_rate: float = Field(ge=0, le=100)
+    channel_rate: float = Field(ge=0, le=100)
     reason: str = Field(min_length=2)
+
+
+class SettlementProposalDecisionBody(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")
+    comment: str = ""
 
 
 class SettlementRuleCreateBody(BaseModel):
@@ -1012,6 +1194,7 @@ class SettlementBatchBody(BaseModel):
     rule_id: str = ""
     order_ids: list[str] = Field(default_factory=list)
     idempotency_key: str = ""
+    rebuild: bool = False
 
 
 class SettlementReconciliationBody(BaseModel):
@@ -1100,6 +1283,20 @@ def require_enterprise_admin(db: Session, user: User, enterprise_id: str | None 
     return membership
 
 
+def enterprise_management_scope(db: Session, user: User, enterprise_id: str | None = None) -> Enterprise:
+    """Resolve the enterprise being managed by a platform or enterprise administrator."""
+    if enterprise_id and user.platform_role in {"super_admin", "platform_operator"}:
+        enterprise = db.get(Enterprise, enterprise_id)
+        if not enterprise:
+            raise HTTPException(404, "企业不存在")
+        return enterprise
+    membership = require_enterprise_admin(db, user, enterprise_id)
+    enterprise = db.get(Enterprise, membership.enterprise_id)
+    if not enterprise:
+        raise HTTPException(404, "企业不存在")
+    return enterprise
+
+
 def require_platform_admin(user: User):
     if user.platform_role not in {"super_admin", "platform_operator"}:
         raise HTTPException(403, "只有系统管理员或平台运营管理员可以执行此操作")
@@ -1173,6 +1370,42 @@ def settlement_values_for_order(db: Session, order: Order, fallback: SettlementR
         if selected:
             return ({key: Decimal(str(getattr(selected, key, 0) or 0)) for key in ("platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate")}, f"global:{selected.version}")
     return ({key: Decimal(str(getattr(fallback, key, 0) or 0)) for key in ("platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate")}, f"global:{fallback.version}")
+
+
+def create_refund_negative_settlement(db: Session, refund: Refund, actor: str = "system") -> Settlement:
+    """Create one idempotent negative settlement for a completed refund."""
+    existing = db.scalar(select(Settlement).where(Settlement.refund_id == refund.id).order_by(Settlement.created_at.desc()))
+    if existing:
+        return existing
+    order = db.get(Order, refund.order_id)
+    if not order:
+        raise HTTPException(409, "退款关联订单不存在，无法生成负向清算单")
+    original = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()))
+    refund_amount = Decimal(str(refund.amount or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if refund_amount <= 0:
+        raise HTTPException(400, "退款金额必须大于0")
+    if original:
+        base_gross = max(Decimal(str(original.gross_amount or 0)), Decimal("0.01"))
+        ratio = refund_amount / base_gross
+        cost = -(Decimal(str(original.cost_amount or 0)) * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        profit = -(Decimal(str(original.profit_amount or 0)) * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        shares = {key: -(Decimal(str(getattr(original, key) or 0)) * ratio).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) for key in ("platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee")}
+        reference_id = original.id
+    else:
+        fallback = db.scalar(select(SettlementRule).where(SettlementRule.status == "active").order_by(SettlementRule.created_at.desc()))
+        if not fallback:
+            fallback = SettlementRule(version="v1", platform_rate=8, provider_rate=67, service_rate=20, expert_rate=5, channel_rate=0)
+        rates, _ = settlement_values_for_order(db, order, fallback)
+        gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"))
+        cost = -(order_cost(db, order) * refund_amount / max(gross, Decimal("0.01"))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        profit = -(refund_amount + cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        shares = {"platform_fee": (profit * rates["platform_rate"] / 100).quantize(Decimal("0.01")), "provider_share": (profit * rates["provider_rate"] / 100).quantize(Decimal("0.01")), "service_share": (profit * rates["service_rate"] / 100).quantize(Decimal("0.01")), "expert_fee": (profit * rates["expert_rate"] / 100).quantize(Decimal("0.01")), "channel_fee": (profit * rates["channel_rate"] / 100).quantize(Decimal("0.01"))}
+        reference_id = ""
+    settlement = Settlement(settlement_no="REF-SET-" + secrets.token_hex(6).upper(), order_id=order.id, refund_id=refund.id, reference_settlement_id=reference_id, is_refund=True, gross_amount=-refund_amount, refund_amount=-refund_amount, net_amount=-refund_amount, cost_amount=cost, profit_amount=profit, refund_recovery=-refund_amount, platform_fee=shares["platform_fee"], provider_share=shares["provider_share"], service_share=shares["service_share"], expert_fee=shares["expert_fee"], channel_fee=shares["channel_fee"], tax_amount=Decimal("0.00"), status="pending")
+    db.add(settlement)
+    db.flush()
+    audit(db, actor, "create_refund_negative_settlement", "settlement", settlement.settlement_no, "退款完成生成负向清算单", category="settlement_adjustment", business_domain="settlement", order_id=order.id, after={"refund_id": refund.id, "gross_amount": float(settlement.gross_amount), "cost_amount": float(cost), "profit_amount": float(profit)})
+    return settlement
 
 
 def log_state(db: Session, order: Order, domain: str, old: str, new: str, action: str, user: User, reason: str):
@@ -1267,6 +1500,7 @@ def ensure_review_and_file_schema():
             "status": "VARCHAR(30)",
             "invited_by": "VARCHAR(36)",
             "joined_at": "TIMESTAMP WITH TIME ZONE",
+            "department_id": "VARCHAR(36) DEFAULT ''",
         },
         "products": {
             "review_comment": "TEXT",
@@ -1290,6 +1524,13 @@ def ensure_review_and_file_schema():
             "refund_recovery": "NUMERIC(14,2)",
             "cost_amount": "NUMERIC(14,2) DEFAULT 0",
             "profit_amount": "NUMERIC(14,2) DEFAULT 0",
+            "channel_fee": "NUMERIC(14,2) DEFAULT 0",
+            "refund_id": "VARCHAR(36) DEFAULT ''",
+            "reference_settlement_id": "VARCHAR(36) DEFAULT ''",
+            "is_refund": "BOOLEAN DEFAULT FALSE",
+        },
+        "payments": {
+            "paid_at": "TIMESTAMP WITH TIME ZONE",
         },
         "settlement_batches": {
             "total_profit": "NUMERIC(14,2) DEFAULT 0",
@@ -1329,6 +1570,10 @@ def ensure_review_and_file_schema():
             "last_error": "TEXT DEFAULT ''",
             "next_retry_at": "TIMESTAMP WITH TIME ZONE",
             "sla_due_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "after_sales_tickets": {
+            "service_level_code": "VARCHAR(30) DEFAULT 'standard'",
+            "response_due_at": "TIMESTAMP WITH TIME ZONE",
         },
         "saas_integration_configs": {
             "credentials_revealed_at": "TIMESTAMP WITH TIME ZONE",
@@ -1377,6 +1622,12 @@ def ensure_review_and_file_schema():
         connection.execute(text("UPDATE memberships SET status = 'active' WHERE status IS NULL"))
         connection.execute(text("UPDATE users SET phone_verified = FALSE WHERE phone_verified IS NULL"))
         connection.execute(text("UPDATE users SET email_verified = FALSE WHERE email_verified IS NULL"))
+        # Historical development payments predate paid_at. Backfill from the
+        # payment row timestamps so the first monthly run remains reproducible.
+        connection.execute(text("UPDATE payments SET paid_at = COALESCE(updated_at, created_at) WHERE paid_at IS NULL AND status IN ('paid', 'refunding', 'refunded')"))
+        # Batch-level disputes/exceptions are retired. The underlying audit or
+        # reconciliation records remain available for traceability.
+        connection.execute(text("UPDATE settlement_batches SET status = 'generated' WHERE status IN ('exception', 'disputed', 'recon_exception')"))
         if engine.dialect.name != "sqlite":
             connection.execute(text("ALTER TABLE users ALTER COLUMN email DROP NOT NULL"))
         # Keep one global default rule active. Older development data may have
@@ -1385,11 +1636,22 @@ def ensure_review_and_file_schema():
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_settlement_rules_one_active ON settlement_rules(status) WHERE status = 'active'"))
 
 
+def repair_settlement_state_consistency():
+    """Repair legacy rows created before batch payment cascaded to settlements."""
+    with SessionLocal() as db:
+        paid_ids = select(SettlementLine.settlement_id).join(SettlementBatch, SettlementBatch.id == SettlementLine.batch_id).where(SettlementBatch.status == "paid", SettlementLine.status != "superseded")
+        db.execute(update(Settlement).where(Settlement.id.in_(paid_ids), Settlement.status != "paid").values(status="paid"))
+        locked_ids = select(SettlementLine.settlement_id).join(SettlementBatch, SettlementBatch.id == SettlementLine.batch_id).where(SettlementBatch.status == "confirmed", SettlementLine.status != "superseded")
+        db.execute(update(Settlement).where(Settlement.id.in_(locked_ids), Settlement.status.notin_(["paid", "superseded"])).values(status="locked"))
+        db.commit()
+
+
 @app.on_event("startup")
 def startup():
     Base.metadata.create_all(engine)
     ensure_product_metadata_schema()
     ensure_review_and_file_schema()
+    repair_settlement_state_consistency()
     with SessionLocal() as db:
         for product in db.scalars(select(Product)).all():
             if not product.versions:
@@ -1465,10 +1727,33 @@ def startup():
             ("QA-006", "部署测试 Agent", "清算端到端、四账、幂等、退款和权限测试", "测试", "P0", "todo", "BE-020..BE-027,FE-009..FE-012", "正常、异常、重试、重复和跨租户场景通过", 0),
             ("QA-007", "部署测试 Agent", "审计分类、检索、导出、安全和性能测试", "测试", "P0", "todo", "BE-028,BE-029,FE-013", "查询准确、越权拒绝、导出留痕、分页性能达标", 0),
             ("ARC-006", "主 Agent", "清算与审计专项集成门禁和验收报告", "架构", "P1", "todo", "BE-020..QA-007", "需求、接口、数据、页面、部署和测试闭环归档", 0),
+            ("ARC-007", "主 Agent", "平台服务与 SLA 保障需求、指标口径、数据模型和验收标准", "SLA 架构", "P0", "done", "已确认 SLA 规则、指标来源、权限和处置边界", "需求文档、接口边界和验收标准固化", 100),
+            ("BE-030", "后端 Agent", "SLA 规则、产品绑定、考核结果和审计 API", "SLA 后端", "P0", "done", "ARC-007", "规则 CRUD、指标计算、结果查询和审计可用", 100),
+            ("FE-014", "前端 Agent", "SLA 规则配置、运行考核、违约结果和报告页面", "SLA 前端", "P0", "done", "BE-030", "运营人员可配置规则、执行考核并查看结果", 100),
+            ("OPS-012", "部署测试 Agent", "SLA 数据库迁移、监控接入和端到端验证", "SLA 部署", "P0", "done", "BE-030,FE-014", "K8S 部署成功，正常/预警/违约场景验证通过", 100),
+            ("BE-031", "后端 Agent", "企业部门、邀请、成员角色和部门归属接口", "用户与企业", "P0", "done", "BE-007", "部门 CRUD、邀请接受、角色调整、成员部门调整和审计可用", 100),
+            ("FE-015", "前端 Agent", "企业成员、部门、邀请和角色管理页面", "用户与企业", "P0", "done", "BE-031", "企业管理员可邀请用户、维护部门和调整成员角色/部门", 100),
+            ("QA-008", "部署测试 Agent", "企业组织权限、邀请和部门端到端验证", "用户与企业", "P0", "done", "BE-031,FE-015", "普通成员越权拒绝，管理员流程和删除保护通过", 100),
         ]
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
                 db.add(DevelopmentTask(code=task[0], owner=task[1], title=task[2], area=task[3], priority=task[4], status=task[5], dependencies=task[6], acceptance=task[7], progress=task[8]))
+        if not db.scalar(select(SLAProfile.id).limit(1)):
+            db.add(SLAProfile(name="平台默认服务等级", service_scope="platform", evaluation_period="daily", availability_target=99.9, latency_target_ms=1000, error_rate_target=1, delivery_hours=24, recovery_minutes=60, warning_margin=0.5, description="覆盖平台 API 可用性、调用质量和交付及时率的默认规则", status="active", created_by="system"))
+        service_level_seeds = [
+            ("standard", "标准级", "面向所有注册用户，提供在线文档、知识库、标准 API、5×8 在线客服和 48 小时问题响应。", "all", 5, 8, 2880, 48, False, False, False),
+            ("enterprise", "企业级", "面向付费客户，在标准级基础上提供专属技术支持经理、7×8 技术支持和 24 小时问题响应。", "paid", 7, 8, 1440, 24, True, False, False),
+            ("strategic", "战略级", "面向核心合作伙伴和重要客户，提供 7×24 专属支持、15 分钟紧急响应、季度报告和年度优化建议。", "strategic", 7, 24, 15, 24, True, True, True),
+        ]
+        for code, name, description, scope, days, hours, response_minutes, response_hours, manager, quarterly, annual in service_level_seeds:
+            if not db.scalar(select(ServiceLevel.id).where(ServiceLevel.code == code)):
+                db.add(ServiceLevel(code=code, name=name, description=description, customer_scope=scope, support_days_per_week=days, support_hours_per_day=hours, online_docs=True, knowledge_base=True, standard_api=True, online_customer_service=True, dedicated_manager=manager, technical_support=code != "standard", initial_response_minutes=response_minutes, problem_response_hours=response_hours, quarterly_report=quarterly, annual_optimization=annual, status="active", created_by="system"))
+        db.flush()
+        standard_level = db.scalar(select(ServiceLevel).where(ServiceLevel.code == "standard"))
+        if standard_level:
+            for enterprise in db.scalars(select(Enterprise)).all():
+                if not db.scalar(select(ServiceLevelAssignment.id).where(ServiceLevelAssignment.enterprise_id == enterprise.id, ServiceLevelAssignment.user_id == "")):
+                    db.add(ServiceLevelAssignment(service_level_id=standard_level.id, enterprise_id=enterprise.id, source="default", created_by="system"))
         active_wave = {"BE-020": 25, "BE-028": 15, "BE-029": 10, "FE-013": 5, "OPS-011": 5}
         for code, progress in active_wave.items():
             task = db.scalar(select(DevelopmentTask).where(DevelopmentTask.code == code))
@@ -1683,16 +1968,16 @@ def review_enterprise_verification(enterprise_id: str, body: VerificationReviewB
 
 
 @app.post("/api/enterprise/invitations")
-def invite_member(body: InviteMemberBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    membership = require_enterprise_admin(db, user)
+def invite_member(body: InviteMemberBody, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = enterprise_management_scope(db, user, enterprise_id)
     target = body.target.strip().lower()
     invitee = db.scalar(select(User).where(or_(User.email == target, User.phone == target)))
     if not invitee:
         raise HTTPException(404, "被邀请用户尚未注册")
-    existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == membership.enterprise_id, Membership.status == "active"))
+    existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
     if existing:
         raise HTTPException(409, "用户已经加入该企业")
-    invitation = EnterpriseInvitation(enterprise_id=membership.enterprise_id, inviter_id=user.id, invitee_id=invitee.id, target=target, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=7))
+    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=7))
     db.add(invitation)
     audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
     db.commit()
@@ -1700,10 +1985,21 @@ def invite_member(body: InviteMemberBody, user: User = Depends(current_user), db
 
 
 @app.get("/api/enterprise/invitations")
-def enterprise_invitations(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    membership = require_enterprise_admin(db, user)
-    items = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.enterprise_id == membership.enterprise_id).order_by(EnterpriseInvitation.created_at.desc())).all()
+def enterprise_invitations(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = enterprise_management_scope(db, user, enterprise_id)
+    items = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.enterprise_id == enterprise.id).order_by(EnterpriseInvitation.created_at.desc())).all()
     return {"items": [{"id": x.id, "target": x.target, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
+
+
+@app.get("/api/enterprise/my-invitations")
+def my_enterprise_invitations(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    rows = db.execute(
+        select(EnterpriseInvitation, Enterprise)
+        .join(Enterprise, Enterprise.id == EnterpriseInvitation.enterprise_id)
+        .where(EnterpriseInvitation.invitee_id == user.id, EnterpriseInvitation.status == "pending")
+        .order_by(EnterpriseInvitation.created_at.desc())
+    ).all()
+    return {"items": [{"id": invitation.id, "enterprise_id": invitation.enterprise_id, "enterprise_name": enterprise.name, "target": invitation.target, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "created_at": invitation.created_at} for invitation, enterprise in rows if invitation.expires_at > now()]}
 
 
 @app.post("/api/enterprise/invitations/{token}/accept")
@@ -1711,32 +2007,113 @@ def accept_enterprise_invitation(token: str, user: User = Depends(current_user),
     invitation = db.scalar(select(EnterpriseInvitation).where(EnterpriseInvitation.token == token, EnterpriseInvitation.invitee_id == user.id))
     if not invitation or invitation.status != "pending" or invitation.expires_at <= now():
         raise HTTPException(400, "邀请不存在、已处理或已过期")
+    existing = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id, Membership.status == "active"))
     invitation.status = "accepted"
-    db.add(Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now()))
+    if not existing:
+        db.add(Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now()))
     audit(db, user.email or user.phone or user.id, "accept_enterprise_invitation", "enterprise_invitation", invitation.id)
     db.commit()
     return {"status": invitation.status, "enterprise_id": invitation.enterprise_id, "role": "member"}
 
 
 @app.get("/api/enterprise/members")
-def enterprise_members(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    membership = current_membership(db, user)
-    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == membership.enterprise_id, Membership.status == "active")).all()
-    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "business_roles": m.business_roles.split(","), "verified_status": u.verified_status} for m, u in rows]}
+def enterprise_members(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = enterprise_management_scope(db, user, enterprise_id) if enterprise_id else db.get(Enterprise, current_membership(db, user).enterprise_id)
+    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == enterprise.id, Membership.status == "active")).all()
+    departments = {x.id: x.name for x in db.scalars(select(EnterpriseDepartment).where(EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")).all()}
+    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_name": departments.get(m.department_id, "未分配"), "business_roles": m.business_roles.split(","), "verified_status": u.verified_status} for m, u in rows]}
 
 
 @app.patch("/api/enterprise/members/{membership_id}")
 def update_enterprise_member(membership_id: str, body: MembershipRoleBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    admin = require_enterprise_admin(db, user)
     if body.role not in {"member", "enterprise_admin"}:
         raise HTTPException(400, "企业成员角色只能是 member 或 enterprise_admin")
     target = db.get(Membership, membership_id)
-    if not target or target.enterprise_id != admin.enterprise_id or target.status != "active":
+    if not target or target.status != "active":
         raise HTTPException(404, "企业成员不存在")
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        admin = require_enterprise_admin(db, user, target.enterprise_id)
+    else:
+        admin = enterprise_management_scope(db, user, target.enterprise_id)
+    if target.role == "super_admin":
+        raise HTTPException(403, "企业超级管理员角色不可在此调整")
     target.role = body.role
     audit(db, user.email or user.phone or user.id, "update_enterprise_member_role", "membership", target.id, body.role)
     db.commit()
     return {"membership_id": target.id, "role": target.role}
+
+
+@app.get("/api/enterprise/departments")
+def enterprise_departments(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = enterprise_management_scope(db, user, enterprise_id) if enterprise_id else db.get(Enterprise, current_membership(db, user).enterprise_id)
+    items = db.scalars(select(EnterpriseDepartment).where(EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active").order_by(EnterpriseDepartment.name)).all()
+    return {"items": [{"id": x.id, "enterprise_id": x.enterprise_id, "parent_id": x.parent_id, "name": x.name, "code": x.code, "status": x.status, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/enterprise/departments")
+def create_enterprise_department(body: EnterpriseDepartmentBody, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = enterprise_management_scope(db, user, enterprise_id)
+    if body.parent_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.parent_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
+        raise HTTPException(404, "上级部门不存在")
+    if db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.name == body.name, EnterpriseDepartment.status == "active")):
+        raise HTTPException(409, "同级部门名称已存在")
+    item = EnterpriseDepartment(enterprise_id=enterprise.id, parent_id=body.parent_id, name=body.name, code=body.code, created_by=user.email or user.phone or user.id)
+    db.add(item)
+    audit(db, user.email or user.phone or user.id, "create_enterprise_department", "enterprise_department", item.id, item.name, category="auth", business_domain="enterprise")
+    db.commit()
+    return {"id": item.id, "parent_id": item.parent_id, "name": item.name, "code": item.code, "status": item.status}
+
+
+@app.patch("/api/enterprise/departments/{department_id}")
+def update_enterprise_department(department_id: str, body: EnterpriseDepartmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.get(EnterpriseDepartment, department_id)
+    if item and user.platform_role not in {"super_admin", "platform_operator"}:
+        enterprise_management_scope(db, user, item.enterprise_id)
+    if item and item.status != "active":
+        item = None
+    if not item:
+        raise HTTPException(404, "部门不存在")
+    if body.parent_id == department_id:
+        raise HTTPException(400, "部门不能将自己设置为上级")
+    if body.parent_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.parent_id, EnterpriseDepartment.enterprise_id == item.enterprise_id, EnterpriseDepartment.status == "active")):
+        raise HTTPException(404, "上级部门不存在")
+    item.name, item.code, item.parent_id = body.name, body.code, body.parent_id
+    audit(db, user.email or user.phone or user.id, "update_enterprise_department", "enterprise_department", item.id, item.name, category="auth", business_domain="enterprise")
+    db.commit()
+    return {"id": item.id, "parent_id": item.parent_id, "name": item.name, "code": item.code, "status": item.status}
+
+
+@app.delete("/api/enterprise/departments/{department_id}")
+def delete_enterprise_department(department_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.get(EnterpriseDepartment, department_id)
+    if item and user.platform_role not in {"super_admin", "platform_operator"}:
+        enterprise_management_scope(db, user, item.enterprise_id)
+    if item and item.status != "active":
+        item = None
+    if not item:
+        raise HTTPException(404, "部门不存在")
+    if db.scalar(select(EnterpriseDepartment.id).where(EnterpriseDepartment.parent_id == department_id, EnterpriseDepartment.enterprise_id == item.enterprise_id, EnterpriseDepartment.status == "active")):
+        raise HTTPException(409, "部门存在子部门，请先迁移或删除子部门")
+    if db.scalar(select(Membership.id).where(Membership.enterprise_id == item.enterprise_id, Membership.department_id == department_id, Membership.status == "active")):
+        raise HTTPException(409, "部门存在成员，请先调整成员部门")
+    item.status = "deleted"
+    audit(db, user.email or user.phone or user.id, "delete_enterprise_department", "enterprise_department", item.id, item.name, category="auth", business_domain="enterprise")
+    db.commit()
+    return {"id": item.id, "status": item.status}
+
+
+@app.patch("/api/enterprise/members/{membership_id}/department")
+def update_member_department(membership_id: str, body: MemberDepartmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    target = db.get(Membership, membership_id)
+    if not target or target.status != "active":
+        raise HTTPException(404, "企业成员不存在")
+    enterprise = enterprise_management_scope(db, user, target.enterprise_id)
+    if body.department_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.department_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
+        raise HTTPException(404, "部门不存在")
+    target.department_id = body.department_id
+    audit(db, user.email or user.phone or user.id, "update_enterprise_member_department", "membership", target.id, body.department_id or "未分配", category="auth", business_domain="enterprise")
+    db.commit()
+    return {"membership_id": target.id, "department_id": target.department_id}
 
 
 @app.get("/api/admin/settings/notifications")
@@ -3304,6 +3681,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
                 subscription.status = "active"
         payment.status = "paid"
         payment.confirmed_by = user.name
+        payment.paid_at = now()
         order.payment_status = "paid"
         order.paid_amount = order.amount
         log_state(db, order, "payment", current, target, body.action, user, body.reason)
@@ -3337,6 +3715,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         refund.status = "completed"
         refund.completed_by = user.name
         refund.completed_at = now()
+        create_refund_negative_settlement(db, refund, user.email or user.name)
         order.refunded_amount = Decimal(str(order.refunded_amount or 0)) + Decimal(str(refund.amount or 0))
         fully_refunded = Decimal(str(order.refunded_amount or 0)) >= Decimal(str(order.paid_amount or order.amount or 0))
         payment.status = "refunded" if fully_refunded else "paid"
@@ -3356,7 +3735,8 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         if order.after_sales_status != "none":
             raise HTTPException(400, "当前订单已有售后事项")
         order.after_sales_status = "processing"
-        db.add(AfterSalesTicket(ticket_no="AS-" + secrets.token_hex(5).upper(), order_id=order.id, type="质量异议", description=body.reason or "客户提交售后申请"))
+        level = current_service_level(db, order.buyer_enterprise_id, order.buyer_user_id or "")
+        db.add(AfterSalesTicket(ticket_no="AS-" + secrets.token_hex(5).upper(), order_id=order.id, type="质量异议", description=body.reason or "客户提交售后申请", service_level_code=level.code if level else "standard", response_due_at=now() + timedelta(minutes=(level.initial_response_minutes if level else 2880)), owner="专属技术支持经理" if level and level.dedicated_manager else "售后团队"))
         log_state(db, order, "after_sales", current, target, body.action, user, body.reason)
     elif current != expected:
         raise HTTPException(409, f"当前状态为 {current}，不能执行“{label}”")
@@ -3428,14 +3808,57 @@ def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_
 @app.get("/api/after-sales")
 def after_sales(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(AfterSalesTicket).order_by(AfterSalesTicket.created_at.desc())).all()
-    return {"items": [{"id": x.id, "ticket_no": x.ticket_no, "order_id": x.order_id, "type": x.type, "status": x.status, "priority": x.priority, "description": x.description, "owner": x.owner, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "ticket_no": x.ticket_no, "order_id": x.order_id, "type": x.type, "status": x.status, "priority": x.priority, "description": x.description, "owner": x.owner, "service_level_code": x.service_level_code, "response_due_at": x.response_due_at, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/settlements")
-def settlements(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def settlements(batch_id: str | None = None, settlement_id: str | None = None, order_no: str | None = None, status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
-    items = db.scalars(select(Settlement).order_by(Settlement.created_at.desc())).all()
-    return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "gross_amount": float(x.gross_amount or 0), "refund_amount": float(x.refund_amount or 0), "net_amount": float(x.net_amount or 0), "cost_amount": float(x.cost_amount or 0), "profit_amount": float(x.profit_amount or 0), "refund_recovery": float(x.refund_recovery or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
+    stmt = select(Settlement).where(Settlement.status != "superseded")
+    if status:
+        stmt = stmt.where(Settlement.status == status)
+    if settlement_id:
+        stmt = stmt.where(or_(Settlement.id == settlement_id, Settlement.settlement_no.ilike(f"%{settlement_id}%")))
+    if batch_id:
+        batch_match = select(SettlementLine.settlement_id).join(SettlementBatch, SettlementBatch.id == SettlementLine.batch_id).where(or_(SettlementBatch.id == batch_id, SettlementBatch.batch_no.ilike(f"%{batch_id}%")))
+        stmt = stmt.where(Settlement.id.in_(batch_match))
+    if order_no:
+        stmt = stmt.where(Settlement.order_id.in_(select(Order.id).where(Order.order_no.ilike(f"%{order_no}%"))))
+    items = db.scalars(stmt.order_by(Settlement.created_at.desc())).all()
+    orders = {x.id: x for x in db.scalars(select(Order).where(Order.id.in_([item.order_id for item in items]))).all()} if items else {}
+    line_rows = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id.in_([item.id for item in items]))).all() if items else []
+    batch_ids = {x.settlement_id: x.batch_id for x in line_rows}
+    batches = {x.id: x for x in db.scalars(select(SettlementBatch).where(SettlementBatch.id.in_(list(set(batch_ids.values()))))).all()} if batch_ids else {}
+    def rate(amount: Any, profit: Any) -> float:
+        return round(float(Decimal(str(amount or 0)) / Decimal(str(profit or 0)) * 100), 4) if profit else 0.0
+    return {"items": [{"id": x.id, "settlement_no": x.settlement_no, "batch_id": batch_ids.get(x.id, ""), "batch_no": batches.get(batch_ids.get(x.id)).batch_no if batches.get(batch_ids.get(x.id)) else "", "batch_status": batches.get(batch_ids.get(x.id)).status if batches.get(batch_ids.get(x.id)) else "", "order_id": x.order_id, "order_no": orders.get(x.order_id).order_no if orders.get(x.order_id) else "", "buyer_name": orders.get(x.order_id).buyer_name if orders.get(x.order_id) else "", "gross_amount": float(x.gross_amount or 0), "refund_amount": float(x.refund_amount or 0), "net_amount": float(x.net_amount or 0), "cost_amount": float(x.cost_amount or 0), "profit_amount": float(x.profit_amount or 0), "refund_recovery": float(x.refund_recovery or 0), "platform_fee": float(x.platform_fee or 0), "provider_share": float(x.provider_share or 0), "service_share": float(x.service_share or 0), "expert_fee": float(x.expert_fee or 0), "channel_fee": float(x.channel_fee or 0), "platform_rate": rate(x.platform_fee, x.profit_amount), "provider_rate": rate(x.provider_share, x.profit_amount), "service_rate": rate(x.service_share, x.profit_amount), "expert_rate": rate(x.expert_fee, x.profit_amount), "channel_rate": rate(x.channel_fee, x.profit_amount), "tax_amount": float(x.tax_amount or 0), "adjustment": float(x.adjustment or 0), "status": x.status, "created_at": x.created_at} for x in items]}
+
+
+@app.get("/api/settlements/{settlement_id}/detail")
+def settlement_detail(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
+    settlement = db.get(Settlement, settlement_id)
+    if not settlement:
+        settlement = db.scalar(select(Settlement).where(Settlement.settlement_no == settlement_id))
+    if not settlement:
+        raise HTTPException(404, "清算单不存在")
+    order = db.get(Order, settlement.order_id)
+    lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded").order_by(SettlementLine.created_at)).all()
+    batch = db.get(SettlementBatch, lines[0].batch_id) if lines else None
+    profit = Decimal(str(settlement.profit_amount or 0))
+    def participant_out(participant_type: str, name: str, amount: Any) -> dict[str, Any]:
+        return {"participant_type": participant_type, "participant_name": name, "rate": round(float(Decimal(str(amount or 0)) / profit * 100), 4) if profit else 0.0, "amount": float(amount or 0)}
+    participant_map = {line.participant_type: participant_out(line.participant_type, line.participant_name, line.amount) for line in lines}
+    defaults = [("platform", "平台运营方"), ("provider", "数据/服务提供方"), ("service", "数据服务方"), ("expert", "专家"), ("channel", "渠道")]
+    participants = [participant_map.get(kind, participant_out(kind, name, 0)) for kind, name in defaults]
+    audit_ids = {settlement.id, settlement.settlement_no}
+    lifecycle_filters = [AuditLog.target_id.in_(audit_ids), AuditLog.order_id == settlement.order_id]
+    if batch:
+        lifecycle_filters.append(AuditLog.batch_no == batch.batch_no)
+    lifecycle_logs = db.scalars(select(AuditLog).where(or_(*lifecycle_filters), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
+    lifecycle = [{"action": item.action, "actor": item.actor, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in lifecycle_logs]
+    proposals = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle}
 
 
 @app.post("/api/settlements/generate/{order_id}")
@@ -3457,10 +3880,11 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     platform_fee = (distributable * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     service_share = (distributable * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     expert_fee = (distributable * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    channel_fee = (distributable * Decimal(str(body.channel_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     # Tax is borne and declared by the relevant participants; it is not a
     # standalone deduction from the profit allocation base.
     tax_amount = Decimal("0.00")
-    provider_share = (distributable - platform_fee - service_share - expert_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    provider_share = (distributable - platform_fee - service_share - expert_fee - channel_fee).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     settlement = existing or Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id)
     settlement.gross_amount = gross
     settlement.refund_amount = refund_amount
@@ -3471,6 +3895,7 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     settlement.platform_fee = platform_fee
     settlement.service_share = service_share
     settlement.expert_fee = expert_fee
+    settlement.channel_fee = channel_fee
     settlement.tax_amount = tax_amount
     settlement.provider_share = provider_share
     settlement.status = "pending"
@@ -3479,7 +3904,7 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     audit(db, user.email, "generate_settlement", "settlement", settlement.settlement_no, f"cost={cost_amount} profit={profit_amount}", category="settlement", business_domain="settlement", order_id=order.id, after={"cost_amount": float(cost_amount), "profit_amount": float(profit_amount), "distributable_profit": float(distributable)})
     db.commit()
     db.refresh(settlement)
-    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "refund_amount": float(settlement.refund_amount), "net_amount": float(settlement.net_amount), "cost_amount": float(settlement.cost_amount), "profit_amount": float(settlement.profit_amount), "refund_recovery": float(settlement.refund_recovery), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "order_id": settlement.order_id, "gross_amount": float(settlement.gross_amount), "refund_amount": float(settlement.refund_amount), "net_amount": float(settlement.net_amount), "cost_amount": float(settlement.cost_amount), "profit_amount": float(settlement.profit_amount), "refund_recovery": float(settlement.refund_recovery), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "channel_fee": float(settlement.channel_fee), "tax_amount": float(settlement.tax_amount), "adjustment": float(settlement.adjustment), "status": settlement.status}
 
 
 @app.post("/api/settlements/{settlement_id}/adjust")
@@ -3488,15 +3913,120 @@ def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: 
     settlement = db.get(Settlement, settlement_id)
     if not settlement:
         raise HTTPException(404, "清算单不存在")
-    if settlement.status == "locked":
-        raise HTTPException(409, "已锁定清算单不能直接调整")
-    adjustment = SettlementAdjustment(settlement_id=settlement.id, amount=body.amount, reason=body.reason, created_by=user.name)
-    settlement.adjustment = Decimal(str(settlement.adjustment or 0)) + Decimal(str(body.amount))
+    if settlement.status in {"locked", "paid", "superseded"}:
+        raise HTTPException(409, "当前清算单已锁定、付款或作废，不能直接调整")
+    line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id))
+    batch = db.get(SettlementBatch, line.batch_id) if line else None
+    if settlement.status == "disputed":
+        raise HTTPException(409, "当前清算单处于异议状态，请通过调整提案处理")
+    if batch and batch.status not in {"generated", "pending_confirm"}:
+        raise HTTPException(409, "当前清算批次已确认或付款，不能直接调整")
+    rates = [body.platform_rate, body.provider_rate, body.service_rate, body.expert_rate, body.channel_rate]
+    if abs(sum(rates) - 100) > 0.01:
+        raise HTTPException(400, "五方分成比例合计必须为100%")
+    expected_profit = Decimal(str(body.gross_amount)) - Decimal(str(body.cost_amount))
+    if expected_profit != Decimal(str(body.profit_amount)):
+        raise HTTPException(400, "订单利润必须等于订单金额减订单成本")
+    before = {"status": settlement.status, "gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "platform_fee": float(settlement.platform_fee or 0), "provider_share": float(settlement.provider_share or 0), "service_share": float(settlement.service_share or 0), "expert_fee": float(settlement.expert_fee or 0), "channel_fee": float(settlement.channel_fee or 0)}
+    profit = Decimal(str(body.profit_amount)).quantize(Decimal("0.01"))
+    amounts = [
+        ("platform", (profit * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"))),
+        ("provider", (profit * Decimal(str(body.provider_rate)) / 100).quantize(Decimal("0.01"))),
+        ("service", (profit * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"))),
+        ("expert", (profit * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"))),
+        ("channel", (profit * Decimal(str(body.channel_rate)) / 100).quantize(Decimal("0.01"))),
+    ]
+    settlement.gross_amount = Decimal(str(body.gross_amount)).quantize(Decimal("0.01"))
+    settlement.cost_amount = Decimal(str(body.cost_amount)).quantize(Decimal("0.01"))
+    settlement.profit_amount = profit
+    settlement.net_amount = settlement.gross_amount - Decimal(str(settlement.refund_amount or 0))
+    settlement.platform_fee, settlement.provider_share, settlement.service_share, settlement.expert_fee, settlement.channel_fee = [amount for _, amount in amounts]
+    adjustment = SettlementAdjustment(settlement_id=settlement.id, amount=profit - Decimal(str(before["profit_amount"])), reason=body.reason, created_by=user.name)
+    settlement.adjustment = Decimal(str(settlement.adjustment or 0)) + adjustment.amount
     settlement.status = "adjusted"
     db.add(adjustment)
-    audit(db, user.email, "adjust_settlement", "settlement", settlement.settlement_no, body.reason)
+    for line in db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id)).all():
+        amount = next((value for participant_type, value in amounts if participant_type == line.participant_type), Decimal("0"))
+        line.amount = amount
+    after = {"status": settlement.status, "gross_amount": float(settlement.gross_amount), "cost_amount": float(settlement.cost_amount), "profit_amount": float(settlement.profit_amount), "platform_fee": float(settlement.platform_fee), "provider_share": float(settlement.provider_share), "service_share": float(settlement.service_share), "expert_fee": float(settlement.expert_fee), "channel_fee": float(settlement.channel_fee)}
+    audit(db, user.email, "adjust_settlement", "settlement", settlement.settlement_no, body.reason, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no if batch else "", before=before, after=after)
     db.commit()
-    return {"settlement_no": settlement.settlement_no, "adjustment": float(settlement.adjustment), "status": settlement.status}
+    return {"settlement_no": settlement.settlement_no, "adjustment": float(settlement.adjustment), "status": settlement.status, "before": before, "after": after}
+
+
+@app.post("/api/settlements/{settlement_id}/proposals")
+def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAdjustmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    settlement = db.get(Settlement, settlement_id)
+    if not settlement:
+        raise HTTPException(404, "清算单不存在")
+    if settlement.status in {"locked", "paid", "superseded"}:
+        raise HTTPException(409, "当前清算单已锁定、付款或作废，不能提交调整提案")
+    line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
+    batch = db.get(SettlementBatch, line.batch_id) if line else None
+    if batch and batch.status not in {"generated", "pending_confirm"}:
+        raise HTTPException(409, "当前清算批次已确认或付款，不能提交调整提案")
+    rates = [body.platform_rate, body.provider_rate, body.service_rate, body.expert_rate, body.channel_rate]
+    if abs(sum(rates) - 100) > 0.01:
+        raise HTTPException(400, "五方分成比例合计必须为100%")
+    if Decimal(str(body.gross_amount)) - Decimal(str(body.cost_amount)) != Decimal(str(body.profit_amount)):
+        raise HTTPException(400, "订单利润必须等于订单金额减订单成本")
+    pending = db.scalar(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id, SettlementAdjustmentProposal.status == "pending"))
+    if pending:
+        raise HTTPException(409, "当前清算单已有待处理调整提案")
+    values = body.model_dump(exclude={"reason"})
+    proposal = SettlementAdjustmentProposal(settlement_id=settlement.id, proposed_by=user.email or user.name, reason=body.reason, values_json=json.dumps(values), status="pending")
+    before = {"status": settlement.status}
+    settlement.status = "disputed"
+    db.add(proposal)
+    audit(db, user.email, "create_settlement_adjustment_proposal", "settlement", settlement.settlement_no, body.reason, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no if batch else "", risk_level="high", before=before, after={"status": settlement.status, "proposal_id": proposal.id, "values": values})
+    db.commit()
+    db.refresh(proposal)
+    return {"id": proposal.id, "settlement_id": proposal.settlement_id, "status": proposal.status, "proposed_by": proposal.proposed_by, "values": values, "created_at": proposal.created_at}
+
+
+@app.get("/api/settlements/{settlement_id}/proposals")
+def settlement_adjustment_proposals(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_viewer(user)
+    items = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement_id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
+    return {"items": [{"id": item.id, "settlement_id": item.settlement_id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in items]}
+
+
+@app.post("/api/settlement-proposals/{proposal_id}/decision")
+def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProposalDecisionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_settlement_operator(user)
+    proposal = db.get(SettlementAdjustmentProposal, proposal_id)
+    if not proposal:
+        raise HTTPException(404, "调整提案不存在")
+    if proposal.status != "pending":
+        raise HTTPException(409, "调整提案已经处理")
+    if proposal.proposed_by == (user.email or user.name):
+        raise HTTPException(409, "调整提案不能由提交人本人确认")
+    settlement = db.get(Settlement, proposal.settlement_id)
+    if not settlement or settlement.status != "disputed":
+        raise HTTPException(409, "关联清算单当前不在异议状态")
+    before = {"status": settlement.status}
+    proposal.status = "accepted" if body.decision == "approve" else "rejected"
+    proposal.reviewed_by = user.email or user.name
+    proposal.reviewed_at = now()
+    proposal.review_comment = body.comment
+    if body.decision == "approve":
+        values = json.loads(proposal.values_json or "{}")
+        profit = Decimal(str(values["profit_amount"])).quantize(Decimal("0.01"))
+        amounts = {"platform": (profit * Decimal(str(values["platform_rate"])) / 100).quantize(Decimal("0.01")), "provider": (profit * Decimal(str(values["provider_rate"])) / 100).quantize(Decimal("0.01")), "service": (profit * Decimal(str(values["service_rate"])) / 100).quantize(Decimal("0.01")), "expert": (profit * Decimal(str(values["expert_rate"])) / 100).quantize(Decimal("0.01")), "channel": (profit * Decimal(str(values["channel_rate"])) / 100).quantize(Decimal("0.01"))}
+        settlement.gross_amount = Decimal(str(values["gross_amount"])).quantize(Decimal("0.01"))
+        settlement.cost_amount = Decimal(str(values["cost_amount"])).quantize(Decimal("0.01"))
+        settlement.profit_amount = profit
+        settlement.net_amount = settlement.gross_amount - Decimal(str(settlement.refund_amount or 0))
+        settlement.platform_fee, settlement.provider_share, settlement.service_share, settlement.expert_fee, settlement.channel_fee = amounts["platform"], amounts["provider"], amounts["service"], amounts["expert"], amounts["channel"]
+        for line in db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded")).all():
+            line.amount = amounts.get(line.participant_type, Decimal("0"))
+        settlement.status = "adjusted"
+    else:
+        settlement.status = "pending"
+    audit(db, user.email, "decide_settlement_adjustment_proposal", "settlement_proposal", proposal.id, body.comment, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, before=before, after={"status": settlement.status, "proposal_status": proposal.status, "reviewed_by": proposal.reviewed_by})
+    db.commit()
+    return {"id": proposal.id, "status": proposal.status, "settlement_id": settlement.id, "settlement_status": settlement.status}
 
 
 @app.post("/api/settlements/{settlement_id}/lock")
@@ -3505,10 +4035,29 @@ def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: 
     settlement = db.get(Settlement, settlement_id)
     if not settlement:
         raise HTTPException(404, "清算单不存在")
+    if settlement.status in {"locked", "paid", "superseded"}:
+        raise HTTPException(409, "当前清算单已经锁定、付款或作废")
+    line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
+    batch = db.get(SettlementBatch, line.batch_id) if line else None
+    if batch and batch.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
+        raise HTTPException(409, "当前清算批次已确认或进入付款流程")
+    before = {"status": settlement.status}
     settlement.status = "locked"
-    audit(db, user.email, "lock_settlement", "settlement", settlement.settlement_no)
+    if line:
+        for related_line in db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded")).all():
+            related_line.status = "locked"
+    batch_after = batch.status if batch else ""
+    if batch:
+        settlement_ids = select(SettlementLine.settlement_id).where(SettlementLine.batch_id == batch.id, SettlementLine.status != "superseded")
+        related = db.scalars(select(Settlement).where(Settlement.id.in_(settlement_ids), Settlement.status != "superseded")).all()
+        if related and all(item.status == "locked" for item in related):
+            batch.status = "pending_confirm"
+            batch_after = batch.status
+    audit(db, user.email, "lock_settlement", "settlement", settlement.settlement_no, "清算单锁定", category="settlement", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no if batch else "", before=before, after={"status": settlement.status, "batch_status": batch_after})
+    if batch and batch_after == "pending_confirm":
+        audit(db, user.email, "settlement_batch_ready_for_confirmation", "settlement_batch", batch.batch_no, "所有关联清算单已锁定", category="settlement", business_domain="settlement", batch_no=batch.batch_no, before={"status": "generated"}, after={"status": batch.status})
     db.commit()
-    return {"settlement_no": settlement.settlement_no, "status": settlement.status}
+    return {"settlement_no": settlement.settlement_no, "status": settlement.status, "batch_no": batch.batch_no if batch else "", "batch_status": batch.status if batch else ""}
 
 
 def settlement_rule_out(item: SettlementRule) -> dict[str, Any]:
@@ -3572,7 +4121,16 @@ def simulate_settlement_rule(rule_id: str, body: SettlementBatchBody, user: User
         gross = Decimal(str(order.paid_amount or order.amount or 0))
         refund = min(Decimal(str(order.refunded_amount or 0)), gross)
         net = max(gross - refund, Decimal("0"))
-        rows.append({"order_id": order.id, "order_no": order.order_no, "net_amount": float(net), "platform_fee": float((net * Decimal(str(rule.platform_rate)) / 100).quantize(Decimal("0.01"))), "provider_share": float((net * Decimal(str(rule.provider_rate)) / 100).quantize(Decimal("0.01"))), "service_share": float((net * Decimal(str(rule.service_rate)) / 100).quantize(Decimal("0.01"))), "expert_fee": float((net * Decimal(str(rule.expert_rate)) / 100).quantize(Decimal("0.01"))), "tax_amount": float((net * Decimal(str(rule.tax_rate)) / 100).quantize(Decimal("0.01")))})
+        cost_amount = order_cost(db, order)
+        profit = (net - cost_amount).quantize(Decimal("0.01"))
+        distributable = max(profit, Decimal("0"))
+        rates, matched_rule_version = settlement_values_for_order(db, order, rule)
+        platform_fee = (distributable * rates["platform_rate"] / 100).quantize(Decimal("0.01"))
+        service_share = (distributable * rates["service_rate"] / 100).quantize(Decimal("0.01"))
+        expert_fee = (distributable * rates["expert_rate"] / 100).quantize(Decimal("0.01"))
+        channel_fee = (distributable * rates["channel_rate"] / 100).quantize(Decimal("0.01"))
+        provider_share = (distributable - platform_fee - service_share - expert_fee - channel_fee).quantize(Decimal("0.01"))
+        rows.append({"order_id": order.id, "order_no": order.order_no, "rule_version": matched_rule_version, "net_amount": float(net), "cost_amount": float(cost_amount), "profit_amount": float(profit), "platform_fee": float(platform_fee), "provider_share": float(provider_share), "service_share": float(service_share), "expert_fee": float(expert_fee), "channel_fee": float(channel_fee), "tax_amount": 0.0})
     audit(db, user.email, "simulate_settlement_rule", "settlement_rule", rule.rule_no, f"orders={len(rows)}", category="settlement_rule", business_domain="settlement", rule_version=rule.version)
     db.commit()
     return {"rule": settlement_rule_out(rule), "items": rows, "total": len(rows)}
@@ -3604,16 +4162,42 @@ def settlement_measurements(order_id: str | None = None, user: User = Depends(cu
 @app.post("/api/settlement-batches")
 def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
+    if body.cycle == "monthly" and (not body.period_start or not body.period_end):
+        raise HTTPException(400, "按月清算必须提供自然月起止时间")
     key = body.idempotency_key or f"{body.cycle}:{body.period_start}:{body.period_end}:{','.join(sorted(body.order_ids))}"
     existing = db.scalar(select(SettlementBatch).where(SettlementBatch.idempotency_key == key))
-    if existing:
+    if existing and existing.status != "superseded":
         return {"id": existing.id, "batch_no": existing.batch_no, "status": existing.status, "idempotent": True}
+    if body.cycle == "monthly":
+        existing_period = db.scalar(select(SettlementBatch).where(SettlementBatch.cycle == "monthly", SettlementBatch.period_start == body.period_start, SettlementBatch.period_end == body.period_end, SettlementBatch.status != "superseded").order_by(SettlementBatch.created_at.desc()))
+        if existing_period:
+            if existing_period.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
+                raise HTTPException(409, "该月份清算批次已确认或进入付款流程，不允许重新生成")
+            if not body.rebuild:
+                raise HTTPException(409, f"该月份已有未完成清算批次 {existing_period.batch_no}，如需重算请确认作废原批次")
+            old_settlement_ids = select(SettlementLine.settlement_id).where(SettlementLine.batch_id == existing_period.id)
+            if db.scalar(select(SettlementLine.id).where(SettlementLine.batch_id == existing_period.id, SettlementLine.status == "paid")):
+                raise HTTPException(409, "该月份批次存在已付款清算明细，不允许重新生成")
+            db.execute(update(Settlement).where(Settlement.id.in_(old_settlement_ids)).values(status="superseded"))
+            db.execute(update(SettlementLine).where(SettlementLine.batch_id == existing_period.id).values(status="superseded"))
+            existing_period.status = "superseded"
+            audit(db, user.email, "supersede_settlement_batch", "settlement_batch", existing_period.batch_no, "按月清算重算，原批次作废", category="settlement", business_domain="settlement", batch_no=existing_period.batch_no, risk_level="warning")
     rule = db.get(SettlementRule, body.rule_id) if body.rule_id else db.scalar(select(SettlementRule).where(SettlementRule.status == "active").order_by(SettlementRule.created_at.desc()))
     if not rule:
         rule = SettlementRule(rule_no="RULE-DEFAULT", version="v1", name="默认清算规则", status="active", platform_rate=8, provider_rate=67, service_rate=20, expert_rate=5, tax_rate=0, created_by="system")
         db.add(rule)
         db.flush()
-    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.after_sales_status.in_(["none", "closed"])).limit(100)).all()]
+    order_stmt = select(Order).join(Payment, Payment.order_id == Order.id).where(Payment.status.in_(["paid", "refunding", "refunded"]), Payment.paid_at.is_not(None))
+    if body.period_start:
+        order_stmt = order_stmt.where(Payment.paid_at >= body.period_start)
+    if body.period_end:
+        order_stmt = order_stmt.where(Payment.paid_at < body.period_end)
+    order_ids = body.order_ids or [x.id for x in db.scalars(order_stmt.limit(100)).all()]
+    if body.cycle == "monthly" and order_ids:
+        legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids))))))).all()
+        for legacy in legacy_batches:
+            legacy.status = "superseded"
+            audit(db, user.email, "supersede_legacy_settlement_batch", "settlement_batch", legacy.batch_no, "月度批次覆盖旧手工批次", category="settlement", business_domain="settlement", batch_no=legacy.batch_no, risk_level="warning")
     batch = SettlementBatch(batch_no="BATCH-" + secrets.token_hex(6).upper(), cycle=body.cycle, period_start=body.period_start, period_end=body.period_end, rule_id=rule.id, status="generated", idempotency_key=key, created_by=user.email or user.name)
     db.add(batch)
     db.flush()
@@ -3622,12 +4206,20 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
     exceptions = 0
     for order_id in order_ids:
         order = db.get(Order, order_id)
-        if not order or order.payment_status not in {"paid", "refunded"} or order.after_sales_status not in {"none", "closed"}:
-            exceptions += 1
+        if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
             continue
+        prior_settlements = db.scalars(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded")).all()
+        finalized = next((item for item in prior_settlements if item.status in {"locked", "paid", "archived"}), None)
+        if finalized:
+            audit(db, user.email, "skip_finalized_settlement_order", "settlement", finalized.settlement_no, "订单已有已完成清算，批次不重复生成", category="settlement", business_domain="settlement", order_id=order.id, risk_level="warning")
+            continue
+        for prior in prior_settlements:
+            prior.status = "superseded"
         gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"))
-        refund = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"))
-        net = max(gross - refund, Decimal("0.00"))
+        # The original paid order is settled positively. Completed refunds are
+        # represented by separate negative settlement adjustments below.
+        refund = Decimal("0.00")
+        net = gross
         cost_amount = order_cost(db, order)
         profit = (net - cost_amount).quantize(Decimal("0.01"))
         distributable = max(profit, Decimal("0.00"))
@@ -3635,21 +4227,44 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         platform_fee = (distributable * rates["platform_rate"] / 100).quantize(Decimal("0.01"))
         service_share = (distributable * rates["service_rate"] / 100).quantize(Decimal("0.01"))
         expert_fee = (distributable * rates["expert_rate"] / 100).quantize(Decimal("0.01"))
+        channel_fee = (distributable * rates["channel_rate"] / 100).quantize(Decimal("0.01"))
         tax_amount = Decimal("0.00")
-        provider_share = (distributable - platform_fee - service_share - expert_fee).quantize(Decimal("0.01"))
-        settlement = Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id, gross_amount=gross, refund_amount=refund, net_amount=net, cost_amount=cost_amount, profit_amount=profit, refund_recovery=refund, platform_fee=platform_fee, provider_share=provider_share, service_share=service_share, expert_fee=expert_fee, tax_amount=tax_amount, status="pending")
+        provider_share = (distributable - platform_fee - service_share - expert_fee - channel_fee).quantize(Decimal("0.01"))
+        settlement = Settlement(settlement_no="SET-" + secrets.token_hex(6).upper(), order_id=order.id, gross_amount=gross, refund_amount=refund, net_amount=net, cost_amount=cost_amount, profit_amount=profit, refund_recovery=refund, platform_fee=platform_fee, provider_share=provider_share, service_share=service_share, expert_fee=expert_fee, channel_fee=channel_fee, tax_amount=tax_amount, status="pending")
         db.add(settlement)
         db.flush()
-        db.add_all([SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="platform", participant_name="平台运营方", amount=settlement.platform_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="provider", participant_id=order.provider_enterprise_id, participant_name="数据/服务提供方", amount=settlement.provider_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="service", participant_name="数据服务方", amount=settlement.service_share)])
+        db.add_all([SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="platform", participant_name="平台运营方", amount=settlement.platform_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="provider", participant_id=order.provider_enterprise_id, participant_name="数据/服务提供方", amount=settlement.provider_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="service", participant_name="数据服务方", amount=settlement.service_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="expert", participant_name="专家", amount=settlement.expert_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="channel", participant_name="渠道", amount=settlement.channel_fee)])
         total += net
         total_profit += profit
-        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={matched_rule_version}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=matched_rule_version, after={"net_amount": float(net), "cost_amount": float(cost_amount), "profit_amount": float(profit), "distributable_profit": float(distributable)})
+        audit(db, user.email, "generate_settlement_batch", "settlement", settlement.settlement_no, f"rule={matched_rule_version}", category="settlement", business_domain="settlement", order_id=order.id, batch_no=batch.batch_no, rule_version=matched_rule_version, before={"status": "none"}, after={"status": settlement.status, "net_amount": float(net), "cost_amount": float(cost_amount), "profit_amount": float(profit), "distributable_profit": float(distributable), "platform_fee": float(platform_fee), "provider_share": float(provider_share), "service_share": float(service_share), "expert_fee": float(expert_fee), "channel_fee": float(channel_fee)})
+    # A completed refund is an independent negative settlement adjustment.
+    # It is selected by refund completion time, so a refund never rewrites the
+    # original paid order settlement and can be audited independently.
+    refund_stmt = select(Refund).where(Refund.status == "completed", Refund.completed_at.is_not(None))
+    if body.period_start:
+        refund_stmt = refund_stmt.where(Refund.completed_at >= body.period_start)
+    if body.period_end:
+        refund_stmt = refund_stmt.where(Refund.completed_at < body.period_end)
+    refund_count = 0
+    for refund in (db.scalars(refund_stmt).all() if body.cycle == "monthly" else []):
+        refund_count += 1
+        settlement = create_refund_negative_settlement(db, refund, user.email or user.name)
+        prior_lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded")).all()
+        if prior_lines:
+            linked_batch = db.get(SettlementBatch, prior_lines[0].batch_id)
+            if linked_batch and linked_batch.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
+                continue
+            for line in prior_lines:
+                line.status = "superseded"
+        settlement.status = "pending"
+        db.add_all([SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="platform", participant_name="平台运营方", amount=settlement.platform_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="provider", participant_id=(db.get(Order, settlement.order_id).provider_enterprise_id if db.get(Order, settlement.order_id) else ""), participant_name="数据/服务提供方", amount=settlement.provider_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="service", participant_name="数据服务方", amount=settlement.service_share), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="expert", participant_name="专家", amount=settlement.expert_fee), SettlementLine(batch_id=batch.id, settlement_id=settlement.id, participant_type="channel", participant_name="渠道", amount=settlement.channel_fee)])
+        total += Decimal(str(settlement.net_amount or 0))
+        total_profit += Decimal(str(settlement.profit_amount or 0))
+        audit(db, user.email, "generate_refund_settlement_line", "settlement", settlement.settlement_no, "退款完成日期纳入月度清算", category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no, after={"refund_id": refund.id, "status": settlement.status, "net_amount": float(settlement.net_amount or 0), "profit_amount": float(settlement.profit_amount or 0)})
     batch.total_amount = total
     batch.total_profit = total_profit
-    batch.exception_count = exceptions
-    if exceptions:
-        batch.status = "exception"
-    audit(db, user.email, "create_settlement_batch", "settlement_batch", batch.batch_no, f"orders={len(order_ids)} exceptions={exceptions}", category="settlement", business_domain="settlement", batch_no=batch.batch_no, rule_version=rule.version)
+    batch.exception_count = 0
+    audit(db, user.email, "create_settlement_batch", "settlement_batch", batch.batch_no, f"orders={len(order_ids)} refunds={refund_count}", category="settlement", business_domain="settlement", batch_no=batch.batch_no, rule_version=rule.version, before={"status": "none"}, after={"status": batch.status, "total_amount": float(total), "total_profit": float(total_profit), "order_count": len(order_ids), "refund_count": refund_count, "exception_count": 0})
     db.commit()
     return {"id": batch.id, "batch_no": batch.batch_no, "total_amount": float(total), "total_profit": float(total_profit), "exception_count": exceptions, "status": batch.status, "rule_version": rule.version}
 
@@ -3677,27 +4292,29 @@ def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
     batch = db.get(SettlementBatch, batch_id)
     if not batch:
         raise HTTPException(404, "清算批次不存在")
-    if batch.status == "exception":
-        raise HTTPException(409, "批次存在未处理异常，不能确认")
+    if batch.status != "pending_confirm":
+        raise HTTPException(409, "只有待确认状态的清算批次可以确认")
+    settlement_ids = select(SettlementLine.settlement_id).where(SettlementLine.batch_id == batch.id, SettlementLine.status != "superseded")
+    settlements = db.scalars(select(Settlement).where(Settlement.id.in_(settlement_ids), Settlement.status != "superseded")).all()
+    if not settlements:
+        raise HTTPException(409, "批次没有可确认的清算单")
+    before = {"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}}
+    for item in settlements:
+        if item.status == "paid":
+            raise HTTPException(409, "批次存在已付款清算单，不能重新确认")
+        item.status = "locked"
+    for line in db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id, SettlementLine.status != "superseded")).all():
+        line.status = "locked"
     batch.status = "confirmed"
     batch.confirmed_at = now()
-    audit(db, user.email, "confirm_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement", business_domain="settlement", batch_no=batch.batch_no)
+    audit(db, user.email, "confirm_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement", business_domain="settlement", batch_no=batch.batch_no, before=before, after={"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}})
     db.commit()
     return {"batch_no": batch.batch_no, "status": batch.status, "confirmed_at": batch.confirmed_at}
 
 
 @app.post("/api/settlement-batches/{batch_id}/dispute")
 def dispute_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_operator(user)
-    batch = db.get(SettlementBatch, batch_id)
-    if not batch:
-        raise HTTPException(404, "清算批次不存在")
-    if batch.status not in {"generated", "confirmed"}:
-        raise HTTPException(409, "当前批次不能提出异议")
-    batch.status = "disputed"
-    audit(db, user.email, "dispute_settlement_batch", "settlement_batch", batch.batch_no, body.comment or "参与方提出清算异议", category="settlement", business_domain="settlement", batch_no=batch.batch_no, risk_level="high")
-    db.commit()
-    return {"batch_no": batch.batch_no, "status": batch.status}
+    raise HTTPException(410, "清算异议应针对清算单提交调整提案，清算批次不再设置 disputed 状态")
 
 
 @app.post("/api/settlement-batches/{batch_id}/rollback")
@@ -3706,7 +4323,7 @@ def rollback_settlement_batch(batch_id: str, body: SettlementActionBody, user: U
     batch = db.get(SettlementBatch, batch_id)
     if not batch:
         raise HTTPException(404, "清算批次不存在")
-    if batch.status not in {"generated", "disputed", "recon_exception"}:
+    if batch.status not in {"generated", "pending_confirm", "rolled_back"}:
         raise HTTPException(409, "只有未付款且未归档批次可以回滚")
     before = {"status": batch.status}
     batch.status = "rolled_back"
@@ -3723,12 +4340,22 @@ def pay_settlement_batch(batch_id: str, body: SettlementActionBody, user: User =
         raise HTTPException(404, "清算批次不存在")
     if batch.status != "confirmed":
         raise HTTPException(409, "只有已确认批次可以付款")
+    unresolved = db.scalar(select(SettlementReconciliation.id).where(SettlementReconciliation.batch_id == batch.id, SettlementReconciliation.status.in_(["difference", "exception"])))
+    if unresolved:
+        raise HTTPException(409, "批次存在未关闭的对账差异，不能付款")
+    settlement_ids = select(SettlementLine.settlement_id).where(SettlementLine.batch_id == batch.id, SettlementLine.status != "superseded")
+    settlements = db.scalars(select(Settlement).where(Settlement.id.in_(settlement_ids), Settlement.status != "superseded")).all()
+    if not settlements or any(item.status != "locked" for item in settlements):
+        raise HTTPException(409, "所有清算单锁定后才可以付款")
+    before = {"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}}
     batch.status = "paid"
     batch.paid_at = now()
+    for item in settlements:
+        item.status = "paid"
     for line in db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id)).all():
         line.status = "paid"
         line.payment_no = "SIM-PAY-" + secrets.token_hex(5).upper()
-    audit(db, user.email, "pay_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement_payment", business_domain="settlement", batch_no=batch.batch_no)
+    audit(db, user.email, "pay_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement_payment", business_domain="settlement", batch_no=batch.batch_no, before=before, after={"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}})
     db.commit()
     return {"batch_no": batch.batch_no, "status": batch.status, "paid_at": batch.paid_at}
 
@@ -3744,8 +4371,6 @@ def reconcile_settlement_batch(batch_id: str, body: SettlementReconciliationBody
     difference = (actual - expected).quantize(Decimal("0.01"))
     item = SettlementReconciliation(batch_id=batch.id, ledger_type=body.ledger_type, expected_amount=expected, actual_amount=actual, difference_amount=difference, status="matched" if difference == 0 else "difference", resolution=body.resolution)
     db.add(item)
-    if difference != 0:
-        batch.status = "recon_exception"
     audit(db, user.email, "reconcile_settlement_batch", "reconciliation", item.id, body.resolution, category="reconciliation", business_domain="settlement", batch_no=batch.batch_no, risk_level="high" if difference != 0 else "normal", after={"difference": float(difference), "ledger_type": body.ledger_type})
     db.commit()
     db.refresh(item)
@@ -3775,9 +4400,7 @@ def close_settlement_reconciliation(reconciliation_id: str, body: Reconciliation
     item.closed_by = user.email or user.name
     item.closed_at = now()
     batch = db.get(SettlementBatch, item.batch_id)
-    if batch and not db.scalar(select(SettlementReconciliation.id).where(SettlementReconciliation.batch_id == batch.id, SettlementReconciliation.status.in_(["difference", "exception"]))):
-        if batch.status == "recon_exception":
-            batch.status = "generated"
+    # 对账差异属于对账记录本身，不再污染清算批次状态。
     audit(db, user.email, "close_reconciliation_difference", "reconciliation", item.id, body.resolution, category="reconciliation", business_domain="settlement", batch_no=batch.batch_no if batch else "")
     db.commit()
     return {"id": item.id, "status": item.status, "closed_by": item.closed_by, "closed_at": item.closed_at}
@@ -3840,32 +4463,96 @@ def reject_settlement_correction(correction_id: str, body: SettlementActionBody,
 
 
 @app.get("/api/settlement-reports")
-def settlement_reports(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def settlement_reports(status: str | None = None, start: str | None = None, end: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
-    stmt = select(Settlement)
+    stmt = select(Settlement).where(Settlement.status != "superseded")
     if status:
         stmt = stmt.where(Settlement.status == status)
+    if start:
+        stmt = stmt.where(Settlement.created_at >= datetime.fromisoformat(start))
+    if end:
+        stmt = stmt.where(Settlement.created_at < datetime.fromisoformat(end) + timedelta(days=1))
     items = db.scalars(stmt.order_by(Settlement.created_at.desc()).limit(2000)).all()
-    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "cost_amount": 0.0, "profit_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "tax_amount": 0.0, "count": len(items)}
+    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "cost_amount": 0.0, "profit_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "channel_fee": 0.0, "tax_amount": 0.0, "count": len(items), "participants": []}
+    participant_totals: dict[tuple[str, str], dict[str, Any]] = {}
     rows = []
     for x in items:
-        fields = ["gross_amount", "refund_amount", "net_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "tax_amount"]
+        order = db.get(Order, x.order_id)
+        fields = ["gross_amount", "refund_amount", "net_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee", "tax_amount"]
         values = {field: float(getattr(x, field) or 0) for field in fields}
         for field in fields:
             summary[field] += values[field]
-        rows.append({"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "status": x.status, "created_at": x.created_at, **values})
-    return {"summary": summary, "items": rows}
+        lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == x.id).order_by(SettlementLine.created_at)).all()
+        participants = [{"participant_type": line.participant_type, "participant_id": line.participant_id, "participant_name": line.participant_name, "amount": float(line.amount or 0)} for line in lines]
+        participant_defaults = [
+            ("platform", "", "平台运营方", "platform_fee"),
+            ("provider", order.provider_enterprise_id if order else "", "数据/服务提供方", "provider_share"),
+            ("service", "", "数据服务方", "service_share"),
+            ("expert", "", "专家", "expert_fee"),
+            ("channel", "", "渠道", "channel_fee"),
+        ]
+        existing_types = {participant["participant_type"] for participant in participants}
+        # 补齐历史清算单缺少的参与方明细，保证专家和渠道在总表、明细中始终可见。
+        for participant_type, participant_id, participant_name, field in participant_defaults:
+            if participant_type not in existing_types:
+                participants.append({"participant_type": participant_type, "participant_id": participant_id, "participant_name": participant_name, "amount": values[field]})
+        for participant in participants:
+            key = (participant["participant_type"], participant["participant_id"] or participant["participant_name"])
+            total = participant_totals.setdefault(key, {"participant_type": participant["participant_type"], "participant_id": participant["participant_id"], "participant_name": participant["participant_name"], "amount": 0.0, "order_count": 0})
+            total["amount"] += participant["amount"]
+            total["order_count"] += 1
+        public_participants = [{"participant_type": item["participant_type"], "participant_name": item["participant_name"], "amount": item["amount"]} for item in participants]
+        rows.append({"id": x.id, "settlement_no": x.settlement_no, "order_id": x.order_id, "order_no": order.order_no if order else "", "product_id": order.product_id if order else "", "product_name": order.product_name if order else "未命名产品", "status": x.status, "created_at": x.created_at, "participants": public_participants, "participant_total": round(sum(item["amount"] for item in participants), 2), **values})
+    summary["participants"] = sorted([{"participant_type": item["participant_type"], "participant_name": item["participant_name"], "amount": round(item["amount"], 2), "order_count": item["order_count"]} for item in participant_totals.values()], key=lambda item: (-item["amount"], item["participant_type"], item["participant_name"]))
+
+    def empty_breakdown(label: str) -> dict[str, Any]:
+        return {"label": label, "order_count": 0, "gross_amount": 0.0, "cost_amount": 0.0, "profit_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "channel_fee": 0.0}
+
+    monthly: dict[str, dict[str, Any]] = {}
+    products: dict[tuple[str, str], dict[str, Any]] = {}
+    breakdown_fields = ["gross_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee"]
+    for row in rows:
+        month = row["created_at"].strftime("%Y-%m") if row.get("created_at") else "未知月份"
+        monthly_item = monthly.setdefault(month, empty_breakdown(month))
+        product_key = (row.get("product_id", ""), row.get("product_name", "未命名产品"))
+        product_item = products.setdefault(product_key, empty_breakdown(row.get("product_name", "未命名产品")))
+        for bucket in (monthly_item, product_item):
+            bucket["order_count"] += 1
+            for field in breakdown_fields:
+                bucket[field] += row.get(field, 0.0)
+
+    def clean_breakdown(item: dict[str, Any]) -> dict[str, Any]:
+        return {key: (round(value, 2) if isinstance(value, float) else value) for key, value in item.items()}
+
+    return {"summary": summary, "monthly": [clean_breakdown(monthly[key]) for key in sorted(monthly)], "products": [clean_breakdown(item) | {"product_id": key[0], "product_name": key[1]} for key, item in sorted(products.items(), key=lambda pair: pair[0][1])], "items": rows}
 
 
 @app.get("/api/settlement-reports/export")
-def export_settlement_report(status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    data = settlement_reports(status=status, user=user, db=db)
-    lines = ["settlement_no,order_id,status,gross_amount,refund_amount,net_amount,platform_fee,provider_share,service_share,expert_fee,tax_amount,created_at"]
-    for item in data["items"]:
-        lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["settlement_no", "order_id", "status", "gross_amount", "refund_amount", "net_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "tax_amount", "created_at"]))
+def export_settlement_report(status: str | None = None, start: str | None = None, end: str | None = None, kind: str = "details", user: User = Depends(current_user), db: Session = Depends(db_session)):
+    data = settlement_reports(status=status, start=start, end=end, user=user, db=db)
+    if kind == "summary":
+        lines = ["总体订单清算汇总", "指标,金额", f"订单金额,{data['summary']['gross_amount']}", f"订单成本,{data['summary']['cost_amount']}", f"订单利润,{data['summary']['profit_amount']}", "", "总体参与方汇总"]
+        lines.append("participant_type,participant_name,order_count,settlement_amount")
+        for item in data["summary"]["participants"]:
+            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["participant_type", "participant_name", "order_count", "amount"]))
+        lines.append("")
+        lines.append("自然月汇总")
+        lines.append("月份,订单数量,订单金额,订单成本,订单利润,平台运营方,数据/服务提供方,数据服务方,专家,渠道")
+        for item in data["monthly"]:
+            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["label", "order_count", "gross_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee"]))
+    elif kind == "products":
+        lines = ["产品维度清算汇总", "product_id,product_name,订单数量,订单金额,订单成本,订单利润,平台运营方,数据/服务提供方,数据服务方,专家,渠道"]
+        for item in data["products"]:
+            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["product_id", "product_name", "order_count", "gross_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee"]))
+    else:
+        lines = ["settlement_no,order_id,order_no,product_name,status,order_amount,refund_amount,net_amount,cost_amount,profit_amount,平台运营方,数据/服务提供方,数据服务方,专家,渠道,created_at"]
+        for item in data["items"]:
+            amounts = {p["participant_type"]: p["amount"] for p in item["participants"]}
+            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["settlement_no", "order_id", "order_no", "product_name", "status", "gross_amount", "refund_amount", "net_amount", "cost_amount", "profit_amount"]) + "," + ",".join(str(amounts.get(key, 0)).replace(",", " ") for key in ["platform", "provider", "service", "expert", "channel"]) + "," + str(item.get("created_at", "")))
     audit(db, user.email, "export_settlement_report", "settlement_report", "", f"status={status or 'all'} rows={len(data['items'])}", category="settlement_report", business_domain="settlement")
     db.commit()
-    return Response(content="\ufeff" + "\n".join(lines), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=settlement-report.csv"})
+    filename = "settlement-summary.csv" if kind == "summary" else "settlement-products.csv" if kind == "products" else "settlement-details.csv"
+    return Response(content="\ufeff" + "\n".join(lines), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 @app.get("/api/audit-logs")
@@ -3943,6 +4630,218 @@ def update_development_task(code: str, body: DevelopmentTaskUpdate, user: User =
     audit(db, user.email, "update_development_task", "development_task", task.code, body.note)
     db.commit()
     return {"code": task.code, "status": task.status, "progress": task.progress, "updated_at": task.updated_at}
+
+
+def sla_profile_out(item: SLAProfile) -> dict[str, Any]:
+    return {"id": item.id, "name": item.name, "service_scope": item.service_scope, "product_id": item.product_id,
+            "evaluation_period": item.evaluation_period, "availability_target": float(item.availability_target or 0),
+            "latency_target_ms": item.latency_target_ms, "error_rate_target": float(item.error_rate_target or 0),
+            "delivery_hours": item.delivery_hours, "recovery_minutes": item.recovery_minutes,
+            "warning_margin": float(item.warning_margin or 0), "status": item.status, "description": item.description,
+            "created_by": item.created_by, "created_at": item.created_at, "updated_at": item.updated_at}
+
+
+def service_level_out(item: ServiceLevel) -> dict[str, Any]:
+    return {"id": item.id, "code": item.code, "name": item.name, "description": item.description, "customer_scope": item.customer_scope,
+            "support_days_per_week": item.support_days_per_week, "support_hours_per_day": item.support_hours_per_day,
+            "support_schedule": f"{item.support_days_per_week}×{item.support_hours_per_day}", "online_docs": item.online_docs,
+            "knowledge_base": item.knowledge_base, "standard_api": item.standard_api, "online_customer_service": item.online_customer_service,
+            "dedicated_manager": item.dedicated_manager, "technical_support": item.technical_support,
+            "initial_response_minutes": item.initial_response_minutes, "problem_response_hours": item.problem_response_hours,
+            "quarterly_report": item.quarterly_report, "annual_optimization": item.annual_optimization, "status": item.status,
+            "created_by": item.created_by, "created_at": item.created_at, "updated_at": item.updated_at}
+
+
+def service_level_assignment_out(item: ServiceLevelAssignment, level: ServiceLevel | None = None, enterprise: Enterprise | None = None) -> dict[str, Any]:
+    return {"id": item.id, "service_level_id": item.service_level_id, "service_level": service_level_out(level) if level else None,
+            "enterprise_id": item.enterprise_id, "enterprise_name": enterprise.name if enterprise else "", "user_id": item.user_id,
+            "source": item.source, "effective_at": item.effective_at, "expires_at": item.expires_at, "created_by": item.created_by, "created_at": item.created_at}
+
+
+def current_service_level(db: Session, enterprise_id: str, user_id: str = "") -> ServiceLevel:
+    statement = select(ServiceLevelAssignment).where(ServiceLevelAssignment.enterprise_id == enterprise_id, ServiceLevelAssignment.effective_at <= now(), or_(ServiceLevelAssignment.expires_at.is_(None), ServiceLevelAssignment.expires_at >= now()))
+    if user_id:
+        statement = statement.where(or_(ServiceLevelAssignment.user_id == user_id, ServiceLevelAssignment.user_id == ""))
+    assignment = db.scalar(statement.order_by(ServiceLevelAssignment.user_id.desc(), ServiceLevelAssignment.effective_at.desc()))
+    level = db.get(ServiceLevel, assignment.service_level_id) if assignment else None
+    return level or db.scalar(select(ServiceLevel).where(ServiceLevel.code == "standard"))
+
+
+def sla_result_out(item: SLAResult, profile: SLAProfile | None = None) -> dict[str, Any]:
+    return {"id": item.id, "profile_id": item.profile_id, "profile_name": profile.name if profile else "",
+            "product_id": item.product_id, "period_start": item.period_start, "period_end": item.period_end,
+            "sample_count": item.sample_count, "success_count": item.success_count,
+            "availability": float(item.availability or 0), "avg_latency_ms": float(item.avg_latency_ms or 0),
+            "error_rate": float(item.error_rate or 0), "delivery_count": item.delivery_count,
+            "delivery_on_time": item.delivery_on_time, "delivery_compliance": float(item.delivery_compliance or 0),
+            "status": item.status, "breach_reason": item.breach_reason, "calculated_at": item.calculated_at}
+
+
+@app.get("/api/sla/overview")
+def sla_overview(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    profiles = db.scalars(select(SLAProfile).order_by(SLAProfile.created_at.desc())).all()
+    all_results = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc()).limit(200)).all()
+    latest_result_ids = set()
+    results = []
+    for result in all_results:
+        if result.profile_id not in latest_result_ids:
+            latest_result_ids.add(result.profile_id)
+            results.append(result)
+    profile_map = {x.id: x for x in profiles}
+    service_levels = db.scalars(select(ServiceLevel).order_by(ServiceLevel.code)).all()
+    assignments = db.scalars(select(ServiceLevelAssignment).order_by(ServiceLevelAssignment.created_at.desc()).limit(100)).all()
+    return {"summary": {"profiles": len(profiles), "active_profiles": sum(x.status == "active" for x in profiles),
+                         "met": sum(x.status == "met" for x in results), "warning": sum(x.status == "warning" for x in results),
+                         "breached": sum(x.status == "breached" for x in results)},
+            "profiles": [sla_profile_out(x) for x in profiles],
+            "results": [sla_result_out(x, profile_map.get(x.profile_id)) for x in results],
+            "service_levels": [service_level_out(x) for x in service_levels],
+            "service_level_assignments": [service_level_assignment_out(x, db.get(ServiceLevel, x.service_level_id), db.get(Enterprise, x.enterprise_id)) for x in assignments]}
+
+
+@app.post("/api/sla/profiles")
+def create_sla_profile(body: SLAProfileBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    if db.scalar(select(SLAProfile).where(SLAProfile.name == body.name)):
+        raise HTTPException(409, "SLA 规则名称已存在")
+    item = SLAProfile(**body.model_dump(), created_by=user.email)
+    db.add(item)
+    audit(db, user.email, "create_sla_profile", "sla_profile", item.id, f"创建 SLA 规则：{item.name}", category="sla", business_domain="sla")
+    db.commit()
+    return {"item": sla_profile_out(item)}
+
+
+@app.patch("/api/sla/profiles/{profile_id}")
+def update_sla_profile(profile_id: str, body: SLAProfileUpdate, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    item = db.get(SLAProfile, profile_id)
+    if not item:
+        raise HTTPException(404, "SLA 规则不存在")
+    before = sla_profile_out(item)
+    for key, value in body.model_dump().items():
+        setattr(item, key, value)
+    audit(db, user.email, "update_sla_profile", "sla_profile", item.id, f"更新 SLA 规则：{item.name}", category="sla", business_domain="sla", before=before, after=sla_profile_out(item))
+    db.commit()
+    return {"item": sla_profile_out(item)}
+
+
+@app.post("/api/sla/service-levels")
+def create_service_level(body: ServiceLevelBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    if db.scalar(select(ServiceLevel).where(or_(ServiceLevel.code == body.code, ServiceLevel.name == body.name))):
+        raise HTTPException(409, "服务级别编码或名称已存在")
+    item = ServiceLevel(**body.model_dump(), created_by=user.email)
+    db.add(item)
+    audit(db, user.email, "create_service_level", "service_level", item.id, f"创建服务级别：{item.name}", category="sla", business_domain="service_level")
+    db.commit()
+    return {"item": service_level_out(item)}
+
+
+@app.patch("/api/sla/service-levels/{level_id}")
+def update_service_level(level_id: str, body: ServiceLevelBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    item = db.get(ServiceLevel, level_id)
+    if not item:
+        raise HTTPException(404, "服务级别不存在")
+    before = service_level_out(item)
+    for key, value in body.model_dump().items():
+        setattr(item, key, value)
+    audit(db, user.email, "update_service_level", "service_level", item.id, f"更新服务级别：{item.name}", category="sla", business_domain="service_level", before=before, after=service_level_out(item))
+    db.commit()
+    return {"item": service_level_out(item)}
+
+
+@app.get("/api/sla/service-levels")
+def list_service_levels(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    levels = db.scalars(select(ServiceLevel).order_by(ServiceLevel.code)).all()
+    return {"items": [service_level_out(x) for x in levels]}
+
+
+@app.get("/api/sla/service-level-assignments")
+def list_service_level_assignments(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    items = db.scalars(select(ServiceLevelAssignment).order_by(ServiceLevelAssignment.created_at.desc())).all()
+    return {"items": [service_level_assignment_out(x, db.get(ServiceLevel, x.service_level_id), db.get(Enterprise, x.enterprise_id)) for x in items]}
+
+
+@app.post("/api/sla/service-level-assignments")
+def assign_service_level(body: ServiceLevelAssignmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    if not db.get(Enterprise, body.enterprise_id):
+        raise HTTPException(404, "企业不存在")
+    level = db.get(ServiceLevel, body.service_level_id)
+    if not level or level.status != "active":
+        raise HTTPException(404, "服务级别不存在或未启用")
+    existing = db.scalars(select(ServiceLevelAssignment).where(ServiceLevelAssignment.enterprise_id == body.enterprise_id, ServiceLevelAssignment.user_id == body.user_id, ServiceLevelAssignment.expires_at.is_(None))).all()
+    for assignment in existing:
+        assignment.expires_at = now()
+    item = ServiceLevelAssignment(service_level_id=level.id, enterprise_id=body.enterprise_id, user_id=body.user_id, source="manual", expires_at=body.expires_at, created_by=user.email)
+    db.add(item)
+    audit(db, user.email, "assign_service_level", "service_level_assignment", item.id, f"绑定{level.name}服务级别", category="sla", business_domain="service_level", tenant_id=body.enterprise_id)
+    db.commit()
+    return {"item": service_level_assignment_out(item, level, db.get(Enterprise, body.enterprise_id))}
+
+
+@app.get("/api/sla/my-service-level")
+def my_service_level(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    enterprise = first_enterprise(db, user)
+    level = current_service_level(db, enterprise.id, user.id)
+    return {"enterprise_id": enterprise.id, "enterprise_name": enterprise.name, "item": service_level_out(level)}
+
+
+@app.post("/api/sla/evaluate")
+def evaluate_sla(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    end = now()
+    start = end - timedelta(hours=24)
+    created = []
+    for profile in db.scalars(select(SLAProfile).where(SLAProfile.status == "active")).all():
+        usage_query = select(ApiUsage).join(ApiGatewayRoute, ApiUsage.route_id == ApiGatewayRoute.id).where(ApiUsage.created_at >= start, ApiUsage.created_at <= end)
+        if profile.product_id:
+            usage_query = usage_query.where(ApiGatewayRoute.product_id == profile.product_id)
+        usage = db.scalars(usage_query).all()
+        sample_count = len(usage)
+        success_count = sum(1 for x in usage if x.status_code < 400)
+        availability = round(success_count / sample_count * 100, 4) if sample_count else 100.0
+        avg_latency = round(sum(x.latency_ms for x in usage) / sample_count, 2) if sample_count else 0.0
+        error_rate = round((sample_count - success_count) / sample_count * 100, 4) if sample_count else 0.0
+        delivery_query = select(DeliveryTask).where(DeliveryTask.created_at >= start, DeliveryTask.created_at <= end)
+        deliveries = db.scalars(delivery_query).all()
+        delivery_count = len(deliveries)
+        on_time = sum(1 for task in deliveries if task.status in {"completed", "pending_acceptance"} and (not task.sla_due_at or task.sla_due_at >= end))
+        delivery_compliance = round(on_time / delivery_count * 100, 4) if delivery_count else 100.0
+        reasons = []
+        if availability < float(profile.availability_target): reasons.append(f"可用性 {availability}% < {float(profile.availability_target)}%")
+        if avg_latency > profile.latency_target_ms: reasons.append(f"平均延迟 {avg_latency}ms > {profile.latency_target_ms}ms")
+        if error_rate > float(profile.error_rate_target): reasons.append(f"错误率 {error_rate}% > {float(profile.error_rate_target)}%")
+        if delivery_compliance < 100: reasons.append(f"交付及时率 {delivery_compliance}%")
+        has_samples = sample_count > 0 or delivery_count > 0
+        warning_reasons = []
+        if has_samples and not reasons:
+            availability_warning_threshold = min(100.0, float(profile.availability_target) + float(profile.warning_margin))
+            if availability < availability_warning_threshold: warning_reasons.append(f"可用性接近阈值：当前 {availability}% / 目标 {float(profile.availability_target)}%")
+            if avg_latency > profile.latency_target_ms * 0.8: warning_reasons.append(f"延迟接近阈值：当前 {avg_latency}ms / 目标 {profile.latency_target_ms}ms")
+            if error_rate > float(profile.error_rate_target) * 0.8: warning_reasons.append(f"错误率接近阈值：当前 {error_rate}% / 上限 {float(profile.error_rate_target)}%")
+            if delivery_compliance < 100: warning_reasons.append(f"交付及时率存在风险：当前 {delivery_compliance}%")
+        warning = has_samples and bool(warning_reasons) and not reasons
+        status = "breached" if reasons else "warning" if warning else "met"
+        result = SLAResult(profile_id=profile.id, product_id=profile.product_id, period_start=start, period_end=end, sample_count=sample_count,
+                           success_count=success_count, availability=availability, avg_latency_ms=avg_latency, error_rate=error_rate,
+                           delivery_count=delivery_count, delivery_on_time=on_time, delivery_compliance=delivery_compliance,
+                           status=status, breach_reason="；".join(reasons or warning_reasons))
+        db.add(result)
+        created.append(result)
+        audit(db, user.email, "evaluate_sla", "sla_result", result.id, f"SLA 考核：{profile.name} / {status}", category="sla", business_domain="sla", risk_level="high" if status == "breached" else "normal")
+    db.commit()
+    return {"items": [sla_result_out(x, db.get(SLAProfile, x.profile_id)) for x in created]}
+
+
+@app.get("/api/sla/results")
+def sla_results(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_platform_admin(user)
+    items = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc()).limit(100)).all()
+    return {"items": [sla_result_out(x, db.get(SLAProfile, x.profile_id)) for x in items]}
 
 
 def file_out(item: FileObject) -> dict[str, Any]:

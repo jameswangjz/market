@@ -73,6 +73,12 @@ const gatewaySelected = ref(null);
 const gatewayRevisions = ref([]);
 const gatewayUsage = ref({ summary: {}, items: [] });
 const gatewayTab = ref("routes");
+const slaOverview = ref({ summary: {}, profiles: [], results: [] });
+const selectedSlaResult = ref(null);
+const serviceLevelForm = ref({ code: "", name: "", description: "", customer_scope: "all", support_days_per_week: 5, support_hours_per_day: 8, online_docs: true, knowledge_base: true, standard_api: true, online_customer_service: true, dedicated_manager: false, technical_support: false, initial_response_minutes: 2880, problem_response_hours: 48, quarterly_report: false, annual_optimization: false, status: "active" });
+const serviceAssignmentForm = ref({ enterprise_id: "", service_level_id: "", user_id: "", expires_at: null });
+const slaEnterprises = ref([]);
+const slaForm = ref({ name: "", service_scope: "platform", product_id: "", evaluation_period: "daily", availability_target: 99.9, latency_target_ms: 1000, error_rate_target: 1, delivery_hours: 24, recovery_minutes: 60, warning_margin: 0.5, description: "", status: "active" });
 const gatewayForm = ref({
   upstream_url: "",
   route_key: "",
@@ -97,13 +103,24 @@ const development = ref({
 const deliveryItems = ref([]);
 const afterSalesItems = ref([]);
 const settlementItems = ref([]);
+const settlementFilterItems = ref([]);
+const settlementFilters = ref({ batch_id: "", settlement_id: "", order_no: "", status: "" });
+const settlementFilterOrders = computed(() => {
+  const seen = new Set();
+  return settlementFilterItems.value.filter((item) => item.order_no && !seen.has(item.order_no) && seen.add(item.order_no));
+});
+const settlementDetail = ref(null);
 const settlementRules = ref([]);
 const settlementBatches = ref([]);
 const settlementTab = ref("settlements");
+const settlementBatchMonth = ref(new Date().toISOString().slice(0, 7));
 const settlementRuleForm = ref({ name: "", version: "v1", platform_rate: 8, provider_rate: 67, service_rate: 20, expert_rate: 5, channel_rate: 0, change_reason: "" });
 const settlementReconciliations = ref([]);
 const settlementCorrections = ref([]);
+const settlementAdjusting = ref(null);
+const settlementAdjustForm = ref({ gross_amount: 0, cost_amount: 0, profit_amount: 0, platform_rate: 0, provider_rate: 0, service_rate: 0, expert_rate: 0, channel_rate: 0, reason: "" });
 const settlementReport = ref({ summary: {}, items: [] });
+const settlementReportFilters = ref({ start: "", end: "" });
 const settlementMeasurements = ref([]);
 const auditItems = ref([]);
 const auditCategories = ref([]);
@@ -112,6 +129,14 @@ const auditSelected = ref(null);
 const auditFilters = ref({ q: "", actor: "", order_id: "", batch_no: "", rule_version: "", risk_level: "", start: "", end: "", page: 1, page_size: 50, total: 0, pages: 0 });
 const userItems = ref([]);
 const enterpriseItems = ref([]);
+const enterpriseMembers = ref([]);
+const enterpriseDepartments = ref([]);
+const enterpriseInvitations = ref([]);
+const myEnterpriseInvitations = ref([]);
+const enterpriseManageModal = ref(null);
+const enterpriseManageTab = ref("details");
+const inviteTarget = ref("");
+const newDepartment = ref({ name: "", code: "", parent_id: "" });
 const personalVerificationItems = ref([]);
 const userEnterpriseTab = ref("users");
 const showPersonalVerification = ref(false);
@@ -193,6 +218,7 @@ const nav = [
   { key: "settlements", label: "清算分账", icon: BarChart3 },
   { key: "audit", label: "审计日志", icon: ShieldCheck },
   { key: "gateway", label: "API 网关", icon: Network },
+  { key: "sla", label: "SLA 保障", icon: Activity },
   { key: "users", label: "用户与企业", icon: Users },
   { key: "development", label: "开发进度", icon: Activity },
 ];
@@ -266,6 +292,19 @@ const typeLabels = {
 function fmtMoney(value) {
   return `¥${Number(value || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2 })}`;
 }
+const settlementLifecycleLabels = { generate_settlement_batch: "生成清算单", generate_refund_settlement_line: "生成退款负向清算单", create_refund_negative_settlement: "创建退款负向清算单", create_settlement_batch: "生成清算批次", lock_settlement: "锁定清算单", settlement_batch_ready_for_confirmation: "清算批次待确认", confirm_settlement_batch: "确认清算批次", pay_settlement_batch: "支付清算批次", create_settlement_adjustment_proposal: "提交调整提案", decide_settlement_adjustment_proposal: "处理调整提案" };
+const settlementLifecycleFieldLabels = { status: "状态", net_amount: "净金额", gross_amount: "订单金额", cost_amount: "订单成本", profit_amount: "订单利润", distributable_profit: "可分配利润", refund_amount: "退款金额", platform_fee: "平台运营方", provider_share: "数据/服务提供方", service_share: "数据服务方", expert_fee: "专家", channel_fee: "渠道", batch_status: "批次状态", settlement_statuses: "清算单状态" };
+function settlementLifecycleAction(action) { return settlementLifecycleLabels[action] || action; }
+function settlementLifecycleValue(value, key) {
+  if (value === undefined || value === null || value === "") return "-";
+  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "number" && (key.includes("amount") || key.includes("profit") || key.includes("fee") || key.includes("share"))) return fmtMoney(value);
+  return String(value);
+}
+function settlementLifecycleFields(event) {
+  const keys = [...new Set([...Object.keys(event.before || {}), ...Object.keys(event.after || {})])];
+  return keys.map((key) => ({ key, label: settlementLifecycleFieldLabels[key] || key, before: settlementLifecycleValue(event.before?.[key], key), after: settlementLifecycleValue(event.after?.[key], key) }));
+}
 function fmtDate(value) {
   return value
     ? new Date(value).toLocaleString("zh-CN", { hour12: false })
@@ -273,6 +312,9 @@ function fmtDate(value) {
 }
 function label(value) {
   return statusLabels[value] || value;
+}
+function participantLabel(value) {
+  return { platform: "平台运营方", provider: "数据/服务提供方", service: "数据服务方", expert: "专家", channel: "渠道" }[value] || value;
 }
 function notify(message) {
   toast.value = message;
@@ -378,16 +420,18 @@ async function loadViewData(view) {
     afterSalesItems.value = afterSales.data.items;
   }
   if (view === "settlements") {
-    const [settlements, rules, batches, reconciliations, corrections, report, measurements] = await Promise.all([
+    const [settlements, allSettlements, rules, batches, reconciliations, corrections, report, measurements] = await Promise.all([
+      api.get("/settlements", { params: settlementFilters.value }),
       api.get("/settlements"),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-batches").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-reconciliations").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-corrections").catch(() => ({ data: { items: [] } })),
-      api.get("/settlement-reports").catch(() => ({ data: { summary: {}, items: [] } })),
+      api.get("/settlement-reports", { params: settlementReportFilters.value }).catch(() => ({ data: { summary: {}, items: [] } })),
       api.get("/settlement-measurements").catch(() => ({ data: { items: [] } })),
     ]);
     settlementItems.value = settlements.data.items;
+    settlementFilterItems.value = allSettlements.data.items;
     settlementRules.value = rules.data.items;
     settlementBatches.value = batches.data.items;
     settlementReconciliations.value = reconciliations.data.items;
@@ -409,17 +453,30 @@ async function loadViewData(view) {
     gatewayAlerts.value = alerts.data.items;
     if (gatewayItems.value.length) await selectGateway(gatewayItems.value[0]);
   }
+  if (view === "sla") {
+    const [sla, enterprises] = await Promise.all([api.get("/sla/overview"), api.get("/admin/enterprises").catch(() => ({ data: { items: [] } }))]);
+    slaOverview.value = sla.data;
+    slaEnterprises.value = enterprises.data.items;
+  }
   if (view === "users") {
-    const [usersData, enterpriseData, personalData] = await Promise.all([
+    const [usersData, enterpriseData, personalData, memberData, departmentData, invitationData, myInvitationData] = await Promise.all([
       api.get("/users"),
       api.get("/admin/enterprises").catch(() => ({ data: { items: [] } })),
       api
         .get("/admin/verifications/personal")
         .catch(() => ({ data: { items: [] } })),
+      api.get("/enterprise/members").catch(() => ({ data: { items: [] } })),
+      api.get("/enterprise/departments").catch(() => ({ data: { items: [] } })),
+      api.get("/enterprise/invitations").catch(() => ({ data: { items: [] } })),
+      api.get("/enterprise/my-invitations").catch(() => ({ data: { items: [] } })),
     ]);
     userItems.value = usersData.data.items;
     enterpriseItems.value = enterpriseData.data.items;
     personalVerificationItems.value = personalData.data.items;
+    enterpriseMembers.value = memberData.data.items;
+    enterpriseDepartments.value = departmentData.data.items;
+    enterpriseInvitations.value = invitationData.data.items;
+    myEnterpriseInvitations.value = myInvitationData.data.items;
   }
   if (view === "settings") {
     const [settings, roles] = await Promise.all([
@@ -451,6 +508,93 @@ async function loadViewData(view) {
         legal_representative: enterprise.data.legal_representative,
       });
   }
+}
+
+async function createSlaProfile() {
+  if (!slaForm.value.name.trim()) return notify("请输入 SLA 规则名称");
+  try {
+    await api.post("/sla/profiles", slaForm.value);
+    notify("SLA 规则已创建");
+    slaForm.value = { name: "", service_scope: "platform", product_id: "", evaluation_period: "daily", availability_target: 99.9, latency_target_ms: 1000, error_rate_target: 1, delivery_hours: 24, recovery_minutes: 60, warning_margin: 0.5, description: "", status: "active" };
+    await loadViewData("sla");
+  } catch (error) { notify(error.response?.data?.detail || "SLA 规则创建失败"); }
+}
+async function evaluateSla() {
+  try {
+    await api.post("/sla/evaluate");
+    notify("SLA 已重新考核");
+    await loadViewData("sla");
+  } catch (error) { notify(error.response?.data?.detail || "SLA 考核失败"); }
+}
+async function toggleSlaProfile(profile) {
+  try {
+    await api.patch(`/sla/profiles/${profile.id}`, { ...profile, status: profile.status === "active" ? "disabled" : "active" });
+    notify("SLA 规则状态已更新");
+    await loadViewData("sla");
+  } catch (error) { notify(error.response?.data?.detail || "SLA 规则更新失败"); }
+}
+function openSlaResult(result) {
+  selectedSlaResult.value = result;
+}
+async function createServiceLevel() {
+  if (!serviceLevelForm.value.code || !serviceLevelForm.value.name) return notify("请输入服务级别编码和名称");
+  try {
+    await api.post("/sla/service-levels", serviceLevelForm.value);
+    notify("服务级别已创建");
+    serviceLevelForm.value = { code: "", name: "", description: "", customer_scope: "all", support_days_per_week: 5, support_hours_per_day: 8, online_docs: true, knowledge_base: true, standard_api: true, online_customer_service: true, dedicated_manager: false, technical_support: false, initial_response_minutes: 2880, problem_response_hours: 48, quarterly_report: false, annual_optimization: false, status: "active" };
+    await loadViewData("sla");
+  } catch (error) { notify(error.response?.data?.detail || "服务级别创建失败"); }
+}
+async function assignServiceLevel() {
+  if (!serviceAssignmentForm.value.enterprise_id || !serviceAssignmentForm.value.service_level_id) return notify("请选择企业和服务级别");
+  try {
+    await api.post("/sla/service-level-assignments", serviceAssignmentForm.value);
+    notify("服务级别已绑定到企业");
+    await loadViewData("sla");
+  } catch (error) { notify(error.response?.data?.detail || "服务级别绑定失败"); }
+}
+async function inviteEnterpriseMember() {
+  if (!inviteTarget.value.trim()) return notify("请输入已注册用户的邮箱或手机号");
+  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim() }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(`邀请已创建，开发令牌：${data.token}`); inviteTarget.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
+}
+async function acceptEnterpriseInvitation(item) {
+  try { await api.post(`/enterprise/invitations/${item.token}/accept`); notify(`已加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "接受邀请失败"); }
+}
+async function createDepartment() {
+  if (!newDepartment.value.name.trim()) return notify("请输入部门名称");
+  try { await api.post("/enterprise/departments", newDepartment.value, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify("部门已创建"); newDepartment.value = { name: "", code: "", parent_id: "" }; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "部门创建失败"); }
+}
+async function updateMemberRole(item, role) {
+  try { await api.patch(`/enterprise/members/${item.membership_id}`, { role }); notify("成员角色已更新"); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "成员角色更新失败"); }
+}
+async function updateMemberDepartment(item, departmentId) {
+  try { await api.patch(`/enterprise/members/${item.membership_id}/department`, { department_id: departmentId }); notify("成员部门已更新"); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "成员部门更新失败"); }
+}
+async function deleteDepartment(item) {
+  if (!window.confirm(`确认删除部门“${item.name}”吗？`)) return;
+  try { await api.delete(`/enterprise/departments/${item.id}`); notify("部门已删除"); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "部门删除失败"); }
+}
+async function loadEnterpriseManagement() {
+  if (!enterpriseManageModal.value?.id) return;
+  const enterpriseId = enterpriseManageModal.value.id;
+  const [members, departments, invitations] = await Promise.all([
+    api.get("/enterprise/members", { params: { enterprise_id: enterpriseId } }),
+    api.get("/enterprise/departments", { params: { enterprise_id: enterpriseId } }),
+    api.get("/enterprise/invitations", { params: { enterprise_id: enterpriseId } }),
+  ]);
+  enterpriseMembers.value = members.data.items;
+  enterpriseDepartments.value = departments.data.items;
+  enterpriseInvitations.value = invitations.data.items;
+}
+async function openEnterpriseManagement(item, tab = "details") {
+  enterpriseManageModal.value = item;
+  enterpriseManageTab.value = tab;
+  inviteTarget.value = "";
+  newDepartment.value = { name: "", code: "", parent_id: "" };
+  try { await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "企业管理数据加载失败"); }
+}
+function closeEnterpriseManagement() {
+  enterpriseManageModal.value = null;
 }
 
 const auditCategoryLabels = {
@@ -928,17 +1072,55 @@ async function generateSettlement(order) {
     notify(error.response?.data?.detail || "清算生成失败");
   }
 }
-async function adjustSettlement(item) {
-  const amount = window.prompt("请输入调整金额，可填写负数", "0");
-  if (amount === null || amount === "" || Number.isNaN(Number(amount))) return;
-  const reason = window.prompt("请输入调整原因", "");
-  if (!reason) return notify("清算调整必须填写原因");
+async function searchSettlements() {
+  await loadViewData("settlements");
+}
+function updateUiScale() {
+  const width = window.innerWidth;
+  const height = window.innerHeight || 900;
+  if (width <= 760) {
+    document.documentElement.style.setProperty("--ui-scale", "1");
+    return;
+  }
+  const ratio = width / height;
+  let scale = 1;
+  if (window.devicePixelRatio >= 2) scale -= 0.08;
+  else if (window.devicePixelRatio >= 1.5) scale -= 0.04;
+  if (ratio < 1.2) scale -= 0.04;
+  if (height < 800) scale -= 0.03;
+  document.documentElement.style.setProperty("--ui-scale", String(Math.max(0.86, Math.min(1, scale))));
+}
+async function openSettlementDetail(item) {
   try {
-    await api.post(`/settlements/${item.id}/adjust`, {
-      amount: Number(amount),
-      reason,
-    });
-    notify("清算调整已保存");
+    const { data } = await api.get(`/settlements/${item.id}/detail`);
+    settlementDetail.value = data;
+  } catch (error) {
+    notify(error.response?.data?.detail || "清算单详情加载失败");
+  }
+}
+function closeSettlementDetail() {
+  settlementDetail.value = null;
+}
+function openSettlementAdjustment(item) {
+  settlementAdjusting.value = item;
+  settlementAdjustForm.value = { gross_amount: item.gross_amount, cost_amount: item.cost_amount, profit_amount: item.profit_amount, platform_rate: item.platform_rate || 0, provider_rate: item.provider_rate || 0, service_rate: item.service_rate || 0, expert_rate: item.expert_rate || 0, channel_rate: item.channel_rate || 0, reason: "" };
+}
+function closeSettlementAdjustment() {
+  settlementAdjusting.value = null;
+}
+function adjustmentShare(rate) {
+  return ((Number(settlementAdjustForm.value.profit_amount || 0) * Number(rate || 0)) / 100).toFixed(2);
+}
+async function adjustSettlement() {
+  const form = settlementAdjustForm.value;
+  if (!form.reason || form.reason.trim().length < 2) return notify("清算调整必须填写原因");
+  const totalRate = [form.platform_rate, form.provider_rate, form.service_rate, form.expert_rate, form.channel_rate].reduce((sum, value) => sum + Number(value || 0), 0);
+  if (Math.abs(totalRate - 100) > 0.01) return notify("五方分成比例合计必须为100%");
+  if (Math.abs(Number(form.gross_amount) - Number(form.cost_amount) - Number(form.profit_amount)) > 0.01) return notify("订单利润必须等于订单金额减订单成本");
+  try {
+    await api.post(`/settlements/${settlementAdjusting.value.id}/proposals`, { ...form, gross_amount: Number(form.gross_amount), cost_amount: Number(form.cost_amount), profit_amount: Number(form.profit_amount), platform_rate: Number(form.platform_rate), provider_rate: Number(form.provider_rate), service_rate: Number(form.service_rate), expert_rate: Number(form.expert_rate), channel_rate: Number(form.channel_rate) });
+    notify("调整提案已提交，等待其他清算参与方确认");
+    closeSettlementAdjustment();
     await loadViewData("settlements");
   } catch (error) {
     notify(error.response?.data?.detail || "清算调整失败");
@@ -952,6 +1134,18 @@ async function lockSettlement(item) {
     await loadViewData("settlements");
   } catch (error) {
     notify(error.response?.data?.detail || "清算锁定失败");
+  }
+}
+async function decideSettlementProposal(proposal, decision) {
+  const comment = window.prompt(decision === "approve" ? "请输入提案确认意见" : "请输入提案拒绝原因", "")
+  if (comment === null) return;
+  try {
+    await api.post(`/settlement-proposals/${proposal.id}/decision`, { decision, comment });
+    notify(decision === "approve" ? "调整提案已确认" : "调整提案已拒绝");
+    if (settlementDetail.value) await openSettlementDetail({ id: settlementDetail.value.id });
+    await loadViewData("settlements");
+  } catch (error) {
+    notify(error.response?.data?.detail || "调整提案处理失败");
   }
 }
 async function createSettlementRule() {
@@ -983,11 +1177,32 @@ async function simulateSettlementRule(rule) {
   }
 }
 async function generateSettlementBatch() {
+  const month = window.prompt("请输入要清算的自然月（格式 YYYY-MM）", settlementBatchMonth.value);
+  if (month === null) return;
+  if (!/^[0-9]{4}-[0-9]{2}$/.test(month)) return notify("月份格式应为 YYYY-MM");
+  settlementBatchMonth.value = month;
+  const [year, monthNumber] = month.split("-").map(Number);
+  const start = `${month}-01T00:00:00Z`;
+  const endDate = new Date(Date.UTC(monthNumber === 12 ? year + 1 : year, monthNumber === 12 ? 0 : monthNumber, 1));
+  const end = endDate.toISOString();
+  const ruleId = settlementRules.value.find((x) => x.status === "active")?.id || "";
   try {
-    await api.post("/settlement-batches", { cycle: "manual", rule_id: settlementRules.value.find((x) => x.status === "active")?.id || "" });
-    notify("清算批次已生成");
+    await api.post("/settlement-batches", { cycle: "monthly", period_start: start, period_end: end, rule_id: ruleId, idempotency_key: `monthly:${month}` });
+    notify(`${month} 清算批次已生成`);
     await loadViewData("settlements");
   } catch (error) {
+    if (error.response?.status === 409 && error.response?.data?.detail?.includes("未完成清算批次")) {
+      if (!window.confirm(`${month} 已存在未完成清算批次，是否作废原批次并重新生成？`)) return;
+      try {
+        await api.post("/settlement-batches", { cycle: "monthly", period_start: start, period_end: end, rule_id: ruleId, rebuild: true, idempotency_key: `monthly:${month}:rebuild:${Date.now()}` });
+        notify(`${month} 原清算批次已作废并重新生成`);
+        await loadViewData("settlements");
+        return;
+      } catch (rebuildError) {
+        notify(rebuildError.response?.data?.detail || "清算批次重算失败");
+        return;
+      }
+    }
     notify(error.response?.data?.detail || "清算批次生成失败");
   }
 }
@@ -1033,13 +1248,16 @@ async function approveCorrection(item) {
     notify(error.response?.data?.detail || "清算调整审批失败");
   }
 }
-async function exportSettlementReport() {
+async function loadSettlementReport() {
+  try { const { data } = await api.get("/settlement-reports", { params: settlementReportFilters.value }); settlementReport.value = data; } catch (error) { notify(error.response?.data?.detail || "清算报表加载失败"); }
+}
+async function exportSettlementReport(kind = "details") {
   try {
-    const response = await api.get("/settlement-reports/export", { responseType: "blob" });
+    const response = await api.get("/settlement-reports/export", { params: { ...settlementReportFilters.value, kind }, responseType: "blob" });
     const url = URL.createObjectURL(response.data);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "settlement-report.csv";
+    link.download = kind === "summary" ? "settlement-summary.csv" : "settlement-details.csv";
     link.click();
     URL.revokeObjectURL(url);
     notify("清算报表已导出");
@@ -1229,12 +1447,17 @@ function nextActions(order) {
 }
 
 onMounted(() => {
+  updateUiScale();
+  window.addEventListener("resize", updateUiScale);
   if (token.value) loadSession();
   progressTimer = window.setInterval(() => {
     if (token.value) loadViewData("development");
   }, 10000);
 });
-onUnmounted(() => window.clearInterval(progressTimer));
+onUnmounted(() => {
+  window.clearInterval(progressTimer);
+  window.removeEventListener("resize", updateUiScale);
+});
 </script>
 
 <template>
@@ -1613,6 +1836,38 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <div v-else-if="gatewayTab === 'revisions'" class="table-wrap"><table class="data-table"><thead><tr><th>版本</th><th>状态</th><th>操作人</th><th>时间</th><th>错误</th></tr></thead><tbody><tr v-for="item in gatewayRevisions" :key="item.id"><td>Revision {{ item.revision }}</td><td><span :class="['status-pill', item.status === 'published' ? 'status-done' : item.status === 'failed' ? 'status-blocked' : 'status-in_progress']">{{ item.status }}</span></td><td>{{ item.created_by }}</td><td>{{ fmtDate(item.created_at) }}</td><td>{{ item.error_message || '-' }}</td></tr><tr v-if="!gatewayRevisions.length"><td colspan="5"><div class="empty-state">暂无发布记录</div></td></tr></tbody></table></div>
             <div v-else class="table-wrap"><table class="data-table"><thead><tr><th>等级</th><th>告警</th><th>说明</th><th>时间</th></tr></thead><tbody><tr v-for="item in gatewayAlerts" :key="item.id"><td><span class="status-pill status-blocked">{{ item.severity }}</span></td><td><strong>{{ item.title }}</strong></td><td>{{ item.message }}</td><td>{{ fmtDate(item.created_at) }}</td></tr><tr v-if="!gatewayAlerts.length"><td colspan="4"><div class="empty-state"><CheckCircle2 :size="22" />暂无未处理告警</div></td></tr></tbody></table></div>
           </div></template
+        >
+        <template v-else-if="activeView === 'sla'"
+          ><div class="page-heading">
+            <div><div class="eyebrow">SERVICE ASSURANCE · SLA</div><h1>平台服务与 SLA 保障</h1><p>统一配置服务等级目标，按 API 调用质量和交付及时率进行周期考核。</p></div>
+            <button class="primary-btn" @click="evaluateSla"><RefreshCw :size="15" />立即考核</button>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-card"><div class="metric-icon blue"><Activity :size="17" /></div><span>启用规则</span><strong>{{ slaOverview.summary.active_profiles || 0 }}</strong><small>共 {{ slaOverview.summary.profiles || 0 }} 条规则</small></div>
+            <div class="metric-card"><div class="metric-icon green"><CheckCircle2 :size="17" /></div><span>达标结果</span><strong>{{ slaOverview.summary.met || 0 }}</strong><small>最近考核周期</small></div>
+            <div class="metric-card"><div class="metric-icon orange"><CircleAlert :size="17" /></div><span>预警结果</span><strong>{{ slaOverview.summary.warning || 0 }}</strong><small>需要关注</small></div>
+            <div class="metric-card"><div class="metric-icon red"><CircleAlert :size="17" /></div><span>违约结果</span><strong>{{ slaOverview.summary.breached || 0 }}</strong><small>需要处置</small></div>
+          </div>
+          <div class="two-column-panels">
+            <div class="panel sla-policy-panel">
+              <div class="panel-heading sla-panel-heading"><div><span class="section-kicker">SLA POLICY</span><h3>规则配置</h3></div><span class="muted">平台管理员</span></div>
+              <div class="form-grid sla-rule-form">
+                <label>规则名称<input v-model="slaForm.name" placeholder="如 API 核心服务等级" /></label>
+                <label>适用范围<select v-model="slaForm.service_scope"><option value="platform">平台服务</option><option value="api">API 服务</option><option value="delivery">交付服务</option><option value="product">指定产品</option></select></label>
+                <label v-if="slaForm.service_scope === 'product'">绑定产品<select v-model="slaForm.product_id"><option value="">请选择产品</option><option v-for="product in products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
+                <label>可用性目标（%）<input v-model.number="slaForm.availability_target" type="number" step="0.01" min="0" max="100" /></label>
+                <label>延迟目标（ms）<input v-model.number="slaForm.latency_target_ms" type="number" min="1" /></label>
+                <label>错误率上限（%）<input v-model.number="slaForm.error_rate_target" type="number" step="0.01" min="0" /></label>
+                <label>交付时限（小时）<input v-model.number="slaForm.delivery_hours" type="number" min="1" /></label>
+                <label>恢复目标（分钟）<input v-model.number="slaForm.recovery_minutes" type="number" min="1" /></label>
+                <label>预警裕量（百分点）<input v-model.number="slaForm.warning_margin" type="number" step="0.1" min="0" /></label>
+                <label class="wide">说明<textarea v-model="slaForm.description" rows="2" placeholder="描述服务范围、考核口径和处置要求"></textarea></label>
+              </div>
+              <div class="sla-form-actions"><button class="primary-btn" @click="createSlaProfile"><CheckCircle2 :size="15" />创建规则</button></div>
+              <div class="sla-rule-table"><div class="sla-subheading"><strong>已配置规则</strong><span>{{ slaOverview.profiles.length }} 条</span></div><div class="table-wrap"><table class="data-table compact"><thead><tr><th>规则</th><th>范围</th><th>目标</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in slaOverview.profiles" :key="item.id"><td><strong>{{ item.name }}</strong><small>{{ item.description || '无说明' }}</small></td><td>{{ item.service_scope }}</td><td>可用 {{ item.availability_target }}% · 延迟 {{ item.latency_target_ms }}ms · 错误 {{ item.error_rate_target }}%</td><td><span :class="['status-pill', item.status === 'active' ? 'status-done' : 'status-todo']">{{ item.status === 'active' ? '启用' : '停用' }}</span></td><td><button class="text-btn" @click="toggleSlaProfile(item)">{{ item.status === 'active' ? '停用' : '启用' }}</button></td></tr><tr v-if="!slaOverview.profiles.length"><td colspan="5"><div class="empty-state">暂无 SLA 规则</div></td></tr></tbody></table></div></div>
+            </div>
+            <div class="panel sla-results-panel"><div class="panel-heading"><div><span class="section-kicker">SLA RESULTS</span><h3>周期考核结果</h3></div><span class="muted">最近 100 条</span></div><div class="table-wrap"><table class="data-table compact"><thead><tr><th>规则</th><th>可用性</th><th>延迟</th><th>错误率</th><th>交付及时率</th><th>结论</th></tr></thead><tbody><tr v-for="item in slaOverview.results" :key="item.id"><td><strong>{{ item.profile_name }}</strong><small>{{ fmtDate(item.calculated_at) }}</small></td><td>{{ item.availability }}%</td><td>{{ item.avg_latency_ms }} ms</td><td>{{ item.error_rate }}%</td><td>{{ item.delivery_compliance }}%</td><td><button class="sla-result-button" @click="openSlaResult(item)"><span :class="['status-pill', item.status === 'met' ? 'status-done' : item.status === 'warning' ? 'status-review' : 'status-blocked']">{{ item.status === 'met' ? '达标' : item.status === 'warning' ? '预警' : '违约' }}</span><small>{{ item.breach_reason || '查看考核详情' }}</small></button></td></tr><tr v-if="!slaOverview.results.length"><td colspan="6"><div class="empty-state">暂无考核结果，请先执行考核</div></td></tr></tbody></table></div></div>
+          </div><div v-if="selectedSlaResult" class="drawer-scrim" @click.self="selectedSlaResult = null"><aside class="order-drawer sla-result-drawer"><div class="drawer-head"><div><div class="eyebrow">SLA RESULT DETAIL</div><h2>{{ selectedSlaResult.status === 'breached' ? 'SLA 违约详情' : selectedSlaResult.status === 'warning' ? 'SLA 预警详情' : 'SLA 达标详情' }}</h2></div><button class="icon-btn" @click="selectedSlaResult = null"><X :size="18" /></button></div><div class="drawer-summary"><strong>{{ selectedSlaResult.profile_name }}</strong><span>{{ fmtDate(selectedSlaResult.period_start) }} 至 {{ fmtDate(selectedSlaResult.period_end) }}</span><span :class="['status-pill', selectedSlaResult.status === 'met' ? 'status-done' : selectedSlaResult.status === 'warning' ? 'status-review' : 'status-blocked']">{{ selectedSlaResult.status === 'met' ? '达标' : selectedSlaResult.status === 'warning' ? '预警' : '违约' }}</span></div><div class="drawer-section"><div class="drawer-section-title">异常内容</div><p class="sla-result-reason">{{ selectedSlaResult.breach_reason || '本周期各项指标均达到目标。' }}</p></div><div class="drawer-section"><div class="drawer-section-title">考核指标</div><div class="state-grid"><div><small>可用性</small><strong>{{ selectedSlaResult.availability }}%</strong></div><div><small>平均延迟</small><strong>{{ selectedSlaResult.avg_latency_ms }} ms</strong></div><div><small>错误率</small><strong>{{ selectedSlaResult.error_rate }}%</strong></div><div><small>交付及时率</small><strong>{{ selectedSlaResult.delivery_compliance }}%</strong></div><div><small>请求样本</small><strong>{{ selectedSlaResult.sample_count }}</strong></div><div><small>成功请求</small><strong>{{ selectedSlaResult.success_count }}</strong></div></div></div><div class="drawer-section"><div class="drawer-section-title">处理建议</div><p class="sla-result-advice">{{ selectedSlaResult.status === 'breached' ? '请创建服务事件，定位故障原因并记录恢复过程。' : selectedSlaResult.status === 'warning' ? '建议持续观察下一周期指标，必要时提前处理容量、延迟或交付风险。' : '当前周期无需额外处置。' }}</p></div></aside></div><div class="panel service-level-panel"><div class="panel-heading"><div><span class="section-kicker">SERVICE LEVEL</span><h3>服务级别与支持权益</h3></div><span class="muted">时长均可配置</span></div><div class="service-level-cards"><article v-for="level in slaOverview.service_levels" :key="level.id" class="service-level-card"><div class="service-level-card-head"><div><strong>{{ level.name }}</strong><small>{{ level.code }} · {{ level.support_schedule }} 支持</small></div><span :class="['status-pill', level.status === 'active' ? 'status-done' : 'status-todo']">{{ level.status === 'active' ? '启用' : '停用' }}</span></div><p>{{ level.description }}</p><div class="service-level-meta"><span>首响 {{ level.initial_response_minutes }} 分钟</span><span>问题 {{ level.problem_response_hours }} 小时</span><span v-if="level.dedicated_manager">专属经理</span><span v-if="level.quarterly_report">季度报告</span><span v-if="level.annual_optimization">年度优化</span></div></article></div><div class="service-level-config"><div class="service-level-config-title">新增可配置级别</div><div class="form-grid service-level-form"><label>编码<input v-model="serviceLevelForm.code" placeholder="如 premium" /></label><label>名称<input v-model="serviceLevelForm.name" placeholder="如 专业级" /></label><label>每周支持天数<input v-model.number="serviceLevelForm.support_days_per_week" type="number" min="1" max="7" /></label><label>每天支持小时<input v-model.number="serviceLevelForm.support_hours_per_day" type="number" min="1" max="24" /></label><label>首次响应（分钟）<input v-model.number="serviceLevelForm.initial_response_minutes" type="number" min="1" /></label><label>问题响应（小时）<input v-model.number="serviceLevelForm.problem_response_hours" type="number" min="1" /></label><label class="wide">说明<input v-model="serviceLevelForm.description" placeholder="支持权益说明" /></label></div><div class="service-level-options"><label><input v-model="serviceLevelForm.dedicated_manager" type="checkbox" />专属技术支持经理</label><label><input v-model="serviceLevelForm.quarterly_report" type="checkbox" />季度服务报告</label><label><input v-model="serviceLevelForm.annual_optimization" type="checkbox" />年度服务优化建议</label></div><button class="primary-btn" @click="createServiceLevel"><CheckCircle2 :size="15" />创建服务级别</button></div><div class="service-level-assignment"><div class="service-level-config-title">企业服务级别绑定</div><div class="form-grid"><label>企业<select v-model="serviceAssignmentForm.enterprise_id"><option value="">请选择企业</option><option v-for="enterprise in slaEnterprises" :key="enterprise.id" :value="enterprise.id">{{ enterprise.name }}</option></select></label><label>服务级别<select v-model="serviceAssignmentForm.service_level_id"><option value="">请选择级别</option><option v-for="level in slaOverview.service_levels" :key="level.id" :value="level.id">{{ level.name }}</option></select></label></div><button class="secondary-btn" @click="assignServiceLevel"><Users :size="15" />绑定企业级别</button></div></div></template
         >
         <template v-else-if="activeView === 'development'"
           ><div class="page-heading">
@@ -2094,7 +2349,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
             <div>
               <div class="eyebrow">财务运营 · 可核对分账</div>
               <h1>清算分账</h1>
-              <p>按订单版本成本计算利润，再依据利润进行分账；税费单独核算。</p>
+              <p>按订单版本成本计算利润，再依据利润进行分账；渠道单独核算，税费独立记录。</p>
             </div>
             <button class="secondary-btn" @click="loadViewData('settlements')">
               <RefreshCw :size="16" />刷新
@@ -2123,31 +2378,34 @@ onUnmounted(() => window.clearInterval(progressTimer));
               </div>
               <div class="gateway-actions"><button class="primary-btn" @click="createSettlementRule">保存规则</button></div>
             </div>
-            <div class="panel"><div class="panel-heading"><div><span class="section-kicker">RULE VERSIONS</span><h3>规则版本</h3></div></div><div class="settlement-rule-list"><div v-for="rule in settlementRules" :key="rule.id" class="settlement-rule-item"><div><strong>{{ rule.name }} · {{ rule.version }}</strong><small>平台 {{ rule.platform_rate }}% · 提供方 {{ rule.provider_rate }}% · 数据服务方 {{ rule.service_rate }}% · 专家 {{ rule.expert_rate }}%</small></div><div class="table-actions"><span class="status-pill" :class="rule.status === 'active' ? 'status-done' : 'status-review'">{{ rule.status }}</span><button v-if="rule.status === 'draft'" class="text-btn" @click="decideSettlementRule(rule, 'approve')">审批</button><button v-if="['approved', 'disabled'].includes(rule.status)" class="text-btn" @click="decideSettlementRule(rule, 'activate')">启用</button><button class="text-btn" @click="simulateSettlementRule(rule)">试算</button></div></div></div><div v-if="!settlementRules.length" class="empty-state">暂无清算规则</div></div>
+            <div class="panel"><div class="panel-heading"><div><span class="section-kicker">RULE VERSIONS</span><h3>规则版本</h3></div></div><div class="settlement-rule-list"><div v-for="rule in settlementRules" :key="rule.id" class="settlement-rule-item"><div><strong>{{ rule.name }} · {{ rule.version }}</strong><small>平台 {{ rule.platform_rate }}% · 提供方 {{ rule.provider_rate }}% · 数据服务方 {{ rule.service_rate }}% · 专家 {{ rule.expert_rate }}% · 渠道 {{ rule.channel_rate }}%</small></div><div class="table-actions"><span class="status-pill" :class="rule.status === 'active' ? 'status-done' : 'status-review'">{{ rule.status }}</span><button v-if="rule.status === 'draft'" class="text-btn" @click="decideSettlementRule(rule, 'approve')">审批</button><button v-if="['approved', 'disabled'].includes(rule.status)" class="text-btn" @click="decideSettlementRule(rule, 'activate')">启用</button><button class="text-btn" @click="simulateSettlementRule(rule)">试算</button></div></div></div><div v-if="!settlementRules.length" class="empty-state">暂无清算规则</div></div>
           </div>
-          <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>异常</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td>{{ batch.exception_count }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : batch.status === 'exception' || batch.status === 'disputed' ? 'status-blocked' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'generated'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'generated' || batch.status === 'confirmed'" class="text-btn danger-text" @click="batchAction(batch, 'dispute')">提出异议</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
+          <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'pending_confirm'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
           <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div></div>
           <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REVERSAL AND RECOVERY</span><h3>退款、冲正与清算调整</h3></div><span class="muted">原始清算结果保持不变</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td><td><button v-if="item.status === 'pending'" class="text-btn" @click="approveCorrection(item)">审批</button></td></tr><tr v-if="!settlementCorrections.length && settlementItems.length"><td colspan="7"><div class="empty-state"><button class="primary-btn" @click="createCorrection(settlementItems[0])">从最近清算单发起冲正</button></div></td></tr></tbody></table></div><div v-if="!settlementCorrections.length && !settlementItems.length" class="empty-state">暂无清算调整记录</div></div>
-          <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3></div><button class="secondary-btn" @click="exportSettlementReport"><FileText :size="15" />导出 CSV</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>清算单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>净收入</span><strong>{{ fmtMoney(settlementReport.summary.net_amount) }}</strong></div><div class="metric-card"><span>确认成本</span><strong>{{ fmtMoney(settlementReport.summary.cost_amount) }}</strong></div><div class="metric-card"><span>可分配利润</span><strong>{{ fmtMoney(settlementReport.summary.profit_amount) }}</strong></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>状态</th><th>净收入</th><th>成本</th><th>利润</th><th>提供方</th><th>服务方</th><th>创建时间</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.status }}</td><td>{{ fmtMoney(item.net_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div></div>
+          <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3><span class="muted">支持按清算周期在线核对和下载</span></div><div class="table-actions"><button class="secondary-btn" @click="exportSettlementReport('summary')"><FileText :size="15" />下载参与方总表</button><button class="secondary-btn" @click="exportSettlementReport('details')"><FileText :size="15" />下载订单明细</button><button class="secondary-btn" @click="exportSettlementReport('products')"><FileText :size="15" />下载产品汇总</button></div></div><div class="report-filter-bar"><label>周期开始<input v-model="settlementReportFilters.start" type="date" /></label><label>周期结束<input v-model="settlementReportFilters.end" type="date" /></label><button class="primary-btn" @click="loadSettlementReport"><RefreshCw :size="15" />查询周期</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>订单总额</span><strong>{{ fmtMoney(settlementReport.summary.gross_amount) }}</strong></div><div class="metric-card"><span>订单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>总成本</span><strong>{{ fmtMoney(settlementReport.summary.cost_amount) }}</strong></div><div class="metric-card"><span>总利润</span><strong>{{ fmtMoney(settlementReport.summary.profit_amount) }}</strong></div></div><div class="report-section-heading"><strong>自然月清算汇总</strong><span class="muted">按订单清算明细的创建月份统计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>自然月</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.monthly || []" :key="item.label"><td>{{ item.label }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.monthly || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无自然月汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>产品维度清算汇总</strong><span class="muted">按产品统计订单、成本、利润和参与方金额</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>产品</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.products || []" :key="item.product_id || item.product_name"><td>{{ item.product_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.products || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无产品汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>参与清算各方汇总</strong><span class="muted">按参与方分别合计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>参与方类型</th><th>参与方</th><th>订单数</th><th>清算小计金额</th></tr></thead><tbody><tr v-for="item in settlementReport.summary.participants || []" :key="`${item.participant_type}-${item.participant_name}`"><td>{{ participantLabel(item.participant_type) }}</td><td>{{ item.participant_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.amount) }}</td></tr><tr v-if="!(settlementReport.summary.participants || []).length"><td colspan="4"><div class="empty-state">当前周期暂无参与方清算数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>订单清算明细</strong><span class="muted">每个订单的金额、成本、利润和参与方分配</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>专家</th><th>渠道</th><th>参与方清算小计</th><th>参与方明细</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_no || item.order_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td><td>{{ fmtMoney(item.participant_total) }}</td><td><div class="report-participant-list"><span v-for="participant in item.participants" :key="`${item.id}-${participant.participant_type}-${participant.participant_name}`">{{ participant.participant_name }}：{{ fmtMoney(participant.amount) }}</span></div></td><td>{{ item.status }}</td></tr><tr v-if="!settlementReport.items.length"><td colspan="10"><div class="empty-state">当前周期暂无订单清算数据</div></td></tr></tbody></table></div></div>
           <div v-else-if="settlementTab === 'measurements'" class="panel"><div class="panel-heading"><div><span class="section-kicker">MEASUREMENT AND BILLING</span><h3>计量计费数据</h3></div><button class="primary-btn" @click="createMeasurement">登记计量</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>计量类型</th><th>数量</th><th>单位</th><th>来源</th><th>校验状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementMeasurements" :key="item.id"><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.measurement_type }}</td><td>{{ item.quantity }}</td><td>{{ item.unit }}</td><td>{{ item.source }}</td><td><span class="status-pill status-done">{{ item.validation_status }}</span></td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div><div v-if="!settlementMeasurements.length" class="empty-state">暂无计量数据</div></div>
           <div v-else class="panel">
             <div class="panel-heading">
               <h3>
                 清算单 <small>{{ settlementItems.length }} 张</small>
               </h3>
-              <button
-                class="text-btn"
-                @click="
-                  filteredOrders.length && generateSettlement(filteredOrders[0])
-                "
-              >
-                为最近订单生成 <ArrowUpRight :size="15" />
+              <button class="primary-btn" @click="generateSettlementBatch">
+                生成指定月份清算批次 <ArrowUpRight :size="15" />
               </button>
+            </div>
+            <div class="settlement-filter-bar">
+              <label>清算批次<input v-model="settlementFilters.batch_id" list="settlement-batch-options" placeholder="下拉选择或输入批次号模糊匹配" /><datalist id="settlement-batch-options"><option value=""></option><option v-for="batch in settlementBatches" :key="batch.id" :value="batch.batch_no"></option></datalist></label>
+              <label>清算单<input v-model="settlementFilters.settlement_id" list="settlement-options" placeholder="下拉选择或输入清算单号模糊匹配" /><datalist id="settlement-options"><option v-for="item in settlementFilterItems" :key="item.id" :value="item.settlement_no"></option></datalist></label>
+              <label>订单号<input v-model="settlementFilters.order_no" list="settlement-order-options" placeholder="下拉选择或输入订单号模糊匹配" /><datalist id="settlement-order-options"><option v-for="item in settlementFilterOrders" :key="item.order_no" :value="item.order_no"></option></datalist></label>
+              <label>状态<select v-model="settlementFilters.status"><option value="">全部状态</option><option value="pending">待审核</option><option value="adjusted">已调整</option><option value="locked">已锁定</option><option value="paid">已付款</option></select></label>
+              <button class="primary-btn" @click="searchSettlements"><Search :size="15" />检索</button>
             </div>
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th>清算批次</th>
                     <th>清算单</th>
                     <th>订单</th>
                     <th>原始金额</th>
@@ -2159,7 +2417,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                     <th>提供方</th>
                     <th>服务方</th>
                     <th>专家</th>
-                    <th>税费</th>
+                    <th>渠道</th>
                     <th>状态</th>
                     <th>操作</th>
                   </tr>
@@ -2167,10 +2425,13 @@ onUnmounted(() => window.clearInterval(progressTimer));
                 <tbody>
                   <tr v-for="item in settlementItems" :key="item.id">
                     <td>
-                      <span class="task-code">{{ item.settlement_no }}</span
+                      <span class="task-code">{{ item.batch_no || '-' }}</span><small>{{ item.batch_status || '-' }}</small>
+                    </td>
+                    <td>
+                      <button class="link-btn" @click="openSettlementDetail(item)">{{ item.settlement_no }}</button
                       ><small>{{ fmtDate(item.created_at) }}</small>
                     </td>
-                    <td>{{ item.order_id.slice(0, 12) }}</td>
+                    <td><span class="task-code">{{ item.order_no || item.order_id }}</span></td>
                     <td>
                       <strong>{{ fmtMoney(item.gross_amount) }}</strong>
                     </td>
@@ -2184,7 +2445,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                     <td>{{ fmtMoney(item.provider_share) }}</td>
                     <td>{{ fmtMoney(item.service_share) }}</td>
                     <td>{{ fmtMoney(item.expert_fee) }}</td>
-                    <td>{{ fmtMoney(item.tax_amount) }}</td>
+                    <td>{{ fmtMoney(item.channel_fee) }}</td>
                     <td>
                       <span class="status-pill status-review">{{
                         item.status
@@ -2193,13 +2454,13 @@ onUnmounted(() => window.clearInterval(progressTimer));
                     <td>
                       <div class="table-actions">
                         <button
-                          v-if="item.status !== 'locked'"
+                          v-if="!['locked','paid','superseded'].includes(item.status)"
                           class="text-btn"
-                          @click="adjustSettlement(item)"
+                          @click="openSettlementAdjustment(item)"
                         >
                           调整</button
                         ><button
-                          v-if="item.status !== 'locked'"
+                          v-if="!['locked','paid','superseded'].includes(item.status)"
                           class="text-btn danger-text"
                           @click="lockSettlement(item)"
                         >
@@ -2305,6 +2566,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
               平台注册企业 {{ enterpriseItems.length }} 个
             </button>
           </div>
+          <div v-if="userEnterpriseTab === 'users' && myEnterpriseInvitations.length" class="panel received-invitations-panel"><div class="panel-heading"><div><span class="section-kicker">MY INVITATIONS</span><h3>待接受的企业邀请</h3></div><span class="muted">接受后默认加入为企业普通成员</span></div><div class="received-invitations"><div v-for="item in myEnterpriseInvitations" :key="item.id" class="received-invitation"><span>{{ item.enterprise_name }}</span><button class="text-btn" @click="acceptEnterpriseInvitation(item)">接受并加入</button></div></div></div>
           <div v-if="userEnterpriseTab === 'users'" class="panel">
             <div class="panel-heading">
               <h3>平台注册用户</h3>
@@ -2468,7 +2730,7 @@ onUnmounted(() => window.clearInterval(progressTimer));
                           @click="showEnterpriseVerification = true"
                         >
                           重新提交
-                        </button>
+                        </button><template v-if="item.verification_status === 'verified'"><button class="text-btn" @click="openEnterpriseManagement(item, 'details')">企业详情</button><button class="text-btn" @click="openEnterpriseManagement(item, 'invite')">邀请用户</button><button class="text-btn" @click="openEnterpriseManagement(item, 'departments')">部门管理</button><button class="text-btn" @click="openEnterpriseManagement(item, 'members')">成员管理</button></template>
                       </div>
                     </td>
                   </tr>
@@ -3316,6 +3578,42 @@ onUnmounted(() => window.clearInterval(progressTimer));
       </form>
     </div>
     <div
+      v-if="enterpriseManageModal"
+      class="modal-scrim"
+      @click="closeEnterpriseManagement"
+    >
+      <section class="modal-card enterprise-manage-modal" @click.stop>
+        <div class="drawer-head">
+          <div><span class="eyebrow">ENTERPRISE MANAGEMENT</span><h2>{{ enterpriseManageModal.name }}</h2><p class="muted">已认证企业 · 企业成员、部门和邀请管理</p></div>
+          <button type="button" class="icon-btn" @click="closeEnterpriseManagement"><X :size="19" /></button>
+        </div>
+        <div class="tabs modal-tabs">
+          <button :class="{ active: enterpriseManageTab === 'details' }" @click="enterpriseManageTab = 'details'">企业详情</button>
+          <button :class="{ active: enterpriseManageTab === 'invite' }" @click="enterpriseManageTab = 'invite'">邀请用户</button>
+          <button :class="{ active: enterpriseManageTab === 'departments' }" @click="enterpriseManageTab = 'departments'">部门管理</button>
+          <button :class="{ active: enterpriseManageTab === 'members' }" @click="enterpriseManageTab = 'members'">成员管理</button>
+        </div>
+        <div v-if="enterpriseManageTab === 'details'" class="enterprise-detail-grid">
+          <div><small>企业名称</small><strong>{{ enterpriseManageModal.name }}</strong></div><div><small>统一社会信用代码</small><strong>{{ enterpriseManageModal.credit_code }}</strong></div><div><small>企业类型</small><strong>{{ enterpriseManageModal.enterprise_type || '-' }}</strong></div><div><small>法定代表人</small><strong>{{ enterpriseManageModal.legal_representative || '-' }}</strong></div><div><small>认证状态</small><strong>已认证</strong></div><div><small>认证时间</small><strong>{{ fmtDate(enterpriseManageModal.verified_at) }}</strong></div>
+        </div>
+        <div v-else-if="enterpriseManageTab === 'invite'" class="enterprise-manage-section">
+          <div class="panel-heading"><div><h3>邀请用户加入企业</h3><span class="muted">输入平台注册用户的邮箱或手机号</span></div></div>
+          <div class="inline-form"><input v-model="inviteTarget" placeholder="邮箱或手机号" /><button class="primary-btn" @click="inviteEnterpriseMember"><Users :size="15" />发送邀请</button></div>
+          <div class="invite-list"><div v-for="item in enterpriseInvitations" :key="item.id"><span>{{ item.target }}</span><small>{{ item.status === 'accepted' ? '已接受' : item.status === 'pending' ? '待接受' : item.status }}</small></div><div v-if="!enterpriseInvitations.length" class="muted">暂无邀请记录</div></div>
+        </div>
+        <div v-else-if="enterpriseManageTab === 'departments'" class="enterprise-manage-section">
+          <div class="panel-heading"><div><h3>企业部门管理</h3><span class="muted">部门存在成员时不可直接删除</span></div><span class="muted">{{ enterpriseDepartments.length }} 个部门</span></div>
+          <div class="inline-form"><input v-model="newDepartment.name" placeholder="部门名称" /><input v-model="newDepartment.code" placeholder="部门编码（可选）" /><button class="primary-btn" @click="createDepartment"><CheckCircle2 :size="15" />创建</button></div>
+          <div class="department-list"><div v-for="item in enterpriseDepartments" :key="item.id"><span>{{ item.parent_id ? '└ ' : '' }}{{ item.name }} <small>{{ item.code || '无编码' }}</small></span><button class="text-btn danger-text" @click="deleteDepartment(item)">删除</button></div><div v-if="!enterpriseDepartments.length" class="muted">暂无部门，请先创建</div></div>
+        </div>
+        <div v-else class="enterprise-manage-section">
+          <div class="panel-heading"><div><h3>企业成员与部门归属</h3><span class="muted">企业超级管理员和企业管理员可维护成员</span></div></div>
+          <div class="member-role-hint">企业注册人自动成为企业超级管理员，该角色不可降级；请先通过“邀请用户”加入普通成员，再为其指定企业管理员角色。</div>
+          <div class="table-wrap"><table class="data-table compact"><thead><tr><th>成员</th><th>角色</th><th>部门</th><th>实名认证</th></tr></thead><tbody><tr v-for="item in enterpriseMembers" :key="item.membership_id"><td><strong>{{ item.name }}</strong><small>{{ item.email || item.phone || '-' }}</small></td><td><select class="status-select" :title="item.role === 'super_admin' ? '企业注册人自动成为超级管理员，不可调整' : '调整企业成员角色'" :value="item.role" @change="updateMemberRole(item, $event.target.value)" :disabled="item.role === 'super_admin'"><option value="member">普通成员</option><option value="enterprise_admin">企业管理员</option><option value="super_admin">企业超级管理员</option></select></td><td><select class="status-select" :value="item.department_id" @change="updateMemberDepartment(item, $event.target.value)"><option value="">未分配</option><option v-for="department in enterpriseDepartments" :key="department.id" :value="department.id">{{ department.name }}</option></select></td><td><span class="status-pill status-done">{{ item.verified_status === 'verified' ? '已实名' : item.verified_status }}</span></td></tr><tr v-if="!enterpriseMembers.length"><td colspan="4"><div class="empty-state">暂无企业成员</div></td></tr></tbody></table></div>
+        </div>
+      </section>
+    </div>
+    <div
       v-if="showEnterpriseVerification"
       class="modal-scrim"
       @click="showEnterpriseVerification = false"
@@ -3365,6 +3663,58 @@ onUnmounted(() => window.clearInterval(progressTimer));
           提交企业认证 <ArrowUpRight :size="16" />
         </button>
       </form>
+    </div>
+    <div v-if="settlementAdjusting" class="modal-scrim" @click.self="closeSettlementAdjustment">
+      <form class="modal-card settlement-adjust-modal" @submit.prevent="adjustSettlement" @click.stop>
+        <div class="drawer-head">
+          <div><span class="eyebrow">SETTLEMENT ADJUSTMENT</span><h2>调整清算单</h2><p class="muted">调整前须确认清算单尚未锁定，提交后将记录完整审计信息。</p></div>
+          <button type="button" class="icon-btn" @click="closeSettlementAdjustment"><X :size="19" /></button>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-section-title">关联信息</div>
+          <div class="state-grid settlement-context-grid">
+            <div><small>清算批次 ID</small><strong>{{ settlementAdjusting.batch_id || '-' }}</strong></div>
+            <div><small>清算批次号</small><strong>{{ settlementAdjusting.batch_no || '-' }}</strong></div>
+            <div><small>清算单 ID</small><strong>{{ settlementAdjusting.id }}</strong></div>
+            <div><small>订单 ID</small><strong>{{ settlementAdjusting.order_id }}</strong></div>
+            <div><small>购买方</small><strong>{{ settlementAdjusting.buyer_name || '-' }}</strong></div>
+            <div><small>订单号</small><strong>{{ settlementAdjusting.order_no || '-' }}</strong></div>
+          </div>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-section-title">订单金额与利润</div>
+          <div class="form-grid settlement-adjust-form-grid">
+            <label>订单金额<input v-model.number="settlementAdjustForm.gross_amount" type="number" min="0" step="0.01" /></label>
+            <label>订单成本<input v-model.number="settlementAdjustForm.cost_amount" type="number" min="0" step="0.01" /></label>
+            <label>订单利润<input v-model.number="settlementAdjustForm.profit_amount" type="number" min="0" step="0.01" /></label>
+          </div>
+          <div class="settlement-adjust-hint">校验关系：订单利润 = 订单金额 - 订单成本，当前差额 {{ fmtMoney(Number(settlementAdjustForm.gross_amount || 0) - Number(settlementAdjustForm.cost_amount || 0) - Number(settlementAdjustForm.profit_amount || 0)) }}</div>
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-section-title">五方清算比例与金额</div>
+          <div class="settlement-adjust-grid">
+            <div class="settlement-adjust-head"><span>参与方</span><span>比例（可调整）</span><span>金额（自动计算）</span></div>
+            <label><span>平台运营方</span><input v-model.number="settlementAdjustForm.platform_rate" type="number" min="0" max="100" step="0.01" /><strong>{{ fmtMoney(adjustmentShare(settlementAdjustForm.platform_rate)) }}</strong></label>
+            <label><span>数据/服务提供方</span><input v-model.number="settlementAdjustForm.provider_rate" type="number" min="0" max="100" step="0.01" /><strong>{{ fmtMoney(adjustmentShare(settlementAdjustForm.provider_rate)) }}</strong></label>
+            <label><span>数据服务方</span><input v-model.number="settlementAdjustForm.service_rate" type="number" min="0" max="100" step="0.01" /><strong>{{ fmtMoney(adjustmentShare(settlementAdjustForm.service_rate)) }}</strong></label>
+            <label><span>专家</span><input v-model.number="settlementAdjustForm.expert_rate" type="number" min="0" max="100" step="0.01" /><strong>{{ fmtMoney(adjustmentShare(settlementAdjustForm.expert_rate)) }}</strong></label>
+            <label><span>渠道</span><input v-model.number="settlementAdjustForm.channel_rate" type="number" min="0" max="100" step="0.01" /><strong>{{ fmtMoney(adjustmentShare(settlementAdjustForm.channel_rate)) }}</strong></label>
+          </div>
+          <div class="settlement-adjust-total">比例合计：{{ (Number(settlementAdjustForm.platform_rate || 0) + Number(settlementAdjustForm.provider_rate || 0) + Number(settlementAdjustForm.service_rate || 0) + Number(settlementAdjustForm.expert_rate || 0) + Number(settlementAdjustForm.channel_rate || 0)).toFixed(2) }}%</div>
+        </div>
+        <div class="drawer-section"><label>调整原因<textarea v-model="settlementAdjustForm.reason" rows="3" required placeholder="请填写调整依据和业务原因"></textarea></label></div>
+        <div class="modal-actions"><button type="button" class="secondary-btn" @click="closeSettlementAdjustment">取消</button><button type="submit" class="primary-btn">保存调整 <CheckCircle2 :size="15" /></button></div>
+      </form>
+    </div>
+    <div v-if="settlementDetail" class="modal-scrim" @click.self="closeSettlementDetail">
+      <aside class="modal-card settlement-detail-modal" @click.stop>
+        <div class="drawer-head"><div><span class="eyebrow">SETTLEMENT DETAIL</span><h2>{{ settlementDetail.settlement_no }}</h2><p class="muted">清算单完整关联信息和状态生命周期</p></div><button class="icon-btn" @click="closeSettlementDetail"><X :size="19" /></button></div>
+        <div class="drawer-section"><div class="drawer-section-title">清算批次与订单</div><div class="state-grid settlement-context-grid"><div><small>清算批次</small><strong>{{ settlementDetail.batch?.batch_no || '-' }}</strong></div><div><small>批次 ID</small><strong>{{ settlementDetail.batch?.id || '-' }}</strong></div><div><small>批次状态</small><strong>{{ settlementDetail.batch?.status || '-' }}</strong></div><div><small>清算单 ID</small><strong>{{ settlementDetail.id }}</strong></div><div><small>订单号</small><strong>{{ settlementDetail.order?.order_no || '-' }}</strong></div><div><small>订单 ID</small><strong>{{ settlementDetail.order?.id || '-' }}</strong></div><div><small>购买方</small><strong>{{ settlementDetail.order?.buyer_name || '-' }}</strong></div><div><small>当前状态</small><strong>{{ settlementDetail.status }}</strong></div></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
+        <div v-if="settlementDetail.proposals?.length" class="drawer-section"><div class="drawer-section-title">调整提案</div><div class="settlement-proposal-list"><div v-for="proposal in settlementDetail.proposals" :key="proposal.id" class="settlement-proposal-item"><div><strong>{{ proposal.status }}</strong><span>{{ proposal.proposed_by }} · {{ fmtDate(proposal.created_at) }}</span></div><p>{{ proposal.reason }}</p><div v-if="proposal.status === 'pending'" class="table-actions"><button class="text-btn" @click="decideSettlementProposal(proposal, 'approve')">确认提案</button><button class="text-btn danger-text" @click="decideSettlementProposal(proposal, 'reject')">拒绝提案</button></div></div></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>
+      </aside>
     </div>
     <div v-if="toast" class="toast"><CheckCircle2 :size="17" />{{ toast }}</div>
   </div>
