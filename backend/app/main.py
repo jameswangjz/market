@@ -4924,7 +4924,10 @@ def users(user: User = Depends(current_user), db: Session = Depends(db_session))
     else:
         managed_enterprises = db.scalars(select(Membership.enterprise_id).where(Membership.user_id == user.id, Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"]))).all()
         if managed_enterprises:
-            items = db.scalars(select(User).join(Membership, Membership.user_id == User.id).where(Membership.enterprise_id.in_(managed_enterprises), Membership.status.in_(["active", "pending_activation"])).distinct().order_by(User.created_at.desc())).all()
+            member_user_ids = db.scalars(select(Membership.user_id).where(Membership.enterprise_id.in_(managed_enterprises), Membership.status.in_(["active", "pending_activation"]))).all()
+            invited_user_ids = db.scalars(select(EnterpriseInvitation.invitee_id).where(EnterpriseInvitation.enterprise_id.in_(managed_enterprises), EnterpriseInvitation.status == "pending")).all()
+            visible_user_ids = set(member_user_ids) | set(invited_user_ids) | {user.id}
+            items = db.scalars(select(User).where(User.id.in_(visible_user_ids)).order_by(User.created_at.desc())).all()
         else:
             items = [user]
     return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "created_at": x.created_at} for x in items]}
