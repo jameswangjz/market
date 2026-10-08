@@ -2347,9 +2347,9 @@ def accept_enterprise_invitation(token: str, user: User = Depends(current_user),
 @app.get("/api/enterprise/members")
 def enterprise_members(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id) if enterprise_id else db.get(Enterprise, current_membership(db, user).enterprise_id)
-    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == enterprise.id, Membership.status == "active")).all()
+    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == enterprise.id, Membership.status.in_(["active", "pending_activation"]))).all()
     departments = {x.id: x.name for x in db.scalars(select(EnterpriseDepartment).where(EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")).all()}
-    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_name": departments.get(m.department_id, "未分配"), "business_roles": m.business_roles.split(","), "verified_status": u.verified_status} for m, u in rows]}
+    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_name": departments.get(m.department_id, "未分配"), "business_roles": m.business_roles.split(","), "verified_status": u.verified_status, "activation_status": u.activation_status, "membership_status": m.status} for m, u in rows]}
 
 
 @app.patch("/api/enterprise/members/{membership_id}")
@@ -4924,7 +4924,7 @@ def users(user: User = Depends(current_user), db: Session = Depends(db_session))
     else:
         managed_enterprises = db.scalars(select(Membership.enterprise_id).where(Membership.user_id == user.id, Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"]))).all()
         if managed_enterprises:
-            items = db.scalars(select(User).join(Membership, Membership.user_id == User.id).where(Membership.enterprise_id.in_(managed_enterprises), Membership.status == "active").distinct().order_by(User.created_at.desc())).all()
+            items = db.scalars(select(User).join(Membership, Membership.user_id == User.id).where(Membership.enterprise_id.in_(managed_enterprises), Membership.status.in_(["active", "pending_activation"])).distinct().order_by(User.created_at.desc())).all()
         else:
             items = [user]
     return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "created_at": x.created_at} for x in items]}
