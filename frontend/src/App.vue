@@ -270,6 +270,10 @@ const statusLabels = {
   resolved: "已解决",
   after_closed: "售后关闭",
 };
+const settlementStatusLabels = { pending: "待处理", disputed: "待处理调整提案", adjusted: "已调整", locked: "已锁定", paid: "已付款", superseded: "已作废" };
+const settlementProposalStatusLabels = { pending: "待确认", accepted: "已确认", rejected: "已拒绝", cancelled: "已取消" };
+function settlementStatusLabel(value) { return settlementStatusLabels[value] || value; }
+function settlementProposalStatusLabel(value) { return settlementProposalStatusLabels[value] || value; }
 const taskStatusLabels = {
   todo: "待开发",
   in_progress: "进行中",
@@ -2447,9 +2451,7 @@ onUnmounted(() => {
                     <td>{{ fmtMoney(item.expert_fee) }}</td>
                     <td>{{ fmtMoney(item.channel_fee) }}</td>
                     <td>
-                      <span class="status-pill status-review">{{
-                        item.status
-                      }}</span>
+                      <span class="status-pill status-review">{{ settlementStatusLabel(item.status) }}</span>
                     </td>
                     <td>
                       <div class="table-actions">
@@ -3709,11 +3711,11 @@ onUnmounted(() => {
     <div v-if="settlementDetail" class="modal-scrim" @click.self="closeSettlementDetail">
       <aside class="modal-card settlement-detail-modal" @click.stop>
         <div class="drawer-head"><div><span class="eyebrow">SETTLEMENT DETAIL</span><h2>{{ settlementDetail.settlement_no }}</h2><p class="muted">清算单完整关联信息和状态生命周期</p></div><button class="icon-btn" @click="closeSettlementDetail"><X :size="19" /></button></div>
-        <div class="drawer-section"><div class="drawer-section-title">清算批次与订单</div><div class="state-grid settlement-context-grid"><div><small>清算批次</small><strong>{{ settlementDetail.batch?.batch_no || '-' }}</strong></div><div><small>批次 ID</small><strong>{{ settlementDetail.batch?.id || '-' }}</strong></div><div><small>批次状态</small><strong>{{ settlementDetail.batch?.status || '-' }}</strong></div><div><small>清算单 ID</small><strong>{{ settlementDetail.id }}</strong></div><div><small>订单号</small><strong>{{ settlementDetail.order?.order_no || '-' }}</strong></div><div><small>订单 ID</small><strong>{{ settlementDetail.order?.id || '-' }}</strong></div><div><small>购买方</small><strong>{{ settlementDetail.order?.buyer_name || '-' }}</strong></div><div><small>当前状态</small><strong>{{ settlementDetail.status }}</strong></div></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">清算批次与订单</div><div class="state-grid settlement-context-grid"><div><small>清算批次</small><strong>{{ settlementDetail.batch?.batch_no || '-' }}</strong></div><div><small>批次 ID</small><strong>{{ settlementDetail.batch?.id || '-' }}</strong></div><div><small>批次状态</small><strong>{{ settlementDetail.batch?.status || '-' }}</strong></div><div><small>清算单 ID</small><strong>{{ settlementDetail.id }}</strong></div><div><small>订单号</small><strong>{{ settlementDetail.order?.order_no || '-' }}</strong></div><div><small>订单 ID</small><strong>{{ settlementDetail.order?.id || '-' }}</strong></div><div><small>购买方</small><strong>{{ settlementDetail.order?.buyer_name || '-' }}</strong></div><div><small>当前状态</small><strong>{{ settlementStatusLabel(settlementDetail.status) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
-        <div v-if="settlementDetail.proposals?.length" class="drawer-section"><div class="drawer-section-title">调整提案</div><div class="settlement-proposal-list"><div v-for="proposal in settlementDetail.proposals" :key="proposal.id" class="settlement-proposal-item"><div><strong>{{ proposal.status }}</strong><span>{{ proposal.proposed_by }} · {{ fmtDate(proposal.created_at) }}</span></div><p>{{ proposal.reason }}</p><div v-if="proposal.status === 'pending'" class="table-actions"><button class="text-btn" @click="decideSettlementProposal(proposal, 'approve')">确认提案</button><button class="text-btn danger-text" @click="decideSettlementProposal(proposal, 'reject')">拒绝提案</button></div></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>
+        <div v-if="settlementDetail.proposals?.length" class="drawer-section"><div class="drawer-section-title">调整提案</div><div class="settlement-proposal-list"><div v-for="proposal in settlementDetail.proposals" :key="proposal.id" class="settlement-proposal-item"><div><strong>{{ settlementProposalStatusLabel(proposal.status) }}</strong><span>{{ proposal.proposed_by }} · {{ fmtDate(proposal.created_at) }}</span></div><p>{{ proposal.reason }}</p><div v-if="proposal.status === 'pending'" class="table-actions"><button class="text-btn" @click="decideSettlementProposal(proposal, 'approve')">确认提案</button><button class="text-btn danger-text" @click="decideSettlementProposal(proposal, 'reject')">拒绝提案</button></div></div></div></div>
       </aside>
     </div>
     <div v-if="toast" class="toast"><CheckCircle2 :size="17" />{{ toast }}</div>

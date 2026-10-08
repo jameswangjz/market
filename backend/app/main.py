@@ -3852,10 +3852,12 @@ def settlement_detail(settlement_id: str, user: User = Depends(current_user), db
     defaults = [("platform", "平台运营方"), ("provider", "数据/服务提供方"), ("service", "数据服务方"), ("expert", "专家"), ("channel", "渠道")]
     participants = [participant_map.get(kind, participant_out(kind, name, 0)) for kind, name in defaults]
     audit_ids = {settlement.id, settlement.settlement_no}
-    lifecycle_filters = [AuditLog.target_id.in_(audit_ids), AuditLog.order_id == settlement.order_id]
+    # Scope lifecycle records by the current settlement ID. A batch contains
+    # multiple orders, so batch_no/order_id alone would leak other settlements.
+    lifecycle_targets = [AuditLog.target_id.in_(audit_ids)]
     if batch:
-        lifecycle_filters.append(AuditLog.batch_no == batch.batch_no)
-    lifecycle_logs = db.scalars(select(AuditLog).where(or_(*lifecycle_filters), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
+        lifecycle_targets.append(AuditLog.target_id == batch.batch_no)
+    lifecycle_logs = db.scalars(select(AuditLog).where(or_(*lifecycle_targets), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
     lifecycle = [{"action": item.action, "actor": item.actor, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in lifecycle_logs]
     proposals = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
     return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle}
@@ -3976,10 +3978,13 @@ def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAd
         raise HTTPException(409, "当前清算单已有待处理调整提案")
     values = body.model_dump(exclude={"reason"})
     proposal = SettlementAdjustmentProposal(settlement_id=settlement.id, proposed_by=user.email or user.name, reason=body.reason, values_json=json.dumps(values), status="pending")
-    before = {"status": settlement.status}
+    current_profit = Decimal(str(settlement.profit_amount or 0))
+    current_rate = lambda amount: float((Decimal(str(amount or 0)) / current_profit * 100).quantize(Decimal("0.01"))) if current_profit else 0.0
+    before = {"status": settlement.status, "gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "platform_rate": current_rate(settlement.platform_fee), "provider_rate": current_rate(settlement.provider_share), "service_rate": current_rate(settlement.service_share), "expert_rate": current_rate(settlement.expert_fee), "channel_rate": current_rate(settlement.channel_fee)}
     settlement.status = "disputed"
     db.add(proposal)
-    audit(db, user.email, "create_settlement_adjustment_proposal", "settlement", settlement.settlement_no, body.reason, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no if batch else "", risk_level="high", before=before, after={"status": settlement.status, "proposal_id": proposal.id, "values": values})
+    db.flush()
+    audit(db, user.email, "create_settlement_adjustment_proposal", "settlement", settlement.settlement_no, body.reason, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no if batch else "", risk_level="high", before=before, after={"status": settlement.status, "proposal_id": proposal.id, **values})
     db.commit()
     db.refresh(proposal)
     return {"id": proposal.id, "settlement_id": proposal.settlement_id, "status": proposal.status, "proposed_by": proposal.proposed_by, "values": values, "created_at": proposal.created_at}
