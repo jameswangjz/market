@@ -270,7 +270,7 @@ const statusLabels = {
   resolved: "已解决",
   after_closed: "售后关闭",
 };
-const settlementStatusLabels = { pending: "待处理", disputed: "待处理调整提案", adjusted: "已调整", locked: "已锁定", paid: "已付款", superseded: "已作废" };
+const settlementStatusLabels = { pending: "待处理", disputed: "待处理调整提案", proposal_rejected: "调整提案被拒绝", adjusted: "已调整", locked: "已锁定", paid: "已付款", superseded: "已作废" };
 const settlementProposalStatusLabels = { pending: "待确认", accepted: "已确认", rejected: "已拒绝", cancelled: "已取消" };
 function settlementStatusLabel(value) { return settlementStatusLabels[value] || value; }
 function settlementProposalStatusLabel(value) { return settlementProposalStatusLabels[value] || value; }
@@ -2402,7 +2402,7 @@ onUnmounted(() => {
               <label>清算批次<input v-model="settlementFilters.batch_id" list="settlement-batch-options" placeholder="下拉选择或输入批次号模糊匹配" /><datalist id="settlement-batch-options"><option value=""></option><option v-for="batch in settlementBatches" :key="batch.id" :value="batch.batch_no"></option></datalist></label>
               <label>清算单<input v-model="settlementFilters.settlement_id" list="settlement-options" placeholder="下拉选择或输入清算单号模糊匹配" /><datalist id="settlement-options"><option v-for="item in settlementFilterItems" :key="item.id" :value="item.settlement_no"></option></datalist></label>
               <label>订单号<input v-model="settlementFilters.order_no" list="settlement-order-options" placeholder="下拉选择或输入订单号模糊匹配" /><datalist id="settlement-order-options"><option v-for="item in settlementFilterOrders" :key="item.order_no" :value="item.order_no"></option></datalist></label>
-              <label>状态<select v-model="settlementFilters.status"><option value="">全部状态</option><option value="pending">待审核</option><option value="adjusted">已调整</option><option value="locked">已锁定</option><option value="paid">已付款</option></select></label>
+              <label>状态<select v-model="settlementFilters.status"><option value="">全部状态</option><option value="pending">待处理</option><option value="disputed">待处理调整提案</option><option value="proposal_rejected">调整提案被拒绝</option><option value="adjusted">已调整</option><option value="locked">已锁定</option><option value="paid">已付款</option></select></label>
               <button class="primary-btn" @click="searchSettlements"><Search :size="15" />检索</button>
             </div>
             <div class="table-wrap">

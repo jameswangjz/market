@@ -3854,10 +3854,7 @@ def settlement_detail(settlement_id: str, user: User = Depends(current_user), db
     audit_ids = {settlement.id, settlement.settlement_no}
     # Scope lifecycle records by the current settlement ID. A batch contains
     # multiple orders, so batch_no/order_id alone would leak other settlements.
-    lifecycle_targets = [AuditLog.target_id.in_(audit_ids)]
-    if batch:
-        lifecycle_targets.append(AuditLog.target_id == batch.batch_no)
-    lifecycle_logs = db.scalars(select(AuditLog).where(or_(*lifecycle_targets), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
+    lifecycle_logs = db.scalars(select(AuditLog).where(AuditLog.target_id.in_(audit_ids), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
     lifecycle = [{"action": item.action, "actor": item.actor, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in lifecycle_logs]
     proposals = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
     return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle}
@@ -4028,7 +4025,7 @@ def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProp
             line.amount = amounts.get(line.participant_type, Decimal("0"))
         settlement.status = "adjusted"
     else:
-        settlement.status = "pending"
+        settlement.status = "proposal_rejected"
     audit(db, user.email, "decide_settlement_adjustment_proposal", "settlement_proposal", proposal.id, body.comment, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, before=before, after={"status": settlement.status, "proposal_status": proposal.status, "reviewed_by": proposal.reviewed_by})
     db.commit()
     return {"id": proposal.id, "status": proposal.status, "settlement_id": settlement.id, "settlement_status": settlement.status}
