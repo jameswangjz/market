@@ -68,6 +68,18 @@
 .settlement-adjust-grid label input { width: 100%; }
 .settlement-adjust-grid label strong { text-align: right; color: #172033; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.verification-review-modal { width: min(820px, calc(100% - 32px)); max-height: 92vh; overflow: auto; }
+.identity-review-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
+.identity-review-images.single { grid-template-columns: minmax(0, 360px); }
+.identity-review-images > div { border: 1px solid #e5e6eb; border-radius: 8px; padding: 10px; background: #fafbfc; }
+.identity-review-images small, .review-long-text small { display: block; color: #86909c; font-size: 11px; margin-bottom: 8px; }
+.identity-review-images img { display: block; width: 100%; height: 150px; object-fit: contain; background: #fff; cursor: zoom-in; border-radius: 5px; }
+.review-long-text { border: 1px solid #e5e6eb; border-radius: 8px; padding: 12px; margin: 14px 0; }
+.review-long-text p { margin: 0; font-size: 12px; line-height: 1.7; color: #344054; white-space: pre-wrap; }
+.review-comment textarea { min-height: 78px; resize: vertical; }
+.image-preview-scrim { z-index: 70; }
+.image-preview-modal { position: absolute; inset: 5vh 5vw; background: #fff; border-radius: 10px; padding: 18px; display: flex; flex-direction: column; box-shadow: 0 20px 60px #1d212955; }
+.image-preview-modal img { min-height: 0; flex: 1; width: 100%; object-fit: contain; margin-top: 10px; background: #f7f8fa; }
 @media (max-width: 720px) { .settlement-context-grid, .settlement-adjust-form-grid { grid-template-columns: 1fr; } .settlement-adjust-head, .settlement-adjust-grid label { grid-template-columns: 1fr 100px 110px; gap: 6px; } }
 :root { --ui-scale: 1; }
 .app-shell, .login-shell { zoom: var(--ui-scale); }

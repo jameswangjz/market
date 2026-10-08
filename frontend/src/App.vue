@@ -40,6 +40,7 @@ const user = ref(null);
 const enterprise = ref(null);
 const loginForm = ref({ email: "admin@market.local", password: "Admin123!" });
 const loginError = ref("");
+const activationHint = ref("");
 const registerMode = ref(false);
 const registerForm = ref({
   name: "",
@@ -136,20 +137,27 @@ const myEnterpriseInvitations = ref([]);
 const enterpriseManageModal = ref(null);
 const enterpriseManageTab = ref("details");
 const inviteTarget = ref("");
+const inviteDepartmentId = ref("");
+const inviteChannel = ref("sms");
 const newDepartment = ref({ name: "", code: "", parent_id: "" });
 const personalVerificationItems = ref([]);
 const userEnterpriseTab = ref("users");
 const showPersonalVerification = ref(false);
+const editingPersonalVerification = ref(null);
+const showProfileContact = ref(false);
+const profileContactForm = ref({ channel: "phone", target: "", verification_code: "123456" });
 const showEnterpriseVerification = ref(false);
 const platformRoleItems = ref({ roles: {}, items: [] });
 const notificationSettings = ref({
   sms_provider: "",
   sms_endpoint: "",
-  email_host: "imap.263.net",
-  email_ssl: false,
-  email_port: 143,
-  email_username: "",
-  email_password: "",
+  smtp_host: "",
+  smtp_ssl: false,
+  smtp_starttls: true,
+  smtp_port: 587,
+  smtp_username: "",
+  smtp_password: "",
+  smtp_from_name: "数据集运营服务管理平台",
 });
 const roleForm = ref({
   identifier: "",
@@ -158,6 +166,10 @@ const roleForm = ref({
   channel: "email",
 });
 const verification = ref({ personal: null, enterprise: null });
+const identityReview = ref(null);
+const identityReviewImages = ref({ front: "", back: "", license: "" });
+const identityReviewComment = ref("");
+const identityImagePreview = ref(null);
 const verificationForm = ref({
   id_name: "",
   id_number: "",
@@ -169,6 +181,10 @@ const verificationForm = ref({
   credit_code: "",
   enterprise_type: "有限责任公司",
   legal_representative: "",
+  registered_capital: "",
+  establishment_date: "",
+  business_address: "",
+  business_scope: "",
 });
 const verificationFiles = ref({ front: null, back: null, license: null });
 const developmentFilter = ref("all");
@@ -223,7 +239,7 @@ const nav = [
   { key: "development", label: "开发进度", icon: Activity },
 ];
 
-const visibleNav = computed(() => nav);
+const visibleNav = computed(() => user.value?.verified_status === "verified" ? nav : nav.filter((item) => ["products", "users"].includes(item.key)));
 const filteredProducts = computed(() =>
   products.value.filter((p) => !search.value || p.name.includes(search.value)),
 );
@@ -334,6 +350,7 @@ function setToken(value) {
 
 async function login() {
   loginError.value = "";
+  activationHint.value = "";
   try {
     const { data } = await api.post("/auth/login", loginForm.value);
     setToken(data.token);
@@ -344,16 +361,41 @@ async function login() {
 }
 async function register() {
   loginError.value = "";
+  activationHint.value = "";
   try {
     const { data } = await api.post("/auth/register", registerForm.value);
+    if (!data.token) {
+      activationHint.value = data.development_hint || "请先激活邮箱后再登录";
+      loginForm.value.email = registerForm.value.email;
+      registerMode.value = false;
+      return;
+    }
     setToken(data.token);
     await loadSession();
-    activeView.value = "users";
+    activeView.value = "products";
     showPersonalVerification.value = true;
-    await loadViewData("users");
+    await loadViewData("products");
   } catch (error) {
     loginError.value =
       error.response?.data?.detail || "注册失败，请检查注册信息";
+  }
+}
+async function sendContactCode() {
+  try {
+    await api.post("/auth/send-code", { channel: profileContactForm.value.channel === "email" ? "email" : "sms", target: profileContactForm.value.target, purpose: "contact_update" });
+    notify("验证码已发送，10 分钟内有效");
+  } catch (error) {
+    notify(error.response?.data?.detail || "验证码发送失败");
+  }
+}
+async function updateProfileContact() {
+  try {
+    const { data } = await api.post("/auth/profile/contact", profileContactForm.value);
+    user.value = { ...user.value, ...data };
+    showProfileContact.value = false;
+    notify("联系方式已更新");
+  } catch (error) {
+    notify(error.response?.data?.detail || "联系方式更新失败");
   }
 }
 async function loadSession() {
@@ -363,7 +405,13 @@ async function loadSession() {
     const { data } = await api.get("/auth/me");
     user.value = { ...data.user, enterprise_role: data.role };
     enterprise.value = data.enterprise;
-    await refreshData();
+    if (user.value.verified_status !== "verified") {
+      activeView.value = "products";
+      showPersonalVerification.value = true;
+      await loadViewData("products");
+    } else {
+      await refreshData();
+    }
   } catch {
     logout();
   }
@@ -559,7 +607,10 @@ async function assignServiceLevel() {
 }
 async function inviteEnterpriseMember() {
   if (!inviteTarget.value.trim()) return notify("请输入已注册用户的邮箱或手机号");
-  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim() }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(`邀请已创建，开发令牌：${data.token}`); inviteTarget.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
+  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim(), department_id: inviteDepartmentId.value, channel: inviteChannel.value }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(data.temporary_password ? `邀请已创建，临时密码：${data.temporary_password}` : "邀请已创建"); inviteTarget.value = ""; inviteDepartmentId.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
+}
+async function resendEnterpriseInvitation(item) {
+  try { const { data } = await api.post(`/enterprise/invitations/${item.id}/resend`); notify(`邀请已重新发送，临时密码：${data.temporary_password}`); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "重新邀请失败"); }
 }
 async function acceptEnterpriseInvitation(item) {
   try { await api.post(`/enterprise/invitations/${item.token}/accept`); notify(`已加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "接受邀请失败"); }
@@ -594,11 +645,18 @@ async function openEnterpriseManagement(item, tab = "details") {
   enterpriseManageModal.value = item;
   enterpriseManageTab.value = tab;
   inviteTarget.value = "";
+  inviteDepartmentId.value = "";
+  inviteChannel.value = "sms";
   newDepartment.value = { name: "", code: "", parent_id: "" };
   try { await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "企业管理数据加载失败"); }
 }
 function closeEnterpriseManagement() {
   enterpriseManageModal.value = null;
+}
+function openEnterpriseResubmit(item) {
+  Object.assign(verificationForm.value, { enterprise_name: item.name, credit_code: item.credit_code, enterprise_type: item.enterprise_type || "有限责任公司", legal_representative: item.legal_representative || "", registered_capital: item.registered_capital || "", establishment_date: item.establishment_date || "", business_address: item.business_address || "", business_scope: item.business_scope || "" });
+  verificationFiles.value.license = null;
+  showEnterpriseVerification.value = true;
 }
 
 const auditCategoryLabels = {
@@ -1289,7 +1347,7 @@ async function saveNotificationSettings() {
       "/admin/settings/notifications",
       notificationSettings.value,
     );
-    notificationSettings.value.email_password = "";
+    notificationSettings.value.smtp_password = "";
     notify("通知平台配置已保存");
   } catch (error) {
     notify(error.response?.data?.detail || "通知配置保存失败");
@@ -1310,24 +1368,87 @@ async function assignPlatformRole() {
     notify(error.response?.data?.detail || "平台角色分配失败");
   }
 }
-async function uploadVerificationFile(file) {
+async function uploadVerificationFile(file, fileRole = "product_data") {
   if (!file) return "";
   const form = new FormData();
   form.append("upload", file);
+  form.append("file_role", fileRole);
   const { data } = await api.post("/files/upload", form);
   return data.id;
 }
+function canReviewIdentity() {
+  return ["super_admin", "platform_operator"].includes(user.value?.platform_role);
+}
+function canManageEnterprise(item) {
+  return canReviewIdentity() || (item?.id === enterprise.value?.id && ["super_admin", "enterprise_admin"].includes(user.value?.enterprise_role));
+}
+async function openVerificationFile(fileId) {
+  try {
+    const response = await api.get(`/files/${fileId}/download`, { responseType: "blob" });
+    const url = URL.createObjectURL(response.data);
+    window.open(url, "_blank", "noopener");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (error) {
+    notify(error.response?.data?.detail || "文件查看失败");
+  }
+}
+async function loadReviewImage(fileId, key) {
+  if (!fileId) return;
+  try {
+    const response = await api.get(`/files/${fileId}/download`, { responseType: "blob" });
+    identityReviewImages.value = { ...identityReviewImages.value, [key]: URL.createObjectURL(response.data) };
+  } catch (error) {
+    notify(error.response?.data?.detail || "实名材料加载失败");
+  }
+}
+async function openPersonalReview(item) {
+  const applicant = userItems.value.find((userItem) => userItem.id === item.user_id) || {};
+  identityReview.value = { kind: "personal", item, applicant };
+  identityReviewComment.value = "";
+  identityReviewImages.value = { front: "", back: "", license: "" };
+  await Promise.all([loadReviewImage(item.id_front_file_id, "front"), loadReviewImage(item.id_back_file_id, "back")]);
+}
+function openPersonalEdit(item) {
+  editingPersonalVerification.value = item;
+  Object.assign(verificationForm.value, { id_name: item.id_name || "", id_number: item.id_number || "", phone: item.phone || user.value?.phone || "", enterprise_id: item.enterprise_id || "", enterprise_role: item.enterprise_role || "", phone_code: "123456" });
+  verificationFiles.value.front = null;
+  verificationFiles.value.back = null;
+  showPersonalVerification.value = true;
+}
+async function openEnterpriseReview(item) {
+  identityReview.value = { kind: "enterprise", item };
+  identityReviewComment.value = "";
+  identityReviewImages.value = { front: "", back: "", license: "" };
+  await loadReviewImage(item.license_file_id, "license");
+}
+async function submitIdentityReview(decision) {
+  if (!identityReview.value) return;
+  if (decision === "reject" && !identityReviewComment.value.trim()) return notify("拒绝实名必须填写原因");
+  try {
+    const path = identityReview.value.kind === "personal" ? `/admin/verifications/personal/${identityReview.value.item.id}/review` : `/admin/verifications/enterprise/${identityReview.value.item.id}/review`;
+    await api.post(path, { decision, comment: identityReviewComment.value.trim() });
+    notify(decision === "approve" ? "实名认证已通过" : "实名认证已拒绝");
+    identityReview.value = null;
+    await loadViewData("users");
+  } catch (error) {
+    notify(error.response?.data?.detail || "实名认证审核失败");
+  }
+}
 async function submitPersonalVerification() {
   try {
-    const front = await uploadVerificationFile(verificationFiles.value.front);
-    const back = await uploadVerificationFile(verificationFiles.value.back);
-    await api.post("/verification/personal", {
+    const current = editingPersonalVerification.value;
+    const front = verificationFiles.value.front ? await uploadVerificationFile(verificationFiles.value.front, "identity_id_front") : current?.id_front_file_id || "";
+    const back = verificationFiles.value.back ? await uploadVerificationFile(verificationFiles.value.back, "identity_id_back") : current?.id_back_file_id || "";
+    const payload = {
       ...verificationForm.value,
       id_front_file_id: front,
       id_back_file_id: back,
-    });
+    };
+    if (current) await api.put(`/verification/personal/${current.id}`, payload);
+    else await api.post("/verification/personal", payload);
     notify("个人实名认证申请已提交");
     showPersonalVerification.value = false;
+    editingPersonalVerification.value = null;
     await loadViewData("users");
   } catch (error) {
     notify(error.response?.data?.detail || "个人实名认证提交失败");
@@ -1335,15 +1456,17 @@ async function submitPersonalVerification() {
 }
 async function submitEnterpriseVerification() {
   try {
-    const license = await uploadVerificationFile(
-      verificationFiles.value.license,
-    );
+    const license = await uploadVerificationFile(verificationFiles.value.license, "enterprise_license");
     await api.post("/verification/enterprise", {
       license_file_id: license,
       enterprise_name: verificationForm.value.enterprise_name,
       credit_code: verificationForm.value.credit_code,
       enterprise_type: verificationForm.value.enterprise_type,
       legal_representative: verificationForm.value.legal_representative,
+      registered_capital: verificationForm.value.registered_capital,
+      establishment_date: verificationForm.value.establishment_date,
+      business_address: verificationForm.value.business_address,
+      business_scope: verificationForm.value.business_scope,
     });
     notify("企业实名认证申请已提交");
     showEnterpriseVerification.value = false;
@@ -1517,7 +1640,7 @@ onUnmounted(() => {
             required /></label></template
       ><template v-else
         ><label
-          >邮箱或手机号码<input
+          >用户名、邮箱或手机号码<input
             v-model="loginForm.email"
             autocomplete="username" /></label
         ><label
@@ -1527,6 +1650,7 @@ onUnmounted(() => {
             autocomplete="current-password" /></label
       ></template>
       <p v-if="loginError" class="error-text">{{ loginError }}</p>
+      <p v-if="activationHint" class="login-hint activation-hint">{{ activationHint }}</p>
       <button class="primary-btn full-btn" type="submit">
         {{ registerMode ? "注册并进行实名认证" : "进入运营工作台" }}
         <ArrowUpRight :size="16" /></button
@@ -1630,7 +1754,7 @@ onUnmounted(() => {
           <button class="icon-btn notification-btn">
             <Bell :size="18" /><i></i>
           </button>
-          <div class="user-chip">
+          <div class="user-chip" role="button" tabindex="0" @click="showProfileContact = true">
             <div class="avatar">{{ user.name?.slice(0, 1) }}</div>
             <div class="user-chip-copy">
               <strong>{{ user.name }}</strong
@@ -2353,7 +2477,7 @@ onUnmounted(() => {
             <div>
               <div class="eyebrow">财务运营 · 可核对分账</div>
               <h1>清算分账</h1>
-              <p>按订单版本成本计算利润，再依据利润进行分账；渠道单独核算，税费独立记录。</p>
+              <p>按订单版本成本计算利润，再依据利润进行分账。</p>
             </div>
             <button class="secondary-btn" @click="loadViewData('settlements')">
               <RefreshCw :size="16" />刷新
@@ -2364,7 +2488,7 @@ onUnmounted(() => {
             <button :class="{ active: settlementTab === 'rules' }" @click="settlementTab = 'rules'">规则与试算 {{ settlementRules.length }}</button>
             <button :class="{ active: settlementTab === 'batches' }" @click="settlementTab = 'batches'">清算批次 {{ settlementBatches.length }}</button>
             <button :class="{ active: settlementTab === 'reconciliation' }" @click="settlementTab = 'reconciliation'">对账差异 {{ settlementReconciliations.filter((x) => x.status !== 'closed').length }}</button>
-            <button :class="{ active: settlementTab === 'corrections' }" @click="settlementTab = 'corrections'">冲正调整 {{ settlementCorrections.length }}</button>
+            <button :class="{ active: settlementTab === 'corrections' }" @click="settlementTab = 'corrections'">退款与冲正（预留） {{ settlementCorrections.length }}</button>
             <button :class="{ active: settlementTab === 'reports' }" @click="settlementTab = 'reports'">清算报表</button>
             <button :class="{ active: settlementTab === 'measurements' }" @click="settlementTab = 'measurements'">计量计费 {{ settlementMeasurements.length }}</button>
           </div>
@@ -2386,7 +2510,7 @@ onUnmounted(() => {
           </div>
           <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'pending_confirm'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
           <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div></div>
-          <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REVERSAL AND RECOVERY</span><h3>退款、冲正与清算调整</h3></div><span class="muted">原始清算结果保持不变</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td><td><button v-if="item.status === 'pending'" class="text-btn" @click="approveCorrection(item)">审批</button></td></tr><tr v-if="!settlementCorrections.length && settlementItems.length"><td colspan="7"><div class="empty-state"><button class="primary-btn" @click="createCorrection(settlementItems[0])">从最近清算单发起冲正</button></div></td></tr></tbody></table></div><div v-if="!settlementCorrections.length && !settlementItems.length" class="empty-state">暂无清算调整记录</div></div>
+          <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REFUND AND REVERSAL · RESERVED</span><h3>退款与冲正（预留）</h3></div><span class="muted">退款流程尚未上线；现有清算调整请在清算单中处理</span></div><div class="empty-state">当前版本尚未实现退款、原路退回和负向清算单。已发生的清算金额调整，请通过清算单的“调整提案”完成并保留审计记录。</div><div v-if="settlementCorrections.length" class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td></tr></tbody></table></div></div>
           <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3><span class="muted">支持按清算周期在线核对和下载</span></div><div class="table-actions"><button class="secondary-btn" @click="exportSettlementReport('summary')"><FileText :size="15" />下载参与方总表</button><button class="secondary-btn" @click="exportSettlementReport('details')"><FileText :size="15" />下载订单明细</button><button class="secondary-btn" @click="exportSettlementReport('products')"><FileText :size="15" />下载产品汇总</button></div></div><div class="report-filter-bar"><label>周期开始<input v-model="settlementReportFilters.start" type="date" /></label><label>周期结束<input v-model="settlementReportFilters.end" type="date" /></label><button class="primary-btn" @click="loadSettlementReport"><RefreshCw :size="15" />查询周期</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>订单总额</span><strong>{{ fmtMoney(settlementReport.summary.gross_amount) }}</strong></div><div class="metric-card"><span>订单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>总成本</span><strong>{{ fmtMoney(settlementReport.summary.cost_amount) }}</strong></div><div class="metric-card"><span>总利润</span><strong>{{ fmtMoney(settlementReport.summary.profit_amount) }}</strong></div></div><div class="report-section-heading"><strong>自然月清算汇总</strong><span class="muted">按订单清算明细的创建月份统计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>自然月</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.monthly || []" :key="item.label"><td>{{ item.label }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.monthly || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无自然月汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>产品维度清算汇总</strong><span class="muted">按产品统计订单、成本、利润和参与方金额</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>产品</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.products || []" :key="item.product_id || item.product_name"><td>{{ item.product_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.products || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无产品汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>参与清算各方汇总</strong><span class="muted">按参与方分别合计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>参与方类型</th><th>参与方</th><th>订单数</th><th>清算小计金额</th></tr></thead><tbody><tr v-for="item in settlementReport.summary.participants || []" :key="`${item.participant_type}-${item.participant_name}`"><td>{{ participantLabel(item.participant_type) }}</td><td>{{ item.participant_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.amount) }}</td></tr><tr v-if="!(settlementReport.summary.participants || []).length"><td colspan="4"><div class="empty-state">当前周期暂无参与方清算数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>订单清算明细</strong><span class="muted">每个订单的金额、成本、利润和参与方分配</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>专家</th><th>渠道</th><th>参与方清算小计</th><th>参与方明细</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_no || item.order_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td><td>{{ fmtMoney(item.participant_total) }}</td><td><div class="report-participant-list"><span v-for="participant in item.participants" :key="`${item.id}-${participant.participant_type}-${participant.participant_name}`">{{ participant.participant_name }}：{{ fmtMoney(participant.amount) }}</span></div></td><td>{{ item.status }}</td></tr><tr v-if="!settlementReport.items.length"><td colspan="10"><div class="empty-state">当前周期暂无订单清算数据</div></td></tr></tbody></table></div></div>
           <div v-else-if="settlementTab === 'measurements'" class="panel"><div class="panel-heading"><div><span class="section-kicker">MEASUREMENT AND BILLING</span><h3>计量计费数据</h3></div><button class="primary-btn" @click="createMeasurement">登记计量</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>计量类型</th><th>数量</th><th>单位</th><th>来源</th><th>校验状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementMeasurements" :key="item.id"><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.measurement_type }}</td><td>{{ item.quantity }}</td><td>{{ item.unit }}</td><td>{{ item.source }}</td><td><span class="status-pill status-done">{{ item.validation_status }}</span></td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div><div v-if="!settlementMeasurements.length" class="empty-state">暂无计量数据</div></div>
           <div v-else class="panel">
@@ -2584,6 +2708,7 @@ onUnmounted(() => {
                     <th>平台角色</th>
                     <th>账户状态</th>
                     <th>注册时间</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2597,17 +2722,22 @@ onUnmounted(() => {
                       <div class="table-actions">
                         <button
                           v-if="
-                            identityStatusLabel(
+                            item.id === user?.id &&
+                            (identityStatusLabel(
                               personalForUser(item.id)?.status ||
                                 item.verified_status,
                             ) === '待实名' ||
                             identityStatusLabel(
                               personalForUser(item.id)?.status ||
                                 item.verified_status,
-                            ) === '已拒绝'
+                            ) === '待审核' ||
+                            identityStatusLabel(
+                              personalForUser(item.id)?.status ||
+                                item.verified_status,
+                            ) === '已拒绝')
                           "
                           class="status-pill status-todo status-action"
-                          @click="showPersonalVerification = true"
+                          @click="openPersonalEdit(personalForUser(item.id))"
                         >
                           {{
                             identityStatusLabel(
@@ -2629,35 +2759,22 @@ onUnmounted(() => {
                               personalForUser(item.id)?.status ||
                                 item.verified_status,
                             )
-                          }}</span
-                        ><button
-                          v-if="
-                            personalForUser(item.id)?.status ===
-                            'pending_review'
-                          "
-                          class="text-btn"
-                          @click="
-                            reviewPersonal(personalForUser(item.id), 'approve')
-                          "
-                        >
-                          通过</button
-                        ><button
-                          v-if="
-                            personalForUser(item.id)?.status ===
-                            'pending_review'
-                          "
-                          class="text-btn danger-text"
-                          @click="
-                            reviewPersonal(personalForUser(item.id), 'reject')
-                          "
-                        >
-                          拒绝
-                        </button>
+                          }}</span>
                       </div>
                     </td>
                     <td>{{ item.platform_role || "-" }}</td>
                     <td>{{ item.is_active ? "正常" : "已禁用" }}</td>
                     <td>{{ fmtDate(item.created_at) }}</td>
+                    <td>
+                      <div class="table-actions" v-if="personalForUser(item.id)">
+                        <template v-if="canReviewIdentity() && personalForUser(item.id)?.status === 'pending_review'">
+                          <button class="text-btn" @click="reviewPersonal(personalForUser(item.id), 'approve')">通过</button>
+                          <button class="text-btn danger-text" @click="reviewPersonal(personalForUser(item.id), 'reject')">拒绝</button>
+                        </template>
+                        <button v-if="canReviewIdentity() && ['pending', 'pending_review'].includes(personalForUser(item.id)?.status)" class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
+                      </div>
+                      <span v-else class="muted">-</span>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -2715,24 +2832,12 @@ onUnmounted(() => {
                     <td>
                       <div class="table-actions">
                         <button
-                          v-if="item.verification_status === 'pending_review'"
+                          v-if="item.verification_status === 'rejected' && item.id === enterprise?.id"
                           class="text-btn"
-                          @click="reviewEnterprise(item, 'approve')"
-                        >
-                          通过</button
-                        ><button
-                          v-if="item.verification_status === 'pending_review'"
-                          class="text-btn danger-text"
-                          @click="reviewEnterprise(item, 'reject')"
-                        >
-                          拒绝</button
-                        ><button
-                          v-if="item.verification_status === 'rejected'"
-                          class="text-btn"
-                          @click="showEnterpriseVerification = true"
+                          @click="openEnterpriseResubmit(item)"
                         >
                           重新提交
-                        </button><template v-if="item.verification_status === 'verified'"><button class="text-btn" @click="openEnterpriseManagement(item, 'details')">企业详情</button><button class="text-btn" @click="openEnterpriseManagement(item, 'invite')">邀请用户</button><button class="text-btn" @click="openEnterpriseManagement(item, 'departments')">部门管理</button><button class="text-btn" @click="openEnterpriseManagement(item, 'members')">成员管理</button></template>
+                        </button><button v-if="canReviewIdentity() && item.verification_status === 'pending_review'" class="text-btn" @click="openEnterpriseReview(item)">实名审核</button><template v-if="item.verification_status === 'verified' && canManageEnterprise(item)"><button class="text-btn" @click="openEnterpriseManagement(item, 'details')">企业详情</button><button class="text-btn" @click="openEnterpriseManagement(item, 'invite')">邀请用户</button><button class="text-btn" @click="openEnterpriseManagement(item, 'departments')">部门管理</button><button class="text-btn" @click="openEnterpriseManagement(item, 'members')">成员管理</button></template>
                       </div>
                     </td>
                   </tr>
@@ -2746,7 +2851,7 @@ onUnmounted(() => {
             <div>
               <div class="eyebrow">平台管理 · 通知与角色</div>
               <h1>系统设置</h1>
-              <p>配置短信、邮件平台，并由平台超级管理员分配运营角色。</p>
+              <p>配置短信、SMTP 发件平台，并由平台超级管理员维护固化运营角色。</p>
             </div>
             <button class="secondary-btn" @click="loadViewData('settings')">
               <RefreshCw :size="16" />刷新
@@ -2755,35 +2860,44 @@ onUnmounted(() => {
           <div class="two-column-panels">
             <div class="panel">
               <div class="panel-heading">
-                <h3>通知平台配置</h3>
+                <h3>短信与 SMTP 发件配置</h3>
                 <span class="muted">密码仅保存不回显</span>
               </div>
               <div class="form-grid">
                 <label
-                  >邮件服务器<input
-                    v-model="notificationSettings.email_host" /></label
+                  >SMTP 服务器<input
+                    v-model="notificationSettings.smtp_host"
+                    placeholder="例如 smtp.example.com" /></label
                 ><label
-                  >邮件端口<input
-                    v-model="notificationSettings.email_port"
+                  >SMTP 端口<input
+                    v-model="notificationSettings.smtp_port"
                     type="number"
                 /></label>
               </div>
               <div class="form-grid">
                 <label
-                  >发件用户名<input
-                    v-model="notificationSettings.email_username" /></label
+                  >SMTP 发件用户名<input
+                    v-model="notificationSettings.smtp_username" /></label
                 ><label
-                  >邮件密码<input
-                    v-model="notificationSettings.email_password"
+                  >SMTP 发件密码<input
+                    v-model="notificationSettings.smtp_password"
                     type="password"
                     placeholder="留空表示不修改"
                 /></label>
               </div>
               <label class="checkbox-line"
                 ><input
-                  v-model="notificationSettings.email_ssl"
+                  v-model="notificationSettings.smtp_ssl"
                   type="checkbox"
-                />启用 SSL</label
+                />使用 SSL</label
+              ><label class="checkbox-line"
+                ><input
+                  v-model="notificationSettings.smtp_starttls"
+                  type="checkbox"
+                />使用 STARTTLS</label
+              ><label
+                >发件人名称<input v-model="notificationSettings.smtp_from_name"
+              /></label>
               >
               <div class="form-grid">
                 <label
@@ -2801,36 +2915,10 @@ onUnmounted(() => {
             </div>
             <div class="panel">
               <div class="panel-heading">
-                <h3>平台角色分配</h3>
-                <span class="muted">临时密码按渠道有效期不同</span>
+                <h3>固化平台角色账号</h3>
+                <span class="muted">七类角色由平台统一维护，初始密码：Admin123!</span>
               </div>
-              <label
-                >手机或邮箱<input
-                  v-model="roleForm.identifier"
-                  placeholder="已注册用户的手机或邮箱"
-              /></label>
-              <div class="form-grid">
-                <label>用户名称<input v-model="roleForm.name" /></label
-                ><label
-                  >角色<select v-model="roleForm.role">
-                    <option
-                      v-for="(name, key) in platformRoleItems.roles"
-                      :key="key"
-                      :value="key"
-                    >
-                      {{ name }}
-                    </option>
-                  </select></label
-                >
-              </div>
-              <label
-                >通知渠道<select v-model="roleForm.channel">
-                  <option value="email">邮件，临时密码 1 小时有效</option>
-                  <option value="sms">短信，临时密码 10 分钟有效</option>
-                </select></label
-              ><button class="primary-btn" @click="assignPlatformRole">
-                分配角色并生成临时密码 <ArrowUpRight :size="16" />
-              </button>
+              <p class="muted">角色账号不可通过普通注册或动态分配产生。平台管理员如需调整权限，应修改固定账号的角色配置。</p>
             </div>
           </div>
           <div class="panel">
@@ -2852,7 +2940,7 @@ onUnmounted(() => {
                 <tbody>
                   <tr v-for="item in platformRoleItems.items" :key="item.id">
                     <td>{{ item.name }}</td>
-                    <td>{{ item.email || item.phone }}</td>
+                    <td><strong>{{ item.username }}</strong><small>{{ item.email }}</small></td>
                     <td>
                       <span class="status-pill status-done">{{
                         item.role_name
@@ -3026,6 +3114,20 @@ onUnmounted(() => {
               ><label
                 >法定代表人/负责人<input
                   v-model="verificationForm.legal_representative" /></label
+              ><label
+                >注册资本/出资额<input
+                  v-model="verificationForm.registered_capital" /></label
+              ><label
+                >成立日期<input
+                  v-model="verificationForm.establishment_date"
+                  type="date" /></label
+              ><label
+                >经营场所<input
+                  v-model="verificationForm.business_address" /></label
+              ><label
+                >经营范围<textarea
+                  v-model="verificationForm.business_scope"
+                ></textarea></label
               ><button
                 class="primary-btn"
                 @click="submitEnterpriseVerification"
@@ -3519,6 +3621,16 @@ onUnmounted(() => {
         </button>
       </form>
     </div>
+    <div v-if="showProfileContact" class="modal-scrim" @click="showProfileContact = false">
+      <form class="modal-card" @submit.prevent="updateProfileContact" @click.stop>
+        <div class="drawer-head"><div><span class="eyebrow">ACCOUNT CONTACT</span><h2>账号联系方式</h2></div><button type="button" class="icon-btn" @click="showProfileContact = false"><X :size="19" /></button></div>
+        <p class="muted">手机号或邮箱变更均需验证码确认，验证码有效期 10 分钟。</p>
+        <label>变更类型<select v-model="profileContactForm.channel"><option value="phone">手机号码</option><option value="email">邮箱地址</option></select></label>
+        <label>{{ profileContactForm.channel === 'phone' ? '新手机号码' : '新邮箱地址' }}<input v-model="profileContactForm.target" required /></label>
+        <div class="inline-form"><input v-model="profileContactForm.verification_code" placeholder="验证码" required /><button type="button" class="secondary-btn" @click="sendContactCode">发送验证码</button></div>
+        <button class="primary-btn full-btn" type="submit">确认更新 <ArrowUpRight :size="16" /></button>
+      </form>
+    </div>
     <div
       v-if="showPersonalVerification"
       class="modal-scrim"
@@ -3532,7 +3644,7 @@ onUnmounted(() => {
         <div class="drawer-head">
           <div>
             <span class="eyebrow">IDENTITY VERIFICATION</span>
-            <h2>个人实名认证</h2>
+            <h2>{{ editingPersonalVerification ? '编辑个人实名认证' : '个人实名认证' }}</h2>
           </div>
           <button
             type="button"
@@ -3556,13 +3668,13 @@ onUnmounted(() => {
               type="file"
               accept="image/*"
               @change="verificationFiles.front = $event.target.files[0]"
-              required /></label
+              :required="!editingPersonalVerification" /></label
           ><label
             >身份证反面<input
               type="file"
               accept="image/*"
               @change="verificationFiles.back = $event.target.files[0]"
-              required
+              :required="!editingPersonalVerification"
           /></label>
         </div>
         <label>手机号<input v-model="verificationForm.phone" required /></label
@@ -3578,6 +3690,45 @@ onUnmounted(() => {
           提交实名认证 <ArrowUpRight :size="16" />
         </button>
       </form>
+    </div>
+    <div v-if="identityReview" class="modal-scrim" @click.self="identityReview = null">
+      <section class="modal-card verification-review-modal" @click.stop>
+        <div class="drawer-head">
+          <div><span class="eyebrow">IDENTITY REVIEW</span><h2>{{ identityReview.kind === 'personal' ? '个人实名审核' : '企业实名审核' }}</h2></div>
+          <button type="button" class="icon-btn" @click="identityReview = null"><X :size="19" /></button>
+        </div>
+        <template v-if="identityReview.kind === 'personal'">
+          <div class="state-grid">
+            <div><small>用户名</small><strong>{{ identityReview.applicant.name || '-' }}</strong></div>
+            <div><small>注册时间</small><strong>{{ fmtDate(identityReview.applicant.created_at) }}</strong></div>
+            <div><small>手机号码</small><strong>{{ identityReview.applicant.phone || '-' }}</strong></div>
+            <div><small>邮箱地址</small><strong>{{ identityReview.applicant.email || '-' }}</strong></div>
+          </div>
+          <div class="identity-review-images">
+            <div><small>身份证正面</small><img v-if="identityReviewImages.front" :src="identityReviewImages.front" alt="身份证正面" @click="identityImagePreview = { url: identityReviewImages.front, title: '身份证正面' }" /><span v-else class="muted">图片加载失败</span></div>
+            <div><small>身份证反面</small><img v-if="identityReviewImages.back" :src="identityReviewImages.back" alt="身份证反面" @click="identityImagePreview = { url: identityReviewImages.back, title: '身份证反面' }" /><span v-else class="muted">图片加载失败</span></div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="state-grid">
+            <div><small>企业名称</small><strong>{{ identityReview.item.name }}</strong></div>
+            <div><small>统一社会信用代码</small><strong>{{ identityReview.item.credit_code }}</strong></div>
+            <div><small>企业类型</small><strong>{{ identityReview.item.enterprise_type || '-' }}</strong></div>
+            <div><small>法定代表人</small><strong>{{ identityReview.item.legal_representative || '-' }}</strong></div>
+            <div><small>注册资本/出资额</small><strong>{{ identityReview.item.registered_capital || '-' }}</strong></div>
+            <div><small>成立日期</small><strong>{{ identityReview.item.establishment_date || '-' }}</strong></div>
+            <div><small>经营场所</small><strong>{{ identityReview.item.business_address || '-' }}</strong></div>
+            <div><small>申请实名时间</small><strong>{{ fmtDate(identityReview.item.created_at) }}</strong></div>
+          </div>
+          <div class="review-long-text"><small>经营范围</small><p>{{ identityReview.item.business_scope || '-' }}</p></div>
+          <div class="identity-review-images single"><div><small>营业执照</small><img v-if="identityReviewImages.license" :src="identityReviewImages.license" alt="营业执照" @click="identityImagePreview = { url: identityReviewImages.license, title: '营业执照' }" /><span v-else class="muted">图片加载失败</span></div></div>
+        </template>
+        <label class="review-comment">审核意见/拒绝原因<textarea v-model="identityReviewComment" placeholder="拒绝时必须填写原因"></textarea></label>
+        <div class="modal-actions"><button class="secondary-btn" @click="identityReview = null">取消</button><button class="text-btn danger-text" @click="submitIdentityReview('reject')">拒绝</button><button class="primary-btn" @click="submitIdentityReview('approve')">通过</button></div>
+      </section>
+    </div>
+    <div v-if="identityImagePreview" class="modal-scrim image-preview-scrim" @click.self="identityImagePreview = null">
+      <section class="image-preview-modal" @click.stop><div class="drawer-head"><h3>{{ identityImagePreview.title }}</h3><button class="icon-btn" @click="identityImagePreview = null"><X :size="19" /></button></div><img :src="identityImagePreview.url" :alt="identityImagePreview.title" /></section>
     </div>
     <div
       v-if="enterpriseManageModal"
@@ -3596,12 +3747,12 @@ onUnmounted(() => {
           <button :class="{ active: enterpriseManageTab === 'members' }" @click="enterpriseManageTab = 'members'">成员管理</button>
         </div>
         <div v-if="enterpriseManageTab === 'details'" class="enterprise-detail-grid">
-          <div><small>企业名称</small><strong>{{ enterpriseManageModal.name }}</strong></div><div><small>统一社会信用代码</small><strong>{{ enterpriseManageModal.credit_code }}</strong></div><div><small>企业类型</small><strong>{{ enterpriseManageModal.enterprise_type || '-' }}</strong></div><div><small>法定代表人</small><strong>{{ enterpriseManageModal.legal_representative || '-' }}</strong></div><div><small>认证状态</small><strong>已认证</strong></div><div><small>认证时间</small><strong>{{ fmtDate(enterpriseManageModal.verified_at) }}</strong></div>
+          <div><small>企业名称</small><strong>{{ enterpriseManageModal.name }}</strong></div><div><small>统一社会信用代码</small><strong>{{ enterpriseManageModal.credit_code }}</strong></div><div><small>企业类型</small><strong>{{ enterpriseManageModal.enterprise_type || '-' }}</strong></div><div><small>法定代表人</small><strong>{{ enterpriseManageModal.legal_representative || '-' }}</strong></div><div><small>注册资本/出资额</small><strong>{{ enterpriseManageModal.registered_capital || '-' }}</strong></div><div><small>成立日期</small><strong>{{ enterpriseManageModal.establishment_date || '-' }}</strong></div><div><small>经营场所</small><strong>{{ enterpriseManageModal.business_address || '-' }}</strong></div><div><small>认证状态</small><strong>已认证</strong></div><div><small>认证时间</small><strong>{{ fmtDate(enterpriseManageModal.verified_at) }}</strong></div><div class="enterprise-detail-wide"><small>经营范围</small><strong>{{ enterpriseManageModal.business_scope || '-' }}</strong></div>
         </div>
         <div v-else-if="enterpriseManageTab === 'invite'" class="enterprise-manage-section">
           <div class="panel-heading"><div><h3>邀请用户加入企业</h3><span class="muted">输入平台注册用户的邮箱或手机号</span></div></div>
-          <div class="inline-form"><input v-model="inviteTarget" placeholder="邮箱或手机号" /><button class="primary-btn" @click="inviteEnterpriseMember"><Users :size="15" />发送邀请</button></div>
-          <div class="invite-list"><div v-for="item in enterpriseInvitations" :key="item.id"><span>{{ item.target }}</span><small>{{ item.status === 'accepted' ? '已接受' : item.status === 'pending' ? '待接受' : item.status }}</small></div><div v-if="!enterpriseInvitations.length" class="muted">暂无邀请记录</div></div>
+          <div class="inline-form"><input v-model="inviteTarget" placeholder="邮箱或手机号" /><select v-model="inviteChannel" title="邀请渠道"><option value="sms">手机短信</option><option value="email">邮件</option></select><select v-model="inviteDepartmentId" title="加入后的归属部门"><option value="">不指定部门</option><option v-for="department in enterpriseDepartments" :key="department.id" :value="department.id">{{ department.name }}</option></select><button class="primary-btn" @click="inviteEnterpriseMember"><Users :size="15" />发送邀请</button></div>
+          <div class="invite-list"><div v-for="item in enterpriseInvitations" :key="item.id"><span>{{ item.target }} <small>{{ item.channel === 'email' ? '邮件' : '短信' }}</small></span><span><small>{{ item.status === 'accepted' ? '已接受' : item.status === 'pending' ? (item.created_user ? '待激活' : '待接受') : item.status === 'expired' ? '已过期' : item.status }}</small><button v-if="item.status === 'expired' || (item.status === 'pending' && item.created_user)" class="text-btn" @click="resendEnterpriseInvitation(item)">重新邀请</button></span></div><div v-if="!enterpriseInvitations.length" class="muted">暂无邀请记录</div></div>
         </div>
         <div v-else-if="enterpriseManageTab === 'departments'" class="enterprise-manage-section">
           <div class="panel-heading"><div><h3>企业部门管理</h3><span class="muted">部门存在成员时不可直接删除</span></div><span class="muted">{{ enterpriseDepartments.length }} 个部门</span></div>
@@ -3661,6 +3812,24 @@ onUnmounted(() => {
           >法定代表人/负责人<input
             v-model="verificationForm.legal_representative"
             required /></label
+        ><label
+          >注册资本/出资额<input
+            v-model="verificationForm.registered_capital"
+            required /></label
+        ><label
+          >成立日期<input
+            v-model="verificationForm.establishment_date"
+            type="date"
+            required /></label
+        ><label
+          >经营场所<input
+            v-model="verificationForm.business_address"
+            required /></label
+        ><label
+          >经营范围<textarea
+            v-model="verificationForm.business_scope"
+            required
+          ></textarea></label
         ><button class="primary-btn full-btn" type="submit">
           提交企业认证 <ArrowUpRight :size="16" />
         </button>

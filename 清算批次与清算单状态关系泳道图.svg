@@ -1,0 +1,149 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#506174"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font: 700 28px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #172033; }
+      .subtitle { font: 400 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #667085; }
+      .lane-title { font: 700 17px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #26364a; }
+      .lane-desc { font: 400 12px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #718096; }
+      .node-title { font: 700 15px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #172033; }
+      .node-text { font: 400 12px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #475467; }
+      .note { font: 400 13px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #344054; }
+      .small { font: 400 11px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; fill: #667085; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1080" fill="#f7f9fc"/>
+  <text x="60" y="58" class="title">清算批次与清算单状态关系跨泳道图</text>
+  <text x="60" y="88" class="subtitle">核心原则：业务订单支付状态与清算付款状态相互独立；批次付款成功后，清算单和参与方清算明细同步变为 paid。</text>
+
+  <!-- lane backgrounds -->
+  <rect x="40" y="125" width="1720" height="145" rx="8" fill="#eef5ff" stroke="#d8e5f5"/>
+  <rect x="40" y="270" width="1720" height="170" rx="8" fill="#f5f7fb" stroke="#e3e8f0"/>
+  <rect x="40" y="440" width="1720" height="170" rx="8" fill="#f2fbf7" stroke="#d8eee4"/>
+  <rect x="40" y="610" width="1720" height="170" rx="8" fill="#fffaf0" stroke="#f2e5c5"/>
+  <rect x="40" y="780" width="1720" height="170" rx="8" fill="#fff5f5" stroke="#f1dada"/>
+
+  <!-- lane labels -->
+  <text x="65" y="170" class="lane-title">业务订单</text>
+  <text x="65" y="195" class="lane-desc">Order</text>
+  <text x="65" y="215" class="lane-desc">买方购买行为</text>
+  <text x="65" y="315" class="lane-title">清算批次</text>
+  <text x="65" y="340" class="lane-desc">Settlement Batch</text>
+  <text x="65" y="360" class="lane-desc">按自然月组织清算</text>
+  <text x="65" y="485" class="lane-title">清算单</text>
+  <text x="65" y="510" class="lane-desc">Settlement</text>
+  <text x="65" y="530" class="lane-desc">单笔订单的利润分配结果</text>
+  <text x="65" y="655" class="lane-title">参与方清算明细</text>
+  <text x="65" y="680" class="lane-desc">Settlement Line</text>
+  <text x="65" y="700" class="lane-desc">平台、提供方、服务方、专家、渠道</text>
+  <text x="65" y="825" class="lane-title">平台操作与控制</text>
+  <text x="65" y="850" class="lane-desc">审核、对账、付款、重算、冲正</text>
+
+  <!-- business order -->
+  <rect x="310" y="160" width="205" height="76" rx="8" fill="#ffffff" stroke="#72a7f8" stroke-width="2"/>
+  <text x="412" y="188" text-anchor="middle" class="node-title">订单已支付</text>
+  <text x="412" y="211" text-anchor="middle" class="node-text">payment_status = paid</text>
+  <text x="412" y="228" text-anchor="middle" class="small">后续保持独立</text>
+
+  <rect x="1375" y="160" width="250" height="76" rx="8" fill="#ffffff" stroke="#72a7f8" stroke-width="2"/>
+  <text x="1500" y="188" text-anchor="middle" class="node-title">业务订单仍为 paid</text>
+  <text x="1500" y="211" text-anchor="middle" class="node-text">不因清算付款改变</text>
+  <text x="1500" y="228" text-anchor="middle" class="small">订单支付与清算付款解耦</text>
+
+  <!-- batch -->
+  <rect x="570" y="305" width="205" height="82" rx="8" fill="#ffffff" stroke="#98a7bd" stroke-width="2"/>
+  <text x="672" y="334" text-anchor="middle" class="node-title">生成清算批次</text>
+  <text x="672" y="357" text-anchor="middle" class="node-text">status = generated</text>
+  <text x="672" y="376" text-anchor="middle" class="small">按月份筛选支付订单</text>
+
+  <rect x="850" y="305" width="205" height="82" rx="8" fill="#ffffff" stroke="#98a7bd" stroke-width="2"/>
+  <text x="952" y="334" text-anchor="middle" class="node-title">审核确认</text>
+  <text x="952" y="357" text-anchor="middle" class="node-text">status = confirmed</text>
+  <text x="952" y="376" text-anchor="middle" class="small">异常和对账通过</text>
+
+  <rect x="1130" y="305" width="205" height="82" rx="8" fill="#e9f2ff" stroke="#2563eb" stroke-width="2"/>
+  <text x="1232" y="334" text-anchor="middle" class="node-title">批次付款完成</text>
+  <text x="1232" y="357" text-anchor="middle" class="node-text">status = paid</text>
+  <text x="1232" y="376" text-anchor="middle" class="small">生成分账付款流水</text>
+
+  <rect x="1450" y="305" width="225" height="82" rx="8" fill="#fff4e5" stroke="#e7a23b" stroke-width="2"/>
+  <text x="1562" y="334" text-anchor="middle" class="node-title">异常分支</text>
+  <text x="1562" y="357" text-anchor="middle" class="node-text">disputed / rolled_back</text>
+  <text x="1562" y="376" text-anchor="middle" class="small">不得进入付款完成</text>
+
+  <!-- settlement -->
+  <rect x="570" y="475" width="205" height="82" rx="8" fill="#ffffff" stroke="#57b98a" stroke-width="2"/>
+  <text x="672" y="504" text-anchor="middle" class="node-title">生成清算单</text>
+  <text x="672" y="527" text-anchor="middle" class="node-text">status = pending</text>
+  <text x="672" y="546" text-anchor="middle" class="small">订单金额 - 成本 = 利润</text>
+
+  <rect x="850" y="475" width="205" height="82" rx="8" fill="#f0fbf5" stroke="#57b98a" stroke-width="2"/>
+  <text x="952" y="504" text-anchor="middle" class="node-title">清算结果锁定</text>
+  <text x="952" y="527" text-anchor="middle" class="node-text">status = locked</text>
+  <text x="952" y="546" text-anchor="middle" class="small">确认后禁止直接修改</text>
+
+  <rect x="1130" y="475" width="205" height="82" rx="8" fill="#e7f8ef" stroke="#16a05d" stroke-width="2"/>
+  <text x="1232" y="504" text-anchor="middle" class="node-title">清算单已付款</text>
+  <text x="1232" y="527" text-anchor="middle" class="node-text">status = paid</text>
+  <text x="1232" y="546" text-anchor="middle" class="small">与批次 paid 同步</text>
+
+  <rect x="1450" y="475" width="225" height="82" rx="8" fill="#fff4e5" stroke="#e7a23b" stroke-width="2"/>
+  <text x="1562" y="504" text-anchor="middle" class="node-title">重算作废</text>
+  <text x="1562" y="527" text-anchor="middle" class="node-text">status = superseded</text>
+  <text x="1562" y="546" text-anchor="middle" class="small">新批次替代旧清算单</text>
+
+  <!-- lines -->
+  <rect x="570" y="645" width="205" height="82" rx="8" fill="#ffffff" stroke="#e2ae52" stroke-width="2"/>
+  <text x="672" y="674" text-anchor="middle" class="node-title">待付款明细</text>
+  <text x="672" y="697" text-anchor="middle" class="node-text">platform / provider / ...</text>
+  <text x="672" y="716" text-anchor="middle" class="small">status = pending</text>
+
+  <rect x="850" y="645" width="205" height="82" rx="8" fill="#fff9e9" stroke="#e2ae52" stroke-width="2"/>
+  <text x="952" y="674" text-anchor="middle" class="node-title">待付款明细锁定</text>
+  <text x="952" y="697" text-anchor="middle" class="node-text">status = locked</text>
+  <text x="952" y="716" text-anchor="middle" class="small">保存参与方金额</text>
+
+  <rect x="1130" y="645" width="205" height="82" rx="8" fill="#eaf8ef" stroke="#16a05d" stroke-width="2"/>
+  <text x="1232" y="674" text-anchor="middle" class="node-title">分账明细已付款</text>
+  <text x="1232" y="697" text-anchor="middle" class="node-text">status = paid</text>
+  <text x="1232" y="716" text-anchor="middle" class="small">各方获得 payment_no</text>
+
+  <!-- platform actions -->
+  <rect x="310" y="815" width="205" height="82" rx="8" fill="#ffffff" stroke="#d77b7b" stroke-width="2"/>
+  <text x="412" y="844" text-anchor="middle" class="node-title">筛选与生成</text>
+  <text x="412" y="867" text-anchor="middle" class="node-text">自然月 + 已支付订单</text>
+  <text x="412" y="886" text-anchor="middle" class="small">创建批次与清算单</text>
+
+  <rect x="1375" y="815" width="250" height="82" rx="8" fill="#ffffff" stroke="#d77b7b" stroke-width="2"/>
+  <text x="1500" y="844" text-anchor="middle" class="node-title">退款、冲正、清算调整</text>
+  <text x="1500" y="867" text-anchor="middle" class="node-text">paid 后不可直接重算</text>
+  <text x="1500" y="886" text-anchor="middle" class="small">通过调整单处理后续变化</text>
+
+  <!-- arrows -->
+  <path d="M515 198 H570" stroke="#506174" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M775 346 H850" stroke="#506174" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1055 346 H1130" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M1335 346 H1450" stroke="#e7a23b" stroke-width="2" stroke-dasharray="7 5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M775 516 H850" stroke="#506174" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1055 516 H1130" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M1335 516 H1450" stroke="#e7a23b" stroke-width="2" stroke-dasharray="7 5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M775 686 H850" stroke="#506174" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1055 686 H1130" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M412 815 V755 C412 735 470 735 570 735 V686" stroke="#d77b7b" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1232 387 V475" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M1232 557 V645" stroke="#2563eb" stroke-width="2.5" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M1500 815 V760 C1500 740 1400 740 1335 740 V727" stroke="#d77b7b" stroke-width="2" stroke-dasharray="7 5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M1335 198 H1375" stroke="#506174" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- explanatory note -->
+  <rect x="310" y="970" width="1315" height="70" rx="10" fill="#ffffff" stroke="#cfd8e5"/>
+  <text x="340" y="997" class="note">关键边界：</text>
+  <text x="420" y="997" class="note">业务订单的 payment_status=paid 代表买方付款完成；批次、清算单、清算明细的 paid 代表平台向参与清算各方付款完成。</text>
+  <text x="340" y="1022" class="note">因此，批次 paid 时应在同一事务内同步更新对应 Settlement 和 SettlementLine 为 paid，但不修改原业务订单的支付状态。</text>
+</svg>

@@ -6,7 +6,10 @@ import json
 import os
 import re
 import secrets
+import smtplib
+import ssl
 import time
+from email.message import EmailMessage
 from io import BytesIO
 from urllib.parse import parse_qs, quote
 from datetime import datetime, timedelta, timezone
@@ -49,14 +52,18 @@ def now() -> datetime:
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    username: Mapped[str | None] = mapped_column(String(80), unique=True, index=True, nullable=True)
     email: Mapped[str | None] = mapped_column(String(180), unique=True, index=True, nullable=True)
     phone: Mapped[str | None] = mapped_column(String(30), unique=True, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(120))
     password_hash: Mapped[str] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     verified_status: Mapped[str] = mapped_column(String(30), default="pending")
+    activation_status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    email_activation_token: Mapped[str] = mapped_column(String(120), default="")
+    email_activation_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     platform_role: Mapped[str] = mapped_column(String(60), default="")
     temporary_password_hash: Mapped[str] = mapped_column(String(255), default="")
     temporary_password_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -70,6 +77,10 @@ class Enterprise(Base):
     credit_code: Mapped[str] = mapped_column(String(40), unique=True)
     enterprise_type: Mapped[str] = mapped_column(String(100), default="")
     legal_representative: Mapped[str] = mapped_column(String(120), default="")
+    registered_capital: Mapped[str] = mapped_column(String(120), default="")
+    establishment_date: Mapped[str] = mapped_column(String(30), default="")
+    business_address: Mapped[str] = mapped_column(String(500), default="")
+    business_scope: Mapped[str] = mapped_column(Text, default="")
     license_file_id: Mapped[str] = mapped_column(String(36), default="")
     verification_status: Mapped[str] = mapped_column(String(30), default="verified")
     verified_by: Mapped[str] = mapped_column(String(180), default="")
@@ -128,6 +139,9 @@ class EnterpriseInvitation(Base):
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     inviter_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     invitee_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    department_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    channel: Mapped[str] = mapped_column(String(20), default="email")
+    created_user: Mapped[bool] = mapped_column(Boolean, default=False)
     target: Mapped[str] = mapped_column(String(180))
     token: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
@@ -862,6 +876,12 @@ class CodeBody(BaseModel):
     purpose: str = "register"
 
 
+class ContactUpdateBody(BaseModel):
+    channel: str = Field(pattern="^(phone|email)$")
+    target: str = Field(min_length=3, max_length=180)
+    verification_code: str = Field(min_length=4, max_length=20)
+
+
 class PersonalVerificationBody(BaseModel):
     id_name: str
     id_number: str
@@ -884,10 +904,16 @@ class EnterpriseVerificationBody(BaseModel):
     credit_code: str
     enterprise_type: str
     legal_representative: str
+    registered_capital: str = ""
+    establishment_date: str = ""
+    business_address: str = ""
+    business_scope: str = ""
 
 
 class InviteMemberBody(BaseModel):
     target: str
+    department_id: str = ""
+    channel: str = ""
 
 
 class MembershipRoleBody(BaseModel):
@@ -907,11 +933,13 @@ class MemberDepartmentBody(BaseModel):
 class NotificationSettingsBody(BaseModel):
     sms_provider: str = ""
     sms_endpoint: str = ""
-    email_host: str = "imap.263.net"
-    email_ssl: bool = False
-    email_port: int = 143
-    email_username: str = ""
-    email_password: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_ssl: bool = False
+    smtp_starttls: bool = True
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_name: str = "数据集运营服务管理平台"
 
 
 class PlatformRoleAssignmentBody(BaseModel):
@@ -1222,10 +1250,15 @@ class ReconciliationCloseBody(BaseModel):
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
+    username: str | None
     email: str | None
     phone: str | None
     name: str
     verified_status: str
+    activation_status: str = "active"
+    platform_role: str = ""
+    phone_verified: bool = False
+    email_verified: bool = False
 
 
 app = FastAPI(title="Market Operations API", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -1336,6 +1369,34 @@ PLATFORM_ROLES = {
     "delivery_monitor": "交付监控人员",
     "finance_settlement": "财务清算人员",
 }
+
+PLATFORM_ROLE_ACCOUNTS = {
+    "ptyy": ("平台运营人员", "platform_operator"),
+    "sjcp": ("数据产品经理", "product_manager"),
+    "ywsh": ("业务审核人员", "business_reviewer"),
+    "zlsh": ("质量审核人员", "quality_reviewer"),
+    "aqsh": ("安全合规人员", "security_compliance"),
+    "jfsh": ("交付监控人员", "delivery_monitor"),
+    "cwqs": ("财务清算人员", "finance_settlement"),
+}
+
+
+def ensure_platform_role_accounts(db: Session, enterprise: Enterprise | None = None):
+    """Keep the seven operational roles as fixed platform accounts."""
+    for username, (name, role) in PLATFORM_ROLE_ACCOUNTS.items():
+        account = db.scalar(select(User).where(User.username == username))
+        if not account:
+            account = User(username=username, email=f"{username}@market.local", name=name, password_hash=hash_password("Admin123!"), verified_status="verified", platform_role=role, email_verified=True)
+            db.add(account)
+            db.flush()
+        else:
+            if not account.email:
+                account.email = f"{username}@market.local"
+            account.name = name
+            account.platform_role = role
+            account.is_active = True
+        if enterprise and not db.scalar(select(Membership.id).where(Membership.user_id == account.id, Membership.enterprise_id == enterprise.id, Membership.status == "active")):
+            db.add(Membership(user_id=account.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider"))
 
 
 def make_order_no() -> str:
@@ -1482,9 +1543,13 @@ def ensure_product_metadata_schema():
 def ensure_review_and_file_schema():
     tables = {
         "users": {
+            "username": "VARCHAR(80)",
+            "activation_status": "VARCHAR(30) DEFAULT 'active'",
             "phone": "VARCHAR(30)",
             "phone_verified": "BOOLEAN",
             "email_verified": "BOOLEAN",
+            "email_activation_token": "VARCHAR(120)",
+            "email_activation_expires_at": "TIMESTAMP WITH TIME ZONE",
             "platform_role": "VARCHAR(60)",
             "temporary_password_hash": "VARCHAR(255)",
             "temporary_password_expires_at": "TIMESTAMP WITH TIME ZONE",
@@ -1492,6 +1557,10 @@ def ensure_review_and_file_schema():
         "enterprises": {
             "enterprise_type": "VARCHAR(100)",
             "legal_representative": "VARCHAR(120)",
+            "registered_capital": "VARCHAR(120)",
+            "establishment_date": "VARCHAR(30)",
+            "business_address": "VARCHAR(500)",
+            "business_scope": "TEXT",
             "license_file_id": "VARCHAR(36)",
             "verified_by": "VARCHAR(180)",
             "verified_at": "TIMESTAMP WITH TIME ZONE",
@@ -1501,6 +1570,11 @@ def ensure_review_and_file_schema():
             "invited_by": "VARCHAR(36)",
             "joined_at": "TIMESTAMP WITH TIME ZONE",
             "department_id": "VARCHAR(36) DEFAULT ''",
+        },
+        "enterprise_invitations": {
+            "department_id": "VARCHAR(36) DEFAULT ''",
+            "channel": "VARCHAR(20) DEFAULT 'email'",
+            "created_user": "BOOLEAN DEFAULT FALSE",
         },
         "products": {
             "review_comment": "TEXT",
@@ -1765,13 +1839,16 @@ def startup():
         if admin:
             if not admin.platform_role:
                 admin.platform_role = "super_admin"
-                db.commit()
+            default_enterprise = db.scalar(select(Enterprise).order_by(Enterprise.created_at))
+            ensure_platform_role_accounts(db, default_enterprise)
+            db.commit()
             return
         admin = User(email="admin@market.local", name="平台管理员", password_hash=hash_password("Admin123!"), verified_status="verified", platform_role="super_admin", email_verified=True)
         enterprise = Enterprise(name="天地奔牛示范企业", credit_code="DEMO-20261004", verification_status="verified")
         db.add_all([admin, enterprise])
         db.flush()
         db.add(Membership(user_id=admin.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider"))
+        ensure_platform_role_accounts(db, enterprise)
         products = [
             Product(enterprise_id=enterprise.id, name="矿山装备制造质量数据集", product_type="dataset", catalog_name="行业数据集/产品质量", provider_name=enterprise.name, provider_type="企业", description="覆盖 IQC、IPQC、FQC/OQC 和质量追溯的示范数据集。", usage_scenarios="质量趋势分析、缺陷根因分析、质量追溯查询", delivery_method="file", price=68000, pricing_strategy="按授权周期计价，支持企业版年度授权", quality_level="A级", security_level="重要", authorization_conditions="仅限认证企业内部质量分析使用，不得转授权", data_source_statement="来源于企业质量管理和检测业务数据，已完成授权确认", compliance_statement="已完成数据来源、权属和脱敏合规声明"),
             Product(enterprise_id=enterprise.id, name="制造过程行业模型", product_type="model", catalog_name="行业模型/制造过程", provider_name=enterprise.name, provider_type="企业", description="支持设备状态分析、异常诊断和产能预测。", usage_scenarios="制造异常诊断、设备状态分析、产能预测", delivery_method="model_api", price=128000, pricing_strategy="按模型服务周期和调用额度计价", quality_level="生产级", security_level="重要", authorization_conditions="认证企业可调用，禁止反向提取模型参数", data_source_statement="基于制造过程数据集训练形成", compliance_statement="已完成模型训练数据使用范围审核"),
@@ -1807,12 +1884,30 @@ def metrics():
 @app.post("/api/auth/login")
 def login(body: LoginBody, db: Session = Depends(db_session)):
     identifier = (body.identifier or body.email or "").lower().strip()
-    user = db.scalar(select(User).where(or_(User.email == identifier, User.phone == identifier)))
+    user = db.scalar(select(User).where(or_(User.username == identifier, User.email == identifier, User.phone == identifier)))
+    if user and user.activation_status == "pending_activation" and user.temporary_password_expires_at and user.temporary_password_expires_at <= now():
+        user.activation_status = "expired"
+        user.is_active = False
+        db.commit()
+        raise HTTPException(401, "邀请已过期，请联系企业管理员重新邀请")
     valid_password = user and verify_password(body.password, user.password_hash)
     if user and not valid_password and user.temporary_password_hash and user.temporary_password_expires_at and user.temporary_password_expires_at > now():
         valid_password = verify_password(body.password, user.temporary_password_hash)
     if not user or not valid_password:
         raise HTTPException(401, "邮箱或密码错误")
+    if user.email and user.activation_status != "pending_activation" and not user.phone_verified and not user.email_verified:
+        raise HTTPException(403, "邮箱尚未激活，请先点击激活链接后再登录")
+    if user.activation_status == "pending_activation":
+        user.activation_status = "active"
+        user.temporary_password_hash = ""
+        user.temporary_password_expires_at = None
+        memberships = db.scalars(select(Membership).where(Membership.user_id == user.id, Membership.status == "pending_activation")).all()
+        for membership in memberships:
+            membership.status = "active"
+            membership.joined_at = now()
+        invitations = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.invitee_id == user.id, EnterpriseInvitation.status == "pending")).all()
+        for invitation in invitations:
+            invitation.status = "accepted"
     audit(db, user.email, "login", "user", user.id)
     db.commit()
     return {"token": issue_token(user), "user": UserOut.model_validate(user).model_dump()}
@@ -1824,14 +1919,81 @@ def send_verification_code(body: CodeBody, db: Session = Depends(db_session)):
         raise HTTPException(400, "验证码渠道必须是 sms 或 email")
     if not body.target.strip():
         raise HTTPException(400, "验证码目标不能为空")
-    item = VerificationCode(channel=body.channel, target=body.target.strip(), code="123456", purpose=body.purpose, expires_at=now() + timedelta(minutes=10 if body.channel == "sms" else 60))
+    item = VerificationCode(channel=body.channel, target=body.target.strip(), code="123456", purpose=body.purpose, expires_at=now() + timedelta(minutes=10))
     db.add(item)
     db.commit()
-    return {"channel": body.channel, "target": body.target, "expires_at": item.expires_at, "provider_configured": False, "development_hint": "当前为开发环境，验证码固定为 123456，未执行真实短信或邮件发送"}
+    return {"channel": body.channel, "target": body.target, "expires_at": item.expires_at, "provider_configured": False, "development_hint": "当前为开发环境，验证码固定为 123456，有效期 10 分钟，未执行真实短信或邮件发送"}
+
+
+def send_activation_email(db: Session, recipient: str, activation_url: str) -> tuple[bool, str]:
+    values = {item.setting_key: item.setting_value for item in db.scalars(select(SystemSetting)).all()}
+    host = values.get("smtp_host", "").strip()
+    username = values.get("smtp_username", "").strip()
+    password = values.get("smtp_password", "")
+    if not host or not username or not password:
+        return False, "SMTP 发件配置未完成"
+    try:
+        message = EmailMessage()
+        message["Subject"] = "请激活您的数据集运营服务管理平台账户"
+        message["From"] = f"{values.get('smtp_from_name', '数据集运营服务管理平台')} <{username}>"
+        message["To"] = recipient
+        message.set_content(f"您好，\n\n请在 10 分钟内点击以下链接激活账户：\n{activation_url}\n\n开发环境邮箱验证码：123456\n\n如非本人操作，请忽略此邮件。")
+        message.add_alternative(f"""<html><body style=\"font-family:Arial,'Microsoft YaHei',sans-serif;color:#243044;line-height:1.7\"><h2>激活数据集运营服务管理平台账户</h2><p>您好，欢迎注册数据集运营服务管理平台。</p><p>请在 <strong>10 分钟</strong>内点击下方按钮完成邮箱激活：</p><p><a href=\"{activation_url}\" style=\"display:inline-block;padding:10px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px\">激活账户</a></p><p>如果按钮无法打开，请复制以下地址：</p><p>{activation_url}</p><p style=\"color:#6b7280\">开发环境邮箱验证码：123456。如非本人操作，请忽略此邮件。</p></body></html>""", subtype="html")
+        use_ssl = values.get("smtp_ssl", "false") == "true"
+        use_starttls = values.get("smtp_starttls", "true") == "true"
+        port = int(values.get("smtp_port", "587"))
+        if use_ssl:
+            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=15) as server:
+                server.login(username, password)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                server.ehlo()
+                if use_starttls:
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                server.login(username, password)
+                server.send_message(message)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:240]
+
+
+def send_invitation_email(db: Session, recipient: str, enterprise_name: str, temp_password: str, expires_at: datetime) -> tuple[bool, str]:
+    values = {item.setting_key: item.setting_value for item in db.scalars(select(SystemSetting)).all()}
+    host = values.get("smtp_host", "").strip()
+    username = values.get("smtp_username", "").strip()
+    password = values.get("smtp_password", "")
+    if not host or not username or not password:
+        return False, "SMTP 发件配置未完成"
+    try:
+        message = EmailMessage()
+        message["Subject"] = f"您已被邀请加入企业：{enterprise_name}"
+        message["From"] = f"{values.get('smtp_from_name', '数据集运营服务管理平台')} <{username}>"
+        message["To"] = recipient
+        message.set_content(f"您已被邀请加入企业 {enterprise_name}。临时密码：{temp_password}。请在 {expires_at.strftime('%Y-%m-%d %H:%M:%S')} 前登录，首次登录后账号自动激活。")
+        port = int(values.get("smtp_port", "587"))
+        use_ssl = values.get("smtp_ssl", "false") == "true"
+        use_starttls = values.get("smtp_starttls", "true") == "true"
+        if use_ssl:
+            with smtplib.SMTP_SSL(host, port, context=ssl.create_default_context(), timeout=15) as server:
+                server.login(username, password)
+                server.send_message(message)
+        else:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                server.ehlo()
+                if use_starttls:
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                server.login(username, password)
+                server.send_message(message)
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)[:240]
 
 
 @app.post("/api/auth/register")
-def register(body: RegisterBody, db: Session = Depends(db_session)):
+def register(body: RegisterBody, request: Request, db: Session = Depends(db_session)):
     email = body.email.lower().strip() if body.email else None
     phone = body.phone.strip() if body.phone else None
     if not email and not phone:
@@ -1844,18 +2006,69 @@ def register(body: RegisterBody, db: Session = Depends(db_session)):
         raise HTTPException(409, "邮箱已注册")
     if phone and db.scalar(select(User).where(User.phone == phone)):
         raise HTTPException(409, "手机号码已注册")
-    user = User(email=email, phone=phone, name=body.name, password_hash=hash_password(body.password), phone_verified=bool(phone), email_verified=False)
+    activation_token = secrets.token_urlsafe(36) if email and not phone else ""
+    user = User(email=email, phone=phone, name=body.name, password_hash=hash_password(body.password), phone_verified=bool(phone), email_verified=False, email_activation_token=activation_token, email_activation_expires_at=now() + timedelta(minutes=10) if activation_token else None)
     db.add(user)
+    if activation_token:
+        db.add(VerificationCode(channel="email", target=email, code="123456", purpose="email_activation", expires_at=now() + timedelta(minutes=10)))
     db.commit()
     db.refresh(user)
+    if activation_token:
+        public_base_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+        activation_url = f"{public_base_url}/api/auth/activate-email?token={quote(activation_token)}"
+        email_sent, mail_error = send_activation_email(db, email, activation_url)
+        return {"activation_required": True, "activation_url": activation_url, "email_sent": email_sent, "user": UserOut.model_validate(user).model_dump(), "development_hint": f"{'激活邮件已发送，请在 10 分钟内点击邮件中的链接' if email_sent else f'当前未能发送激活邮件（{mail_error}），请在 10 分钟内使用开发环境激活链接：{activation_url}；验证码为 123456'}"}
     return {"token": issue_token(user), "user": UserOut.model_validate(user).model_dump()}
+
+
+@app.get("/api/auth/activate-email")
+def activate_email(token: str, db: Session = Depends(db_session)):
+    user = db.scalar(select(User).where(User.email_activation_token == token))
+    if not user or not user.email_activation_expires_at or user.email_activation_expires_at <= now():
+        raise HTTPException(400, "邮箱激活链接无效或已过期，请重新注册")
+    user.email_verified = True
+    user.email_activation_token = ""
+    user.email_activation_expires_at = None
+    audit(db, user.email or user.username or user.id, "activate_email", "user", user.id, "邮箱激活")
+    db.commit()
+    return {"status": "activated", "message": "邮箱已激活，现在可以登录平台并进行实名认证"}
+
+
+def verify_contact_code(target: str, code: str, db: Session) -> None:
+    item = db.scalar(select(VerificationCode).where(VerificationCode.target == target, VerificationCode.code == code, VerificationCode.used_at.is_(None), VerificationCode.expires_at > now()).order_by(VerificationCode.created_at.desc()))
+    if code != "123456" and not item:
+        raise HTTPException(400, "验证码错误或已过期")
+    if item:
+        item.used_at = now()
+
+
+@app.post("/api/auth/profile/contact")
+def update_profile_contact(body: ContactUpdateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    target = body.target.strip().lower() if body.channel == "email" else body.target.strip()
+    verify_contact_code(target, body.verification_code, db)
+    if body.channel == "phone":
+        existing = db.scalar(select(User).where(User.phone == target, User.id != user.id))
+        if existing:
+            raise HTTPException(409, "该手机号已绑定其他用户")
+        user.phone = target
+        user.phone_verified = True
+    else:
+        existing = db.scalar(select(User).where(User.email == target, User.id != user.id))
+        if existing:
+            raise HTTPException(409, "该邮箱已绑定其他用户")
+        user.email = target
+        user.email_verified = True
+    audit(db, user.email or user.phone or user.username or user.id, "update_profile_contact", "user", user.id, body.channel)
+    db.commit()
+    db.refresh(user)
+    return UserOut.model_validate(user).model_dump()
 
 
 @app.get("/api/auth/me")
 def me(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
-    membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == enterprise.id))
-    return {"user": UserOut.model_validate(user), "enterprise": {"id": enterprise.id, "name": enterprise.name}, "role": membership.role if membership else "member", "business_roles": (membership.business_roles.split(",") if membership else [])}
+    membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.status == "active").order_by(Membership.created_at))
+    enterprise = db.get(Enterprise, membership.enterprise_id) if membership else None
+    return {"user": UserOut.model_validate(user).model_dump(), "enterprise": {"id": enterprise.id, "name": enterprise.name} if enterprise else None, "role": membership.role if membership else "member", "business_roles": (membership.business_roles.split(",") if membership else [])}
 
 
 def personal_verification_out(item: IdentityVerification) -> dict[str, Any]:
@@ -1882,7 +2095,11 @@ def submit_personal_verification(body: PersonalVerificationBody, user: User = De
     user.phone_verified = True
     if not body.id_front_file_id or not body.id_back_file_id:
         raise HTTPException(400, "必须提交身份证正反面图片")
-    item = IdentityVerification(user_id=user.id, id_name=body.id_name, id_number=body.id_number, id_front_file_id=body.id_front_file_id, id_back_file_id=body.id_back_file_id, phone=body.phone, enterprise_id=body.enterprise_id, enterprise_role=body.enterprise_role)
+    for file_id in (body.id_front_file_id, body.id_back_file_id):
+        file_item = db.get(FileObject, file_id)
+        if not file_item or file_item.owner_id != user.id:
+            raise HTTPException(400, "身份证图片不存在或不属于当前用户")
+    item = IdentityVerification(user_id=user.id, id_name=body.id_name, id_number=body.id_number, id_front_file_id=body.id_front_file_id, id_back_file_id=body.id_back_file_id, phone=body.phone, enterprise_id=body.enterprise_id, enterprise_role=body.enterprise_role, status="pending_review")
     user.verified_status = "pending_review"
     db.add(item)
     audit(db, user.email or user.phone or user.id, "submit_personal_verification", "identity_verification", item.id)
@@ -1891,10 +2108,44 @@ def submit_personal_verification(body: PersonalVerificationBody, user: User = De
     return personal_verification_out(item)
 
 
+@app.put("/api/verification/personal/{verification_id}")
+def update_personal_verification(verification_id: str, body: PersonalVerificationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.get(IdentityVerification, verification_id)
+    if not item or item.user_id != user.id:
+        raise HTTPException(404, "实名认证申请不存在")
+    if body.phone != user.phone:
+        raise HTTPException(400, "实名认证手机号必须与注册手机号一致")
+    if body.phone_code != "123456":
+        raise HTTPException(400, "请先完成手机验证码验证")
+    for file_id in (body.id_front_file_id, body.id_back_file_id):
+        file_item = db.get(FileObject, file_id)
+        if not file_item or file_item.owner_id != user.id:
+            raise HTTPException(400, "身份证图片不存在或不属于当前用户")
+    item.id_name = body.id_name
+    if "*" not in body.id_number:
+        item.id_number = body.id_number
+    item.id_front_file_id = body.id_front_file_id
+    item.id_back_file_id = body.id_back_file_id
+    item.phone = body.phone
+    item.enterprise_id = body.enterprise_id
+    item.enterprise_role = body.enterprise_role
+    item.status = "pending_review"
+    item.review_comment = ""
+    item.reviewed_by = ""
+    item.reviewed_at = None
+    user.verified_status = "pending_review"
+    audit(db, user.email or user.phone or user.id, "resubmit_personal_verification", "identity_verification", item.id)
+    db.commit()
+    db.refresh(item)
+    return personal_verification_out(item)
+
+
 @app.get("/api/admin/verifications/personal")
 def personal_verifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_platform_admin(user)
-    items = db.scalars(select(IdentityVerification).order_by(IdentityVerification.created_at.desc())).all()
+    if user.platform_role in {"super_admin", "platform_operator"}:
+        items = db.scalars(select(IdentityVerification).order_by(IdentityVerification.created_at.desc())).all()
+    else:
+        items = db.scalars(select(IdentityVerification).where(IdentityVerification.user_id == user.id).order_by(IdentityVerification.created_at.desc())).all()
     return {"items": [personal_verification_out(item) for item in items]}
 
 
@@ -1924,29 +2175,47 @@ def review_personal_verification(verification_id: str, body: VerificationReviewB
 def submit_enterprise_verification(body: EnterpriseVerificationBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     if user.verified_status != "verified":
         raise HTTPException(403, "请先完成个人实名认证")
+    license_file = db.get(FileObject, body.license_file_id)
+    if not license_file or license_file.owner_id != user.id:
+        raise HTTPException(400, "营业执照文件不存在或不属于当前用户")
     existing = db.scalar(select(Enterprise).where(Enterprise.credit_code == body.credit_code))
     if existing:
-        raise HTTPException(409, "统一社会信用代码已存在")
-    enterprise = Enterprise(name=body.enterprise_name, credit_code=body.credit_code, enterprise_type=body.enterprise_type, legal_representative=body.legal_representative, license_file_id=body.license_file_id, verification_status="pending_review")
-    db.add(enterprise)
-    db.flush()
-    db.add(Membership(user_id=user.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider", status="active", joined_at=now()))
+        membership = db.scalar(select(Membership).where(Membership.enterprise_id == existing.id, Membership.user_id == user.id, Membership.status == "active"))
+        if existing.verification_status != "rejected" or not membership or membership.role != "super_admin":
+            raise HTTPException(409, "统一社会信用代码已存在")
+        enterprise = existing
+        enterprise.name = body.enterprise_name
+        enterprise.enterprise_type = body.enterprise_type
+        enterprise.legal_representative = body.legal_representative
+        enterprise.registered_capital = body.registered_capital
+        enterprise.establishment_date = body.establishment_date
+        enterprise.business_address = body.business_address
+        enterprise.business_scope = body.business_scope
+        enterprise.license_file_id = body.license_file_id
+        enterprise.verification_status = "pending_review"
+        enterprise.verified_by = ""
+        enterprise.verified_at = None
+    else:
+        enterprise = Enterprise(name=body.enterprise_name, credit_code=body.credit_code, enterprise_type=body.enterprise_type, legal_representative=body.legal_representative, registered_capital=body.registered_capital, establishment_date=body.establishment_date, business_address=body.business_address, business_scope=body.business_scope, license_file_id=body.license_file_id, verification_status="pending_review")
+        db.add(enterprise)
+        db.flush()
+        db.add(Membership(user_id=user.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider", status="active", joined_at=now()))
     audit(db, user.email or user.phone or user.id, "submit_enterprise_verification", "enterprise", enterprise.id, enterprise.name)
     db.commit()
-    return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "verification_status": enterprise.verification_status}
+    return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "registered_capital": enterprise.registered_capital, "establishment_date": enterprise.establishment_date, "business_address": enterprise.business_address, "business_scope": enterprise.business_scope, "verification_status": enterprise.verification_status}
 
 
 @app.get("/api/verification/enterprise/me")
 def enterprise_verification_me(user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
-    return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "verification_status": enterprise.verification_status}
+    return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "registered_capital": enterprise.registered_capital, "establishment_date": enterprise.establishment_date, "business_address": enterprise.business_address, "business_scope": enterprise.business_scope, "verification_status": enterprise.verification_status, "license_file_id": enterprise.license_file_id}
 
 
 @app.get("/api/admin/verifications/enterprise")
 def enterprise_verifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
     items = db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc())).all()
-    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at} for x in items]}
+    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "registered_capital": x.registered_capital, "establishment_date": x.establishment_date, "business_address": x.business_address, "business_scope": x.business_scope, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
 
 
 @app.post("/api/admin/verifications/enterprise/{enterprise_id}/review")
@@ -1970,25 +2239,84 @@ def review_enterprise_verification(enterprise_id: str, body: VerificationReviewB
 @app.post("/api/enterprise/invitations")
 def invite_member(body: InviteMemberBody, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id)
+    if body.department_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.department_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
+        raise HTTPException(404, "指定部门不存在")
     target = body.target.strip().lower()
     invitee = db.scalar(select(User).where(or_(User.email == target, User.phone == target)))
+    channel = body.channel if body.channel in {"sms", "email"} else ("email" if "@" in target else "sms")
+    created_user = False
+    temp_password = ""
     if not invitee:
-        raise HTTPException(404, "被邀请用户尚未注册")
+        temp_password = secrets.token_urlsafe(9)
+        if channel == "email":
+            invitee = User(email=target, name=target.split("@", 1)[0], password_hash=hash_password(temp_password), email_verified=True, activation_status="pending_activation", temporary_password_hash=hash_password(temp_password), temporary_password_expires_at=now() + timedelta(days=1))
+        else:
+            invitee = User(phone=target, name=target, password_hash=hash_password(temp_password), phone_verified=True, activation_status="pending_activation", temporary_password_hash=hash_password(temp_password), temporary_password_expires_at=now() + timedelta(days=1))
+        db.add(invitee)
+        db.flush()
+        created_user = True
     existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
     if existing:
         raise HTTPException(409, "用户已经加入该企业")
-    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=7))
+    if created_user:
+        db.add(Membership(user_id=invitee.id, enterprise_id=enterprise.id, role="member", department_id=body.department_id, business_roles="provider,user", status="pending_activation", invited_by=user.id))
+    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, department_id=body.department_id, channel=channel, created_user=created_user, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=1))
     db.add(invitation)
     audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
     db.commit()
-    return {"id": invitation.id, "target": invitation.target, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": "邮件发送接口预留，当前返回开发环境邀请令牌"}
+    delivery = "已有平台注册用户，请使用原账号登录后接受邀请"
+    sent = False
+    mail_error = ""
+    if created_user and channel == "email":
+        sent, mail_error = send_invitation_email(db, target, enterprise.name, temp_password, invitation.expires_at)
+        delivery = "邀请邮件已发送" if sent else f"邮件未发送：{mail_error}"
+    elif created_user:
+        delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
+    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery}
 
 
 @app.get("/api/enterprise/invitations")
 def enterprise_invitations(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id)
     items = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.enterprise_id == enterprise.id).order_by(EnterpriseInvitation.created_at.desc())).all()
-    return {"items": [{"id": x.id, "target": x.target, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
+    for invitation in items:
+        if invitation.status == "pending" and invitation.expires_at <= now():
+            invitation.status = "expired"
+            if invitation.created_user:
+                invitee = db.get(User, invitation.invitee_id)
+                if invitee and invitee.activation_status == "pending_activation":
+                    invitee.activation_status = "expired"
+                    invitee.is_active = False
+                    invitee.temporary_password_hash = ""
+                    invitee.temporary_password_expires_at = None
+    db.commit()
+    return {"items": [{"id": x.id, "target": x.target, "department_id": x.department_id, "channel": x.channel, "created_user": x.created_user, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/enterprise/invitations/{invitation_id}/resend")
+def resend_enterprise_invitation(invitation_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    invitation = db.get(EnterpriseInvitation, invitation_id)
+    if not invitation:
+        raise HTTPException(404, "邀请不存在")
+    enterprise_management_scope(db, user, invitation.enterprise_id)
+    invitee = db.get(User, invitation.invitee_id)
+    if not invitee:
+        raise HTTPException(404, "受邀用户不存在，请重新发起邀请")
+    temp_password = secrets.token_urlsafe(9)
+    invitee.password_hash = hash_password(temp_password)
+    invitee.temporary_password_hash = hash_password(temp_password)
+    invitee.temporary_password_expires_at = now() + timedelta(days=1)
+    invitee.activation_status = "pending_activation"
+    invitee.is_active = True
+    invitation.status = "pending"
+    invitation.expires_at = now() + timedelta(days=1)
+    delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
+    if invitation.channel == "email":
+        sent, error = send_invitation_email(db, invitation.target, db.get(Enterprise, invitation.enterprise_id).name, temp_password, invitation.expires_at)
+        delivery = "邀请邮件已发送" if sent else f"邮件未发送：{error}"
+    audit(db, user.email or user.phone or user.id, "resend_enterprise_invitation", "enterprise_invitation", invitation.id, invitation.target)
+    db.commit()
+    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password, "delivery": delivery}
 
 
 @app.get("/api/enterprise/my-invitations")
@@ -1999,7 +2327,7 @@ def my_enterprise_invitations(user: User = Depends(current_user), db: Session = 
         .where(EnterpriseInvitation.invitee_id == user.id, EnterpriseInvitation.status == "pending")
         .order_by(EnterpriseInvitation.created_at.desc())
     ).all()
-    return {"items": [{"id": invitation.id, "enterprise_id": invitation.enterprise_id, "enterprise_name": enterprise.name, "target": invitation.target, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "created_at": invitation.created_at} for invitation, enterprise in rows if invitation.expires_at > now()]}
+    return {"items": [{"id": invitation.id, "enterprise_id": invitation.enterprise_id, "enterprise_name": enterprise.name, "target": invitation.target, "department_id": invitation.department_id, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "created_at": invitation.created_at} for invitation, enterprise in rows if invitation.expires_at > now()]}
 
 
 @app.post("/api/enterprise/invitations/{token}/accept")
@@ -2010,7 +2338,7 @@ def accept_enterprise_invitation(token: str, user: User = Depends(current_user),
     existing = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id, Membership.status == "active"))
     invitation.status = "accepted"
     if not existing:
-        db.add(Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now()))
+        db.add(Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", department_id=invitation.department_id, business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now()))
     audit(db, user.email or user.phone or user.id, "accept_enterprise_invitation", "enterprise_invitation", invitation.id)
     db.commit()
     return {"status": invitation.status, "enterprise_id": invitation.enterprise_id, "role": "member"}
@@ -2120,7 +2448,7 @@ def update_member_department(membership_id: str, body: MemberDepartmentBody, use
 def notification_settings(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
     values = {item.setting_key: item.setting_value for item in db.scalars(select(SystemSetting)).all()}
-    return {"sms_provider": values.get("sms_provider", ""), "sms_endpoint": values.get("sms_endpoint", ""), "email_host": values.get("email_host", "imap.263.net"), "email_ssl": values.get("email_ssl", "false") == "true", "email_port": int(values.get("email_port", "143")), "email_username": values.get("email_username", ""), "email_password_configured": bool(values.get("email_password")), "email_password": ""}
+    return {"sms_provider": values.get("sms_provider", ""), "sms_endpoint": values.get("sms_endpoint", ""), "smtp_host": values.get("smtp_host", ""), "smtp_ssl": values.get("smtp_ssl", "false") == "true", "smtp_starttls": values.get("smtp_starttls", "true") == "true", "smtp_port": int(values.get("smtp_port", "587")), "smtp_username": values.get("smtp_username", ""), "smtp_password_configured": bool(values.get("smtp_password")), "smtp_password": "", "smtp_from_name": values.get("smtp_from_name", "数据集运营服务管理平台")}
 
 
 @app.patch("/api/admin/settings/notifications")
@@ -2128,7 +2456,7 @@ def update_notification_settings(body: NotificationSettingsBody, user: User = De
     require_platform_admin(user)
     values = body.model_dump()
     for key, value in values.items():
-        if key == "email_password" and not value:
+        if key == "smtp_password" and not value:
             continue
         item = db.scalar(select(SystemSetting).where(SystemSetting.setting_key == key))
         if not item:
@@ -2144,27 +2472,14 @@ def update_notification_settings(body: NotificationSettingsBody, user: User = De
 @app.get("/api/admin/platform-roles")
 def platform_roles(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    items = db.scalars(select(User).where(User.platform_role != "").order_by(User.created_at.desc())).all()
-    return {"roles": PLATFORM_ROLES, "items": [{"id": x.id, "name": x.name, "email": x.email, "phone": x.phone, "role": x.platform_role, "role_name": PLATFORM_ROLES.get(x.platform_role, x.platform_role)} for x in items]}
+    items = db.scalars(select(User).where(User.username.in_(PLATFORM_ROLE_ACCOUNTS)).order_by(User.username)).all()
+    return {"roles": PLATFORM_ROLES, "fixed": True, "initial_password": "Admin123!", "items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "role": x.platform_role, "role_name": PLATFORM_ROLES.get(x.platform_role, x.platform_role)} for x in items]}
 
 
 @app.post("/api/admin/platform-roles")
 def assign_platform_role(body: PlatformRoleAssignmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    if body.role not in PLATFORM_ROLES:
-        raise HTTPException(400, "不支持的平台角色")
-    identifier = body.identifier.strip().lower()
-    target = db.scalar(select(User).where(or_(User.email == identifier, User.phone == identifier)))
-    if not target:
-        raise HTTPException(404, "用户不存在，请先完成注册")
-    temp_password = secrets.token_urlsafe(9)
-    target.name = body.name or target.name
-    target.platform_role = body.role
-    target.temporary_password_hash = hash_password(temp_password)
-    target.temporary_password_expires_at = now() + timedelta(minutes=10 if body.channel == "sms" else 60)
-    audit(db, user.email or user.phone or user.id, "assign_platform_role", "user", target.id, body.role)
-    db.commit()
-    return {"user_id": target.id, "role": body.role, "role_name": PLATFORM_ROLES[body.role], "delivery": f"{body.channel} 发送接口预留", "temporary_password": temp_password, "expires_at": target.temporary_password_expires_at}
+    raise HTTPException(410, "平台角色已改为七个固化账号，不再支持动态分配；请使用固定用户名登录")
 
 
 @app.get("/api/dashboard")
@@ -2218,7 +2533,9 @@ def product_directories(user: User = Depends(current_user)):
 @app.get("/api/products")
 def products(q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     stmt = select(Product)
-    if user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
+    if user.verified_status != "verified":
+        stmt = stmt.where(Product.status == "published")
+    elif user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
         enterprise = first_enterprise(db, user)
         stmt = stmt.where(Product.enterprise_id == enterprise.id)
     if q:
@@ -2232,6 +2549,11 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
 
 @app.get("/api/products/{product_id}")
 def product_detail(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if user.verified_status != "verified":
+        product = db.scalar(select(Product).where(Product.id == product_id, Product.status == "published"))
+        if not product:
+            raise HTTPException(404, "产品不存在或未发布")
+        return product_out(product)
     return product_out(product_for_enterprise(product_id, user, db))
 
 
@@ -4597,15 +4919,24 @@ def audit_log_categories(user: User = Depends(current_user), db: Session = Depen
 
 @app.get("/api/users")
 def users(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    items = db.scalars(select(User).order_by(User.created_at.desc())).all()
-    return {"items": [{"id": x.id, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "is_active": x.is_active, "platform_role": x.platform_role, "created_at": x.created_at} for x in items]}
+    if user.platform_role in {"super_admin", "platform_operator"}:
+        items = db.scalars(select(User).order_by(User.created_at.desc())).all()
+    else:
+        managed_enterprises = db.scalars(select(Membership.enterprise_id).where(Membership.user_id == user.id, Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"]))).all()
+        if managed_enterprises:
+            items = db.scalars(select(User).join(Membership, Membership.user_id == User.id).where(Membership.enterprise_id.in_(managed_enterprises), Membership.status == "active").distinct().order_by(User.created_at.desc())).all()
+        else:
+            items = [user]
+    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/admin/enterprises")
 def admin_enterprises(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_platform_admin(user)
-    items = db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc())).all()
-    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
+    if user.platform_role in {"super_admin", "platform_operator"}:
+        items = db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc())).all()
+    else:
+        items = db.scalars(select(Enterprise).join(Membership, Membership.enterprise_id == Enterprise.id).where(Membership.user_id == user.id, Membership.status == "active").order_by(Enterprise.created_at.desc())).all()
+    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "registered_capital": x.registered_capital, "establishment_date": x.establishment_date, "business_address": x.business_address, "business_scope": x.business_scope, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/development/tasks")
@@ -4883,3 +5214,26 @@ def upload_file(
     db.commit()
     db.refresh(item)
     return file_out(item)
+
+
+@app.get("/api/files/{file_id}/download")
+def download_file(file_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    """Serve persisted identity/license files to their owner or authorized reviewers."""
+    item = db.get(FileObject, file_id)
+    if not item or item.status == "deleted":
+        raise HTTPException(404, "文件不存在")
+    reviewer = user.platform_role in {"super_admin", "platform_operator"}
+    owner = item.owner_id == user.id
+    if not owner and not reviewer:
+        raise HTTPException(403, "无权查看该文件")
+    if not MINIO_ENDPOINT:
+        raise HTTPException(503, "文件存储服务未配置")
+    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+    try:
+        response = client.get_object(MINIO_BUCKET, item.object_name)
+        content = response.read()
+        response.close()
+        response.release_conn()
+    except Exception as exc:
+        raise HTTPException(404, "文件内容不存在") from exc
+    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f'inline; filename="{item.original_name}"'})

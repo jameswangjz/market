@@ -21,9 +21,11 @@ npm run dev
 ## Kubernetes
 
 ```bash
-kubectl apply -f k8s/all-in-one.yaml
+GIT_SHA=$(git rev-parse --short=12 HEAD) bash scripts/deploy.sh
 kubectl -n market get pods
 kubectl -n market get svc market-web
 ```
+
+部署脚本为本地镜像统一生成不可变标签：`YYYYMMDDHHMMSS-GitSha`。如果部署目录没有 Git 元数据，需显式传入 `GIT_SHA`，例如：`GIT_SHA=d39193140003 bash scripts/deploy.sh`。
 
 首版使用 NodePort `30080` 暴露前端，暂不依赖 Ingress、域名和 HTTPS 证书。对外连接器和国家数据基础设施接口不在首版范围内。

@@ -27,6 +27,7 @@ data:
   MINIO_BUCKET: market-files
   REDIS_URL: redis://market-redis:6379/0
   CORS_ORIGINS: '*'
+  PUBLIC_BASE_URL: http://192.168.10.10:30080
   APISIX_ENABLED: 'true'
   APISIX_ADMIN_URL: http://market-apisix-admin:9180/apisix/admin
   APISIX_COMPAT_UPSTREAM: http://market-gateway:8100
