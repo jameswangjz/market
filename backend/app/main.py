@@ -1381,7 +1381,7 @@ PLATFORM_ROLE_ACCOUNTS = {
 }
 
 
-def ensure_platform_role_accounts(db: Session, enterprise: Enterprise | None = None):
+def ensure_platform_role_accounts(db: Session):
     """Keep the seven operational roles as fixed platform accounts."""
     for username, (name, role) in PLATFORM_ROLE_ACCOUNTS.items():
         account = db.scalar(select(User).where(User.username == username))
@@ -1395,8 +1395,9 @@ def ensure_platform_role_accounts(db: Session, enterprise: Enterprise | None = N
             account.name = name
             account.platform_role = role
             account.is_active = True
-        if enterprise and not db.scalar(select(Membership.id).where(Membership.user_id == account.id, Membership.enterprise_id == enterprise.id, Membership.status == "active")):
-            db.add(Membership(user_id=account.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider"))
+        # Platform role accounts are not enterprise members; they manage tenants through platform scope.
+        for membership in db.scalars(select(Membership).where(Membership.user_id == account.id)).all():
+            db.delete(membership)
 
 
 def make_order_no() -> str:
@@ -1839,16 +1840,16 @@ def startup():
         if admin:
             if not admin.platform_role:
                 admin.platform_role = "super_admin"
-            default_enterprise = db.scalar(select(Enterprise).order_by(Enterprise.created_at))
-            ensure_platform_role_accounts(db, default_enterprise)
+            for membership in db.scalars(select(Membership).where(Membership.user_id == admin.id)).all():
+                db.delete(membership)
+            ensure_platform_role_accounts(db)
             db.commit()
             return
         admin = User(email="admin@market.local", name="平台管理员", password_hash=hash_password("Admin123!"), verified_status="verified", platform_role="super_admin", email_verified=True)
         enterprise = Enterprise(name="天地奔牛示范企业", credit_code="DEMO-20261004", verification_status="verified")
         db.add_all([admin, enterprise])
         db.flush()
-        db.add(Membership(user_id=admin.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider"))
-        ensure_platform_role_accounts(db, enterprise)
+        ensure_platform_role_accounts(db)
         products = [
             Product(enterprise_id=enterprise.id, name="矿山装备制造质量数据集", product_type="dataset", catalog_name="行业数据集/产品质量", provider_name=enterprise.name, provider_type="企业", description="覆盖 IQC、IPQC、FQC/OQC 和质量追溯的示范数据集。", usage_scenarios="质量趋势分析、缺陷根因分析、质量追溯查询", delivery_method="file", price=68000, pricing_strategy="按授权周期计价，支持企业版年度授权", quality_level="A级", security_level="重要", authorization_conditions="仅限认证企业内部质量分析使用，不得转授权", data_source_statement="来源于企业质量管理和检测业务数据，已完成授权确认", compliance_statement="已完成数据来源、权属和脱敏合规声明"),
             Product(enterprise_id=enterprise.id, name="制造过程行业模型", product_type="model", catalog_name="行业模型/制造过程", provider_name=enterprise.name, provider_type="企业", description="支持设备状态分析、异常诊断和产能预测。", usage_scenarios="制造异常诊断、设备状态分析、产能预测", delivery_method="model_api", price=128000, pricing_strategy="按模型服务周期和调用额度计价", quality_level="生产级", security_level="重要", authorization_conditions="认证企业可调用，禁止反向提取模型参数", data_source_statement="基于制造过程数据集训练形成", compliance_statement="已完成模型训练数据使用范围审核"),
