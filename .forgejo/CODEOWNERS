@@ -1,0 +1,2 @@
+# Owners are requested as reviewers on every PR (patterns are regular expressions)
+.* @wangjizhong @biru
