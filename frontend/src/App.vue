@@ -59,6 +59,7 @@ const products = ref([]);
 const productFiles = ref([]);
 const productLogoPreview = ref("");
 const securityReport = ref(null);
+const fileReportViewer = ref(null);
 const productReviewMode = ref(false);
 const productDirectories = ref([]);
 const orders = ref([]);
@@ -1108,6 +1109,9 @@ async function viewProductReport(file, reportType) {
   } catch (error) {
     notify(error.response?.data?.detail || "报告打开失败");
   }
+}
+function openFileReport(file, reportType) {
+  fileReportViewer.value = { file, reportType };
 }
 async function reviewProductFromDetail(decision) {
   const product = productForm.value;
@@ -2382,7 +2386,8 @@ onUnmounted(() => {
                     <td>
                       <div v-if="isPlatformRole()" class="table-actions">
                         <button v-if="canReviewProduct(product)" class="text-btn" @click="openProductDetail(product, true)">审核</button>
-                        <span v-else class="muted">-</span>
+                        <button v-if="product.status === 'published' && ['super_admin', 'platform_operator'].includes(user?.platform_role)" class="text-btn danger-text" @click="productAction(product, 'unpublish')">下架</button>
+                        <span v-if="!canReviewProduct(product) && !(product.status === 'published' && ['super_admin', 'platform_operator'].includes(user?.platform_role))" class="muted">-</span>
                       </div>
                       <div v-else class="table-actions">
                         <button
@@ -3627,16 +3632,13 @@ onUnmounted(() => {
               <button class="text-btn" @click="downloadProductFile(file)">下载文件</button>
               <template v-if="file.file_role === 'product_logo'">
                 <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button class="text-btn" @click="viewProductReport(file, 'clamav')">查看报告</button>
-                <button class="text-btn" @click="downloadProductFile(file, 'clamav')">下载报告</button>
+                <button class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
               </template>
               <template v-else>
                 <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button class="text-btn" @click="viewProductReport(file, 'clamav')">病毒报告</button>
-                <button class="text-btn" @click="downloadProductFile(file, 'clamav')">下载病毒报告</button>
+                <button class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
                 <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
-                <button class="text-btn" @click="viewProductReport(file, 'presidio')">Presidio报告</button>
-                <button class="text-btn" @click="downloadProductFile(file, 'presidio')">下载Presidio报告</button>
+                <button class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
               </template>
             </div>
           </div>
@@ -3817,6 +3819,14 @@ onUnmounted(() => {
           {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
       </form>
+    </div>
+    <div v-if="fileReportViewer" class="modal-scrim" @click="fileReportViewer = null">
+      <section class="modal-card security-report-modal" @click.stop>
+        <div class="drawer-head"><div><span class="eyebrow">FILE SCAN REPORT</span><h2>{{ fileReportViewer.reportType === 'clamav' ? '病毒扫描报告' : 'Presidio扫描报告' }}</h2></div><button type="button" class="icon-btn" @click="fileReportViewer = null"><X :size="19" /></button></div>
+        <div class="state-grid"><div><small>文件名称</small><strong>{{ fileReportViewer.file.original_name }}</strong></div><div><small>文件大小</small><strong>{{ fileReportViewer.file.size }} bytes</strong></div><div><small>扫描工具</small><strong>{{ fileReportViewer.reportType === 'clamav' ? 'ClamAV' : 'Presidio' }}</strong></div><div><small>扫描结论</small><strong>{{ fileReportViewer.reportType === 'clamav' ? (fileReportViewer.file.clamav_status === 'clean' ? '通过' : fileReportViewer.file.clamav_status) : (fileReportViewer.file.presidio_status === 'available' ? '完成' : fileReportViewer.file.presidio_status) }}</strong></div><div><small>扫描时间</small><strong>{{ fmtDate(fileReportViewer.file.scanned_at) }}</strong></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">扫描详情</div><pre class="scan-report-detail">{{ fileReportViewer.reportType === 'clamav' ? fileReportViewer.file.clamav_report : JSON.stringify(fileReportViewer.file.presidio_findings || [], null, 2) }}</pre></div>
+        <button class="primary-btn full-btn" @click="downloadProductFile(fileReportViewer.file, fileReportViewer.reportType)">下载{{ fileReportViewer.reportType === 'clamav' ? '病毒' : 'Presidio' }}报告</button>
+      </section>
     </div>
     <div v-if="securityReport" class="modal-scrim" @click="securityReport = null">
       <section class="modal-card security-report-modal" @click.stop>
