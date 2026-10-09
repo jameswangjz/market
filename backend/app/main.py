@@ -12,6 +12,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import shutil
 import tarfile
 import tempfile
 import time
@@ -3257,7 +3258,11 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
                 archive_path = temporary_archive
             try:
                 with tempfile.TemporaryDirectory(prefix="market-presidio-extract-") as extract_dir:
-                    result = subprocess.run(["7z", "x", "-y", f"-o{extract_dir}", archive_path], capture_output=True, text=True, timeout=120)
+                    if name.endswith(".rar") and shutil.which("unar"):
+                        extraction_command = ["unar", "-f", "-o", extract_dir, archive_path]
+                    else:
+                        extraction_command = ["7z", "x", "-y", f"-o{extract_dir}", archive_path]
+                    result = subprocess.run(extraction_command, capture_output=True, text=True, timeout=120)
                     text_parts = []
                     for root, _, names in os.walk(extract_dir):
                         for entry_name in names:
