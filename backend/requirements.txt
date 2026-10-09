@@ -7,3 +7,4 @@ PyJWT==2.10.1
 minio==7.2.15
 httpx==0.28.1
 redis==5.2.1
+Pillow==11.1.0

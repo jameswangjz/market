@@ -202,6 +202,8 @@ const emptyProductVersion = () => ({
   rate_limit_per_minute: 60,
   daily_quota: 10000,
   monthly_quota: 0,
+  quota_unit: "",
+  quota_amount: 0,
   status: "active",
 });
 const emptyProductForm = () => ({
@@ -213,6 +215,11 @@ const emptyProductForm = () => ({
   description: "",
   usage_scenarios: "",
   delivery_method: "file",
+  upstream_url: "",
+  application_url: "",
+  integration_api_url: "",
+  download_limit: 0,
+  logo_file_id: "",
   pricing_strategy: "",
   versions: [emptyProductVersion()],
   quality_level: "标准",
@@ -975,13 +982,29 @@ async function copyApiCredential() {
 }
 async function createProduct() {
   try {
-    await api.post("/products", {
+    const { data } = await api.post("/products", {
       ...productForm.value,
       catalog_name:
         productForm.value.catalog_name ||
         productDirectories.value[0]?.value ||
         "未分类",
     });
+    if (productForm.value.logoFile) {
+      const form = new FormData();
+      form.append("upload", productForm.value.logoFile);
+      form.append("product_id", data.id);
+      form.append("file_role", "product_logo");
+      const uploaded = await api.post("/files/upload", form);
+      await api.put(`/products/${data.id}`, { ...productForm.value, logo_file_id: uploaded.data.id, logoFile: undefined });
+    }
+    if (productForm.value.fileUpload) {
+      const form = new FormData();
+      form.append("upload", productForm.value.fileUpload);
+      form.append("product_id", data.id);
+      form.append("file_role", "product_data");
+      form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
+      await api.post("/files/upload", form);
+    }
     showProductForm.value = false;
     productForm.value = {
       ...emptyProductForm(),
@@ -1012,15 +1035,34 @@ function openProductDetail(product) {
     ...product,
     versions: product.versions?.length ? product.versions : [emptyProductVersion()],
   }));
+  productForm.value.logoFile = null;
   showProductForm.value = true;
 }
 async function saveProductEdit() {
   if (!selectedProductId.value || productReadOnlyMode.value) return;
   try {
-    await api.put(`/products/${selectedProductId.value}`, {
+    const payload = {
       ...productForm.value,
       catalog_name: productForm.value.catalog_name || "未分类",
-    });
+      logoFile: undefined,
+    };
+    if (productForm.value.logoFile) {
+      const form = new FormData();
+      form.append("upload", productForm.value.logoFile);
+      form.append("product_id", selectedProductId.value);
+      form.append("file_role", "product_logo");
+      const uploaded = await api.post("/files/upload", form);
+      payload.logo_file_id = uploaded.data.id;
+    }
+    if (productForm.value.fileUpload) {
+      const form = new FormData();
+      form.append("upload", productForm.value.fileUpload);
+      form.append("product_id", selectedProductId.value);
+      form.append("file_role", "product_data");
+      form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
+      await api.post("/files/upload", form);
+    }
+    await api.put(`/products/${selectedProductId.value}`, payload);
     showProductForm.value = false;
     notify("产品信息已保存");
     await loadViewData("products");
@@ -1050,6 +1092,10 @@ async function productAction(product, action) {
       const reason = window.prompt("请输入下架原因", "产品提供方主动下架");
       if (!reason) return;
       await api.post(`/products/${product.id}/unpublish`, { reason });
+    } else if (action === "withdraw") {
+      const reason = window.prompt("请输入撤回原因", "企业管理员撤回审核");
+      if (!reason) return;
+      await api.post(`/products/${product.id}/withdraw`, { reason });
     } else if (action === "security_check") {
       const { data } = await api.post(`/products/${product.id}/security-check`);
       notify(data.unpublished ? "安全策略检查发现问题，产品已自动下架" : "安全策略检查通过");
@@ -2275,6 +2321,12 @@ onUnmounted(() => {
                         >
                           驳回</button
                         ><button
+                          v-if="product.status === 'pending_review' && (['super_admin', 'enterprise_admin'].includes(user?.enterprise_role) || ['super_admin', 'platform_operator'].includes(user?.platform_role))"
+                          class="text-btn"
+                          @click="productAction(product, 'withdraw')"
+                        >
+                          撤回</button
+                        ><button
                           v-if="product.status === 'published' && (['super_admin', 'platform_operator'].includes(user?.platform_role) || ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role))"
                           class="text-btn danger-text"
                           @click="productAction(product, 'unpublish')"
@@ -3453,7 +3505,6 @@ onUnmounted(() => {
           <label
             >交付方式<select v-model="productForm.delivery_method">
               <option value="file">文件下载</option>
-              <option value="object_storage">对象存储交付</option>
               <option value="api">API 服务</option>
               <option value="model_api">模型 API</option>
               <option value="tenant_access">租户/权限开通</option>
@@ -3462,6 +3513,21 @@ onUnmounted(() => {
               <option value="custom">定制开发</option>
             </select></label
           >
+        </div>
+        <div v-if="productForm.delivery_method === 'file'" class="form-grid">
+          <label>数据文件（压缩包）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz" @change="productForm.fileUpload = $event.target.files[0]" /></label>
+          <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
+        </div>
+        <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
+          <label class="wide">提供方后端访问URL<input v-model="productForm.upstream_url" type="url" required placeholder="https://provider.example.com/api" /></label>
+        </div>
+        <div v-if="productForm.delivery_method === 'tenant_access'" class="form-grid">
+          <label>应用访问URL<input v-model="productForm.application_url" type="url" required /></label>
+          <label>租户/权限开通API URL<input v-model="productForm.integration_api_url" type="url" required /></label>
+        </div>
+        <div class="form-grid">
+          <label>产品Logo（380×280）<input type="file" accept="image/*,.svg" @change="productForm.logoFile = $event.target.files[0]" /></label>
+          <label>Logo说明<small class="muted">支持SVG及常见图片格式，提交后执行尺寸和安全校验。</small></label>
         </div>
         <div class="version-editor">
           <div class="version-editor-head">
@@ -3501,6 +3567,10 @@ onUnmounted(() => {
               >每日配额<input v-model.number="version.daily_quota" type="number" min="1" required /></label
             ><label v-if="productForm.product_type === 'api'" title="0 表示不单独限制月配额"
               >每月配额<input v-model.number="version.monthly_quota" type="number" min="0" /></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
+              额度单位<select v-model="version.quota_unit"><option value="1000">千次</option><option value="10000">万次</option></select></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
+              购买额度<input v-model.number="version.quota_amount" type="number" min="0" step="1" /></label
             ><label class="version-description"
               >版本简要介绍<textarea
                 v-model="version.description"

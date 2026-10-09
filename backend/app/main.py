@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
@@ -196,6 +197,11 @@ class Product(Base):
     usage_scenarios: Mapped[str] = mapped_column(Text, default="", nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
     delivery_method: Mapped[str] = mapped_column(String(80), default="file")
+    upstream_url: Mapped[str] = mapped_column(String(500), default="")
+    application_url: Mapped[str] = mapped_column(String(500), default="")
+    integration_api_url: Mapped[str] = mapped_column(String(500), default="")
+    download_limit: Mapped[int] = mapped_column(Integer, default=0)
+    logo_file_id: Mapped[str] = mapped_column(String(36), default="")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     pricing_strategy: Mapped[str] = mapped_column(Text, default="", nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="CNY")
@@ -228,6 +234,8 @@ class ProductReleaseVersion(Base):
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
     daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
+    quota_unit: Mapped[str] = mapped_column(String(20), default="")
+    quota_amount: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -963,6 +971,11 @@ class ProductBody(BaseModel):
     description: str = ""
     usage_scenarios: str = ""
     delivery_method: str = "file"
+    upstream_url: str = ""
+    application_url: str = ""
+    integration_api_url: str = ""
+    download_limit: int = Field(default=0, ge=0)
+    logo_file_id: str = ""
     price: float = 0
     pricing_strategy: str = ""
     version: str = "v1.0"
@@ -985,6 +998,8 @@ class ProductVersionBody(BaseModel):
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
     daily_quota: int = Field(default=10000, ge=1, le=100000000)
     monthly_quota: int = Field(default=0, ge=0, le=3000000000)
+    quota_unit: str = ""
+    quota_amount: int = Field(default=0, ge=0, le=3000000000)
     status: str = "active"
 
 
@@ -1530,6 +1545,11 @@ def ensure_product_metadata_schema():
         "authorization_conditions": "TEXT",
         "data_source_statement": "TEXT",
         "compliance_statement": "TEXT",
+        "upstream_url": "VARCHAR(500) DEFAULT ''",
+        "application_url": "VARCHAR(500) DEFAULT ''",
+        "integration_api_url": "VARCHAR(500) DEFAULT ''",
+        "download_limit": "INTEGER DEFAULT 0",
+        "logo_file_id": "VARCHAR(36) DEFAULT ''",
     }
     with engine.begin() as connection:
         if engine.dialect.name == "sqlite":
@@ -1613,6 +1633,8 @@ def ensure_review_and_file_schema():
         },
         "product_release_versions": {
             "cost": "NUMERIC(14,2) DEFAULT 0",
+            "quota_unit": "VARCHAR(20) DEFAULT ''",
+            "quota_amount": "INTEGER DEFAULT 0",
         },
         "saas_product_versions": {
             "cost": "NUMERIC(14,2) DEFAULT 0",
@@ -2520,8 +2542,8 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "quota_unit": x.quota_unit or "", "quota_amount": x.quota_amount or 0, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
@@ -2738,6 +2760,23 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
     product.status = "pending_review"
     product.review_comment = ""
     audit(db, user.email, "submit_product_review", "product", product.id)
+    db.commit()
+    return product_out(product)
+
+
+@app.post("/api/products/{product_id}/withdraw")
+def withdraw_product(product_id: str, body: ProductUnpublishBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        require_enterprise_admin(db, user, product.enterprise_id)
+    if product.status != "pending_review":
+        raise HTTPException(409, "只有待审核产品可以撤回")
+    before = {"status": product.status, "review_comment": product.review_comment or ""}
+    product.status = "draft"
+    product.review_comment = body.reason.strip()
+    product.reviewed_by = user.email or user.phone or user.id
+    product.reviewed_at = now()
+    audit(db, user.email or user.phone or user.id, "withdraw_product_review", "product", product.id, body.reason.strip(), before=before, after={"status": product.status, "review_comment": product.review_comment})
     db.commit()
     return product_out(product)
 
@@ -5244,6 +5283,29 @@ def upload_file(
     if product_id:
         product_for_enterprise(product_id, user, db)
     content = upload.file.read()
+    if file_role == "product_data":
+        allowed = (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz")
+        if not (upload.filename or "").lower().endswith(allowed):
+            raise HTTPException(400, "数据文件仅支持 zip、tar、tar.gz、tgz、bz2 或 xz 压缩格式")
+        if len(content) >= 10 * 1024 * 1024 * 1024:
+            raise HTTPException(413, "数据文件必须小于10GB")
+    if file_role == "product_logo":
+        name = (upload.filename or "").lower()
+        if not (name.endswith(".svg") or (upload.content_type or "").startswith("image/")):
+            raise HTTPException(400, "Logo仅支持SVG和图片格式")
+        if name.endswith(".svg"):
+            svg_text = content.decode("utf-8", errors="ignore").lower()
+            if "<script" in svg_text or "javascript:" in svg_text or "external" in svg_text or re.search(r"\son[a-z]+\s*=", svg_text):
+                raise HTTPException(400, "SVG包含脚本、外部资源或事件属性，无法上传")
+        else:
+            try:
+                with Image.open(BytesIO(content)) as image:
+                    if image.size != (380, 280):
+                        raise HTTPException(400, "Logo图片尺寸必须为380×280")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(400, "Logo图片无法解析") from exc
     object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{upload.filename}"
     if MINIO_ENDPOINT:
         client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
