@@ -349,6 +349,9 @@ function fmtDate(value) {
     ? new Date(value).toLocaleString("zh-CN", { hour12: false })
     : "-";
 }
+const presidioEntityLabels = { PERSON: "个人姓名", PHONE_NUMBER: "电话号码", EMAIL_ADDRESS: "邮箱地址", LOCATION: "地理位置", ORGANIZATION: "组织机构", CREDIT_CARD: "银行卡/信用卡号", IBAN_CODE: "银行账户", IP_ADDRESS: "IP地址", URL: "网址" };
+function presidioEntityLabel(value) { return presidioEntityLabels[value] || value || "敏感信息"; }
+function presidioScore(value) { return value === undefined || value === null ? "-" : `${(Number(value) * 100).toFixed(1)}%`; }
 function label(value) {
   return statusLabels[value] || value;
 }
@@ -3824,8 +3827,8 @@ onUnmounted(() => {
       <section class="modal-card security-report-modal" @click.stop>
         <div class="drawer-head"><div><span class="eyebrow">FILE SCAN REPORT</span><h2>{{ fileReportViewer.reportType === 'clamav' ? '病毒扫描报告' : 'Presidio扫描报告' }}</h2></div><button type="button" class="icon-btn" @click="fileReportViewer = null"><X :size="19" /></button></div>
         <div class="state-grid"><div><small>文件名称</small><strong>{{ fileReportViewer.file.original_name }}</strong></div><div><small>文件大小</small><strong>{{ fileReportViewer.file.size }} bytes</strong></div><div><small>扫描工具</small><strong>{{ fileReportViewer.reportType === 'clamav' ? 'ClamAV' : 'Presidio' }}</strong></div><div v-if="fileReportViewer.reportType === 'clamav'"><small>病毒引擎版本</small><strong>{{ fileReportViewer.file.clamav_version || '未返回' }}</strong></div><div><small>扫描结论</small><strong>{{ fileReportViewer.reportType === 'clamav' ? (fileReportViewer.file.clamav_status === 'clean' ? '通过' : fileReportViewer.file.clamav_status) : (fileReportViewer.file.presidio_status === 'available' ? '完成' : fileReportViewer.file.presidio_status) }}</strong></div><div><small>扫描时间</small><strong>{{ fmtDate(fileReportViewer.file.scanned_at) }}</strong></div></div>
-        <div class="drawer-section"><div class="drawer-section-title">扫描详情</div><pre class="scan-report-detail">{{ fileReportViewer.reportType === 'clamav' ? fileReportViewer.file.clamav_report : JSON.stringify(fileReportViewer.file.presidio_findings || [], null, 2) }}</pre></div>
-        <button class="primary-btn full-btn" @click="downloadProductFile(fileReportViewer.file, fileReportViewer.reportType)">下载{{ fileReportViewer.reportType === 'clamav' ? '病毒' : 'Presidio' }}报告</button>
+        <div class="drawer-section report-detail-scroll"><div class="drawer-section-title">扫描详情</div><pre v-if="fileReportViewer.reportType === 'clamav'" class="scan-report-detail">{{ fileReportViewer.file.clamav_report }}</pre><div v-else-if="fileReportViewer.file.presidio_findings?.length" class="presidio-finding-list"><article v-for="(finding, index) in fileReportViewer.file.presidio_findings" :key="`${finding.entity}-${index}`" class="presidio-finding-card"><div class="presidio-finding-head"><strong>{{ finding.entity_label || presidioEntityLabel(finding.entity) }}</strong><span>置信度 {{ presidioScore(finding.score) }}</span></div><p>{{ finding.message || `检测到${presidioEntityLabel(finding.entity)}` }}</p><div><small>命中内容</small><code>{{ finding.matched_text || '未提取到具体内容' }}</code></div><div><small>所在行 {{ finding.line_number || '-' }}</small><span class="presidio-line-content">{{ finding.line_content || '-' }}</span></div></article></div><p v-else class="muted">未发现Presidio敏感信息。</p></div>
+        <div class="security-report-actions"><button class="primary-btn full-btn" @click="downloadProductFile(fileReportViewer.file, fileReportViewer.reportType)">下载{{ fileReportViewer.reportType === 'clamav' ? '病毒' : 'Presidio' }}报告</button></div>
       </section>
     </div>
     <div v-if="securityReport" class="modal-scrim" @click="securityReport = null">

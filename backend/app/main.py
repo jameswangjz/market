@@ -3181,7 +3181,41 @@ def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
         response = httpx.post(url, json={"text": text_value[:200000], "language": "en"}, timeout=30)
         response.raise_for_status()
         items = response.json()
-        return [{"entity": item.get("entity_type", "UNKNOWN"), "score": item.get("score", 0), "start": item.get("start"), "end": item.get("end"), "source": "presidio"} for item in items if isinstance(item, dict)], "available"
+        entity_labels = {
+            "PERSON": "个人姓名",
+            "PHONE_NUMBER": "电话号码",
+            "EMAIL_ADDRESS": "邮箱地址",
+            "LOCATION": "地理位置",
+            "ORGANIZATION": "组织机构",
+            "CREDIT_CARD": "银行卡/信用卡号",
+            "IBAN_CODE": "银行账户",
+            "IP_ADDRESS": "IP地址",
+            "URL": "网址",
+        }
+        findings = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            entity = item.get("entity_type", "UNKNOWN")
+            start = int(item.get("start") or 0)
+            end = int(item.get("end") or start)
+            matched = text_value[start:end].replace("\n", " ").strip()
+            line_start = text_value.rfind("\n", 0, start) + 1
+            line_end = text_value.find("\n", end)
+            if line_end < 0:
+                line_end = len(text_value)
+            line_content = text_value[line_start:line_end].strip()
+            findings.append({
+                "entity": entity,
+                "entity_label": entity_labels.get(entity, entity),
+                "score": item.get("score", 0),
+                "matched_text": matched[:240],
+                "line_number": text_value.count("\n", 0, start) + 1,
+                "line_content": line_content[:1000],
+                "message": f"检测到{entity_labels.get(entity, entity)}：{matched[:240] or '未提取到具体内容'}",
+                "source": "presidio",
+            })
+        return findings, "available"
     except (httpx.HTTPError, ValueError) as exc:
         return [{"entity": "PRESIDIO_UNAVAILABLE", "severity": "medium", "message": str(exc)[:240], "source": "platform"}], "unavailable"
 
