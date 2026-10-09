@@ -62,6 +62,23 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def membership_department_ids(db: Session, membership: Membership) -> list[str]:
+    links = db.scalars(select(MembershipDepartment).where(MembershipDepartment.membership_id == membership.id)).all()
+    ids = [item.department_id for item in links]
+    if membership.department_id and membership.department_id not in ids:
+        ids.insert(0, membership.department_id)
+    return ids
+
+
+def replace_membership_departments(db: Session, membership: Membership, department_ids: list[str]) -> None:
+    normalized = list(dict.fromkeys(item for item in department_ids if item))
+    for link in db.scalars(select(MembershipDepartment).where(MembershipDepartment.membership_id == membership.id)).all():
+        db.delete(link)
+    for department_id in normalized:
+        db.add(MembershipDepartment(membership_id=membership.id, department_id=department_id))
+    membership.department_id = normalized[0] if normalized else ""
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -112,6 +129,14 @@ class Membership(Base):
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     invited_by: Mapped[str] = mapped_column(String(36), default="")
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MembershipDepartment(Base):
+    __tablename__ = "membership_departments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    membership_id: Mapped[str] = mapped_column(ForeignKey("memberships.id"), index=True)
+    department_id: Mapped[str] = mapped_column(ForeignKey("enterprise_departments.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -973,6 +998,7 @@ class EnterpriseVerificationBody(BaseModel):
 class InviteMemberBody(BaseModel):
     target: str
     department_id: str = ""
+    department_ids: list[str] = []
     channel: str = ""
 
 
@@ -988,6 +1014,7 @@ class EnterpriseDepartmentBody(BaseModel):
 
 class MemberDepartmentBody(BaseModel):
     department_id: str = ""
+    department_ids: list[str] = []
 
 
 class MembershipStatusBody(BaseModel):
@@ -1500,6 +1527,14 @@ def ensure_platform_role_accounts(db: Session):
     for account in db.scalars(select(User).where(User.platform_role != "")).all():
         for membership in db.scalars(select(Membership).where(Membership.user_id == account.id)).all():
             db.delete(membership)
+    # Invitations create membership immediately. Normalize legacy rows created
+    # with the old pending_activation membership state.
+    for membership in db.scalars(select(Membership).where(Membership.status == "pending_activation")).all():
+        invitee = db.get(User, membership.user_id)
+        membership.status = "active" if invitee and invitee.is_active and invitee.activation_status != "deleted" else "expired"
+    for membership in db.scalars(select(Membership).where(Membership.department_id != "")).all():
+        if not db.scalar(select(MembershipDepartment.id).where(MembershipDepartment.membership_id == membership.id, MembershipDepartment.department_id == membership.department_id)):
+            db.add(MembershipDepartment(membership_id=membership.id, department_id=membership.department_id))
 
 
 def make_order_no() -> str:
@@ -2396,8 +2431,11 @@ def review_enterprise_verification(enterprise_id: str, body: VerificationReviewB
 @app.post("/api/enterprise/invitations")
 def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id)
-    if body.department_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.department_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
-        raise HTTPException(404, "指定部门不存在")
+    department_ids = list(dict.fromkeys(body.department_ids or ([body.department_id] if body.department_id else [])))
+    if department_ids:
+        valid_department_ids = set(db.scalars(select(EnterpriseDepartment.id).where(EnterpriseDepartment.id.in_(department_ids), EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")).all())
+        if valid_department_ids != set(department_ids):
+            raise HTTPException(404, "指定部门不存在")
     target = body.target.strip().lower()
     invitee = db.scalar(select(User).where(or_(User.email == target, User.phone == target)))
     channel = body.channel if body.channel in {"sms", "email"} else ("email" if "@" in target else "sms")
@@ -2414,16 +2452,28 @@ def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str |
         created_user = True
     if invitee.platform_role:
         raise HTTPException(403, "平台角色账号不属于任何企业，不能被邀请加入企业")
-    existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
-    if existing:
+    existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == enterprise.id).order_by(Membership.created_at.desc()))
+    if existing and existing.status == "active":
         raise HTTPException(409, "用户已经加入该企业")
-    if created_user:
-        db.add(Membership(user_id=invitee.id, enterprise_id=enterprise.id, role="member", department_id=body.department_id, business_roles="provider,user", status="pending_activation", invited_by=user.id))
-    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, department_id=body.department_id, channel=channel, created_user=created_user, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=1))
+    if invitee.activation_status == "deleted" or not invitee.is_active:
+        raise HTTPException(400, "用户已被禁用或删除，不能邀请加入企业")
+    if existing:
+        existing.role = "member"
+        existing.department_id = body.department_id
+        existing.business_roles = existing.business_roles or "provider,user"
+        existing.status = "active"
+        existing.invited_by = user.id
+        existing.joined_at = now()
+    else:
+        existing = Membership(user_id=invitee.id, enterprise_id=enterprise.id, role="member", department_id="", business_roles="provider,user", status="active", invited_by=user.id, joined_at=now())
+        db.add(existing)
+        db.flush()
+    replace_membership_departments(db, existing, department_ids)
+    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, department_id=department_ids[0] if department_ids else "", channel=channel, created_user=created_user, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=1))
     db.add(invitation)
     audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
     db.commit()
-    delivery = "已有平台注册用户，请使用原账号登录后接受邀请"
+    delivery = "用户已加入企业，首次登录后账号激活"
     platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
     login_username = invitee.username or invitee.email or invitee.phone or target
     invitation_message = f"平台地址：{platform_url}\n用户名：{login_username}"
@@ -2452,6 +2502,9 @@ def enterprise_invitations(enterprise_id: str | None = None, user: User = Depend
                     invitee.is_active = False
                     invitee.temporary_password_hash = ""
                     invitee.temporary_password_expires_at = None
+                membership = db.scalar(select(Membership).where(Membership.user_id == invitation.invitee_id, Membership.enterprise_id == invitation.enterprise_id, Membership.status.in_(["active", "pending_activation"])))
+                if membership:
+                    membership.status = "expired"
     db.commit()
     return {"items": [{"id": x.id, "target": x.target, "department_id": x.department_id, "channel": x.channel, "created_user": x.created_user, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
 
@@ -2471,6 +2524,11 @@ def resend_enterprise_invitation(invitation_id: str, request: Request, user: Use
     invitee.temporary_password_expires_at = now() + timedelta(days=1)
     invitee.activation_status = "pending_activation"
     invitee.is_active = True
+    membership = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == invitation.enterprise_id).order_by(Membership.created_at.desc()))
+    if membership and membership.status in {"expired", "rejected", "pending_activation"}:
+        membership.status = "active"
+        membership.department_id = invitation.department_id
+        membership.joined_at = now()
     invitation.status = "pending"
     invitation.expires_at = now() + timedelta(days=1)
     request_platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
@@ -2520,7 +2578,7 @@ def reject_enterprise_invitation(invitation_id: str, user: User = Depends(curren
         invitation.status = "expired"
         db.commit()
         raise HTTPException(400, "邀请已过期")
-    pending_membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id, Membership.status == "pending_activation"))
+    pending_membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id, Membership.status.in_(["active", "pending_activation"])))
     if pending_membership:
         pending_membership.status = "rejected"
     invitation.status = "rejected"
@@ -2534,7 +2592,7 @@ def enterprise_members(enterprise_id: str | None = None, user: User = Depends(cu
     enterprise = enterprise_management_scope(db, user, enterprise_id) if enterprise_id else db.get(Enterprise, current_membership(db, user).enterprise_id)
     rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == enterprise.id, Membership.status.in_(["active", "pending_activation", "disabled", "deleted"]))).all()
     departments = {x.id: x.name for x in db.scalars(select(EnterpriseDepartment).where(EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")).all()}
-    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_name": departments.get(m.department_id, "未分配"), "business_roles": m.business_roles.split(","), "verified_status": u.verified_status, "activation_status": u.activation_status, "is_active": u.is_active, "membership_status": m.status, "account_status": "deleted" if u.activation_status == "deleted" else "disabled" if not u.is_active else "active"} for m, u in rows]}
+    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_ids": membership_department_ids(db, m), "department_name": "、".join(departments.get(department_id, "") for department_id in membership_department_ids(db, m) if departments.get(department_id)) or "未分配", "department_names": [departments[department_id] for department_id in membership_department_ids(db, m) if department_id in departments], "business_roles": m.business_roles.split(","), "verified_status": u.verified_status, "activation_status": u.activation_status, "is_active": u.is_active, "membership_status": m.status, "account_status": "deleted" if u.activation_status == "deleted" else "disabled" if not u.is_active else "active"} for m, u in rows]}
 
 
 @app.patch("/api/enterprise/members/{membership_id}")
@@ -2542,7 +2600,7 @@ def update_enterprise_member(membership_id: str, body: MembershipRoleBody, user:
     if body.role not in {"member", "enterprise_admin"}:
         raise HTTPException(400, "企业成员角色只能是 member 或 enterprise_admin")
     target = db.get(Membership, membership_id)
-    if not target or target.status != "active":
+    if not target or target.status not in {"active", "pending_activation"}:
         raise HTTPException(404, "企业成员不存在")
     target_user = db.get(User, target.user_id)
     if target_user and target_user.platform_role:
@@ -2617,8 +2675,8 @@ def transfer_enterprise_super_admin(enterprise_id: str, body: TransferSuperAdmin
     if target.user_id == user.id:
         raise HTTPException(400, "不能将企业超级管理员转移给当前用户")
     target_user = db.get(User, target.user_id)
-    if not target_user or target_user.platform_role or not target_user.is_active or target_user.activation_status == "deleted":
-        raise HTTPException(400, "目标用户已被禁用、删除或属于平台角色，不能成为企业超级管理员")
+    if not target_user or target_user.platform_role or not target_user.is_active or target_user.activation_status == "deleted" or target_user.verified_status != "verified":
+        raise HTTPException(400, "目标用户必须是已实名且未被禁用、删除的企业成员，不能是平台角色账号")
     if target.role == "super_admin":
         raise HTTPException(409, "该用户已经是企业超级管理员")
     enterprise = db.get(Enterprise, enterprise_id)
@@ -2682,7 +2740,7 @@ def delete_enterprise_department(department_id: str, user: User = Depends(curren
         raise HTTPException(404, "部门不存在")
     if db.scalar(select(EnterpriseDepartment.id).where(EnterpriseDepartment.parent_id == department_id, EnterpriseDepartment.enterprise_id == item.enterprise_id, EnterpriseDepartment.status == "active")):
         raise HTTPException(409, "部门存在子部门，请先迁移或删除子部门")
-    if db.scalar(select(Membership.id).where(Membership.enterprise_id == item.enterprise_id, Membership.department_id == department_id, Membership.status == "active")):
+    if db.scalar(select(Membership.id).where(Membership.enterprise_id == item.enterprise_id, Membership.department_id == department_id, Membership.status == "active")) or db.scalar(select(MembershipDepartment.id).join(Membership, Membership.id == MembershipDepartment.membership_id).where(Membership.enterprise_id == item.enterprise_id, MembershipDepartment.department_id == department_id, Membership.status == "active")):
         raise HTTPException(409, "部门存在成员，请先调整成员部门")
     item.status = "deleted"
     audit(db, user.email or user.phone or user.id, "delete_enterprise_department", "enterprise_department", item.id, item.name, category="auth", business_domain="enterprise")
@@ -2693,15 +2751,18 @@ def delete_enterprise_department(department_id: str, user: User = Depends(curren
 @app.patch("/api/enterprise/members/{membership_id}/department")
 def update_member_department(membership_id: str, body: MemberDepartmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     target = db.get(Membership, membership_id)
-    if not target or target.status != "active":
+    if not target or target.status not in {"active", "pending_activation"}:
         raise HTTPException(404, "企业成员不存在")
     enterprise = enterprise_management_scope(db, user, target.enterprise_id)
-    if body.department_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.department_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
-        raise HTTPException(404, "部门不存在")
-    target.department_id = body.department_id
-    audit(db, user.email or user.phone or user.id, "update_enterprise_member_department", "membership", target.id, body.department_id or "未分配", category="auth", business_domain="enterprise")
+    department_ids = list(dict.fromkeys(body.department_ids or ([body.department_id] if body.department_id else [])))
+    if department_ids:
+        valid_department_ids = set(db.scalars(select(EnterpriseDepartment.id).where(EnterpriseDepartment.id.in_(department_ids), EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")).all())
+        if valid_department_ids != set(department_ids):
+            raise HTTPException(404, "部门不存在")
+    replace_membership_departments(db, target, department_ids)
+    audit(db, user.email or user.phone or user.id, "update_enterprise_member_department", "membership", target.id, "、".join(department_ids) or "未分配", category="auth", business_domain="enterprise")
     db.commit()
-    return {"membership_id": target.id, "department_id": target.department_id}
+    return {"membership_id": target.id, "department_id": target.department_id, "department_ids": department_ids}
 
 
 @app.get("/api/admin/settings/notifications")
