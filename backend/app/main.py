@@ -5070,8 +5070,19 @@ def export_settlement_report(status: str | None = None, start: str | None = None
 
 
 @app.get("/api/audit-logs")
-def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: datetime | None = None, end: datetime | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_audit_viewer(user)
+    def parse_filter_date(value: str | None, field: str) -> datetime | None:
+        if not value or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"{field}必须是有效的ISO日期时间") from exc
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    start_at = parse_filter_date(start, "start")
+    end_at = parse_filter_date(end, "end")
     stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
     filters = []
     if category:
@@ -5089,10 +5100,10 @@ def audit_logs(category: str | None = None, q: str | None = None, actor: str | N
         filters.append(AuditLog.rule_version == rule_version)
     if risk_level:
         filters.append(AuditLog.risk_level == risk_level)
-    if start:
-        filters.append(AuditLog.created_at >= start)
-    if end:
-        filters.append(AuditLog.created_at <= end)
+    if start_at:
+        filters.append(AuditLog.created_at >= start_at)
+    if end_at:
+        filters.append(AuditLog.created_at <= end_at)
     stmt = stmt.where(*filters)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     items = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()
