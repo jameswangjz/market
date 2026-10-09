@@ -68,6 +68,13 @@
 .settlement-adjust-grid label input { width: 100%; }
 .settlement-adjust-grid label strong { text-align: right; color: #172033; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal-scrim,.drawer-scrim{background:rgba(29,33,41,.56);backdrop-filter:blur(3px)}
+.modal-card{border:1px solid #e5e6eb;border-top:3px solid #ff6a00;border-radius:12px;box-shadow:0 24px 60px rgba(29,33,41,.22);overflow:auto}
+.modal-card .drawer-head{padding-bottom:18px;border-bottom:1px solid #f0f1f3;margin-bottom:20px}
+.modal-card .drawer-head h2{font-size:20px;line-height:1.35;margin-top:6px}
+.modal-card .drawer-head .eyebrow{color:#ff6a00}
+.modal-card .modal-actions{padding-top:16px;border-top:1px solid #f0f1f3}
+.modal-card .panel-heading{margin-bottom:14px}
 .verification-review-modal { width: min(820px, calc(100% - 32px)); max-height: 92vh; overflow: auto; }
 .identity-review-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
 .identity-review-images.single { grid-template-columns: minmax(0, 360px); }
