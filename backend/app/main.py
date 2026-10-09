@@ -2860,6 +2860,9 @@ def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.in
         client.status = "active"
         existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if existing_saas:
+            existing_saas.client_id = client.client_id
+            existing_saas.client_secret = client.client_secret
+            existing_saas.scope = client.scope
             existing_saas.token_url = platform_oauth_token_url()
             existing_saas.auth_mode = "oauth2"
         return client
@@ -2872,6 +2875,7 @@ def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.in
     if existing_saas:
         existing_saas.client_id = client_id
         existing_saas.client_secret = client_secret
+        existing_saas.scope = client.scope
         existing_saas.token_url = platform_oauth_token_url()
         existing_saas.auth_mode = "oauth2"
     return client
