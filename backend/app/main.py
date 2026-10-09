@@ -11,6 +11,7 @@ import smtplib
 import socket
 import ssl
 import struct
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -3202,7 +3203,7 @@ def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
 def read_product_sample(file_item: FileObject, raw_content: bytes | None = None) -> str:
     if not MINIO_ENDPOINT or file_item.size <= 0:
         return ""
-    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz"))):
+    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz", ".rar", ".7z"))):
         return ""
     response = None
     temp_path = None
@@ -3246,6 +3247,37 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
                     if handle:
                         text_parts.append(handle.read(2_000_000).decode("utf-8", errors="ignore"))
                 return "\n".join(text_parts)
+        if name.endswith((".rar", ".7z")):
+            archive_path = temp_path
+            temporary_archive = None
+            if not archive_path:
+                with tempfile.NamedTemporaryFile(prefix="market-presidio-", suffix=os.path.splitext(name)[1], delete=False) as handle:
+                    temporary_archive = handle.name
+                    handle.write(sample)
+                archive_path = temporary_archive
+            try:
+                with tempfile.TemporaryDirectory(prefix="market-presidio-extract-") as extract_dir:
+                    result = subprocess.run(["7z", "x", "-y", f"-o{extract_dir}", archive_path], capture_output=True, text=True, timeout=120)
+                    if result.returncode not in {0, 1}:
+                        return ""
+                    text_parts = []
+                    for root, _, names in os.walk(extract_dir):
+                        for entry_name in names:
+                            if not entry_name.lower().endswith((".txt", ".csv", ".json", ".xml")):
+                                continue
+                            with open(os.path.join(root, entry_name), "rb") as handle:
+                                text_parts.append(handle.read(2_000_000).decode("utf-8", errors="ignore"))
+                            if len(text_parts) >= 50:
+                                break
+                        if len(text_parts) >= 50:
+                            break
+                    return "\n".join(text_parts)
+            finally:
+                if temporary_archive:
+                    try:
+                        os.unlink(temporary_archive)
+                    except OSError:
+                        pass
         return sample.decode("utf-8", errors="ignore")
     finally:
         if response is not None:
