@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 import httpx
 import jwt
+import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -3341,6 +3342,10 @@ def apisix_native_upstream() -> bool:
     return os.getenv("APISIX_NATIVE_UPSTREAM", "false").lower() == "true"
 
 
+def apisix_policy_redis():
+    return redis.Redis.from_url(os.getenv("REDIS_URL", "redis://market-redis:6379/0"), decode_responses=True)
+
+
 def apisix_admin_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     base_url = os.getenv("APISIX_ADMIN_URL", "http://market-apisix-admin:9180/apisix/admin").rstrip("/")
     admin_key = os.getenv("APISIX_ADMIN_KEY", "")
@@ -3367,6 +3372,7 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     plugins = {
         "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
         "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "consumer_name" if apisix_native_auth() else "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2},
+        "market-gateway-quota": {"route_key": route.route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "lookup_consumer": True},
     }
     if apisix_native_auth():
         plugins["key-auth"] = {"header": "X-API-Key", "query": "api_key"}
@@ -3400,6 +3406,10 @@ def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, 
     daily_quota = credential.daily_quota if credential.daily_quota is not None else (route.daily_quota if route else 0)
     monthly_quota = credential.monthly_quota if credential.monthly_quota is not None else (route.monthly_quota if route else 0)
     apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}, "market-gateway-quota": {"route_key": route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "total_quota": credential.total_quota or 0}}})
+    try:
+        apisix_policy_redis().hset(f"market:apisix:credential:{credential.apisix_consumer_name}", mapping={"status": credential.status, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "total_quota": credential.total_quota or 0})
+    except redis.RedisError as exc:
+        raise RuntimeError(f"API 凭据策略缓存同步失败：{exc}") from exc
     return True
 
 

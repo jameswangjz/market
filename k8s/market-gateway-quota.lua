@@ -8,6 +8,7 @@ local schema = {
         daily_quota = {type = "integer", minimum = 0},
         monthly_quota = {type = "integer", minimum = 0},
         total_quota = {type = "integer", minimum = 0},
+        lookup_consumer = {type = "boolean", default = false},
     },
 }
 
@@ -56,6 +57,23 @@ function _M.access(conf, ctx)
     end
     red:select(0)
     local route = conf.route_key or "unknown"
+    local daily_limit = conf.daily_quota or 0
+    local monthly_limit = conf.monthly_quota or 0
+    local total_limit = conf.total_quota or 0
+    if conf.lookup_consumer and consumer ~= "" then
+        local metadata = red:hgetall("market:apisix:credential:" .. consumer)
+        if metadata and #metadata > 0 then
+            local values = {}
+            for i = 1, #metadata, 2 do values[metadata[i]] = metadata[i + 1] end
+            if values.status and values.status ~= "active" then
+                red:set_keepalive(60000, 100)
+                return reject(403, "订单 API 访问凭据已回收")
+            end
+            daily_limit = tonumber(values.daily_quota) or daily_limit
+            monthly_limit = tonumber(values.monthly_quota) or monthly_limit
+            total_limit = tonumber(values.total_quota) or total_limit
+        end
+    end
     local date = os.date("!%Y-%m-%d")
     local month = os.date("!%Y-%m")
     local result = red:eval(quota_script, 4,
@@ -63,16 +81,16 @@ function _M.access(conf, ctx)
         "market:apisix:quota:day:" .. route .. ":" .. consumer .. ":" .. date,
         "market:apisix:quota:month:" .. route .. ":" .. consumer .. ":" .. month,
         "market:apisix:quota:total:" .. route .. ":" .. consumer,
-        70, 86400, 2678400, 31536000, conf.daily_quota or 0, conf.monthly_quota or 0, conf.total_quota or 0)
+        70, 86400, 2678400, 31536000, daily_limit, monthly_limit, total_limit)
     red:set_keepalive(60000, 100)
     if not result then
         return reject(503, "API 网关配额服务不可用")
     end
     if tonumber(result[1]) ~= 1 then
-        if conf.total_quota and conf.total_quota > 0 and tonumber(result[4]) >= conf.total_quota then
+        if total_limit > 0 and tonumber(result[4]) >= total_limit then
             return reject(403, "订单 API 调用额度已耗尽，访问凭据已回收")
         end
-        if conf.daily_quota and conf.daily_quota > 0 and tonumber(result[2]) > conf.daily_quota then
+        if daily_limit > 0 and tonumber(result[2]) > daily_limit then
             return reject(429, "超过 API 每日调用配额")
         end
         return reject(429, "超过 API 每月调用配额")
