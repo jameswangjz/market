@@ -608,10 +608,10 @@ async function assignServiceLevel() {
 }
 async function inviteEnterpriseMember() {
   if (!inviteTarget.value.trim()) return notify("请输入已注册用户的邮箱或手机号");
-  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim(), department_id: inviteDepartmentId.value, channel: inviteChannel.value }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(data.temporary_password ? `邀请已创建，临时密码：${data.temporary_password}` : "邀请已创建"); inviteTarget.value = ""; inviteDepartmentId.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
+  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim(), department_id: inviteDepartmentId.value, channel: inviteChannel.value }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(data.invitation_message ? `邀请已创建\n${data.invitation_message}` : "邀请已创建"); inviteTarget.value = ""; inviteDepartmentId.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
 }
 async function resendEnterpriseInvitation(item) {
-  try { const { data } = await api.post(`/enterprise/invitations/${item.id}/resend`); notify(`邀请已重新发送，临时密码：${data.temporary_password}`); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "重新邀请失败"); }
+  try { const { data } = await api.post(`/enterprise/invitations/${item.id}/resend`); notify(data.invitation_message ? `邀请已重新发送\n${data.invitation_message}` : "邀请已重新发送"); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "重新邀请失败"); }
 }
 async function acceptEnterpriseInvitation(item) {
   try { await api.post(`/enterprise/invitations/${item.token}/accept`); notify(`已加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "接受邀请失败"); }

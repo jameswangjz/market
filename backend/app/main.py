@@ -1960,7 +1960,7 @@ def send_activation_email(db: Session, recipient: str, activation_url: str) -> t
         return False, str(exc)[:240]
 
 
-def send_invitation_email(db: Session, recipient: str, enterprise_name: str, temp_password: str, expires_at: datetime) -> tuple[bool, str]:
+def send_invitation_email(db: Session, recipient: str, enterprise_name: str, login_username: str, temp_password: str, expires_at: datetime, platform_url: str) -> tuple[bool, str]:
     values = {item.setting_key: item.setting_value for item in db.scalars(select(SystemSetting)).all()}
     host = values.get("smtp_host", "").strip()
     username = values.get("smtp_username", "").strip()
@@ -1972,7 +1972,8 @@ def send_invitation_email(db: Session, recipient: str, enterprise_name: str, tem
         message["Subject"] = f"您已被邀请加入企业：{enterprise_name}"
         message["From"] = f"{values.get('smtp_from_name', '数据集运营服务管理平台')} <{username}>"
         message["To"] = recipient
-        message.set_content(f"您已被邀请加入企业 {enterprise_name}。临时密码：{temp_password}。请在 {expires_at.strftime('%Y-%m-%d %H:%M:%S')} 前登录，首次登录后账号自动激活。")
+        message.set_content(f"您已被邀请加入企业 {enterprise_name}。\n\n平台地址：{platform_url}\n用户名：{login_username}\n临时密码：{temp_password}\n\n请在 {expires_at.strftime('%Y-%m-%d %H:%M:%S')} 前登录，首次登录后账号自动激活。")
+        message.add_alternative(f"""<html><body style=\"font-family:Arial,'Microsoft YaHei',sans-serif;color:#243044;line-height:1.7"><h2>您已被邀请加入企业：{enterprise_name}</h2><p>请使用以下信息登录数据集运营服务管理平台：</p><p><strong>平台地址：</strong>{platform_url}<br><strong>用户名：</strong>{login_username}<br><strong>临时密码：</strong>{temp_password}</p><p>请在 <strong>{expires_at.strftime('%Y-%m-%d %H:%M:%S')}</strong> 前完成首次登录。首次登录后账号将自动激活，并进入实名认证流程。</p><p style=\"color:#6b7280\">如非本人操作，请忽略此邮件。</p></body></html>""", subtype="html")
         port = int(values.get("smtp_port", "587"))
         use_ssl = values.get("smtp_ssl", "false") == "true"
         use_starttls = values.get("smtp_starttls", "true") == "true"
@@ -2238,7 +2239,7 @@ def review_enterprise_verification(enterprise_id: str, body: VerificationReviewB
 
 
 @app.post("/api/enterprise/invitations")
-def invite_member(body: InviteMemberBody, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id)
     if body.department_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.department_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
         raise HTTPException(404, "指定部门不存在")
@@ -2266,14 +2267,18 @@ def invite_member(body: InviteMemberBody, enterprise_id: str | None = None, user
     audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
     db.commit()
     delivery = "已有平台注册用户，请使用原账号登录后接受邀请"
+    platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    login_username = invitee.username or invitee.email or invitee.phone or target
+    invitation_message = f"平台地址：{platform_url}\n用户名：{login_username}"
     sent = False
     mail_error = ""
     if created_user and channel == "email":
-        sent, mail_error = send_invitation_email(db, target, enterprise.name, temp_password, invitation.expires_at)
+        sent, mail_error = send_invitation_email(db, target, enterprise.name, login_username, temp_password, invitation.expires_at, platform_url)
         delivery = "邀请邮件已发送" if sent else f"邮件未发送：{mail_error}"
     elif created_user:
-        delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
-    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery}
+        delivery = "开发环境短信发送接口已预留，邀请信息已生成"
+        invitation_message += f"\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery, "platform_url": platform_url, "login_username": login_username, "invitation_message": invitation_message}
 
 
 @app.get("/api/enterprise/invitations")
@@ -2295,7 +2300,7 @@ def enterprise_invitations(enterprise_id: str | None = None, user: User = Depend
 
 
 @app.post("/api/enterprise/invitations/{invitation_id}/resend")
-def resend_enterprise_invitation(invitation_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def resend_enterprise_invitation(invitation_id: str, request: Request, user: User = Depends(current_user), db: Session = Depends(db_session)):
     invitation = db.get(EnterpriseInvitation, invitation_id)
     if not invitation:
         raise HTTPException(404, "邀请不存在")
@@ -2311,13 +2316,15 @@ def resend_enterprise_invitation(invitation_id: str, user: User = Depends(curren
     invitee.is_active = True
     invitation.status = "pending"
     invitation.expires_at = now() + timedelta(days=1)
+    request_platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    login_username = invitee.username or invitee.email or invitee.phone or invitation.target
     delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
     if invitation.channel == "email":
-        sent, error = send_invitation_email(db, invitation.target, db.get(Enterprise, invitation.enterprise_id).name, temp_password, invitation.expires_at)
+        sent, error = send_invitation_email(db, invitation.target, db.get(Enterprise, invitation.enterprise_id).name, login_username, temp_password, invitation.expires_at, request_platform_url)
         delivery = "邀请邮件已发送" if sent else f"邮件未发送：{error}"
     audit(db, user.email or user.phone or user.id, "resend_enterprise_invitation", "enterprise_invitation", invitation.id, invitation.target)
     db.commit()
-    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password, "delivery": delivery}
+    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password, "delivery": delivery, "platform_url": request_platform_url, "login_username": login_username, "invitation_message": f"平台地址：{request_platform_url}\n用户名：{login_username}\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"}
 
 
 @app.get("/api/enterprise/my-invitations")
