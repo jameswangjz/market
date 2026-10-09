@@ -3203,7 +3203,7 @@ def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
 def read_product_sample(file_item: FileObject, raw_content: bytes | None = None) -> str:
     if not MINIO_ENDPOINT or file_item.size <= 0:
         return ""
-    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz", ".rar", ".7z"))):
+    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".jsonl", ".md", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz", ".rar", ".7z"))):
         return ""
     response = None
     temp_path = None
@@ -3232,7 +3232,7 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
             with zipfile.ZipFile(archive_source) as archive:
                 text_parts = []
                 for entry in archive.infolist()[:50]:
-                    if entry.is_dir() or not entry.filename.lower().endswith((".txt", ".csv", ".json", ".xml")):
+                    if entry.is_dir() or not entry.filename.lower().endswith((".txt", ".csv", ".json", ".jsonl", ".md", ".xml")):
                         continue
                     text_parts.append(archive.open(entry).read(2_000_000).decode("utf-8", errors="ignore"))
                 return "\n".join(text_parts)
@@ -3241,7 +3241,7 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
             with archive:
                 text_parts = []
                 for entry in archive.getmembers()[:50]:
-                    if not entry.isfile() or not entry.name.lower().endswith((".txt", ".csv", ".json", ".xml")):
+                    if not entry.isfile() or not entry.name.lower().endswith((".txt", ".csv", ".json", ".jsonl", ".md", ".xml")):
                         continue
                     handle = archive.extractfile(entry)
                     if handle:
@@ -3263,7 +3263,7 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
                     text_parts = []
                     for root, _, names in os.walk(extract_dir):
                         for entry_name in names:
-                            if not entry_name.lower().endswith((".txt", ".csv", ".json", ".xml")):
+                            if not entry_name.lower().endswith((".txt", ".csv", ".json", ".jsonl", ".md", ".xml")):
                                 continue
                             with open(os.path.join(root, entry_name), "rb") as handle:
                                 text_parts.append(handle.read(2_000_000).decode("utf-8", errors="ignore"))
