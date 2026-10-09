@@ -3172,6 +3172,11 @@ def clamav_version() -> str:
         return "unavailable"
 
 
+def presidio_version() -> str:
+    """Return the analyzer package version used by the in-cluster service."""
+    return os.getenv("PRESIDIO_VERSION", "2.2.364")
+
+
 def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
     """Call the in-cluster Presidio Analyzer; no data leaves Kubernetes."""
     if not text_value.strip():
@@ -5817,7 +5822,7 @@ def file_out(item: FileObject) -> dict[str, Any]:
         except Exception:
             pass
     findings = filter_presidio_dataset_false_positives(findings)
-    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": findings, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_version": presidio_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": findings, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
 
 
 def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
@@ -5844,16 +5849,33 @@ def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
     if report_type in {"combined", "clamav"}:
         lines.append("ClamAV detail: " + str(clamav_report))
     if report_type in {"combined", "presidio"}:
-        lines.extend([f"Presidio result: {presidio_status}", "Presidio findings: " + json.dumps(presidio_findings, ensure_ascii=True)[:1800]])
-    # Use the standard Adobe-GB1 CID font and UTF-16BE hex strings so Chinese
-    # filenames, conclusions, and findings remain readable without embedding a font.
-    encode_text = lambda value: str(value).encode("utf-16-be").hex().upper()
-    stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(f"<{encode_text(line)}> Tj T*" for line in lines) + " ET"
+        lines.extend([f"Presidio version: {presidio_version()}", f"Presidio result: {presidio_status}", "Presidio findings: " + json.dumps(presidio_findings, ensure_ascii=True)[:1800]])
+    # Keep the original Helvetica look for ASCII and switch only non-ASCII
+    # runs to the Adobe GB CID font so Chinese text remains readable.
+    def render_line(value: str) -> str:
+        runs = []
+        current = ""
+        current_ascii = None
+        for char in str(value):
+            is_ascii = ord(char) < 128
+            if current_ascii is not None and is_ascii != current_ascii:
+                encoded = current.encode("ascii").hex().upper() if current_ascii else current.encode("utf-16-be").hex().upper()
+                runs.append(f"/{'F1' if current_ascii else 'F2'} 9 Tf <{encoded}> Tj")
+                current = ""
+            current += char
+            current_ascii = is_ascii
+        if current:
+            encoded = current.encode("ascii").hex().upper() if current_ascii else current.encode("utf-16-be").hex().upper()
+            runs.append(f"/{'F1' if current_ascii else 'F2'} 9 Tf <{encoded}> Tj")
+        return " ".join(runs) + " T*"
+
+    stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(render_line(line) for line in lines) + " ET"
     objects = [
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [6 0 R] >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [7 0 R] >>",
         f"<< /Length {len(stream.encode('ascii'))} >>\nstream\n{stream}\nendstream",
         "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> /DW 1000 >>",
     ]
