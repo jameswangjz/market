@@ -1204,7 +1204,7 @@ function canReviewProduct(product) {
   if (role === "super_admin") return true;
   if (product.status === "pending_review") return ["product_manager", "business_reviewer"].includes(role);
   if (product.status === "quality_review") return role === "quality_reviewer";
-  if (product.status === "security_review") return ["security_compliance", "platform_operator"].includes(role);
+  if (product.status === "security_review") return ["super_admin", "security_compliance"].includes(role);
   if (product.status === "operation_review") return role === "platform_operator";
   return false;
 }
