@@ -2507,6 +2507,24 @@ def accept_enterprise_invitation(token: str, user: User = Depends(current_user),
     return {"status": invitation.status, "enterprise_id": invitation.enterprise_id, "role": "member"}
 
 
+@app.post("/api/enterprise/invitations/{invitation_id}/reject")
+def reject_enterprise_invitation(invitation_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    invitation = db.get(EnterpriseInvitation, invitation_id)
+    if not invitation or invitation.invitee_id != user.id or invitation.status != "pending":
+        raise HTTPException(400, "邀请不存在、已处理或已过期")
+    if invitation.expires_at <= now():
+        invitation.status = "expired"
+        db.commit()
+        raise HTTPException(400, "邀请已过期")
+    pending_membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id, Membership.status == "pending_activation"))
+    if pending_membership:
+        pending_membership.status = "rejected"
+    invitation.status = "rejected"
+    audit(db, user.email or user.phone or user.id, "reject_enterprise_invitation", "enterprise_invitation", invitation.id, "用户拒绝加入企业", category="auth", business_domain="enterprise", before={"status": "pending", "membership_status": "pending_activation" if pending_membership else "none"}, after={"status": "rejected", "membership_status": "rejected" if pending_membership else "none"})
+    db.commit()
+    return {"id": invitation.id, "status": invitation.status, "enterprise_id": invitation.enterprise_id}
+
+
 @app.get("/api/enterprise/members")
 def enterprise_members(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id) if enterprise_id else db.get(Enterprise, current_membership(db, user).enterprise_id)

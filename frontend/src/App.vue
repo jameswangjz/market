@@ -645,6 +645,10 @@ async function resendEnterpriseInvitation(item) {
 async function acceptEnterpriseInvitation(item) {
   try { await api.post(`/enterprise/invitations/${item.token}/accept`); notify(`已加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "接受邀请失败"); }
 }
+async function rejectEnterpriseInvitation(item) {
+  if (!window.confirm(`确认拒绝加入企业“${item.enterprise_name}”吗？`)) return;
+  try { await api.post(`/enterprise/invitations/${item.id}/reject`); notify(`已拒绝加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "拒绝邀请失败"); }
+}
 async function createDepartment() {
   if (!newDepartment.value.name.trim()) return notify("请输入部门名称");
   try { await api.post("/enterprise/departments", newDepartment.value, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify("部门已创建"); newDepartment.value = { name: "", code: "", parent_id: "" }; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "部门创建失败"); }
@@ -2893,7 +2897,7 @@ onUnmounted(() => {
               平台注册企业 {{ enterpriseItems.length }} 个
             </button>
           </div>
-          <div v-if="userEnterpriseTab === 'users' && myEnterpriseInvitations.length" class="panel received-invitations-panel"><div class="panel-heading"><div><span class="section-kicker">MY INVITATIONS</span><h3>待接受的企业邀请</h3></div><span class="muted">接受后默认加入为企业普通成员</span></div><div class="received-invitations"><div v-for="item in myEnterpriseInvitations" :key="item.id" class="received-invitation"><span>{{ item.enterprise_name }}</span><button class="text-btn" @click="acceptEnterpriseInvitation(item)">接受并加入</button></div></div></div>
+          <div v-if="userEnterpriseTab === 'users' && myEnterpriseInvitations.length" class="panel received-invitations-panel"><div class="panel-heading"><div><span class="section-kicker">MY INVITATIONS</span><h3>待接受的企业邀请</h3></div><span class="muted">接受后默认加入为企业普通成员</span></div><div class="received-invitations"><div v-for="item in myEnterpriseInvitations" :key="item.id" class="received-invitation"><span>{{ item.enterprise_name }}</span><span class="table-actions"><button class="text-btn" @click="acceptEnterpriseInvitation(item)">接受并加入</button><button class="text-btn danger-text" @click="rejectEnterpriseInvitation(item)">拒绝邀请</button></span></div></div></div>
           <div v-if="userEnterpriseTab === 'users'" class="panel">
             <div class="panel-heading">
               <h3>平台注册用户</h3>
