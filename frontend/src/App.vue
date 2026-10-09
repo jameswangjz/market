@@ -2920,8 +2920,7 @@ onUnmounted(() => {
                 <tbody>
                   <tr v-for="item in userItems" :key="item.id">
                     <td>
-                      <strong>{{ item.name }}</strong
-                      ><small>{{ item.id.slice(0, 12) }}</small>
+                      <strong>{{ item.name }}</strong>
                     </td>
                     <td>{{ item.email || item.phone || "-" }}</td>
                     <td>{{ item.enterprise_name || "" }}</td>
