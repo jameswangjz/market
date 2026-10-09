@@ -198,6 +198,7 @@ const developmentFilter = ref("all");
 const search = ref("");
 const showProductForm = ref(false);
 const productDetailMode = ref(false);
+const productDetailTab = ref("info");
 const productReadOnlyMode = ref(false);
 const selectedProductId = ref("");
 const emptyProductVersion = () => ({
@@ -1055,6 +1056,7 @@ async function createProduct() {
 }
 function openNewProduct() {
   productDetailMode.value = false;
+  productDetailTab.value = "info";
   productReadOnlyMode.value = false;
   productReviewMode.value = false;
   selectedProductId.value = "";
@@ -1067,6 +1069,7 @@ function openNewProduct() {
 async function openProductDetail(product, review = false) {
   selectedProductId.value = product.id;
   productDetailMode.value = true;
+  productDetailTab.value = "info";
   productReviewMode.value = review && canReviewProduct(product);
   productReadOnlyMode.value = !["draft", "rejected"].includes(product.status);
   let detail = product;
@@ -3542,18 +3545,6 @@ onUnmounted(() => {
             <p v-if="productDetailMode" class="modal-status-line">
               当前状态：{{ productForm.status === "published" ? "已发布" : productForm.status === "pending_review" ? "待审核" : productForm.status === "security_review" ? "安全审核中" : productForm.status === "security_unpublished" ? "安全下架" : productForm.status === "rejected" ? "已驳回" : "草稿" }} · {{ productForm.review_comment || "暂无审核意见" }}
             </p>
-            <div v-if="productDetailMode" class="product-review-log-section">
-              <div class="form-section-title">审核日志</div>
-              <div v-if="productForm.review_logs?.length" class="product-review-log-list">
-                <div v-for="item in productForm.review_logs" :key="item.id" class="product-review-log-row">
-                  <strong>{{ productReviewActionLabel(item.action) }}</strong>
-                  <span>{{ item.actor }} · {{ fmtDate(item.created_at) }}</span>
-                  <b :class="['status-pill', productReviewResult(item) === '拒绝' ? 'status-blocked' : productReviewResult(item) === '通过' ? 'status-done' : 'status-review']">{{ productReviewResult(item) }}</b>
-                  <small>{{ item.detail || item.after?.review_comment || '无审核说明' }}</small>
-                </div>
-              </div>
-              <div v-else class="muted">暂无审核日志</div>
-            </div>
           </div>
           <button
             type="button"
@@ -3563,6 +3554,11 @@ onUnmounted(() => {
             <X :size="19" />
           </button>
         </div>
+        <div v-if="productDetailMode" class="tabs product-detail-tabs">
+          <button type="button" :class="{ active: productDetailTab === 'info' }" @click="productDetailTab = 'info'">产品信息</button>
+          <button type="button" :class="{ active: productDetailTab === 'audit' }" @click="productDetailTab = 'audit'">审核日志（{{ productForm.review_logs?.length || 0 }}）</button>
+        </div>
+        <div v-if="!productDetailMode || productDetailTab === 'info'">
         <fieldset :disabled="productReadOnlyMode" class="product-fieldset">
         <div class="form-section-title">基础元数据</div>
         <label
@@ -3836,13 +3832,26 @@ onUnmounted(() => {
           >
         </div>
         </fieldset>
+        </div>
         <div v-if="productReviewMode" class="review-action-bar">
           <button type="button" class="primary-btn" @click="reviewProductFromDetail('approve')">通过审核</button>
           <button type="button" class="secondary-btn danger-text" @click="reviewProductFromDetail('reject')">拒绝审核</button>
         </div>
-        <button v-if="!productReadOnlyMode" class="primary-btn full-btn" type="submit">
+        <button v-if="!productReadOnlyMode && (!productDetailMode || productDetailTab === 'info')" class="primary-btn full-btn" type="submit">
           {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
+        <section v-if="productDetailMode && productDetailTab === 'audit'" class="product-review-log-section">
+          <div class="form-section-title">审核日志</div>
+          <div v-if="productForm.review_logs?.length" class="product-review-log-list">
+            <div v-for="item in productForm.review_logs" :key="item.id" class="product-review-log-row">
+              <strong>{{ productReviewActionLabel(item.action) }}</strong>
+              <span>{{ item.actor }} · {{ fmtDate(item.created_at) }}</span>
+              <b :class="['status-pill', productReviewResult(item) === '拒绝' ? 'status-blocked' : productReviewResult(item) === '通过' ? 'status-done' : 'status-review']">{{ productReviewResult(item) }}</b>
+              <small>{{ item.detail || item.after?.review_comment || '无审核说明' }}</small>
+            </div>
+          </div>
+          <div v-else class="muted">暂无审核日志</div>
+        </section>
       </form>
     </div>
     <div v-if="fileReportViewer" class="modal-scrim" @click="fileReportViewer = null">
