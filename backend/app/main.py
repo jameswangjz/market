@@ -3021,7 +3021,7 @@ def clamav_scan(content: bytes) -> tuple[str, str]:
                 connection.sendall(struct.pack("!I", len(chunk)))
                 connection.sendall(chunk)
             connection.sendall(struct.pack("!I", 0))
-            response = connection.recv(4096).decode("utf-8", errors="replace").strip()
+            response = connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip()
         if "FOUND" in response:
             return "infected", response
         if response.endswith("OK"):
@@ -3047,7 +3047,7 @@ def clamav_scan_stream(fileobj, size: int) -> tuple[str, str]:
                 connection.sendall(chunk)
                 remaining -= len(chunk)
             connection.sendall(struct.pack("!I", 0))
-            response = connection.recv(4096).decode("utf-8", errors="replace").strip()
+            response = connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip()
         if remaining:
             return "error", "上传文件流长度与声明大小不一致"
         if "FOUND" in response:
