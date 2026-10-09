@@ -3417,6 +3417,76 @@ def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, 
     return True
 
 
+def api_entitlement_policy(db: Session, enterprise_id: str, route: ApiGatewayRoute) -> dict[str, int]:
+    """Aggregate active paid orders into one enterprise/API entitlement."""
+    orders = db.scalars(select(Order).where(
+        Order.buyer_enterprise_id == enterprise_id,
+        Order.product_id == route.product_id,
+        Order.payment_status == "paid",
+        Order.main_status.not_in(("cancelled", "closed")),
+        Order.refunded_amount == 0,
+    )).all()
+    versions = {x.id: x for x in db.scalars(select(ProductReleaseVersion).where(ProductReleaseVersion.id.in_([o.product_version_id for o in orders]))).all()} if orders else {}
+    limits = {"rate_limit_per_minute": 0, "daily_quota": 0, "monthly_quota": 0, "total_quota": 0}
+    for order in orders:
+        version = versions.get(order.product_version_id)
+        if not version:
+            continue
+        limits["rate_limit_per_minute"] = max(limits["rate_limit_per_minute"], int(version.rate_limit_per_minute or 0))
+        for key, value in (("daily_quota", version.daily_quota), ("monthly_quota", version.monthly_quota), ("total_quota", version.quota_amount)):
+            value = int(value or 0)
+            if value == 0:
+                limits[key] = 0
+            elif limits[key] != 0:
+                limits[key] += value
+    return limits
+
+
+def refresh_enterprise_api_credentials(db: Session, enterprise_id: str, route: ApiGatewayRoute) -> None:
+    """Refresh shared enterprise credentials after an order entitlement changes."""
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    has_orders = db.scalar(select(func.count(Order.id)).where(
+        Order.buyer_enterprise_id == enterprise_id,
+        Order.product_id == route.product_id,
+        Order.payment_status == "paid",
+        Order.main_status.not_in(("cancelled", "closed")),
+        Order.refunded_amount == 0,
+    )) > 0
+    items = db.scalars(select(ApiCredential).where(
+        ApiCredential.route_id == route.id,
+        ApiCredential.enterprise_id == enterprise_id,
+        ApiCredential.order_id == "",
+    )).all()
+    for credential in items:
+        if has_orders:
+            credential.status = "active"
+            credential.rate_limit_per_minute = policy["rate_limit_per_minute"] or None
+            credential.daily_quota = policy["daily_quota"] or None
+            credential.monthly_quota = policy["monthly_quota"] or None
+            credential.total_quota = policy["total_quota"]
+            sync_apisix_consumer_policy(credential, route)
+        else:
+            credential.status = "revoked"
+            remove_apisix_consumer(credential)
+
+
+def sync_apisix_consumer_policy(credential: ApiCredential, route: ApiGatewayRoute) -> bool:
+    """Update APISIX/Redis policy without changing the existing secret."""
+    if not apisix_enabled():
+        return True
+    if not credential.apisix_consumer_name:
+        credential.apisix_consumer_name = f"market-consumer-{credential.id}"
+    daily_quota = credential.daily_quota if credential.daily_quota is not None else (route.daily_quota or 0)
+    monthly_quota = credential.monthly_quota if credential.monthly_quota is not None else (route.monthly_quota or 0)
+    apisix_policy_redis().hset(f"market:apisix:credential:{credential.apisix_consumer_name}", mapping={
+        "status": credential.status,
+        "daily_quota": daily_quota,
+        "monthly_quota": monthly_quota,
+        "total_quota": credential.total_quota or 0,
+    })
+    return True
+
+
 def remove_apisix_consumer(credential: ApiCredential) -> None:
     if apisix_enabled() and credential.apisix_consumer_name:
         apisix_admin_request("DELETE", f"/consumers/{credential.apisix_consumer_name}")
@@ -3672,8 +3742,8 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
 @app.get("/api/orders/{order_id}/api-credentials")
 def list_order_api_credentials(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
-    items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id).order_by(ApiCredential.created_at.desc())).all()
-    return {"order_id": order.id, "product_id": product.id, "product_name": product.name, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "items": [api_credential_out(x, route) for x in items]}
+    items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == "").order_by(ApiCredential.created_at.desc())).all()
+    return {"order_id": order.id, "product_id": product.id, "product_name": product.name, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared_scope": "enterprise", "items": [api_credential_out(x, route) for x in items]}
 
 
 @app.post("/api/orders/{order_id}/api-credentials")
@@ -3682,8 +3752,15 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     version = db.get(ProductReleaseVersion, order.product_version_id)
     if not version:
         raise HTTPException(409, "订单对应的 API 版本不存在")
+    credential = db.scalar(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == "").order_by(ApiCredential.created_at.desc()))
+    if credential and credential.status in {"active", "exhausted"}:
+        refresh_enterprise_api_credentials(db, enterprise_id, route)
+        db.commit()
+        db.refresh(credential)
+        return {**api_credential_out(credential, route), "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "该企业已有共享 API 凭据，本次订单已合并额度；API Key 不会重复生成，请继续使用原凭据"}
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=order.product_version_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else version.rate_limit_per_minute, daily_quota=body.daily_quota if body.daily_quota is not None else version.daily_quota, monthly_quota=body.monthly_quota if body.monthly_quota is not None else version.monthly_quota, total_quota=body.total_quota if body.total_quota is not None else version.quota_amount, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -3691,16 +3768,16 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
-    audit(db, user.email or user.phone or user.id, "create_order_api_credential", "api_credential", credential.id, order.order_no)
+    audit(db, user.email or user.phone or user.id, "create_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": "API Key 仅在本次响应中返回，请妥善保存"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key，仅在本次生成响应中返回，请妥善保存；同企业其它已支付订单会合并到该凭证"}
 
 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/revoke")
 def revoke_order_api_credential(order_id: str, credential_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, _, route, enterprise_id = api_order_context(order_id, user, db)
-    credential = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id))
+    credential = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == ""))
     if not credential:
         raise HTTPException(404, "API 凭据不存在")
     if credential.status != "active":
@@ -3711,7 +3788,7 @@ def revoke_order_api_credential(order_id: str, credential_id: str, user: User = 
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据从 APISIX Consumer 停用失败：{exc}") from exc
-    audit(db, user.email or user.phone or user.id, "revoke_order_api_credential", "api_credential", credential.id, order.order_no)
+    audit(db, user.email or user.phone or user.id, "revoke_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     return {"id": credential.id, "status": credential.status}
 
@@ -3719,12 +3796,13 @@ def revoke_order_api_credential(order_id: str, credential_id: str, user: User = 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/regenerate")
 def regenerate_order_api_credential(order_id: str, credential_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
-    old = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id))
+    old = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == ""))
     if not old:
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=old.product_version_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, total_quota=old.total_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=policy["rate_limit_per_minute"] or old.rate_limit_per_minute, daily_quota=policy["daily_quota"] or old.daily_quota, monthly_quota=policy["monthly_quota"] or old.monthly_quota, total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -3733,7 +3811,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据重生成同步 APISIX Consumer 失败：{exc}") from exc
-    audit(db, user.email or user.phone or user.id, "regenerate_order_api_credential", "api_credential", credential.id, f"{order.order_no} from={old.id}")
+    audit(db, user.email or user.phone or user.id, "regenerate_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};from={old.id}")
     db.commit()
     db.refresh(credential)
     return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用，新 API Key 仅在本次响应中返回，请妥善保存"}
@@ -4215,10 +4293,9 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             raise HTTPException(409, "当前订单状态不允许取消")
         old_main = order.main_status
         order.main_status = "cancelled"
-        for credential in db.scalars(select(ApiCredential).where(ApiCredential.order_id == order.id, ApiCredential.status == "active")).all():
-            credential.status = "revoked"
-            remove_apisix_consumer(credential)
-            audit(db, user.email or user.phone or user.id, "revoke_api_credential_order_cancelled", "api_credential", credential.id, order.order_no, category="delivery", business_domain="api", order_id=order.id)
+        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id))
+        if route:
+            refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
         log_state(db, order, "main", old_main, "cancelled", body.action, user, body.reason)
         audit(db, user.email or user.phone or user.id, body.action, "order", order.id, body.reason)
         db.commit()
@@ -4281,10 +4358,9 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         refund_target = "refunded" if fully_refunded else "paid"
         order.payment_status = refund_target
         if refund_target == "refunded" or order.refunded_amount > 0:
-            for credential in db.scalars(select(ApiCredential).where(ApiCredential.order_id == order.id, ApiCredential.status == "active")).all():
-                credential.status = "revoked"
-                remove_apisix_consumer(credential)
-                audit(db, user.email or user.phone or user.id, "revoke_api_credential_refunded", "api_credential", credential.id, order.order_no, category="payment_refund", business_domain="api", order_id=order.id)
+            route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id))
+            if route:
+                refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
         if order.after_sales_status == "processing":
             old_after_sales = order.after_sales_status
             order.after_sales_status = "resolved"

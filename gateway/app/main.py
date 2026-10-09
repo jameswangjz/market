@@ -254,11 +254,20 @@ async def proxy(route_key: str, path: str, request: Request):
         if not credential or (credential.expires_at and credential.expires_at < datetime.now(timezone.utc)):
             db.close()
             raise HTTPException(401, "API Key 无效或已过期")
-        if credential and credential.order_id:
+        if credential.order_id:
             order = db.get(Order, credential.order_id)
-            if not order or order.payment_status != "paid" or float(order.refunded_amount or 0) > 0 or order.main_status in {"cancelled", "closed"}:
-                db.close()
-                raise HTTPException(403, "订单授权已失效")
+            valid = order and order.payment_status == "paid" and float(order.refunded_amount or 0) == 0 and order.main_status not in {"cancelled", "closed"}
+        else:
+            valid = db.scalar(select(Order.id).where(
+                Order.buyer_enterprise_id == credential.enterprise_id,
+                Order.product_id == route.product_id,
+                Order.payment_status == "paid",
+                Order.refunded_amount == 0,
+                Order.main_status.not_in(("cancelled", "closed")),
+            ).limit(1)) is not None
+        if not valid:
+            db.close()
+            raise HTTPException(403, "企业 API 授权已失效")
         version = db.get(ProductReleaseVersion, credential.product_version_id) if credential.product_version_id else None
         check_quota(credential, route, version)
     else:

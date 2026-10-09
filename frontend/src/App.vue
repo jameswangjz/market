@@ -954,10 +954,10 @@ async function createOrderApiCredential() {
     const { data } = await api.post(`/orders/${order.id}/api-credentials`, {
       name: `${order.product_name} API 凭据`,
     });
-    apiCredentialReveal.value = data;
+    apiCredentialReveal.value = data.api_key ? data : null;
     await openOrder(order);
-    apiCredentialReveal.value = data;
-    notify("API 凭据已生成，请立即保存 API Key");
+    apiCredentialReveal.value = data.api_key ? data : null;
+    notify(data.api_key ? "企业共享 API 凭据已生成，请立即保存 API Key" : "已复用企业共享 API 凭据，本次订单额度已合并");
   } catch (error) {
     notify(error.response?.data?.detail || "API 凭据生成失败");
   }
@@ -3403,10 +3403,10 @@ onUnmounted(() => {
           v-if="apiOrderState.available"
           class="drawer-section api-order-panel"
         >
-          <div class="drawer-section-title">API 调用凭据</div>
+          <div class="drawer-section-title">API 调用凭据（企业共享）</div>
           <p class="muted">
             网关路径：{{ apiOrderState.gateway_base_path }} ·
-            凭据原文仅在生成或重新生成时显示。
+            同一企业购买同一 API 服务的多个订单共用一套凭据，订单额度自动合并；凭据原文仅在首次生成或重新生成时显示。
           </p>
           <div class="action-list">
             <button class="secondary-btn" @click="createOrderApiCredential">
@@ -3423,7 +3423,7 @@ onUnmounted(() => {
               ><small
                 >{{ item.key_prefix }} ·
                 {{ item.status === "active" ? "启用中" : "已停用" }} ·
-                总额度 {{ item.total_quota || "不限" }} ·
+                企业共享总额度 {{ item.total_quota || "不限" }} ·
                 {{ fmtDate(item.created_at) }}</small
               >
             </div>
