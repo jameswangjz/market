@@ -3258,8 +3258,6 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
             try:
                 with tempfile.TemporaryDirectory(prefix="market-presidio-extract-") as extract_dir:
                     result = subprocess.run(["7z", "x", "-y", f"-o{extract_dir}", archive_path], capture_output=True, text=True, timeout=120)
-                    if result.returncode not in {0, 1}:
-                        return ""
                     text_parts = []
                     for root, _, names in os.walk(extract_dir):
                         for entry_name in names:
@@ -3271,6 +3269,9 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
                                 break
                         if len(text_parts) >= 50:
                             break
+                    # 7z may return 2 for a partially damaged archive while
+                    # still extracting readable entries. Scan those entries
+                    # instead of discarding the usable sample altogether.
                     return "\n".join(text_parts)
             finally:
                 if temporary_archive:
