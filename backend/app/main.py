@@ -5729,7 +5729,8 @@ def download_scan_report(file_id: str, report_type: str = Query(default="combine
         raise HTTPException(403, "无权查看扫描报告")
     if report_type not in {"combined", "clamav", "presidio"}:
         raise HTTPException(400, "报告类型必须是 combined、clamav 或 presidio")
-    return Response(content=scan_report_pdf(item, report_type), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{item.original_name}.{report_type}.scan-report.pdf"'})
+    report_name = f"{item.original_name}.{report_type}.scan-report.pdf"
+    return Response(content=scan_report_pdf(item, report_type), media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=scan-report.pdf; filename*=UTF-8''{quote(report_name)}"})
 
 
 def validate_product_archive(content: bytes, filename: str) -> None:
@@ -5960,7 +5961,7 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         db.add(download_log)
         audit(db, user.email or user.phone or user.id, "download_file", "file", item.id, item.original_name, category="delivery", business_domain="product", order_id=download_log.order_id)
         db.commit()
-    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f'inline; filename="{item.original_name}"'})
+    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"inline; filename=download; filename*=UTF-8''{quote(item.original_name)}"})
 
 
 @app.get("/api/orders/{order_id}/product-files")
