@@ -3215,9 +3215,25 @@ def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
                 "message": f"检测到{entity_labels.get(entity, entity)}：{matched[:240] or '未提取到具体内容'}",
                 "source": "presidio",
             })
-        return findings, "available"
+        return filter_presidio_dataset_false_positives(findings), "available"
     except (httpx.HTTPError, ValueError) as exc:
         return [{"entity": "PRESIDIO_UNAVAILABLE", "severity": "medium", "message": str(exc)[:240], "source": "platform"}], "unavailable"
+
+
+def filter_presidio_dataset_false_positives(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Suppress known English-model false positives in Chinese dataset records."""
+    filtered = []
+    dataset_id = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{2,40}$")
+    for finding in findings:
+        entity = finding.get("entity")
+        matched = str(finding.get("matched_text") or "").strip()
+        has_cjk = bool(re.search(r"[\u3400-\u9fff]", matched))
+        if entity == "LOCATION" and has_cjk:
+            continue
+        if entity == "PERSON" and (dataset_id.fullmatch(matched) or ("-" in matched and any(char.isdigit() for char in matched))):
+            continue
+        filtered.append(finding)
+    return filtered
 
 
 def enrich_legacy_presidio_findings(text_value: str, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -5795,7 +5811,7 @@ def file_out(item: FileObject) -> dict[str, Any]:
     findings = scan.get("presidio_findings", [])
     if any(isinstance(entry, dict) and "start" in entry and "matched_text" not in entry for entry in findings):
         try:
-            findings = enrich_legacy_presidio_findings(read_product_sample(item), findings)
+            findings = filter_presidio_dataset_false_positives(enrich_legacy_presidio_findings(read_product_sample(item), findings))
         except Exception:
             pass
     return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": findings, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
