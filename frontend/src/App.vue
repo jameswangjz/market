@@ -1133,6 +1133,23 @@ async function viewProductReport(file, reportType) {
 function openFileReport(file, reportType) {
   fileReportViewer.value = { file, reportType };
 }
+function openSecurityReportFile(file, reportType) {
+  fileReportViewer.value = {
+    file: {
+      id: file.file_id,
+      original_name: file.name,
+      size: file.size,
+      clamav_status: file.clamav_status,
+      clamav_report: file.clamav_report,
+      clamav_version: file.clamav_version,
+      presidio_status: file.presidio_status,
+      presidio_findings: file.presidio_findings || [],
+      presidio_version: file.presidio_version,
+      scanned_at: securityReport.value?.scanned_at,
+    },
+    reportType,
+  };
+}
 async function reviewProductFromDetail(decision) {
   const product = productForm.value;
   if (product.status === "security_review") {
@@ -1205,7 +1222,7 @@ function canReviewProduct(product) {
   if (product.status === "pending_review") return ["product_manager", "business_reviewer"].includes(role);
   if (product.status === "quality_review") return role === "quality_reviewer";
   if (product.status === "security_review") return ["super_admin", "security_compliance"].includes(role);
-  if (product.status === "operation_review") return role === "platform_operator";
+  if (product.status === "operation_review") return ["super_admin", "platform_operator"].includes(role);
   return false;
 }
 async function productAction(product, action) {
@@ -1273,7 +1290,7 @@ async function downloadSaasCredentials(product) {
     link.href = url;
     link.download = `${product.name}-platform-oauth-credentials.txt`;
     link.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     notify("OAuth 凭据文件已下载");
   } catch (error) {
     notify(error.response?.data?.detail || "OAuth 凭据下载失败");
@@ -3654,16 +3671,16 @@ onUnmounted(() => {
           <div v-for="file in visibleProductFiles" :key="file.id" class="file-status-row product-file-row">
             <div class="product-file-name"><strong>{{ file.original_name }}</strong><small class="muted"> · {{ file.version || "产品级" }} · {{ file.size }} bytes</small></div>
             <div class="product-file-scan">
-              <button class="text-btn" @click="downloadProductFile(file)">下载文件</button>
+              <button type="button" class="text-btn" @click="downloadProductFile(file)">下载文件</button>
               <template v-if="file.file_role === 'product_logo'">
                 <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
               </template>
               <template v-else>
                 <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
                 <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
-                <button class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
+                <button type="button" class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
               </template>
             </div>
           </div>
@@ -3871,7 +3888,7 @@ onUnmounted(() => {
         <div class="drawer-head"><div><span class="eyebrow">SECURITY REPORT</span><h2>数据集安全审核报告</h2></div><button type="button" class="icon-btn" @click="securityReport = null"><X :size="19" /></button></div>
         <div class="state-grid"><div><small>扫描引擎</small><strong>{{ securityReport.engine }}</strong></div><div><small>扫描状态</small><strong>{{ securityReport.status }}</strong></div><div><small>发现项</small><strong>{{ securityReport.findings_count }}</strong></div><div><small>高风险</small><strong>{{ securityReport.high_risk_count }}</strong></div><div><small>Presidio</small><strong>{{ securityReport.report?.presidio_status || '未返回' }}</strong></div></div>
         <div class="drawer-section"><div class="drawer-section-title">自动识别结果</div><div v-if="securityReport.report?.findings?.length" class="security-finding-list"><div v-for="(finding, index) in securityReport.report.findings" :key="`${finding.entity}-${index}`" class="security-finding"><span>{{ finding.entity }}</span><small>{{ finding.message || finding.severity || '发现敏感信息' }}<template v-if="finding.count"> · {{ finding.count }}处</template></small></div></div><p v-else class="muted">未发现自动识别项，仍需安全审核人员结合授权和脱敏材料确认。</p></div>
-        <div class="drawer-section"><div class="drawer-section-title">文件扫描明细</div><div v-for="file in securityReport.report?.files || []" :key="file.file_id" class="file-status-row"><span>{{ file.name }}</span><span><small>{{ file.clamav_status || (file.sample_scanned ? '已提取样本' : '未提取样本') }} · Presidio {{ file.presidio_status || '未执行' }}</small><a class="text-btn" :href="`/api/files/${file.file_id}/scan-report.pdf`" target="_blank" download>查看/下载 PDF 报告</a></span></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">文件扫描明细</div><div v-for="file in securityReport.report?.files || []" :key="file.file_id" class="file-status-row"><span>{{ file.name }}</span><span><small>{{ file.clamav_status || (file.sample_scanned ? '已提取样本' : '未提取样本') }} · Presidio {{ file.presidio_status || '未执行' }}</small><button type="button" class="text-btn" @click="openSecurityReportFile(file, 'clamav')">病毒报告</button><button type="button" class="text-btn" @click="openSecurityReportFile(file, 'presidio')">Presidio报告</button></span></div></div>
       </section>
     </div>
     <div v-if="showProfileContact" class="modal-scrim" @click="showProfileContact = false">
