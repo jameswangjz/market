@@ -209,6 +209,7 @@ class Product(Base):
     integration_api_url: Mapped[str] = mapped_column(String(500), default="")
     download_limit: Mapped[int] = mapped_column(Integer, default=0)
     logo_file_id: Mapped[str] = mapped_column(String(36), default="")
+    logo_thumbnail_file_id: Mapped[str] = mapped_column(String(36), default="")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     pricing_strategy: Mapped[str] = mapped_column(Text, default="", nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="CNY")
@@ -761,6 +762,17 @@ class FileObject(Base):
     scan_status: Mapped[str] = mapped_column(String(30), default="not_scanned", index=True)
     scan_report: Mapped[str] = mapped_column(Text, default="")
     scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FileDownloadLog(Base):
+    __tablename__ = "file_download_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    file_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -1561,6 +1573,7 @@ def ensure_product_metadata_schema():
         "integration_api_url": "VARCHAR(500) DEFAULT ''",
         "download_limit": "INTEGER DEFAULT 0",
         "logo_file_id": "VARCHAR(36) DEFAULT ''",
+        "logo_thumbnail_file_id": "VARCHAR(36) DEFAULT ''",
     }
     with engine.begin() as connection:
         if engine.dialect.name == "sqlite":
@@ -1628,6 +1641,13 @@ def ensure_review_and_file_schema():
             "scan_status": "VARCHAR(30) DEFAULT 'not_scanned'",
             "scan_report": "TEXT DEFAULT ''",
             "scanned_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "file_download_logs": {
+            "file_id": "VARCHAR(36)",
+            "order_id": "VARCHAR(36)",
+            "user_id": "VARCHAR(36)",
+            "success": "BOOLEAN DEFAULT FALSE",
+            "detail": "TEXT DEFAULT ''",
         },
         "settlements": {
             "refund_amount": "NUMERIC(14,2)",
@@ -2558,7 +2578,7 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 def product_out(p: Product) -> dict[str, Any]:
     versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "quota_unit": x.quota_unit or "", "quota_amount": x.quota_amount or 0, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "logo_thumbnail_file_id": p.logo_thumbnail_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
@@ -3002,6 +3022,34 @@ def clamav_scan(content: bytes) -> tuple[str, str]:
                 connection.sendall(chunk)
             connection.sendall(struct.pack("!I", 0))
             response = connection.recv(4096).decode("utf-8", errors="replace").strip()
+        if "FOUND" in response:
+            return "infected", response
+        if response.endswith("OK"):
+            return "clean", response
+        return "error", response or "ClamAV returned an empty response"
+    except (OSError, TimeoutError) as exc:
+        return "unavailable", str(exc)[:240]
+
+
+def clamav_scan_stream(fileobj, size: int) -> tuple[str, str]:
+    """Scan an UploadFile stream without materializing the whole object."""
+    if not CLAMAV_ENABLED:
+        return "disabled", "ClamAV scanning is disabled by configuration"
+    try:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=30) as connection:
+            connection.sendall(b"zINSTREAM\0")
+            remaining = size
+            while remaining:
+                chunk = fileobj.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                connection.sendall(struct.pack("!I", len(chunk)))
+                connection.sendall(chunk)
+                remaining -= len(chunk)
+            connection.sendall(struct.pack("!I", 0))
+            response = connection.recv(4096).decode("utf-8", errors="replace").strip()
+        if remaining:
+            return "error", "上传文件流长度与声明大小不一致"
         if "FOUND" in response:
             return "infected", response
         if response.endswith("OK"):
@@ -5382,16 +5430,26 @@ def upload_file(
         version_item = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product_id))
         if not version_item:
             raise HTTPException(400, "产品版本不存在或不属于该产品")
-    content = upload.file.read()
+    filename = upload.filename or "file"
+    lower_name = filename.lower()
+    upload.file.seek(0, 2)
+    size = upload.file.tell()
+    upload.file.seek(0)
+    content = b""
     if file_role == "product_data":
         allowed = (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz")
-        if not (upload.filename or "").lower().endswith(allowed):
+        if not lower_name.endswith(allowed):
             raise HTTPException(400, "数据文件仅支持 zip、tar、tar.gz、tgz、bz2 或 xz 压缩格式")
-        if len(content) >= 10 * 1024 * 1024 * 1024:
+        if size >= 10 * 1024 * 1024 * 1024:
             raise HTTPException(413, "数据文件必须小于10GB")
-        validate_product_archive(content, upload.filename or "")
+        if size <= 100 * 1024 * 1024:
+            content = upload.file.read()
+            upload.file.seek(0)
+            validate_product_archive(content, filename)
     if file_role == "product_logo":
-        name = (upload.filename or "").lower()
+        name = lower_name
+        content = upload.file.read()
+        upload.file.seek(0)
         if not (name.endswith(".svg") or (upload.content_type or "").startswith("image/")):
             raise HTTPException(400, "Logo仅支持SVG和图片格式")
         if name.endswith(".svg"):
@@ -5415,27 +5473,53 @@ def upload_file(
                 raise HTTPException(400, "Logo图片无法解析") from exc
     scan_status, scan_report = ("not_scanned", "")
     if file_role == "product_data":
-        scan_status, scan_report = clamav_scan(content)
+        scan_status, scan_report = clamav_scan_stream(upload.file, size)
         if scan_status == "infected":
-            audit(db, user.email, "reject_infected_file", "file", upload.filename or "", scan_report, category="security", business_domain="product")
+            audit(db, user.email, "reject_infected_file", "file", filename, scan_report, category="security", business_domain="product")
             raise HTTPException(400, "文件未通过ClamAV病毒扫描")
-    object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{upload.filename}"
+    upload.file.seek(0)
+    hasher = hashlib.sha256()
+    while True:
+        chunk = upload.file.read(1024 * 1024)
+        if not chunk:
+            break
+        hasher.update(chunk)
+    upload.file.seek(0)
+    object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{filename}"
     if MINIO_ENDPOINT:
         client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
         if not client.bucket_exists(MINIO_BUCKET):
             client.make_bucket(MINIO_BUCKET)
-        from io import BytesIO
-        client.put_object(MINIO_BUCKET, object_name, BytesIO(content), length=len(content), content_type=upload.content_type or "application/octet-stream")
-    item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=scan_report, scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
+        client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
+    item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=scan_report, scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
-    audit(db, user.email, "upload_file", "file", item.id, f"{item.original_name}; scan={scan_status}", category="security" if file_role == "product_data" else "ops", business_domain="product")
+    db.flush()
+    if file_role == "product_logo" and product_id and not lower_name.endswith(".svg") and MINIO_ENDPOINT:
+        try:
+            with Image.open(BytesIO(content)) as image:
+                image = image.convert("RGBA")
+                image.thumbnail((190, 140), Image.Resampling.LANCZOS)
+                thumbnail_content = BytesIO()
+                image.save(thumbnail_content, format="PNG", optimize=True)
+                thumbnail_bytes = thumbnail_content.getvalue()
+            thumbnail_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{filename}.thumb.png"
+            client.put_object(MINIO_BUCKET, thumbnail_name, BytesIO(thumbnail_bytes), length=len(thumbnail_bytes), content_type="image/png")
+            thumbnail = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=thumbnail_name, original_name=f"{filename}.thumb.png", content_type="image/png", size=len(thumbnail_bytes), checksum=hashlib.sha256(thumbnail_bytes).hexdigest(), file_role="product_logo_thumbnail", version=item.version, description="Logo缩略图", status="active", scan_status="clean", scan_report="由平台生成", scanned_at=now())
+            db.add(thumbnail)
+            db.flush()
+            product.logo_thumbnail_file_id = thumbnail.id
+        except Exception as exc:
+            audit(db, user.email, "generate_logo_thumbnail_failed", "file", item.id, str(exc)[:240], category="security", business_domain="product", risk_level="warning")
+    if file_role == "product_logo" and product_id:
+        product.logo_file_id = item.id
+    audit(db, user.email, "upload_file", "file", item.id, f"{item.original_name}; scan={scan_status}; size={size}", category="security" if file_role == "product_data" else "ops", business_domain="product")
     db.commit()
     db.refresh(item)
     return file_out(item)
 
 
 @app.get("/api/files/{file_id}/download")
-def download_file(file_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def download_file(file_id: str, order_id: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     """Serve persisted identity/license files to their owner or authorized reviewers."""
     item = db.get(FileObject, file_id)
     if not item or item.status == "deleted":
@@ -5444,6 +5528,25 @@ def download_file(file_id: str, user: User = Depends(current_user), db: Session 
     owner = item.owner_id == user.id
     if not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
+    download_log = None
+    if item.file_role == "product_data":
+        if not order_id:
+            raise HTTPException(400, "下载产品数据文件必须提供订单号")
+        order = db.get(Order, order_id)
+        enterprise = first_enterprise(db, user)
+        member = db.scalar(select(Membership).where(Membership.enterprise_id == enterprise.id, Membership.user_id == user.id, Membership.status == "active"))
+        if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or (order.buyer_enterprise_id != enterprise.id and not reviewer) or (not reviewer and not member):
+            raise HTTPException(403, "当前用户没有该订单文件的下载权限")
+        product = db.get(Product, item.product_id)
+        download_limit = int(product.download_limit or 0) if product else 0
+        used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
+        download_log = FileDownloadLog(file_id=item.id, order_id=order.id, user_id=user.id, success=False)
+        if download_limit > 0 and used >= download_limit:
+            download_log.detail = f"下载次数已达上限：{used}/{download_limit}"
+            db.add(download_log)
+            audit(db, user.email or user.phone or user.id, "download_file_denied", "file", item.id, download_log.detail, category="delivery", business_domain="product", order_id=order.id, risk_level="warning")
+            db.commit()
+            raise HTTPException(429, "该订单的文件下载次数已用尽")
     if not MINIO_ENDPOINT:
         raise HTTPException(503, "文件存储服务未配置")
     client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
@@ -5454,4 +5557,25 @@ def download_file(file_id: str, user: User = Depends(current_user), db: Session 
         response.release_conn()
     except Exception as exc:
         raise HTTPException(404, "文件内容不存在") from exc
+    if download_log:
+        download_log.success = True
+        download_log.detail = "下载成功"
+        db.add(download_log)
+        audit(db, user.email or user.phone or user.id, "download_file", "file", item.id, item.original_name, category="delivery", business_domain="product", order_id=download_log.order_id)
+        db.commit()
     return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f'inline; filename="{item.original_name}"'})
+
+
+@app.get("/api/orders/{order_id}/product-files")
+def order_product_files(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order = db.get(Order, order_id)
+    if not order or order.payment_status != "paid":
+        raise HTTPException(404, "订单不存在或尚未支付")
+    enterprise = first_enterprise(db, user)
+    reviewer = user.platform_role in {"super_admin", "platform_operator"}
+    if not reviewer and order.buyer_enterprise_id != enterprise.id:
+        raise HTTPException(403, "无权查看该订单文件")
+    items = db.scalars(select(FileObject).where(FileObject.product_id == order.product_id, FileObject.version_id == order.product_version_id, FileObject.file_role == "product_data", FileObject.status != "deleted")).all()
+    product = db.get(Product, order.product_id)
+    limit = int(product.download_limit or 0) if product else 0
+    return {"download_limit": limit, "items": [{**file_out(item), "downloaded": db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0, "download_url": f"/api/files/{item.id}/download?order_id={order.id}"} for item in items]}

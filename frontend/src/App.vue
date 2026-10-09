@@ -57,9 +57,12 @@ const toast = ref("");
 const dashboard = ref(null);
 const products = ref([]);
 const productFiles = ref([]);
+const productLogoPreview = ref("");
+const securityReport = ref(null);
 const productDirectories = ref([]);
 const orders = ref([]);
 const selectedOrder = ref(null);
+const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
 const apiOrderState = ref({
   available: false,
@@ -793,7 +796,11 @@ async function openOrder(order) {
     gateway_base_path: "",
   };
   apiCredentialReveal.value = null;
+  orderProductFiles.value = { download_limit: 0, items: [] };
   const requests = [];
+  if (data.order.payment_status === "paid") {
+    requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { orderProductFiles.value = files; }).catch(() => {}));
+  }
   if (data.order.subscription_id) {
     const id = data.order.subscription_id;
     requests.push(
@@ -819,6 +826,21 @@ async function openOrder(order) {
       .catch(() => {}),
   );
   await Promise.all(requests);
+}
+async function downloadOrderProductFile(file) {
+  if (!selectedOrder.value) return;
+  try {
+    const response = await api.get(`/files/${file.id}/download`, { params: { order_id: selectedOrder.value.order.id }, responseType: "blob" });
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = file.original_name;
+    link.click();
+    URL.revokeObjectURL(url);
+    await openOrder(selectedOrder.value.order);
+  } catch (error) {
+    notify(error.response?.data?.detail || "文件下载失败");
+  }
 }
 async function transition(action) {
   if (!selectedOrder.value) return;
@@ -1039,9 +1061,14 @@ async function openProductDetail(product) {
   }));
   productForm.value.logoFile = null;
   productFiles.value = [];
+  productLogoPreview.value = "";
   try {
     const { data } = await api.get(`/products/${product.id}/files`);
     productFiles.value = data.items || [];
+    if (product.logo_thumbnail_file_id) {
+      const response = await api.get(`/files/${product.logo_thumbnail_file_id}/download`, { responseType: "blob" });
+      productLogoPreview.value = URL.createObjectURL(response.data);
+    }
   } catch {
     productFiles.value = [];
   }
@@ -1113,9 +1140,7 @@ async function productAction(product, action) {
       return;
     } else if (action === "security_report") {
       const { data } = await api.get(`/products/${product.id}/security-report`);
-      const report = data.security_report?.report || {};
-      const findings = (report.findings || []).map((item) => `${item.severity || "提示"} · ${item.message || item.entity}`).join("\n");
-      window.alert(`安全审核报告\n扫描引擎：${data.security_report?.engine}\n发现项：${data.security_report?.findings_count}\n高风险：${data.security_report?.high_risk_count}\n\n${findings || "未发现自动识别项"}`);
+      securityReport.value = data.security_report;
       return;
     } else if (action === "security_approve" || action === "security_reject") {
       let comment = window.prompt(action === "security_approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", action === "security_approve" ? "安全审核通过" : "");
@@ -3273,6 +3298,14 @@ onUnmounted(() => {
             >
           </div>
         </div>
+        <div v-if="orderProductFiles.items.length" class="drawer-section">
+          <div class="drawer-section-title">数据文件交付</div>
+          <p class="muted">本订单下载次数：{{ orderProductFiles.download_limit === 0 ? '不限制' : `${orderProductFiles.items[0]?.downloaded || 0}/${orderProductFiles.download_limit}` }}</p>
+          <div v-for="file in orderProductFiles.items" :key="file.id" class="file-status-row">
+            <span>{{ file.original_name }}<small class="muted"> · 已下载{{ file.downloaded }}次</small></span>
+            <button class="secondary-btn" @click="downloadOrderProductFile(file)">下载</button>
+          </div>
+        </div>
         <div class="drawer-section">
           <div class="drawer-section-title">状态时间轴</div>
           <div class="timeline">
@@ -3541,6 +3574,7 @@ onUnmounted(() => {
         </div>
         <div v-if="productDetailMode && productFiles.length" class="product-file-status">
           <div class="form-section-title">已上传文件与安全状态</div>
+          <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
           <div v-for="file in productFiles" :key="file.id" class="file-status-row">
             <span>{{ file.original_name }}<small class="muted"> · {{ file.version || "产品级" }}</small></span>
             <span :class="['status-pill', file.scan_status === 'clean' ? 'status-done' : file.scan_status === 'infected' ? 'status-blocked' : 'status-review']">
@@ -3720,6 +3754,14 @@ onUnmounted(() => {
           {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
       </form>
+    </div>
+    <div v-if="securityReport" class="modal-scrim" @click="securityReport = null">
+      <section class="modal-card security-report-modal" @click.stop>
+        <div class="drawer-head"><div><span class="eyebrow">SECURITY REPORT</span><h2>数据集安全审核报告</h2></div><button type="button" class="icon-btn" @click="securityReport = null"><X :size="19" /></button></div>
+        <div class="state-grid"><div><small>扫描引擎</small><strong>{{ securityReport.engine }}</strong></div><div><small>扫描状态</small><strong>{{ securityReport.status }}</strong></div><div><small>发现项</small><strong>{{ securityReport.findings_count }}</strong></div><div><small>高风险</small><strong>{{ securityReport.high_risk_count }}</strong></div><div><small>Presidio</small><strong>{{ securityReport.report?.presidio_status || '未返回' }}</strong></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">自动识别结果</div><div v-if="securityReport.report?.findings?.length" class="security-finding-list"><div v-for="(finding, index) in securityReport.report.findings" :key="`${finding.entity}-${index}`" class="security-finding"><span>{{ finding.entity }}</span><small>{{ finding.message || finding.severity || '发现敏感信息' }}<template v-if="finding.count"> · {{ finding.count }}处</template></small></div></div><p v-else class="muted">未发现自动识别项，仍需安全审核人员结合授权和脱敏材料确认。</p></div>
+        <div class="drawer-section"><div class="drawer-section-title">文件扫描明细</div><div v-for="file in securityReport.report?.files || []" :key="file.file_id" class="file-status-row"><span>{{ file.name }}</span><small>{{ file.scan_status || (file.sample_scanned ? '已提取样本' : '未提取样本') }}</small></div></div>
+      </section>
     </div>
     <div v-if="showProfileContact" class="modal-scrim" @click="showProfileContact = false">
       <form class="modal-card" @submit.prevent="updateProfileContact" @click.stop>
