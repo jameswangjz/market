@@ -1123,6 +1123,14 @@ function removeProductVersion(index) {
     return notify("至少保留一个产品版本");
   productForm.value.versions.splice(index, 1);
 }
+function canReviewProduct(product) {
+  const role = user.value?.platform_role;
+  if (role === "super_admin") return true;
+  if (product.status === "pending_review") return ["product_manager", "business_reviewer"].includes(role);
+  if (product.status === "quality_review") return role === "quality_reviewer";
+  if (product.status === "operation_review") return role === "platform_operator";
+  return false;
+}
 async function productAction(product, action) {
   try {
     if (action === "unpublish") {
@@ -2297,15 +2305,19 @@ onUnmounted(() => {
                       <span
                         :class="[
                           'status-pill',
-                          `status-${product.status === 'published' ? 'done' : product.status === 'pending_review' || product.status === 'security_review' ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
+                          `status-${product.status === 'published' ? 'done' : ['pending_review','quality_review','security_review','operation_review'].includes(product.status) ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
                         ]"
                         >{{
                           product.status === "published"
                             ? "已发布"
                             : product.status === "pending_review"
-                              ? "待审核"
-                              : product.status === "security_review"
-                                ? "安全审核中"
+                            ? "业务审核"
+                            : product.status === "quality_review"
+                              ? "质量审核"
+                            : product.status === "security_review"
+                              ? "安全审核中"
+                              : product.status === "operation_review"
+                                ? "运营审核"
                               : product.status === "rejected"
                                 ? "已驳回"
                                 : product.status === "security_unpublished"
@@ -2344,19 +2356,19 @@ onUnmounted(() => {
                         >
                           安全驳回</button
                         ><button
-                          v-if="product.status === 'pending_review'"
+                          v-if="canReviewProduct(product)"
                           class="text-btn"
                           @click="productAction(product, 'review')"
                         >
                           通过</button
                         ><button
-                          v-if="product.status === 'pending_review'"
+                          v-if="canReviewProduct(product)"
                           class="text-btn danger-text"
                           @click="productAction(product, 'reject')"
                         >
                           驳回</button
                         ><button
-                          v-if="product.status === 'pending_review' && (['super_admin', 'enterprise_admin'].includes(user?.enterprise_role) || ['super_admin', 'platform_operator'].includes(user?.platform_role))"
+                          v-if="product.status === 'pending_review' && (['super_admin', 'enterprise_admin'].includes(user?.enterprise_role))"
                           class="text-btn"
                           @click="productAction(product, 'withdraw')"
                         >
@@ -3559,7 +3571,7 @@ onUnmounted(() => {
           >
         </div>
         <div v-if="productForm.delivery_method === 'file'" class="form-grid">
-          <label>数据文件（压缩包）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz" @change="productForm.fileUpload = $event.target.files[0]" /></label>
+          <label>数据文件（压缩包）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz,.bz2,.xz,.rar,.7z" @change="productForm.fileUpload = $event.target.files[0]" /></label>
           <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
         </div>
         <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
@@ -3576,11 +3588,11 @@ onUnmounted(() => {
         <div v-if="productDetailMode && productFiles.length" class="product-file-status">
           <div class="form-section-title">已上传文件与安全状态</div>
           <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
-          <div v-for="file in productFiles" :key="file.id" class="file-status-row">
+          <div v-for="file in productFiles.filter((item) => item.file_role !== 'product_logo_thumbnail')" :key="file.id" class="file-status-row">
             <span>{{ file.original_name }}<small class="muted"> · {{ file.version || "产品级" }}</small></span>
-            <span :class="['status-pill', file.scan_status === 'clean' ? 'status-done' : file.scan_status === 'infected' ? 'status-blocked' : 'status-review']">
+            <a v-if="file.scan_status !== 'not_scanned'" class="status-pill scan-report-link" :href="file.scan_report_url" target="_blank" download>
               {{ file.file_role === 'product_logo' ? 'Logo已保存' : file.scan_status === 'clean' ? '病毒扫描通过' : file.scan_status === 'unavailable' ? '待安全扫描' : file.scan_status === 'infected' ? '扫描未通过' : '待扫描' }}
-            </span>
+            </a><span v-else class="status-pill status-review">待扫描</span>
           </div>
         </div>
         <div class="version-editor">
@@ -3761,7 +3773,7 @@ onUnmounted(() => {
         <div class="drawer-head"><div><span class="eyebrow">SECURITY REPORT</span><h2>数据集安全审核报告</h2></div><button type="button" class="icon-btn" @click="securityReport = null"><X :size="19" /></button></div>
         <div class="state-grid"><div><small>扫描引擎</small><strong>{{ securityReport.engine }}</strong></div><div><small>扫描状态</small><strong>{{ securityReport.status }}</strong></div><div><small>发现项</small><strong>{{ securityReport.findings_count }}</strong></div><div><small>高风险</small><strong>{{ securityReport.high_risk_count }}</strong></div><div><small>Presidio</small><strong>{{ securityReport.report?.presidio_status || '未返回' }}</strong></div></div>
         <div class="drawer-section"><div class="drawer-section-title">自动识别结果</div><div v-if="securityReport.report?.findings?.length" class="security-finding-list"><div v-for="(finding, index) in securityReport.report.findings" :key="`${finding.entity}-${index}`" class="security-finding"><span>{{ finding.entity }}</span><small>{{ finding.message || finding.severity || '发现敏感信息' }}<template v-if="finding.count"> · {{ finding.count }}处</template></small></div></div><p v-else class="muted">未发现自动识别项，仍需安全审核人员结合授权和脱敏材料确认。</p></div>
-        <div class="drawer-section"><div class="drawer-section-title">文件扫描明细</div><div v-for="file in securityReport.report?.files || []" :key="file.file_id" class="file-status-row"><span>{{ file.name }}</span><small>{{ file.scan_status || (file.sample_scanned ? '已提取样本' : '未提取样本') }}</small></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">文件扫描明细</div><div v-for="file in securityReport.report?.files || []" :key="file.file_id" class="file-status-row"><span>{{ file.name }}</span><span><small>{{ file.clamav_status || (file.sample_scanned ? '已提取样本' : '未提取样本') }} · Presidio {{ file.presidio_status || '未执行' }}</small><a class="text-btn" :href="`/api/files/${file.file_id}/scan-report.pdf`" target="_blank" download>查看/下载 PDF 报告</a></span></div></div>
       </section>
     </div>
     <div v-if="showProfileContact" class="modal-scrim" @click="showProfileContact = false">

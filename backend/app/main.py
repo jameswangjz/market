@@ -181,6 +181,19 @@ class SystemSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class PlatformNotification(Base):
+    __tablename__ = "platform_notifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    recipient_user_id: Mapped[str] = mapped_column(String(36), index=True)
+    recipient_role: Mapped[str] = mapped_column(String(60), default="", index=True)
+    title: Mapped[str] = mapped_column(String(220))
+    content: Mapped[str] = mapped_column(Text, default="")
+    target_type: Mapped[str] = mapped_column(String(60), default="")
+    target_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    status: Mapped[str] = mapped_column(String(20), default="unread", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ApplicationAccessGrant(Base):
     __tablename__ = "application_access_grants"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -1334,6 +1347,22 @@ def db_session():
 def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = "", *, category: str = "", business_domain: str = "", tenant_id: str = "", order_id: str = "", batch_no: str = "", rule_version: str = "", request_id: str = "", risk_level: str = "normal", before: Any | None = None, after: Any | None = None):
     inferred = category or ("settlement" if target_type in {"settlement", "settlement_batch", "settlement_rule", "reconciliation"} or "settlement" in action else "payment_refund" if target_type in {"payment", "refund"} or "payment" in action or "refund" in action else "order" if target_type in {"order", "order_state"} or "order" in action else "product" if target_type in {"product", "product_review"} or "product" in action else "auth" if target_type in {"user", "membership", "identity"} or "login" in action or "register" in action else "ops")
     db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail, category=inferred, business_domain=business_domain, tenant_id=tenant_id, order_id=order_id, batch_no=batch_no, rule_version=rule_version, request_id=request_id, risk_level=risk_level, before_json=json.dumps(before or {}, ensure_ascii=False, default=str), after_json=json.dumps(after or {}, ensure_ascii=False, default=str)))
+
+
+def notify_platform_role(db: Session, role: str, title: str, content: str, target_type: str, target_id: str) -> None:
+    for recipient in db.scalars(select(User).where(User.platform_role.in_([role, "super_admin"]), User.is_active.is_(True))).all():
+        db.add(PlatformNotification(recipient_user_id=recipient.id, recipient_role=role, title=title, content=content, target_type=target_type, target_id=target_id))
+
+
+def require_product_review_role(user: User, stage: str) -> None:
+    allowed = {
+        "business": {"super_admin", "business_reviewer", "product_manager"},
+        "quality": {"super_admin", "quality_reviewer"},
+        "security": {"super_admin", "security_compliance"},
+        "operation": {"super_admin", "platform_operator"},
+    }
+    if user.platform_role not in allowed.get(stage, set()):
+        raise HTTPException(403, "当前角色无权执行该审核环节")
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(db_session)) -> User:
@@ -2587,6 +2616,22 @@ def update_notification_settings(body: NotificationSettingsBody, user: User = De
     return notification_settings(user, db)
 
 
+@app.get("/api/notifications")
+def platform_notifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    items = db.scalars(select(PlatformNotification).where(PlatformNotification.recipient_user_id == user.id).order_by(PlatformNotification.created_at.desc()).limit(100)).all()
+    return {"unread": sum(1 for item in items if item.status == "unread"), "items": [{"id": x.id, "title": x.title, "content": x.content, "target_type": x.target_type, "target_id": x.target_id, "status": x.status, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def read_platform_notification(notification_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.scalar(select(PlatformNotification).where(PlatformNotification.id == notification_id, PlatformNotification.recipient_user_id == user.id))
+    if not item:
+        raise HTTPException(404, "通知不存在")
+    item.status = "read"
+    db.commit()
+    return {"id": item.id, "status": item.status}
+
+
 @app.get("/api/admin/platform-roles")
 def platform_roles(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
@@ -2620,7 +2665,7 @@ def product_out(p: Product) -> dict[str, Any]:
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
-    if user.platform_role in {"super_admin", "platform_operator", "security_compliance"}:
+    if user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
         product = db.get(Product, product_id)
     else:
         enterprise = first_enterprise(db, user)
@@ -2832,7 +2877,8 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
         raise HTTPException(409, "当前产品状态不允许提交审核")
     product.status = "pending_review"
     product.review_comment = ""
-    audit(db, user.email, "submit_product_review", "product", product.id)
+    notify_platform_role(db, "business_reviewer", "产品待业务审核", f"产品“{product.name}”已提交审核，请进行业务审核。", "product", product.id)
+    audit(db, user.email, "submit_product_review", "product", product.id, after={"status": product.status})
     db.commit()
     return product_out(product)
 
@@ -2938,29 +2984,36 @@ async def platform_oauth_introspect(request: Request):
 
 @app.post("/api/products/{product_id}/review")
 def review_product(product_id: str, body: ProductReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        require_enterprise_admin(db, user, product.enterprise_id)
-    if product.status != "pending_review":
-        raise HTTPException(409, "只有待审核产品可以审核")
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "产品不存在")
+    stage_by_status = {"pending_review": "business", "quality_review": "quality", "operation_review": "operation"}
+    stage = stage_by_status.get(product.status)
+    if not stage:
+        raise HTTPException(409, "当前产品不在业务、质量或运营审核环节")
+    require_product_review_role(user, stage)
     if body.decision not in {"approve", "reject"}:
         raise HTTPException(400, "审核结论必须是 approve 或 reject")
     if body.decision == "reject" and not body.comment.strip():
         raise HTTPException(400, "驳回时必须填写审核意见")
-    if body.decision == "approve" and product.product_type == "dataset":
-        scan = run_product_security_scan(product, db, user.email or user.phone or user.id)
+    actor = user.email or user.phone or user.id
+    before_status = product.status
+    security_scan = None
+    if body.decision == "reject":
+        product.status = "rejected"
+    elif stage == "business":
+        product.status = "quality_review"
+        notify_platform_role(db, "quality_reviewer", "产品待质量审核", f"产品“{product.name}”已通过业务审核，请进行质量审核。", "product", product.id)
+    elif stage == "quality":
         product.status = "security_review"
-        product.review_comment = "业务审核通过，等待安全合规人员确认"
-        product.reviewed_by = user.email or user.phone or user.id
-        product.reviewed_at = now()
-        audit(db, user.email or user.phone or user.id, "enter_product_security_review", "product", product.id, scan.id)
-        db.commit()
-        return product_out(product) | {"security_report": security_scan_out(scan)}
-    product.status = "published" if body.decision == "approve" else "rejected"
-    product.review_comment = body.comment.strip()
-    product.reviewed_by = user.email
+        security_scan = run_product_security_scan(product, db, actor)
+        notify_platform_role(db, "security_compliance", "产品待安全审核", f"产品“{product.name}”已通过质量审核，请查看病毒和数据安全扫描报告。", "product", product.id)
+    elif stage == "operation":
+        product.status = "published"
+    product.review_comment = body.comment.strip() or ("已通过，进入" + {"business": "质量审核", "quality": "安全审核", "operation": "发布"}[stage])
+    product.reviewed_by = actor
     product.reviewed_at = now()
-    if body.decision == "approve" and product.product_type == "saas":
+    if body.decision == "approve" and stage == "operation" and product.product_type == "saas":
         config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if not config:
             client_id = "market_" + secrets.token_urlsafe(12)
@@ -2968,30 +3021,31 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
             config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
             db.add(config)
-    if body.decision == "approve" and product.product_type in {"api", "model", "saas"}:
+    if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model", "saas"}:
         client = ensure_oauth_client(db, product)
         route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
         if route:
             route.upstream_client_id = client.client_id
             route.upstream_client_secret = client.client_secret
         audit(db, user.email or user.phone or user.id, "ensure_platform_oauth_client", "oauth_client", client.id, product.product_type)
-    if body.decision == "approve" and product.product_type in {"api", "model"}:
+    if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model"}:
         route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
         if route:
             gateway_auto_publish(route, product, db, user.email or user.phone or user.id)
         else:
             audit(db, user.email or user.phone or user.id, "gateway_route_pending_config", "product", product.id, "产品已审核，但尚未保存网关配置")
-    audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
+    audit(db, actor, f"{stage}_{'approve' if body.decision == 'approve' else 'reject'}_product", "product", product.id, product.review_comment, before={"status": before_status}, after={"status": product.status})
     db.commit()
-    return product_out(product)
+    return product_out(product) | ({"security_report": security_scan_out(security_scan)} if security_scan else {})
 
 
 @app.get("/api/products/{product_id}/security-report")
 def product_security_report(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_security_operator(user)
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+        raise HTTPException(403, "当前角色无权查看产品安全报告")
     product = db.get(Product, product_id)
-    if not product or product.product_type != "dataset":
-        raise HTTPException(404, "数据集产品不存在")
+    if not product:
+        raise HTTPException(404, "产品不存在")
     scan = db.scalar(select(ProductSecurityScan).where(ProductSecurityScan.product_id == product.id).order_by(ProductSecurityScan.scanned_at.desc()))
     if not scan:
         raise HTTPException(404, "该数据集尚未生成安全审核报告")
@@ -3000,10 +3054,10 @@ def product_security_report(product_id: str, user: User = Depends(current_user),
 
 @app.post("/api/products/{product_id}/security-review")
 def review_product_security(product_id: str, body: ProductSecurityReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_security_operator(user)
+    require_product_review_role(user, "security")
     product = db.get(Product, product_id)
-    if not product or product.product_type != "dataset":
-        raise HTTPException(404, "数据集产品不存在")
+    if not product:
+        raise HTTPException(404, "产品不存在")
     if product.status != "security_review":
         raise HTTPException(409, "当前数据集不在安全审核环节")
     if body.decision not in {"approve", "reject"}:
@@ -3018,11 +3072,13 @@ def review_product_security(product_id: str, body: ProductSecurityReviewBody, us
     scan.reviewed_by = actor
     scan.reviewed_at = now()
     scan.review_comment = body.comment.strip()
-    product.status = "published" if body.decision == "approve" else "rejected"
+    product.status = "operation_review" if body.decision == "approve" else "rejected"
     product.review_comment = body.comment.strip() or "安全审核通过"
     product.reviewed_by = actor
     product.reviewed_at = now()
-    audit(db, actor, "approve_product_security" if body.decision == "approve" else "reject_product_security", "product", product.id, body.comment.strip())
+    if body.decision == "approve":
+        notify_platform_role(db, "platform_operator", "产品待运营审核", f"产品“{product.name}”已通过安全审核，请执行运营审核发布。", "product", product.id)
+    audit(db, actor, "approve_product_security" if body.decision == "approve" else "reject_product_security", "product", product.id, body.comment.strip(), before={"status": "security_review"}, after={"status": product.status})
     db.commit()
     return product_out(product) | {"security_report": security_scan_out(scan)}
 
@@ -3169,17 +3225,20 @@ def run_product_security_scan(product: Product, db: Session, actor: str) -> Prod
     text_parts = [metadata_text]
     files = db.scalars(select(FileObject).where(FileObject.product_id == product.id, FileObject.status != "deleted")).all()
     file_reports = []
+    file_findings = []
     for item in files:
         try:
             sample = read_product_sample(item)
+            file_presidio_findings, file_presidio_status = (presidio_analyze(sample) if item.scan_status == "clean" and sample else ([], "not_scanned"))
             if sample:
                 text_parts.append(sample)
-            file_reports.append({"file_id": item.id, "name": item.original_name, "sample_scanned": bool(sample), "size": item.size})
+            file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": item.scan_status, "clamav_report": item.scan_report, "sample_scanned": bool(sample), "presidio_status": file_presidio_status, "presidio_findings": file_presidio_findings})
+            file_findings.extend(file_presidio_findings)
         except Exception as exc:
-            file_reports.append({"file_id": item.id, "name": item.original_name, "sample_scanned": False, "error": str(exc)[:240]})
+            file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": item.scan_status, "clamav_report": item.scan_report, "sample_scanned": False, "presidio_status": "error", "error": str(exc)[:240]})
     combined = "\n".join(text_parts)
     presidio_findings, presidio_status = presidio_analyze(combined)
-    findings = market_sensitive_patterns(combined) + presidio_findings
+    findings = market_sensitive_patterns(combined) + presidio_findings + file_findings
     metadata_violations = product_security_policy_violations(product)
     if metadata_violations:
         findings.append({"entity": "PRODUCT_METADATA", "severity": "high", "message": "登记元数据缺少：" + "、".join(metadata_violations), "source": "market-policy"})
@@ -5593,7 +5652,55 @@ def sla_results(user: User = Depends(current_user), db: Session = Depends(db_ses
 
 
 def file_out(item: FileObject) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "scanned_at": item.scanned_at, "created_at": item.created_at}
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "scanned_at": item.scanned_at, "created_at": item.created_at}
+
+
+def scan_report_pdf(item: FileObject) -> bytes:
+    """Build a dependency-free PDF report; JSON details remain available in the API."""
+    try:
+        raw = json.loads(item.scan_report or "{}")
+    except json.JSONDecodeError:
+        raw = {"result": item.scan_report}
+    result = "通过" if item.scan_status == "clean" else "发现风险" if item.scan_status == "infected" else item.scan_status
+    lines = [
+        "Market File Security Scan Report",
+        f"File name: {item.original_name}",
+        f"File size: {item.size} bytes",
+        "Virus scanner: ClamAV",
+        "Virus scanner version: deployed ClamAV service",
+        f"Virus scan result: {item.scan_status}",
+        f"Conclusion: {result}",
+        f"Conclusion date: {(item.scanned_at or now()).isoformat()}",
+        "Presidio report: " + json.dumps(raw, ensure_ascii=True)[:1800],
+    ]
+    escape = lambda value: str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(f"({escape(line)}) Tj T*" for line in lines) + " ET"
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        f"<< /Length {len(stream.encode('latin-1', 'replace'))} >>\nstream\n{stream}\nendstream",
+    ]
+    pdf = "%PDF-1.4\n"; offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(len(pdf.encode("latin-1", "replace")))
+        pdf += f"{index} 0 obj\n{obj}\nendobj\n"
+    xref = len(pdf.encode("latin-1", "replace"))
+    pdf += f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n"
+    pdf += "".join(f"{offset:010d} 00000 n \n" for offset in offsets[1:])
+    pdf += f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF"
+    return pdf.encode("latin-1", "replace")
+
+
+@app.get("/api/files/{file_id}/scan-report.pdf")
+def download_scan_report(file_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.get(FileObject, file_id)
+    if not item:
+        raise HTTPException(404, "文件不存在")
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"} and item.owner_id != user.id:
+        raise HTTPException(403, "无权查看扫描报告")
+    return Response(content=scan_report_pdf(item), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{item.original_name}.scan-report.pdf"'})
 
 
 def validate_product_archive(content: bytes, filename: str) -> None:
@@ -5629,6 +5736,12 @@ def validate_product_archive(content: bytes, filename: str) -> None:
                         raise HTTPException(400, "压缩包包含路径穿越或链接条目")
         except tarfile.TarError as exc:
             raise HTTPException(400, "TAR压缩包结构无效") from exc
+    elif lower_name.endswith(".rar"):
+        if not content.startswith(b"Rar!\x1a\x07"):
+            raise HTTPException(400, "RAR压缩包文件头无效")
+    elif lower_name.endswith(".7z"):
+        if not content.startswith(b"7z\xbc\xaf\x27\x1c"):
+            raise HTTPException(400, "7z压缩包文件头无效")
 
 
 @app.get("/api/products/{product_id}/files")
@@ -5665,14 +5778,17 @@ def upload_file(
     upload.file.seek(0)
     content = b""
     if file_role == "product_data":
-        allowed = (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz")
+        allowed = (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".rar", ".7z")
         if not lower_name.endswith(allowed):
-            raise HTTPException(400, "数据文件仅支持 zip、tar、tar.gz、tgz、bz2 或 xz 压缩格式")
+            raise HTTPException(400, "数据文件仅支持 zip、tar、tar.gz、tgz、bz2、xz、rar 或 7z 压缩格式")
         if size >= 10 * 1024 * 1024 * 1024:
             raise HTTPException(413, "数据文件必须小于10GB")
-        if size <= 100 * 1024 * 1024:
-            content = upload.file.read()
-            upload.file.seek(0)
+        if size <= 100 * 1024 * 1024 or lower_name.endswith((".rar", ".7z")):
+            content = upload.file.read() if size <= 100 * 1024 * 1024 else upload.file.read(1024 * 1024)
+        else:
+            content = upload.file.read(1024 * 1024)
+        upload.file.seek(0)
+        if size <= 100 * 1024 * 1024 or lower_name.endswith((".rar", ".7z")):
             validate_product_archive(content, filename)
     if file_role == "product_logo":
         name = lower_name
@@ -5752,7 +5868,7 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
     item = db.get(FileObject, file_id)
     if not item or item.status == "deleted":
         raise HTTPException(404, "文件不存在")
-    reviewer = user.platform_role in {"super_admin", "platform_operator"}
+    reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
     if item.file_role == "delivery_attachment" and not owner and not reviewer:
         attachment = db.scalar(select(DeliveryAttachment).where(DeliveryAttachment.file_id == item.id))
