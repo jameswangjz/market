@@ -990,6 +990,10 @@ class MemberDepartmentBody(BaseModel):
     department_id: str = ""
 
 
+class MembershipStatusBody(BaseModel):
+    action: str = Field(pattern="^(disable|enable|delete)$")
+
+
 class NotificationSettingsBody(BaseModel):
     sms_provider: str = ""
     sms_endpoint: str = ""
@@ -1376,7 +1380,7 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
         user = db.get(User, payload.get("sub"))
     except (jwt.PyJWTError, TypeError):
         user = None
-    if not user or not user.is_active:
+    if not user or not user.is_active or user.activation_status == "deleted":
         raise HTTPException(401, "登录已失效")
     return user
 
@@ -1485,6 +1489,11 @@ def ensure_platform_role_accounts(db: Session):
             account.platform_role = role
             account.is_active = True
         # Platform role accounts are not enterprise members; they manage tenants through platform scope.
+        for membership in db.scalars(select(Membership).where(Membership.user_id == account.id)).all():
+            db.delete(membership)
+    # Platform administrators and specialist accounts are tenant-less. Repair
+    # historical invitations or seed data that attached them to an enterprise.
+    for account in db.scalars(select(User).where(User.platform_role != "")).all():
         for membership in db.scalars(select(Membership).where(Membership.user_id == account.id)).all():
             db.delete(membership)
 
@@ -2399,6 +2408,8 @@ def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str |
         db.add(invitee)
         db.flush()
         created_user = True
+    if invitee.platform_role:
+        raise HTTPException(403, "平台角色账号不属于任何企业，不能被邀请加入企业")
     existing = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
     if existing:
         raise HTTPException(409, "用户已经加入该企业")
@@ -2482,6 +2493,8 @@ def my_enterprise_invitations(user: User = Depends(current_user), db: Session = 
 
 @app.post("/api/enterprise/invitations/{token}/accept")
 def accept_enterprise_invitation(token: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if user.platform_role:
+        raise HTTPException(403, "平台角色账号不属于任何企业，不能接受企业邀请")
     invitation = db.scalar(select(EnterpriseInvitation).where(EnterpriseInvitation.token == token, EnterpriseInvitation.invitee_id == user.id))
     if not invitation or invitation.status != "pending" or invitation.expires_at <= now():
         raise HTTPException(400, "邀请不存在、已处理或已过期")
@@ -2497,9 +2510,9 @@ def accept_enterprise_invitation(token: str, user: User = Depends(current_user),
 @app.get("/api/enterprise/members")
 def enterprise_members(enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id) if enterprise_id else db.get(Enterprise, current_membership(db, user).enterprise_id)
-    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == enterprise.id, Membership.status.in_(["active", "pending_activation"]))).all()
+    rows = db.execute(select(Membership, User).join(User, User.id == Membership.user_id).where(Membership.enterprise_id == enterprise.id, Membership.status.in_(["active", "pending_activation", "disabled", "deleted"]))).all()
     departments = {x.id: x.name for x in db.scalars(select(EnterpriseDepartment).where(EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")).all()}
-    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_name": departments.get(m.department_id, "未分配"), "business_roles": m.business_roles.split(","), "verified_status": u.verified_status, "activation_status": u.activation_status, "membership_status": m.status} for m, u in rows]}
+    return {"items": [{"membership_id": m.id, "user_id": u.id, "name": u.name, "email": u.email, "phone": u.phone, "role": m.role, "department_id": m.department_id, "department_name": departments.get(m.department_id, "未分配"), "business_roles": m.business_roles.split(","), "verified_status": u.verified_status, "activation_status": u.activation_status, "is_active": u.is_active, "membership_status": m.status, "account_status": "deleted" if u.activation_status == "deleted" else "disabled" if not u.is_active else "active"} for m, u in rows]}
 
 
 @app.patch("/api/enterprise/members/{membership_id}")
@@ -2509,6 +2522,9 @@ def update_enterprise_member(membership_id: str, body: MembershipRoleBody, user:
     target = db.get(Membership, membership_id)
     if not target or target.status != "active":
         raise HTTPException(404, "企业成员不存在")
+    target_user = db.get(User, target.user_id)
+    if target_user and target_user.platform_role:
+        raise HTTPException(403, "平台角色账号不属于企业，不能调整企业角色")
     if user.platform_role not in {"super_admin", "platform_operator"}:
         admin = require_enterprise_admin(db, user, target.enterprise_id)
     else:
@@ -2519,6 +2535,50 @@ def update_enterprise_member(membership_id: str, body: MembershipRoleBody, user:
     audit(db, user.email or user.phone or user.id, "update_enterprise_member_role", "membership", target.id, body.role)
     db.commit()
     return {"membership_id": target.id, "role": target.role}
+
+
+@app.patch("/api/enterprise/members/{membership_id}/status")
+def update_enterprise_member_status(membership_id: str, body: MembershipStatusBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    target = db.get(Membership, membership_id)
+    if not target or target.status not in {"active", "pending_activation", "disabled", "deleted"}:
+        raise HTTPException(404, "企业成员不存在")
+    if user.platform_role in {"super_admin", "platform_operator"}:
+        enterprise_management_scope(db, user, target.enterprise_id)
+    else:
+        require_enterprise_admin(db, user, target.enterprise_id)
+    target_user = db.get(User, target.user_id)
+    if not target_user:
+        raise HTTPException(404, "成员用户不存在")
+    if target_user.platform_role:
+        raise HTTPException(403, "平台角色账号不属于企业，不能执行成员状态操作")
+    if target_user.id == user.id:
+        raise HTTPException(400, "不能对当前登录账号执行此操作")
+    if target.role == "super_admin":
+        raise HTTPException(403, "企业超级管理员不能被企业成员操作")
+    before = {"user_active": target_user.is_active, "activation_status": target_user.activation_status, "membership_status": target.status}
+    if body.action == "disable":
+        if target_user.activation_status == "deleted":
+            raise HTTPException(400, "已删除用户不能重复禁用")
+        target_user.is_active = False
+        target_user.activation_status = "disabled"
+    elif body.action == "enable":
+        if target_user.activation_status == "deleted" or target.status == "deleted":
+            raise HTTPException(400, "已删除用户不能解禁，请重新邀请用户")
+        target_user.is_active = True
+        target_user.activation_status = "active"
+        if target.status == "disabled":
+            target.status = "active"
+    else:
+        target_user.is_active = False
+        target_user.activation_status = "deleted"
+        target.status = "deleted"
+        for grant in db.scalars(select(ApplicationAccessGrant).where(ApplicationAccessGrant.user_id == target_user.id, ApplicationAccessGrant.enterprise_id == target.enterprise_id, ApplicationAccessGrant.status == "active")).all():
+            grant.status = "revoked"
+    after = {"user_active": target_user.is_active, "activation_status": target_user.activation_status, "membership_status": target.status}
+    action_name = {"disable": "disable_enterprise_member", "enable": "enable_enterprise_member", "delete": "delete_enterprise_member"}[body.action]
+    audit(db, user.email or user.phone or user.id, action_name, "membership", target.id, target_user.email or target_user.phone or target_user.id, category="auth", business_domain="enterprise", before=before, after=after)
+    db.commit()
+    return {"membership_id": target.id, "user_id": target_user.id, "action": body.action, "account_status": "deleted" if target_user.activation_status == "deleted" else "disabled" if not target_user.is_active else "active", "membership_status": target.status}
 
 
 @app.get("/api/enterprise/departments")
@@ -2764,6 +2824,9 @@ def grant_application_access(product_id: str, body: ApplicationAccessBody, user:
     member = db.scalar(select(Membership).where(Membership.user_id == body.user_id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
     if not member:
         raise HTTPException(404, "目标用户不是当前企业成员")
+    member_user = db.get(User, body.user_id)
+    if not member_user or not member_user.is_active or member_user.activation_status == "deleted":
+        raise HTTPException(400, "目标用户已被禁用或删除，不能授予应用访问权限")
     existing = db.scalar(select(ApplicationAccessGrant).where(ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.user_id == body.user_id, ApplicationAccessGrant.status == "active"))
     if existing:
         return {"id": existing.id, "status": existing.status, "user_id": existing.user_id}
@@ -5579,7 +5642,16 @@ def users(user: User = Depends(current_user), db: Session = Depends(db_session))
             items = db.scalars(select(User).where(User.id.in_(visible_user_ids)).order_by(User.created_at.desc())).all()
         else:
             items = [user]
-    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "created_at": x.created_at} for x in items]}
+    user_ids = [item.id for item in items]
+    role_priority = {"super_admin": 3, "enterprise_admin": 2, "member": 1}
+    role_names = {"super_admin": "超级管理员", "enterprise_admin": "管理员", "member": "普通用户"}
+    memberships = db.scalars(select(Membership).where(Membership.user_id.in_(user_ids), Membership.status.in_(["active", "pending_activation", "disabled"]))).all() if user_ids else []
+    roles_by_user: dict[str, str] = {}
+    for membership in memberships:
+        current = roles_by_user.get(membership.user_id, "")
+        if role_priority.get(membership.role, 0) > role_priority.get(current, 0):
+            roles_by_user[membership.user_id] = membership.role
+    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/admin/enterprises")
