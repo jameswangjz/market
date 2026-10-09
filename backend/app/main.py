@@ -5854,6 +5854,12 @@ def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
     clamav_report = raw.get("clamav_report", item.scan_report)
     presidio_status = raw.get("presidio_status", "not_scanned")
     presidio_findings = raw.get("presidio_findings", [])
+    if any(isinstance(entry, dict) and "start" in entry and "matched_text" not in entry for entry in presidio_findings):
+        try:
+            presidio_findings = enrich_legacy_presidio_findings(read_product_sample(item), presidio_findings)
+        except Exception:
+            pass
+    presidio_findings = filter_presidio_dataset_false_positives(presidio_findings)
     result = "通过" if clamav_status == "clean" else "发现风险" if clamav_status == "infected" else clamav_status
     lines = [
         "Market File Security Scan Report",
@@ -5868,7 +5874,26 @@ def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
     if report_type in {"combined", "clamav"}:
         lines.append("ClamAV detail: " + str(clamav_report))
     if report_type in {"combined", "presidio"}:
-        lines.extend([f"Presidio version: {presidio_version()}", f"Presidio result: {presidio_status}", "Presidio findings: " + json.dumps(presidio_findings, ensure_ascii=True)[:1800]])
+        lines.extend([f"Presidio version: {presidio_version()}", f"Presidio result: {presidio_status}"])
+        if presidio_findings:
+            lines.append(f"Presidio findings count: {len(presidio_findings)}")
+            labels = {"PERSON": "个人姓名", "PHONE_NUMBER": "电话号码", "EMAIL_ADDRESS": "邮箱地址", "LOCATION": "地理位置", "ORGANIZATION": "组织机构", "CREDIT_CARD": "银行卡/信用卡号", "IBAN_CODE": "银行账户", "IP_ADDRESS": "IP地址", "URL": "网址"}
+            for index, finding in enumerate(presidio_findings[:100], 1):
+                entity = finding.get("entity", "UNKNOWN") if isinstance(finding, dict) else "UNKNOWN"
+                label = finding.get("entity_label") or labels.get(entity, entity) if isinstance(finding, dict) else entity
+                score = finding.get("score") if isinstance(finding, dict) else None
+                matched = finding.get("matched_text") or "未提取到具体内容" if isinstance(finding, dict) else str(finding)
+                line_number = finding.get("line_number", "-") if isinstance(finding, dict) else "-"
+                line_content = finding.get("line_content") or "-" if isinstance(finding, dict) else "-"
+                lines.extend([
+                    f"Finding {index}: {label} ({entity})",
+                    f"Confidence: {float(score) * 100:.1f}%" if score is not None else "Confidence: -",
+                    f"Matched content: {matched[:240]}",
+                    f"Line: {line_number}",
+                    f"Line content: {line_content[:1000]}",
+                ])
+        else:
+            lines.append("Presidio findings: 未发现通过当前规则确认的敏感信息")
     # Keep the original Helvetica look for ASCII and switch only non-ASCII
     # runs to the Adobe GB CID font so Chinese text remains readable.
     def render_line(value: str) -> str:
