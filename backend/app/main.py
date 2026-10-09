@@ -12,6 +12,7 @@ import socket
 import ssl
 import struct
 import tarfile
+import tempfile
 import time
 import zipfile
 from email.message import EmailMessage
@@ -3204,14 +3205,30 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
     if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz"))):
         return ""
     response = None
+    temp_path = None
     if raw_content is None:
         client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
         response = client.get_object(MINIO_BUCKET, file_item.object_name)
     try:
-        sample = raw_content if raw_content is not None else response.read(file_item.size if file_item.size <= 100 * 1024 * 1024 else 20_000_000)
+        if raw_content is not None:
+            sample = raw_content
+        elif file_item.size > 100 * 1024 * 1024:
+            # Archive indexes can be at the end of large files. Spool to disk
+            # so extraction is seekable without holding the object in memory.
+            with tempfile.NamedTemporaryFile(prefix="market-presidio-", suffix=".archive", delete=False) as handle:
+                temp_path = handle.name
+                while True:
+                    chunk = response.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+            sample = b""
+        else:
+            sample = response.read(file_item.size)
         name = file_item.original_name.lower()
         if name.endswith(".zip"):
-            with zipfile.ZipFile(BytesIO(sample)) as archive:
+            archive_source = temp_path or BytesIO(sample)
+            with zipfile.ZipFile(archive_source) as archive:
                 text_parts = []
                 for entry in archive.infolist()[:50]:
                     if entry.is_dir() or not entry.filename.lower().endswith((".txt", ".csv", ".json", ".xml")):
@@ -3219,7 +3236,8 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
                     text_parts.append(archive.open(entry).read(2_000_000).decode("utf-8", errors="ignore"))
                 return "\n".join(text_parts)
         if name.endswith((".tar", ".tgz", ".tar.gz")):
-            with tarfile.open(fileobj=BytesIO(sample), mode="r:*") as archive:
+            archive = tarfile.open(name=temp_path, mode="r:*") if temp_path else tarfile.open(fileobj=BytesIO(sample), mode="r:*")
+            with archive:
                 text_parts = []
                 for entry in archive.getmembers()[:50]:
                     if not entry.isfile() or not entry.name.lower().endswith((".txt", ".csv", ".json", ".xml")):
@@ -3233,6 +3251,11 @@ def read_product_sample(file_item: FileObject, raw_content: bytes | None = None)
         if response is not None:
             response.close()
             response.release_conn()
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def run_product_security_scan(product: Product, db: Session, actor: str) -> ProductSecurityScan:
