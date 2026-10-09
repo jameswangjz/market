@@ -3198,15 +3198,17 @@ def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
     return findings
 
 
-def read_product_sample(file_item: FileObject) -> str:
+def read_product_sample(file_item: FileObject, raw_content: bytes | None = None) -> str:
     if not MINIO_ENDPOINT or file_item.size <= 0:
         return ""
     if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz"))):
         return ""
-    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
-    response = client.get_object(MINIO_BUCKET, file_item.object_name)
+    response = None
+    if raw_content is None:
+        client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+        response = client.get_object(MINIO_BUCKET, file_item.object_name)
     try:
-        sample = response.read(20_000_000)
+        sample = raw_content if raw_content is not None else response.read(file_item.size if file_item.size <= 100 * 1024 * 1024 else 20_000_000)
         name = file_item.original_name.lower()
         if name.endswith(".zip"):
             with zipfile.ZipFile(BytesIO(sample)) as archive:
@@ -3228,8 +3230,9 @@ def read_product_sample(file_item: FileObject) -> str:
                 return "\n".join(text_parts)
         return sample.decode("utf-8", errors="ignore")
     finally:
-        response.close()
-        response.release_conn()
+        if response is not None:
+            response.close()
+            response.release_conn()
 
 
 def run_product_security_scan(product: Product, db: Session, actor: str) -> ProductSecurityScan:
@@ -5672,7 +5675,7 @@ def file_out(item: FileObject) -> dict[str, Any]:
         scan = json.loads(item.scan_report or "{}")
     except json.JSONDecodeError:
         scan = {"clamav_report": item.scan_report}
-    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": scan.get("presidio_findings", []), "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": scan.get("presidio_findings", []), "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
 
 
 def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
@@ -5700,24 +5703,27 @@ def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
         lines.append("ClamAV detail: " + str(clamav_report))
     if report_type in {"combined", "presidio"}:
         lines.extend([f"Presidio result: {presidio_status}", "Presidio findings: " + json.dumps(presidio_findings, ensure_ascii=True)[:1800]])
-    escape = lambda value: str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(f"({escape(line)}) Tj T*" for line in lines) + " ET"
+    # Use the standard Adobe-GB1 CID font and UTF-16BE hex strings so Chinese
+    # filenames, conclusions, and findings remain readable without embedding a font.
+    encode_text = lambda value: str(value).encode("utf-16-be").hex().upper()
+    stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(f"<{encode_text(line)}> Tj T*" for line in lines) + " ET"
     objects = [
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        f"<< /Length {len(stream.encode('latin-1', 'replace'))} >>\nstream\n{stream}\nendstream",
+        "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [6 0 R] >>",
+        f"<< /Length {len(stream.encode('ascii'))} >>\nstream\n{stream}\nendstream",
+        "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> /DW 1000 >>",
     ]
     pdf = "%PDF-1.4\n"; offsets = [0]
     for index, obj in enumerate(objects, 1):
-        offsets.append(len(pdf.encode("latin-1", "replace")))
+        offsets.append(len(pdf.encode("ascii")))
         pdf += f"{index} 0 obj\n{obj}\nendobj\n"
-    xref = len(pdf.encode("latin-1", "replace"))
+    xref = len(pdf.encode("ascii"))
     pdf += f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n"
     pdf += "".join(f"{offset:010d} 00000 n \n" for offset in offsets[1:])
     pdf += f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF"
-    return pdf.encode("latin-1", "replace")
+    return pdf.encode("ascii")
 
 
 @app.get("/api/files/{file_id}/scan-report.pdf")
@@ -5878,12 +5884,18 @@ def upload_file(
         old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role == "product_data", version_filter, FileObject.status != "deleted")).all()
         for old_file in old_files:
             old_file.status = "deleted"
+    if file_role in {"product_data", "product_logo"} and product_id:
+        # A replacement invalidates all aggregate Presidio/security reports that
+        # may still contain findings from the previous file.
+        old_scans = db.scalars(select(ProductSecurityScan).where(ProductSecurityScan.product_id == product_id)).all()
+        for old_scan in old_scans:
+            db.delete(old_scan)
     item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=json.dumps({"clamav_status": scan_status, "clamav_report": scan_report}, ensure_ascii=False), scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
     db.flush()
     if file_role == "product_data" and scan_status == "clean":
         try:
-            sample = read_product_sample(item)
+            sample = read_product_sample(item, content if size <= 100 * 1024 * 1024 else None)
             presidio_findings, presidio_status = presidio_analyze(sample) if sample else ([], "not_scanned")
             item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": presidio_status, "presidio_findings": presidio_findings, "sample_scanned": bool(sample)}, ensure_ascii=False)
         except Exception as exc:
