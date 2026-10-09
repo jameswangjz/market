@@ -38,6 +38,10 @@ const api = axios.create({ baseURL: "/api" });
 const token = ref(localStorage.getItem("market_token") || "");
 const user = ref(null);
 const enterprise = ref(null);
+const enterpriseInitial = computed(() => {
+  const name = String(enterprise.value?.name || "").trim();
+  return [...name].find((char) => /[\u4e00-\u9fffA-Za-z0-9]/.test(char)) || "企";
+});
 const loginForm = ref({ email: "admin@market.local", password: "Admin123!" });
 const loginError = ref("");
 const activationHint = ref("");
@@ -1856,7 +1860,7 @@ onUnmounted(() => {
         </div>
       </div>
       <div class="workspace-switch">
-        <div class="workspace-avatar">天</div>
+        <div class="workspace-avatar">{{ enterpriseInitial }}</div>
         <div v-if="!collapsed" class="workspace-copy">
           <strong>{{ enterprise?.name }}</strong
           ><small>主租户 · 已认证</small>
