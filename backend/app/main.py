@@ -445,6 +445,7 @@ class ApiCredential(Base):
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_quota: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(180), default="")
@@ -551,6 +552,16 @@ class DeliveryTask(Base):
     sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DeliveryAttachment(Base):
+    __tablename__ = "delivery_attachments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    task_id: Mapped[str] = mapped_column(ForeignKey("delivery_tasks.id"), index=True)
+    file_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    uploaded_by: Mapped[str] = mapped_column(String(180), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -1118,6 +1129,7 @@ class GatewayCredentialBody(BaseModel):
     rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100000)
     daily_quota: int | None = Field(default=None, ge=1, le=100000000)
     monthly_quota: int | None = Field(default=None, ge=1, le=3000000000)
+    total_quota: int | None = Field(default=None, ge=0, le=3000000000)
     expires_at: datetime | None = None
 
 
@@ -1145,6 +1157,11 @@ class TransitionBody(BaseModel):
 class DeliveryProcessBody(BaseModel):
     success: bool = True
     error: str = ""
+
+
+class DeliveryAttachmentBody(BaseModel):
+    file_id: str
+    description: str = ""
 
 
 class DevelopmentTaskUpdate(BaseModel):
@@ -1525,6 +1542,7 @@ TRANSITIONS: dict[str, tuple[str, str, str, str]] = {
     "start_delivery": ("main", "pending_fulfillment", "fulfilling", "开始履约"),
     "submit_delivery": ("delivery", "preparing", "pending_acceptance", "提交交付物"),
     "accept_delivery": ("delivery", "pending_acceptance", "accepted", "验收通过"),
+    "reject_delivery": ("delivery", "pending_acceptance", "preparing", "拒绝交付并退回整改"),
     "confirm_order": ("main", "pending_confirmation", "completed", "客户确认或自动确认"),
     "mark_exception": ("delivery", "preparing", "exception", "标记交付异常"),
     "retry_delivery": ("delivery", "exception", "preparing", "整改后重试"),
@@ -1733,7 +1751,15 @@ def ensure_review_and_file_schema():
             "order_id": "VARCHAR(36) DEFAULT ''",
             "product_version_id": "VARCHAR(36) DEFAULT ''",
             "monthly_quota": "INTEGER",
+            "total_quota": "INTEGER DEFAULT 0",
             "apisix_consumer_name": "VARCHAR(180) DEFAULT ''",
+        },
+        "delivery_attachments": {
+            "task_id": "VARCHAR(36)",
+            "file_id": "VARCHAR(36)",
+            "description": "TEXT DEFAULT ''",
+            "uploaded_by": "VARCHAR(180) DEFAULT ''",
+            "created_at": "TIMESTAMP WITH TIME ZONE",
         },
         "product_release_versions": {
             "rate_limit_per_minute": "INTEGER DEFAULT 60",
@@ -3373,7 +3399,7 @@ def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, 
     route_key = route.route_key if route else "unknown"
     daily_quota = credential.daily_quota if credential.daily_quota is not None else (route.daily_quota if route else 0)
     monthly_quota = credential.monthly_quota if credential.monthly_quota is not None else (route.monthly_quota if route else 0)
-    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}, "market-gateway-quota": {"route_key": route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0}}})
+    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}, "market-gateway-quota": {"route_key": route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "total_quota": credential.total_quota or 0}}})
     return True
 
 
@@ -3468,7 +3494,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -3639,8 +3665,11 @@ def list_order_api_credentials(order_id: str, user: User = Depends(current_user)
 @app.post("/api/orders/{order_id}/api-credentials")
 def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
+    version = db.get(ProductReleaseVersion, order.product_version_id)
+    if not version:
+        raise HTTPException(409, "订单对应的 API 版本不存在")
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=order.product_version_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=order.product_version_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else version.rate_limit_per_minute, daily_quota=body.daily_quota if body.daily_quota is not None else version.daily_quota, monthly_quota=body.monthly_quota if body.monthly_quota is not None else version.monthly_quota, total_quota=body.total_quota if body.total_quota is not None else version.quota_amount, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -3681,7 +3710,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=old.product_version_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=old.product_version_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, total_quota=old.total_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -4153,7 +4182,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if not item:
         raise HTTPException(400, "不支持的订单动作")
     domain, expected, target, label = item
-    if body.action in {"confirm_payment", "cancel_order"}:
+    if body.action in {"confirm_payment", "cancel_order", "accept_delivery", "reject_delivery"}:
         require_enterprise_admin(db, user, order.buyer_enterprise_id)
     if domain == "main":
         current = order.main_status
@@ -4172,6 +4201,10 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             raise HTTPException(409, "当前订单状态不允许取消")
         old_main = order.main_status
         order.main_status = "cancelled"
+        for credential in db.scalars(select(ApiCredential).where(ApiCredential.order_id == order.id, ApiCredential.status == "active")).all():
+            credential.status = "revoked"
+            remove_apisix_consumer(credential)
+            audit(db, user.email or user.phone or user.id, "revoke_api_credential_order_cancelled", "api_credential", credential.id, order.order_no, category="delivery", business_domain="api", order_id=order.id)
         log_state(db, order, "main", old_main, "cancelled", body.action, user, body.reason)
         audit(db, user.email or user.phone or user.id, body.action, "order", order.id, body.reason)
         db.commit()
@@ -4233,6 +4266,11 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         payment.status = "refunded" if fully_refunded else "paid"
         refund_target = "refunded" if fully_refunded else "paid"
         order.payment_status = refund_target
+        if refund_target == "refunded" or order.refunded_amount > 0:
+            for credential in db.scalars(select(ApiCredential).where(ApiCredential.order_id == order.id, ApiCredential.status == "active")).all():
+                credential.status = "revoked"
+                remove_apisix_consumer(credential)
+                audit(db, user.email or user.phone or user.id, "revoke_api_credential_refunded", "api_credential", credential.id, order.order_no, category="payment_refund", business_domain="api", order_id=order.id)
         if order.after_sales_status == "processing":
             old_after_sales = order.after_sales_status
             order.after_sales_status = "resolved"
@@ -4263,6 +4301,17 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             log_state(db, order, "main", "fulfilling", "pending_confirmation", "交付完成/待确认", user, body.reason)
         if body.action == "accept_delivery":
             order.main_status = "pending_confirmation"
+            task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
+            if task:
+                task.status = "completed"
+                task.note = body.reason or task.note
+        if body.action == "reject_delivery":
+            order.main_status = "fulfilling"
+            task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
+            if task:
+                task.status = "preparing"
+                task.last_error = body.reason or "购买方拒绝履约结果"
+                task.note = body.reason or task.note
         if body.action == "confirm_order":
             order.delivery_status = "accepted"
         if body.action == "retry_delivery":
@@ -4311,10 +4360,74 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
     return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count, "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at, "sla_due_at": task.sla_due_at}, "order": order_out(order)}
 
 
+def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[DeliveryTask, Order]:
+    task = db.get(DeliveryTask, task_id)
+    if not task:
+        raise HTTPException(404, "交付任务不存在")
+    order = db.get(Order, task.order_id)
+    if not order:
+        raise HTTPException(404, "关联订单不存在")
+    if user.platform_role in {"super_admin", "platform_operator", "delivery_monitor"}:
+        return task, order
+    membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]), Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"])))
+    if not membership:
+        raise HTTPException(403, "无权访问该履约任务")
+    return task, order
+
+
+@app.post("/api/delivery-tasks/{task_id}/attachments")
+def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), description: str = Form(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    task, order = delivery_task_access(task_id, user, db)
+    if task.status in {"completed", "cancelled"}:
+        raise HTTPException(409, "履约任务已完成，不能继续上传附件")
+    upload.file.seek(0, 2)
+    size = upload.file.tell()
+    upload.file.seek(0)
+    if size > 100 * 1024 * 1024:
+        raise HTTPException(413, "履约附件不能超过100MB")
+    scan_status, scan_report = clamav_scan_stream(upload.file, size)
+    if scan_status == "infected":
+        audit(db, user.email or user.phone or user.id, "reject_infected_delivery_attachment", "delivery_task", task.id, scan_report, category="security", business_domain="delivery", order_id=order.id, risk_level="high")
+        db.commit()
+        raise HTTPException(400, "履约附件未通过病毒扫描")
+    upload.file.seek(0)
+    hasher = hashlib.sha256()
+    while True:
+        chunk = upload.file.read(1024 * 1024)
+        if not chunk:
+            break
+        hasher.update(chunk)
+    upload.file.seek(0)
+    filename = upload.filename or "delivery-attachment"
+    object_name = f"delivery/{order.id}/{task.id}/{secrets.token_hex(6)}-{filename}"
+    if not MINIO_ENDPOINT:
+        raise HTTPException(503, "文件存储服务未配置")
+    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+    if not client.bucket_exists(MINIO_BUCKET):
+        client.make_bucket(MINIO_BUCKET)
+    client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
+    file_item = FileObject(owner_id=user.id, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role="delivery_attachment", version="", description=description, status="active", scan_status=scan_status, scan_report=scan_report, scanned_at=now())
+    db.add(file_item)
+    db.flush()
+    attachment = DeliveryAttachment(task_id=task.id, file_id=file_item.id, description=description, uploaded_by=user.email or user.phone or user.id)
+    db.add(attachment)
+    audit(db, user.email or user.phone or user.id, "upload_delivery_attachment", "delivery_attachment", attachment.id, filename, category="delivery", business_domain="delivery", order_id=order.id, after={"file_id": file_item.id, "size": size, "scan_status": scan_status})
+    db.commit()
+    return {"id": attachment.id, "task_id": task.id, "file_id": file_item.id, "name": filename, "description": description, "uploaded_by": attachment.uploaded_by, "created_at": attachment.created_at}
+
+
+@app.get("/api/delivery-tasks/{task_id}/attachments")
+def list_delivery_attachments(task_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    task, _ = delivery_task_access(task_id, user, db)
+    rows = db.scalars(select(DeliveryAttachment).where(DeliveryAttachment.task_id == task.id).order_by(DeliveryAttachment.created_at.desc())).all()
+    files = {x.id: x for x in db.scalars(select(FileObject).where(FileObject.id.in_([item.file_id for item in rows]))).all()} if rows else {}
+    return {"items": [{"id": x.id, "task_id": x.task_id, "file_id": x.file_id, "name": files.get(x.file_id).original_name if files.get(x.file_id) else "", "description": x.description, "uploaded_by": x.uploaded_by, "created_at": x.created_at} for x in rows]}
+
+
 @app.get("/api/delivery-tasks")
 def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(DeliveryTask).order_by(DeliveryTask.created_at.desc())).all()
-    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/after-sales")
@@ -5543,6 +5656,12 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         raise HTTPException(404, "文件不存在")
     reviewer = user.platform_role in {"super_admin", "platform_operator"}
     owner = item.owner_id == user.id
+    if item.file_role == "delivery_attachment" and not owner and not reviewer:
+        attachment = db.scalar(select(DeliveryAttachment).where(DeliveryAttachment.file_id == item.id))
+        task = db.get(DeliveryTask, attachment.task_id) if attachment else None
+        order = db.get(Order, task.order_id) if task else None
+        member = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]) if order else False, Membership.status == "active")) if order else None
+        owner = bool(member)
     if not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
     download_log = None

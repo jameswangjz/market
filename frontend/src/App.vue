@@ -1653,7 +1653,7 @@ function nextActions(order) {
   if (order.delivery_status === "preparing")
     actions.push(["submit_delivery", "提交交付物"]);
   if (order.delivery_status === "pending_acceptance")
-    actions.push(["accept_delivery", "验收通过"]);
+    actions.push(["accept_delivery", "验收通过"], ["reject_delivery", "拒绝并退回整改"]);
   if (order.main_status === "pending_confirmation")
     actions.push(["confirm_order", "确认完成"]);
   if (order.delivery_status === "exception")
@@ -3423,6 +3423,7 @@ onUnmounted(() => {
               ><small
                 >{{ item.key_prefix }} ·
                 {{ item.status === "active" ? "启用中" : "已停用" }} ·
+                总额度 {{ item.total_quota || "不限" }} ·
                 {{ fmtDate(item.created_at) }}</small
               >
             </div>
