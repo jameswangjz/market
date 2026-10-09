@@ -358,6 +358,9 @@ function label(value) {
 function participantLabel(value) {
   return { platform: "平台运营方", provider: "数据/服务提供方", service: "数据服务方", expert: "专家", channel: "渠道" }[value] || value;
 }
+const productReviewActionLabels = { submit_product_review: "提交审核", business_approve_product: "业务审核通过", business_reject_product: "业务审核拒绝", quality_approve_product: "质量审核通过", quality_reject_product: "质量审核拒绝", approve_product_security: "安全审核通过", reject_product_security: "安全审核拒绝", operation_approve_product: "运营审核通过", operation_reject_product: "运营审核拒绝", withdraw_product_review: "撤回审核" };
+function productReviewActionLabel(value) { return productReviewActionLabels[value] || value; }
+function productReviewResult(item) { const status = item.after?.status; if (item.action.includes("reject") || status === "rejected") return "拒绝"; if (item.action.includes("approve") || status === "published" || status === "quality_review" || status === "security_review" || status === "operation_review") return "通过"; if (item.action === "withdraw_product_review") return "撤回"; return item.result === "success" ? "已提交" : item.result || "已记录"; }
 function notify(message) {
   toast.value = message;
   window.setTimeout(() => {
@@ -1066,10 +1069,17 @@ async function openProductDetail(product, review = false) {
   productDetailMode.value = true;
   productReviewMode.value = review && canReviewProduct(product);
   productReadOnlyMode.value = !["draft", "rejected"].includes(product.status);
+  let detail = product;
+  try {
+    const response = await api.get(`/products/${product.id}`);
+    detail = response.data;
+  } catch {
+    detail = product;
+  }
   productForm.value = JSON.parse(JSON.stringify({
     ...emptyProductForm(),
-    ...product,
-    versions: product.versions?.length ? product.versions : [emptyProductVersion()],
+    ...detail,
+    versions: detail.versions?.length ? detail.versions : [emptyProductVersion()],
   }));
   productForm.value.logoFile = null;
   productFiles.value = [];
@@ -1077,8 +1087,8 @@ async function openProductDetail(product, review = false) {
   try {
     const { data } = await api.get(`/products/${product.id}/files`);
     productFiles.value = data.items || [];
-    if (product.logo_thumbnail_file_id) {
-      const response = await api.get(`/files/${product.logo_thumbnail_file_id}/download`, { responseType: "blob" });
+    if (detail.logo_thumbnail_file_id) {
+      const response = await api.get(`/files/${detail.logo_thumbnail_file_id}/download`, { responseType: "blob" });
       productLogoPreview.value = URL.createObjectURL(response.data);
     }
   } catch {
@@ -3532,6 +3542,17 @@ onUnmounted(() => {
             <p v-if="productDetailMode" class="modal-status-line">
               当前状态：{{ productForm.status === "published" ? "已发布" : productForm.status === "pending_review" ? "待审核" : productForm.status === "security_review" ? "安全审核中" : productForm.status === "security_unpublished" ? "安全下架" : productForm.status === "rejected" ? "已驳回" : "草稿" }} · {{ productForm.review_comment || "暂无审核意见" }}
             </p>
+            <div v-if="productDetailMode && productForm.review_logs?.length" class="product-review-log-section">
+              <div class="form-section-title">审核日志</div>
+              <div class="product-review-log-list">
+                <div v-for="item in productForm.review_logs" :key="item.id" class="product-review-log-row">
+                  <strong>{{ productReviewActionLabel(item.action) }}</strong>
+                  <span>{{ item.actor }} · {{ fmtDate(item.created_at) }}</span>
+                  <b :class="['status-pill', productReviewResult(item) === '拒绝' ? 'status-blocked' : productReviewResult(item) === '通过' ? 'status-done' : 'status-review']">{{ productReviewResult(item) }}</b>
+                  <small>{{ item.detail || item.after?.review_comment || '无审核说明' }}</small>
+                </div>
+              </div>
+            </div>
           </div>
           <button
             type="button"

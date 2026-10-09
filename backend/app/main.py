@@ -2722,8 +2722,12 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
         product = db.scalar(select(Product).where(Product.id == product_id, Product.status == "published"))
         if not product:
             raise HTTPException(404, "产品不存在或未发布")
-        return product_out(product)
-    return product_out(product_for_enterprise(product_id, user, db))
+        result = product_out(product)
+    else:
+        result = product_out(product_for_enterprise(product_id, user, db))
+    review_items = db.scalars(select(AuditLog).where(AuditLog.target_type == "product", AuditLog.target_id == product_id, or_(AuditLog.action == "submit_product_review", AuditLog.action.ilike("%review%"))).order_by(AuditLog.created_at.asc())).all()
+    result["review_logs"] = [{"id": item.id, "actor": item.actor, "action": item.action, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in review_items]
+    return result
 
 
 @app.get("/api/products/{product_id}/access-grants")
