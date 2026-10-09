@@ -2909,6 +2909,7 @@ onUnmounted(() => {
                   <tr>
                     <th>用户</th>
                     <th>登录名</th>
+                    <th>企业</th>
                     <th>实名认证</th>
                     <th>用户角色</th>
                     <th>账户状态</th>
@@ -2923,6 +2924,7 @@ onUnmounted(() => {
                       ><small>{{ item.id.slice(0, 12) }}</small>
                     </td>
                     <td>{{ item.email || item.phone || "-" }}</td>
+                    <td>{{ item.enterprise_name || "" }}</td>
                     <td>
                       <div class="table-actions">
                         <button

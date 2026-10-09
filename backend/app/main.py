@@ -5669,7 +5669,12 @@ def users(user: User = Depends(current_user), db: Session = Depends(db_session))
         current = roles_by_user.get(membership.user_id, "")
         if role_priority.get(membership.role, 0) > role_priority.get(current, 0):
             roles_by_user[membership.user_id] = membership.role
-    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "created_at": x.created_at} for x in items]}
+    enterprise_names: dict[str, list[str]] = {}
+    if user_ids:
+        enterprise_rows = db.execute(select(Membership.user_id, Enterprise.name).join(Enterprise, Enterprise.id == Membership.enterprise_id).where(Membership.user_id.in_(user_ids), Membership.status.in_(["active", "pending_activation", "disabled"]))).all()
+        for user_id, enterprise_name in enterprise_rows:
+            enterprise_names.setdefault(user_id, []).append(enterprise_name)
+    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "enterprise_name": "平台" if x.platform_role else "、".join(dict.fromkeys(enterprise_names.get(x.id, []))), "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/admin/enterprises")
