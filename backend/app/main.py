@@ -79,6 +79,19 @@ def replace_membership_departments(db: Session, membership: Membership, departme
     membership.department_id = normalized[0] if normalized else ""
 
 
+def invitation_department_ids(invitation: EnterpriseInvitation) -> list[str]:
+    try:
+        ids = json.loads(invitation.department_ids_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        ids = []
+    if not isinstance(ids, list):
+        ids = []
+    ids = [item for item in ids if isinstance(item, str) and item]
+    if invitation.department_id and invitation.department_id not in ids:
+        ids.insert(0, invitation.department_id)
+    return list(dict.fromkeys(ids))
+
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -178,6 +191,7 @@ class EnterpriseInvitation(Base):
     inviter_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     invitee_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     department_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    department_ids_json: Mapped[str] = mapped_column(Text, default="[]")
     channel: Mapped[str] = mapped_column(String(20), default="email")
     created_user: Mapped[bool] = mapped_column(Boolean, default=False)
     target: Mapped[str] = mapped_column(String(180))
@@ -1718,6 +1732,7 @@ def ensure_review_and_file_schema():
         },
         "enterprise_invitations": {
             "department_id": "VARCHAR(36) DEFAULT ''",
+            "department_ids_json": "TEXT DEFAULT '[]'",
             "channel": "VARCHAR(20) DEFAULT 'email'",
             "created_user": "BOOLEAN DEFAULT FALSE",
         },
@@ -2096,7 +2111,7 @@ def login(body: LoginBody, db: Session = Depends(db_session)):
         for membership in memberships:
             membership.status = "active"
             membership.joined_at = now()
-        invitations = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.invitee_id == user.id, EnterpriseInvitation.status == "pending")).all()
+        invitations = db.scalars(select(EnterpriseInvitation).where(EnterpriseInvitation.invitee_id == user.id, EnterpriseInvitation.created_user.is_(True), EnterpriseInvitation.status == "pending")).all()
         for invitation in invitations:
             invitation.status = "accepted"
     audit(db, user.email, "login", "user", user.id)
@@ -2457,23 +2472,29 @@ def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str |
         raise HTTPException(409, "用户已经加入该企业")
     if invitee.activation_status == "deleted" or not invitee.is_active:
         raise HTTPException(400, "用户已被禁用或删除，不能邀请加入企业")
-    if existing:
-        existing.role = "member"
-        existing.department_id = body.department_id
-        existing.business_roles = existing.business_roles or "provider,user"
-        existing.status = "active"
-        existing.invited_by = user.id
-        existing.joined_at = now()
-    else:
-        existing = Membership(user_id=invitee.id, enterprise_id=enterprise.id, role="member", department_id="", business_roles="provider,user", status="active", invited_by=user.id, joined_at=now())
-        db.add(existing)
-        db.flush()
-    replace_membership_departments(db, existing, department_ids)
-    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, department_id=department_ids[0] if department_ids else "", channel=channel, created_user=created_user, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=1))
+    if created_user:
+        # Newly created invitees are associated with the enterprise immediately,
+        # but remain pending activation until their first login.
+        if existing:
+            existing.role = "member"
+            existing.business_roles = existing.business_roles or "provider,user"
+            existing.status = "pending_activation"
+            existing.invited_by = user.id
+            existing.joined_at = None
+        else:
+            existing = Membership(user_id=invitee.id, enterprise_id=enterprise.id, role="member", department_id="", business_roles="provider,user", status="pending_activation", invited_by=user.id)
+            db.add(existing)
+            db.flush()
+        replace_membership_departments(db, existing, department_ids)
+    elif existing and existing.status == "pending_activation":
+        # Preserve compatibility with invitations created before the explicit
+        # accept/reject flow was introduced.
+        replace_membership_departments(db, existing, department_ids)
+    invitation = EnterpriseInvitation(enterprise_id=enterprise.id, inviter_id=user.id, invitee_id=invitee.id, target=target, department_id=department_ids[0] if department_ids else "", department_ids_json=json.dumps(department_ids, ensure_ascii=False), channel=channel, created_user=created_user, token=secrets.token_urlsafe(24), expires_at=now() + timedelta(days=1))
     db.add(invitation)
     audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
     db.commit()
-    delivery = "用户已加入企业，首次登录后账号激活"
+    delivery = "用户已关联企业，首次登录后账号激活" if created_user else "邀请已创建，用户登录后可选择接受或拒绝加入"
     platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
     login_username = invitee.username or invitee.email or invitee.phone or target
     invitation_message = f"平台地址：{platform_url}\n用户名：{login_username}"
@@ -2485,7 +2506,7 @@ def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str |
     elif created_user:
         delivery = "开发环境短信发送接口已预留，邀请信息已生成"
         invitation_message += f"\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"
-    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery, "platform_url": platform_url, "login_username": login_username, "invitation_message": invitation_message}
+    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "department_ids": department_ids, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery, "platform_url": platform_url, "login_username": login_username, "invitation_message": invitation_message}
 
 
 @app.get("/api/enterprise/invitations")
@@ -2506,7 +2527,7 @@ def enterprise_invitations(enterprise_id: str | None = None, user: User = Depend
                 if membership:
                     membership.status = "expired"
     db.commit()
-    return {"items": [{"id": x.id, "target": x.target, "department_id": x.department_id, "channel": x.channel, "created_user": x.created_user, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "target": x.target, "department_id": x.department_id, "department_ids": invitation_department_ids(x), "channel": x.channel, "created_user": x.created_user, "status": x.status, "expires_at": x.expires_at, "created_at": x.created_at} for x in items]}
 
 
 @app.post("/api/enterprise/invitations/{invitation_id}/resend")
@@ -2519,27 +2540,34 @@ def resend_enterprise_invitation(invitation_id: str, request: Request, user: Use
     if not invitee:
         raise HTTPException(404, "受邀用户不存在，请重新发起邀请")
     temp_password = secrets.token_urlsafe(9)
-    invitee.password_hash = hash_password(temp_password)
-    invitee.temporary_password_hash = hash_password(temp_password)
-    invitee.temporary_password_expires_at = now() + timedelta(days=1)
-    invitee.activation_status = "pending_activation"
-    invitee.is_active = True
+    if invitation.created_user:
+        invitee.password_hash = hash_password(temp_password)
+        invitee.temporary_password_hash = hash_password(temp_password)
+        invitee.temporary_password_expires_at = now() + timedelta(days=1)
+        invitee.activation_status = "pending_activation"
+        invitee.is_active = True
     membership = db.scalar(select(Membership).where(Membership.user_id == invitee.id, Membership.enterprise_id == invitation.enterprise_id).order_by(Membership.created_at.desc()))
-    if membership and membership.status in {"expired", "rejected", "pending_activation"}:
-        membership.status = "active"
-        membership.department_id = invitation.department_id
-        membership.joined_at = now()
+    if invitation.created_user and membership and membership.status in {"expired", "rejected", "pending_activation"}:
+        membership.status = "pending_activation"
+        replace_membership_departments(db, membership, invitation_department_ids(invitation))
+        membership.joined_at = None
     invitation.status = "pending"
     invitation.expires_at = now() + timedelta(days=1)
     request_platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
     login_username = invitee.username or invitee.email or invitee.phone or invitation.target
-    delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
-    if invitation.channel == "email":
+    delivery = "邀请已重新发送，用户登录后可选择接受或拒绝加入"
+    if invitation.created_user and invitation.channel == "email":
         sent, error = send_invitation_email(db, invitation.target, db.get(Enterprise, invitation.enterprise_id).name, login_username, temp_password, invitation.expires_at, request_platform_url)
         delivery = "邀请邮件已发送" if sent else f"邮件未发送：{error}"
     audit(db, user.email or user.phone or user.id, "resend_enterprise_invitation", "enterprise_invitation", invitation.id, invitation.target)
     db.commit()
-    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password, "delivery": delivery, "platform_url": request_platform_url, "login_username": login_username, "invitation_message": f"平台地址：{request_platform_url}\n用户名：{login_username}\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"}
+    if invitation.created_user:
+        if invitation.channel != "email":
+            delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
+        message = f"平台地址：{request_platform_url}\n用户名：{login_username}\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    else:
+        message = f"平台地址：{request_platform_url}\n用户名：{login_username}\n请登录后在‘待接受的企业邀请’中选择接受或拒绝"
+    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password if invitation.created_user else "", "delivery": delivery, "platform_url": request_platform_url, "login_username": login_username, "invitation_message": message}
 
 
 @app.get("/api/enterprise/my-invitations")
@@ -2550,7 +2578,7 @@ def my_enterprise_invitations(user: User = Depends(current_user), db: Session = 
         .where(EnterpriseInvitation.invitee_id == user.id, EnterpriseInvitation.status == "pending")
         .order_by(EnterpriseInvitation.created_at.desc())
     ).all()
-    return {"items": [{"id": invitation.id, "enterprise_id": invitation.enterprise_id, "enterprise_name": enterprise.name, "target": invitation.target, "department_id": invitation.department_id, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "created_at": invitation.created_at} for invitation, enterprise in rows if invitation.expires_at > now()]}
+    return {"items": [{"id": invitation.id, "enterprise_id": invitation.enterprise_id, "enterprise_name": enterprise.name, "target": invitation.target, "department_id": invitation.department_id, "department_ids": invitation_department_ids(invitation), "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "created_at": invitation.created_at} for invitation, enterprise in rows if invitation.expires_at > now()]}
 
 
 @app.post("/api/enterprise/invitations/{token}/accept")
@@ -2560,10 +2588,20 @@ def accept_enterprise_invitation(token: str, user: User = Depends(current_user),
     invitation = db.scalar(select(EnterpriseInvitation).where(EnterpriseInvitation.token == token, EnterpriseInvitation.invitee_id == user.id))
     if not invitation or invitation.status != "pending" or invitation.expires_at <= now():
         raise HTTPException(400, "邀请不存在、已处理或已过期")
-    existing = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id, Membership.status == "active"))
+    existing = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id == invitation.enterprise_id).order_by(Membership.created_at.desc()))
     invitation.status = "accepted"
-    if not existing:
-        db.add(Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", department_id=invitation.department_id, business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now()))
+    if existing:
+        existing.status = "active"
+        existing.role = existing.role if existing.role in {"super_admin", "enterprise_admin"} else "member"
+        existing.business_roles = existing.business_roles or "provider,user"
+        existing.invited_by = invitation.inviter_id
+        existing.joined_at = now()
+        replace_membership_departments(db, existing, invitation_department_ids(invitation))
+    else:
+        existing = Membership(user_id=user.id, enterprise_id=invitation.enterprise_id, role="member", department_id="", business_roles="provider,user", status="active", invited_by=invitation.inviter_id, joined_at=now())
+        db.add(existing)
+        db.flush()
+        replace_membership_departments(db, existing, invitation_department_ids(invitation))
     audit(db, user.email or user.phone or user.id, "accept_enterprise_invitation", "enterprise_invitation", invitation.id)
     db.commit()
     return {"status": invitation.status, "enterprise_id": invitation.enterprise_id, "role": "member"}

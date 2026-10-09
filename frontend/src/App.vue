@@ -10,6 +10,7 @@ import {
   Bell,
   BriefcaseBusiness,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   ClipboardCheck,
@@ -148,6 +149,7 @@ const enterpriseManageModal = ref(null);
 const enterpriseManageTab = ref("details");
 const inviteTarget = ref("");
 const inviteDepartmentIds = ref([]);
+const activeDepartmentPicker = ref("");
 const inviteChannel = ref("sms");
 const newDepartment = ref({ name: "", code: "", parent_id: "" });
 const personalVerificationItems = ref([]);
@@ -635,6 +637,29 @@ async function assignServiceLevel() {
     await loadViewData("sla");
   } catch (error) { notify(error.response?.data?.detail || "服务级别绑定失败"); }
 }
+function departmentNames(ids) {
+  return (ids || []).map(id => enterpriseDepartments.value.find(item => item.id === id)?.name).filter(Boolean);
+}
+function departmentPickerLabel(ids) {
+  const names = departmentNames(ids);
+  return names.length ? names.join("、") : "未分配部门";
+}
+function toggleDepartmentPicker(key) {
+  activeDepartmentPicker.value = activeDepartmentPicker.value === key ? "" : key;
+}
+function toggleInviteDepartment(id) {
+  inviteDepartmentIds.value = inviteDepartmentIds.value.includes(id)
+    ? inviteDepartmentIds.value.filter(item => item !== id)
+    : [...inviteDepartmentIds.value, id];
+}
+function toggleMemberDepartment(item, id) {
+  const current = item.department_ids || (item.department_id ? [item.department_id] : []);
+  item.department_ids = current.includes(id) ? current.filter(value => value !== id) : [...current, id];
+}
+async function saveMemberDepartments(item) {
+  await updateMemberDepartment(item, item.department_ids || []);
+  activeDepartmentPicker.value = "";
+}
 async function inviteEnterpriseMember() {
   if (!inviteTarget.value.trim()) return notify("请输入已注册用户的邮箱或手机号");
   try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim(), department_ids: inviteDepartmentIds.value, channel: inviteChannel.value }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(data.invitation_message ? `邀请已创建\n${data.invitation_message}` : "邀请已创建"); inviteTarget.value = ""; inviteDepartmentIds.value = []; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
@@ -716,12 +741,14 @@ async function openEnterpriseManagement(item, tab = "details") {
   enterpriseManageTab.value = tab;
   inviteTarget.value = "";
   inviteDepartmentIds.value = [];
+  activeDepartmentPicker.value = "";
   inviteChannel.value = "sms";
   newDepartment.value = { name: "", code: "", parent_id: "" };
   try { await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "企业管理数据加载失败"); }
 }
 function closeEnterpriseManagement() {
   enterpriseManageModal.value = null;
+  activeDepartmentPicker.value = "";
 }
 function openEnterpriseResubmit(item) {
   Object.assign(verificationForm.value, { enterprise_name: item.name, credit_code: item.credit_code, enterprise_type: item.enterprise_type || "有限责任公司", legal_representative: item.legal_representative || "", registered_capital: item.registered_capital || "", establishment_date: item.establishment_date || "", business_address: item.business_address || "", business_scope: item.business_scope || "" });
@@ -4069,7 +4096,7 @@ onUnmounted(() => {
         </div>
         <div v-else-if="enterpriseManageTab === 'invite'" class="enterprise-manage-section">
           <div class="panel-heading"><div><h3>邀请用户加入企业</h3><span class="muted">输入平台注册用户的邮箱或手机号</span></div></div>
-          <div class="inline-form"><input v-model="inviteTarget" placeholder="邮箱或手机号" /><select v-model="inviteChannel" title="邀请渠道"><option value="sms">手机短信</option><option value="email">邮件</option></select><select v-model="inviteDepartmentIds" title="加入后的归属部门" multiple><option v-for="department in enterpriseDepartments" :key="department.id" :value="department.id">{{ department.name }}</option></select><button class="primary-btn" @click="inviteEnterpriseMember"><Users :size="15" />发送邀请</button></div>
+          <div class="inline-form"><input v-model="inviteTarget" placeholder="邮箱或手机号" /><select v-model="inviteChannel" title="邀请渠道"><option value="sms">手机短信</option><option value="email">邮件</option></select><div class="department-picker"><button type="button" class="department-picker-trigger" @click="toggleDepartmentPicker('invite')">{{ departmentPickerLabel(inviteDepartmentIds) }}<ChevronDown :size="14" /></button><div v-if="activeDepartmentPicker === 'invite'" class="department-picker-menu"><label v-for="department in enterpriseDepartments" :key="department.id" class="department-picker-option"><input type="checkbox" :checked="inviteDepartmentIds.includes(department.id)" @change="toggleInviteDepartment(department.id)" /><span>{{ department.name }}</span></label><span v-if="!enterpriseDepartments.length" class="muted">暂无部门</span></div></div><button class="primary-btn" @click="inviteEnterpriseMember"><Users :size="15" />发送邀请</button></div>
           <div class="invite-list"><div v-for="item in enterpriseInvitations" :key="item.id"><span>{{ item.target }} <small>{{ item.channel === 'email' ? '邮件' : '短信' }}</small></span><span><small>{{ item.status === 'accepted' ? '已接受' : item.status === 'pending' ? (item.created_user ? '待激活' : '待接受') : item.status === 'expired' ? '已过期' : item.status }}</small><button v-if="item.status === 'expired' || (item.status === 'pending' && item.created_user)" class="text-btn" @click="resendEnterpriseInvitation(item)">重新邀请</button></span></div><div v-if="!enterpriseInvitations.length" class="muted">暂无邀请记录</div></div>
         </div>
         <div v-else-if="enterpriseManageTab === 'departments'" class="enterprise-manage-section">
@@ -4080,7 +4107,7 @@ onUnmounted(() => {
         <div v-else class="enterprise-manage-section">
           <div class="panel-heading"><div><h3>企业成员与部门归属</h3><span class="muted">企业超级管理员和企业管理员可维护成员</span></div></div>
           <div class="member-role-hint">企业注册人自动成为企业超级管理员，该角色不可降级；请先通过“邀请用户”加入普通成员，再为其指定企业管理员角色。</div>
-          <div class="table-wrap"><table class="data-table compact"><thead><tr><th>成员</th><th>角色</th><th>部门</th><th>实名认证</th><th>账号状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in enterpriseMembers" :key="item.membership_id"><td><strong>{{ item.name }}</strong><small>{{ item.email || item.phone || '-' }}</small></td><td><select class="status-select" :title="item.role === 'super_admin' ? '企业超级管理员不可在此调整' : '调整企业成员角色'" :value="item.role" @change="updateMemberRole(item, $event.target.value)" :disabled="item.role === 'super_admin' || memberAccountStatusLabel(item) === '已删除'"><option value="member">普通成员</option><option value="enterprise_admin">企业管理员</option><option v-if="item.role === 'super_admin'" value="super_admin">企业超级管理员</option></select></td><td><select class="status-select department-multi-select" :value="item.department_ids || (item.department_id ? [item.department_id] : [])" @change="updateMemberDepartment(item, Array.from($event.target.selectedOptions).map(option => option.value))" :disabled="memberAccountStatusLabel(item) === '已删除'" multiple><option v-for="department in enterpriseDepartments" :key="department.id" :value="department.id">{{ department.name }}</option></select></td><td><span class="status-pill status-done">{{ item.verified_status === 'verified' ? '已实名' : item.verified_status }}</span></td><td><span :class="['status-pill', memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活' ? 'status-done' : memberAccountStatusLabel(item) === '已禁用' ? 'status-review' : 'status-blocked']">{{ memberAccountStatusLabel(item) }}</span></td><td><div class="table-actions" v-if="user?.enterprise_role === 'super_admin' && item.role !== 'super_admin'"><button v-if="memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活'" class="text-btn" @click="updateMemberStatus(item, 'disable')">禁用</button><button v-if="memberAccountStatusLabel(item) === '已禁用'" class="text-btn" @click="updateMemberStatus(item, 'enable')">解禁</button><button v-if="memberAccountStatusLabel(item) !== '已删除'" class="text-btn danger-text" @click="updateMemberStatus(item, 'delete')">删除</button></div><span v-else class="muted">不可操作</span></td></tr><tr v-if="!enterpriseMembers.length"><td colspan="6"><div class="empty-state">暂无企业成员</div></td></tr></tbody></table></div>
+          <div class="table-wrap"><table class="data-table compact"><thead><tr><th>成员</th><th>角色</th><th>部门</th><th>实名认证</th><th>账号状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in enterpriseMembers" :key="item.membership_id"><td><strong>{{ item.name }}</strong><small>{{ item.email || item.phone || '-' }}</small></td><td><select class="status-select" :title="item.role === 'super_admin' ? '企业超级管理员不可在此调整' : '调整企业成员角色'" :value="item.role" @change="updateMemberRole(item, $event.target.value)" :disabled="item.role === 'super_admin' || memberAccountStatusLabel(item) === '已删除'"><option value="member">普通成员</option><option value="enterprise_admin">企业管理员</option><option v-if="item.role === 'super_admin'" value="super_admin">企业超级管理员</option></select></td><td><div class="department-picker member-department-picker"><button type="button" class="department-picker-trigger" @click="toggleDepartmentPicker(`member-${item.membership_id}`)" :disabled="memberAccountStatusLabel(item) === '已删除'">{{ departmentPickerLabel(item.department_ids || (item.department_id ? [item.department_id] : [])) }}<ChevronDown :size="14" /></button><div v-if="activeDepartmentPicker === `member-${item.membership_id}`" class="department-picker-menu"><label v-for="department in enterpriseDepartments" :key="department.id" class="department-picker-option"><input type="checkbox" :checked="(item.department_ids || []).includes(department.id)" @change="toggleMemberDepartment(item, department.id)" /><span>{{ department.name }}</span></label><button type="button" class="text-btn" @click="saveMemberDepartments(item)">完成</button></div></div></td><td><span class="status-pill status-done">{{ item.verified_status === 'verified' ? '已实名' : item.verified_status }}</span></td><td><span :class="['status-pill', memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活' ? 'status-done' : memberAccountStatusLabel(item) === '已禁用' ? 'status-review' : 'status-blocked']">{{ memberAccountStatusLabel(item) }}</span></td><td><div class="table-actions" v-if="user?.enterprise_role === 'super_admin' && item.role !== 'super_admin'"><button v-if="memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活'" class="text-btn" @click="updateMemberStatus(item, 'disable')">禁用</button><button v-if="memberAccountStatusLabel(item) === '已禁用'" class="text-btn" @click="updateMemberStatus(item, 'enable')">解禁</button><button v-if="memberAccountStatusLabel(item) !== '已删除'" class="text-btn danger-text" @click="updateMemberStatus(item, 'delete')">删除</button></div><span v-else class="muted">不可操作</span></td></tr><tr v-if="!enterpriseMembers.length"><td colspan="6"><div class="empty-state">暂无企业成员</div></td></tr></tbody></table></div>
         </div>
       </section>
     </div>
