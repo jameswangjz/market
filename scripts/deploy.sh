@@ -39,6 +39,7 @@ kubectl -n "$NAMESPACE" create configmap market-apisix-policy-plugin --from-file
 kubectl apply -f k8s/monitoring.yaml
 kubectl -n "$NAMESPACE" rollout status deployment/market-postgres --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/market-redis --timeout=180s
+kubectl -n "$NAMESPACE" rollout status deployment/market-clamav --timeout=300s
 kubectl -n "$NAMESPACE" rollout status deployment/market-etcd --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/market-apisix --timeout=240s
 kubectl -n "$NAMESPACE" rollout status deployment/market-minio --timeout=180s
