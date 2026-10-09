@@ -3,12 +3,20 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import calendar
 import os
 import re
 import secrets
 import smtplib
+import socket
 import ssl
+import struct
+import subprocess
+import shutil
+import tarfile
+import tempfile
 import time
+import zipfile
 from email.message import EmailMessage
 from io import BytesIO
 from urllib.parse import parse_qs, quote
@@ -20,10 +28,12 @@ from urllib.parse import urlparse
 
 import httpx
 import jwt
+import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
@@ -35,6 +45,9 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "market")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "market123456")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "market-files")
+CLAMAV_ENABLED = os.getenv("CLAMAV_ENABLED", "true").lower() == "true"
+CLAMAV_HOST = os.getenv("CLAMAV_HOST", "market-clamav")
+CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
@@ -171,6 +184,19 @@ class SystemSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class PlatformNotification(Base):
+    __tablename__ = "platform_notifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    recipient_user_id: Mapped[str] = mapped_column(String(36), index=True)
+    recipient_role: Mapped[str] = mapped_column(String(60), default="", index=True)
+    title: Mapped[str] = mapped_column(String(220))
+    content: Mapped[str] = mapped_column(Text, default="")
+    target_type: Mapped[str] = mapped_column(String(60), default="")
+    target_id: Mapped[str] = mapped_column(String(36), default="", index=True)
+    status: Mapped[str] = mapped_column(String(20), default="unread", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ApplicationAccessGrant(Base):
     __tablename__ = "application_access_grants"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -195,6 +221,12 @@ class Product(Base):
     usage_scenarios: Mapped[str] = mapped_column(Text, default="", nullable=True)
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
     delivery_method: Mapped[str] = mapped_column(String(80), default="file")
+    upstream_url: Mapped[str] = mapped_column(String(500), default="")
+    application_url: Mapped[str] = mapped_column(String(500), default="")
+    integration_api_url: Mapped[str] = mapped_column(String(500), default="")
+    download_limit: Mapped[int] = mapped_column(Integer, default=0)
+    logo_file_id: Mapped[str] = mapped_column(String(36), default="")
+    logo_thumbnail_file_id: Mapped[str] = mapped_column(String(36), default="")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     pricing_strategy: Mapped[str] = mapped_column(Text, default="", nullable=True)
     currency: Mapped[str] = mapped_column(String(10), default="CNY")
@@ -227,6 +259,8 @@ class ProductReleaseVersion(Base):
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
     daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
+    quota_unit: Mapped[str] = mapped_column(String(20), default="")
+    quota_amount: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
@@ -428,6 +462,7 @@ class ApiCredential(Base):
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_quota: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(180), default="")
@@ -534,6 +569,16 @@ class DeliveryTask(Base):
     sla_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class DeliveryAttachment(Base):
+    __tablename__ = "delivery_attachments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    task_id: Mapped[str] = mapped_column(ForeignKey("delivery_tasks.id"), index=True)
+    file_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    uploaded_by: Mapped[str] = mapped_column(String(180), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -732,6 +777,7 @@ class FileObject(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     owner_id: Mapped[str] = mapped_column(String(36), index=True)
     product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), index=True, nullable=True)
+    version_id: Mapped[str | None] = mapped_column(ForeignKey("product_release_versions.id"), index=True, nullable=True)
     object_name: Mapped[str] = mapped_column(String(500))
     original_name: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
@@ -741,6 +787,20 @@ class FileObject(Base):
     version: Mapped[str] = mapped_column(String(30), default="v1.0")
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    scan_status: Mapped[str] = mapped_column(String(30), default="not_scanned", index=True)
+    scan_report: Mapped[str] = mapped_column(Text, default="")
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class FileDownloadLog(Base):
+    __tablename__ = "file_download_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    file_id: Mapped[str] = mapped_column(ForeignKey("file_objects.id"), index=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("orders.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    detail: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -962,6 +1022,11 @@ class ProductBody(BaseModel):
     description: str = ""
     usage_scenarios: str = ""
     delivery_method: str = "file"
+    upstream_url: str = ""
+    application_url: str = ""
+    integration_api_url: str = ""
+    download_limit: int = Field(default=0, ge=0)
+    logo_file_id: str = ""
     price: float = 0
     pricing_strategy: str = ""
     version: str = "v1.0"
@@ -984,6 +1049,8 @@ class ProductVersionBody(BaseModel):
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
     daily_quota: int = Field(default=10000, ge=1, le=100000000)
     monthly_quota: int = Field(default=0, ge=0, le=3000000000)
+    quota_unit: str = ""
+    quota_amount: int = Field(default=0, ge=0, le=3000000000)
     status: str = "active"
 
 
@@ -1079,6 +1146,7 @@ class GatewayCredentialBody(BaseModel):
     rate_limit_per_minute: int | None = Field(default=None, ge=1, le=100000)
     daily_quota: int | None = Field(default=None, ge=1, le=100000000)
     monthly_quota: int | None = Field(default=None, ge=1, le=3000000000)
+    total_quota: int | None = Field(default=None, ge=0, le=3000000000)
     expires_at: datetime | None = None
 
 
@@ -1106,6 +1174,11 @@ class TransitionBody(BaseModel):
 class DeliveryProcessBody(BaseModel):
     success: bool = True
     error: str = ""
+
+
+class DeliveryAttachmentBody(BaseModel):
+    file_id: str
+    description: str = ""
 
 
 class DevelopmentTaskUpdate(BaseModel):
@@ -1277,6 +1350,22 @@ def db_session():
 def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = "", *, category: str = "", business_domain: str = "", tenant_id: str = "", order_id: str = "", batch_no: str = "", rule_version: str = "", request_id: str = "", risk_level: str = "normal", before: Any | None = None, after: Any | None = None):
     inferred = category or ("settlement" if target_type in {"settlement", "settlement_batch", "settlement_rule", "reconciliation"} or "settlement" in action else "payment_refund" if target_type in {"payment", "refund"} or "payment" in action or "refund" in action else "order" if target_type in {"order", "order_state"} or "order" in action else "product" if target_type in {"product", "product_review"} or "product" in action else "auth" if target_type in {"user", "membership", "identity"} or "login" in action or "register" in action else "ops")
     db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail, category=inferred, business_domain=business_domain, tenant_id=tenant_id, order_id=order_id, batch_no=batch_no, rule_version=rule_version, request_id=request_id, risk_level=risk_level, before_json=json.dumps(before or {}, ensure_ascii=False, default=str), after_json=json.dumps(after or {}, ensure_ascii=False, default=str)))
+
+
+def notify_platform_role(db: Session, role: str, title: str, content: str, target_type: str, target_id: str) -> None:
+    for recipient in db.scalars(select(User).where(User.platform_role.in_([role, "super_admin"]), User.is_active.is_(True))).all():
+        db.add(PlatformNotification(recipient_user_id=recipient.id, recipient_role=role, title=title, content=content, target_type=target_type, target_id=target_id))
+
+
+def require_product_review_role(user: User, stage: str) -> None:
+    allowed = {
+        "business": {"super_admin", "business_reviewer", "product_manager"},
+        "quality": {"super_admin", "quality_reviewer"},
+        "security": {"super_admin", "security_compliance"},
+        "operation": {"super_admin", "platform_operator"},
+    }
+    if user.platform_role not in allowed.get(stage, set()):
+        raise HTTPException(403, "当前角色无权执行该审核环节")
 
 
 def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(security), db: Session = Depends(db_session)) -> User:
@@ -1486,6 +1575,7 @@ TRANSITIONS: dict[str, tuple[str, str, str, str]] = {
     "start_delivery": ("main", "pending_fulfillment", "fulfilling", "开始履约"),
     "submit_delivery": ("delivery", "preparing", "pending_acceptance", "提交交付物"),
     "accept_delivery": ("delivery", "pending_acceptance", "accepted", "验收通过"),
+    "reject_delivery": ("delivery", "pending_acceptance", "preparing", "拒绝交付并退回整改"),
     "confirm_order": ("main", "pending_confirmation", "completed", "客户确认或自动确认"),
     "mark_exception": ("delivery", "preparing", "exception", "标记交付异常"),
     "retry_delivery": ("delivery", "exception", "preparing", "整改后重试"),
@@ -1529,6 +1619,12 @@ def ensure_product_metadata_schema():
         "authorization_conditions": "TEXT",
         "data_source_statement": "TEXT",
         "compliance_statement": "TEXT",
+        "upstream_url": "VARCHAR(500) DEFAULT ''",
+        "application_url": "VARCHAR(500) DEFAULT ''",
+        "integration_api_url": "VARCHAR(500) DEFAULT ''",
+        "download_limit": "INTEGER DEFAULT 0",
+        "logo_file_id": "VARCHAR(36) DEFAULT ''",
+        "logo_thumbnail_file_id": "VARCHAR(36) DEFAULT ''",
     }
     with engine.begin() as connection:
         if engine.dialect.name == "sqlite":
@@ -1587,11 +1683,22 @@ def ensure_review_and_file_schema():
         },
         "file_objects": {
             "product_id": "VARCHAR(36)",
+            "version_id": "VARCHAR(36)",
             "checksum": "VARCHAR(64)",
             "file_role": "VARCHAR(50)",
             "version": "VARCHAR(30)",
             "description": "TEXT",
             "status": "VARCHAR(30)",
+            "scan_status": "VARCHAR(30) DEFAULT 'not_scanned'",
+            "scan_report": "TEXT DEFAULT ''",
+            "scanned_at": "TIMESTAMP WITH TIME ZONE",
+        },
+        "file_download_logs": {
+            "file_id": "VARCHAR(36)",
+            "order_id": "VARCHAR(36)",
+            "user_id": "VARCHAR(36)",
+            "success": "BOOLEAN DEFAULT FALSE",
+            "detail": "TEXT DEFAULT ''",
         },
         "settlements": {
             "refund_amount": "NUMERIC(14,2)",
@@ -1612,6 +1719,8 @@ def ensure_review_and_file_schema():
         },
         "product_release_versions": {
             "cost": "NUMERIC(14,2) DEFAULT 0",
+            "quota_unit": "VARCHAR(20) DEFAULT ''",
+            "quota_amount": "INTEGER DEFAULT 0",
         },
         "saas_product_versions": {
             "cost": "NUMERIC(14,2) DEFAULT 0",
@@ -1675,7 +1784,15 @@ def ensure_review_and_file_schema():
             "order_id": "VARCHAR(36) DEFAULT ''",
             "product_version_id": "VARCHAR(36) DEFAULT ''",
             "monthly_quota": "INTEGER",
+            "total_quota": "INTEGER DEFAULT 0",
             "apisix_consumer_name": "VARCHAR(180) DEFAULT ''",
+        },
+        "delivery_attachments": {
+            "task_id": "VARCHAR(36)",
+            "file_id": "VARCHAR(36)",
+            "description": "TEXT DEFAULT ''",
+            "uploaded_by": "VARCHAR(180) DEFAULT ''",
+            "created_at": "TIMESTAMP WITH TIME ZONE",
         },
         "product_release_versions": {
             "rate_limit_per_minute": "INTEGER DEFAULT 60",
@@ -1809,6 +1926,31 @@ def startup():
             ("BE-031", "后端 Agent", "企业部门、邀请、成员角色和部门归属接口", "用户与企业", "P0", "done", "BE-007", "部门 CRUD、邀请接受、角色调整、成员部门调整和审计可用", 100),
             ("FE-015", "前端 Agent", "企业成员、部门、邀请和角色管理页面", "用户与企业", "P0", "done", "BE-031", "企业管理员可邀请用户、维护部门和调整成员角色/部门", 100),
             ("QA-008", "部署测试 Agent", "企业组织权限、邀请和部门端到端验证", "用户与企业", "P0", "done", "BE-031,FE-015", "普通成员越权拒绝，管理员流程和删除保护通过", 100),
+            ("SEC-001", "后端 Agent", "文件格式、MIME、10GB大小和压缩包安全校验", "文件安全", "P0", "in_progress", "BE-002", "非法格式、超限文件和压缩炸弹被拒绝", 10),
+            ("SEC-002", "部署测试 Agent", "ClamAV服务及病毒库持久化部署", "文件安全", "P0", "todo", "SEC-001", "ClamAV在Kubernetes中Ready，病毒库可持久化", 0),
+            ("SEC-003", "部署测试 Agent", "ClamAV病毒库定时更新和版本监控", "文件安全", "P0", "todo", "SEC-002", "定时更新失败可告警，版本可查询", 0),
+            ("SEC-004", "后端 Agent", "文件ClamAV扫描接口和扫描报告", "文件安全", "P0", "todo", "SEC-002", "上传文件得到扫描状态、报告和病毒命中结果", 0),
+            ("SEC-005", "后端 Agent", "文件Presidio内容扫描和安全审核报告", "文件安全", "P0", "todo", "SEC-004", "可解析内容完成敏感信息扫描，报告可供审核人员查看", 0),
+            ("PROD-001", "后端 Agent", "产品Logo上传、精确尺寸校验、SVG清洗和缩略图", "产品登记", "P0", "todo", "BE-002", "产品Logo可持久化，恶意SVG被拒绝，缩略图可展示", 0),
+            ("PROD-002", "后端 Agent", "产品版本文件绑定和已发布版本不可覆盖", "产品登记", "P0", "todo", "SEC-001,PROD-001", "新版本使用新文件，历史订单文件不被覆盖", 0),
+            ("PROD-003", "后端 Agent", "产品审核撤回、原因和权限控制", "产品审核", "P0", "todo", "BE-002", "企业管理员仅能撤回本企业待审核产品，撤回留痕", 0),
+            ("API-001", "后端 Agent", "API/模型API额度单位和订单独立授权", "API交付", "P0", "todo", "BE-009", "千次/万次转换为整数，订单额度独立扣减", 0),
+            ("API-002", "后端 Agent", "取消、退款、额度耗尽后的网关访问回收", "API交付", "P0", "todo", "API-001", "取消/退款/耗尽后凭据和路由访问不可用", 0),
+            ("SAAS-001", "后端 Agent", "SaaS按购买日对应日期计算月付到期时间", "SaaS订阅", "P0", "in_progress", "BE-007", "1月31日、闰年2月、大小月和提前续费测试通过", 10),
+            ("SAAS-002", "后端 Agent", "SaaS订单独立租户标识和多租户订阅隔离", "SaaS订阅", "P0", "todo", "SAAS-001", "同企业多个租户、版本和订单互不串用", 0),
+            ("DELIVERY-001", "后端 Agent", "线下履约状态、附件、拒绝和审计闭环", "线下交付", "P0", "todo", "BE-004", "支付、履约、服务方提交、购买方审核状态完整", 0),
+            ("FE-016", "前端 Agent", "登记弹框按交付方式动态展示字段和上传控件", "产品登记", "P0", "todo", "PROD-001,API-001,SAAS-001", "文件/API/SaaS/线下字段按条件展示并校验", 0),
+            ("FE-017", "前端 Agent", "扫描报告、Logo、下载次数和额度展示", "产品与安全", "P0", "todo", "SEC-005,PROD-001,API-001", "审核人员可查看报告，订单用户可查看额度", 0),
+            ("OPS-013", "部署测试 Agent", "数据库迁移、ClamAV、定时更新和监控告警", "文件安全部署", "P0", "todo", "SEC-002,SEC-003", "K8S部署成功，健康检查、更新和告警可验证", 0),
+            ("QA-009", "部署测试 Agent", "文件安全、交付、额度、SaaS计费端到端验证", "专项测试", "P0", "todo", "SEC-005,API-002,SAAS-002,DELIVERY-001", "正常、异常、权限、退款和边界日期测试通过", 0),
+            ("PROD-004", "后端 Agent", "产品文件支持 RAR/7z 压缩格式", "产品登记", "P0", "todo", "SEC-001", "RAR、7z 扩展名与 MIME 校验通过，非法格式仍被拒绝", 0),
+            ("REVIEW-001", "后端 Agent", "产品业务/质量/安全/运营四阶段审核状态机", "产品审核", "P0", "todo", "PROD-003,SEC-005", "四阶段按顺序流转，审核角色隔离，拒绝必须填写原因", 0),
+            ("REVIEW-002", "后端 Agent", "审核阶段内部通知与审计日志", "产品审核", "P0", "todo", "REVIEW-001", "进入下一审核阶段自动通知对应角色，每个审批动作形成审计记录", 0),
+            ("REVIEW-003", "前端 Agent", "审核人员产品详情、撤回和审核操作界面", "产品审核", "P0", "todo", "REVIEW-001", "企业管理员仅可撤回，平台审核人员仅可审核，拒绝弹窗强制填写原因", 0),
+            ("SEC-006", "后端 Agent", "病毒扫描报告 PDF 生成、查看和下载", "文件安全", "P0", "todo", "SEC-004", "报告包含文件名、大小、工具及版本、结果、结论和结论日期", 0),
+            ("SEC-007", "后端 Agent", "数据集文件 ClamAV 后逐文件 Presidio 扫描", "文件安全", "P0", "todo", "SEC-004,SEC-005", "病毒扫描通过后逐文件执行 Presidio，形成可下载结构化报告", 0),
+            ("FE-018", "前端 Agent", "扫描报告链接、Logo 单组展示和审核详情优化", "产品审核", "P0", "todo", "SEC-006,SEC-007", "每个文件只展示一组扫描结果，报告文字可查看和下载 PDF", 0),
+            ("QA-010", "部署测试 Agent", "产品四阶段审核、通知、报告和权限端到端验证", "专项测试", "P0", "todo", "REVIEW-001,REVIEW-002,REVIEW-003,SEC-006,SEC-007,FE-018", "四角色流程、拒绝原因、通知、审计、报告下载和越权测试通过", 0),
         ]
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
@@ -1960,7 +2102,7 @@ def send_activation_email(db: Session, recipient: str, activation_url: str) -> t
         return False, str(exc)[:240]
 
 
-def send_invitation_email(db: Session, recipient: str, enterprise_name: str, temp_password: str, expires_at: datetime) -> tuple[bool, str]:
+def send_invitation_email(db: Session, recipient: str, enterprise_name: str, login_username: str, temp_password: str, expires_at: datetime, platform_url: str) -> tuple[bool, str]:
     values = {item.setting_key: item.setting_value for item in db.scalars(select(SystemSetting)).all()}
     host = values.get("smtp_host", "").strip()
     username = values.get("smtp_username", "").strip()
@@ -1972,7 +2114,8 @@ def send_invitation_email(db: Session, recipient: str, enterprise_name: str, tem
         message["Subject"] = f"您已被邀请加入企业：{enterprise_name}"
         message["From"] = f"{values.get('smtp_from_name', '数据集运营服务管理平台')} <{username}>"
         message["To"] = recipient
-        message.set_content(f"您已被邀请加入企业 {enterprise_name}。临时密码：{temp_password}。请在 {expires_at.strftime('%Y-%m-%d %H:%M:%S')} 前登录，首次登录后账号自动激活。")
+        message.set_content(f"您已被邀请加入企业 {enterprise_name}。\n\n平台地址：{platform_url}\n用户名：{login_username}\n临时密码：{temp_password}\n\n请在 {expires_at.strftime('%Y-%m-%d %H:%M:%S')} 前登录，首次登录后账号自动激活。")
+        message.add_alternative(f"""<html><body style=\"font-family:Arial,'Microsoft YaHei',sans-serif;color:#243044;line-height:1.7"><h2>您已被邀请加入企业：{enterprise_name}</h2><p>请使用以下信息登录数据集运营服务管理平台：</p><p><strong>平台地址：</strong>{platform_url}<br><strong>用户名：</strong>{login_username}<br><strong>临时密码：</strong>{temp_password}</p><p>请在 <strong>{expires_at.strftime('%Y-%m-%d %H:%M:%S')}</strong> 前完成首次登录。首次登录后账号将自动激活，并进入实名认证流程。</p><p style=\"color:#6b7280\">如非本人操作，请忽略此邮件。</p></body></html>""", subtype="html")
         port = int(values.get("smtp_port", "587"))
         use_ssl = values.get("smtp_ssl", "false") == "true"
         use_starttls = values.get("smtp_starttls", "true") == "true"
@@ -2238,7 +2381,7 @@ def review_enterprise_verification(enterprise_id: str, body: VerificationReviewB
 
 
 @app.post("/api/enterprise/invitations")
-def invite_member(body: InviteMemberBody, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def invite_member(body: InviteMemberBody, request: Request, enterprise_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = enterprise_management_scope(db, user, enterprise_id)
     if body.department_id and not db.scalar(select(EnterpriseDepartment).where(EnterpriseDepartment.id == body.department_id, EnterpriseDepartment.enterprise_id == enterprise.id, EnterpriseDepartment.status == "active")):
         raise HTTPException(404, "指定部门不存在")
@@ -2266,14 +2409,18 @@ def invite_member(body: InviteMemberBody, enterprise_id: str | None = None, user
     audit(db, user.email or user.phone or user.id, "invite_enterprise_member", "enterprise_invitation", invitation.id, target)
     db.commit()
     delivery = "已有平台注册用户，请使用原账号登录后接受邀请"
+    platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    login_username = invitee.username or invitee.email or invitee.phone or target
+    invitation_message = f"平台地址：{platform_url}\n用户名：{login_username}"
     sent = False
     mail_error = ""
     if created_user and channel == "email":
-        sent, mail_error = send_invitation_email(db, target, enterprise.name, temp_password, invitation.expires_at)
+        sent, mail_error = send_invitation_email(db, target, enterprise.name, login_username, temp_password, invitation.expires_at, platform_url)
         delivery = "邀请邮件已发送" if sent else f"邮件未发送：{mail_error}"
     elif created_user:
-        delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
-    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery}
+        delivery = "开发环境短信发送接口已预留，邀请信息已生成"
+        invitation_message += f"\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    return {"id": invitation.id, "target": invitation.target, "department_id": invitation.department_id, "channel": invitation.channel, "created_user": created_user, "temporary_password": temp_password, "token": invitation.token, "status": invitation.status, "expires_at": invitation.expires_at, "delivery": delivery, "platform_url": platform_url, "login_username": login_username, "invitation_message": invitation_message}
 
 
 @app.get("/api/enterprise/invitations")
@@ -2295,7 +2442,7 @@ def enterprise_invitations(enterprise_id: str | None = None, user: User = Depend
 
 
 @app.post("/api/enterprise/invitations/{invitation_id}/resend")
-def resend_enterprise_invitation(invitation_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def resend_enterprise_invitation(invitation_id: str, request: Request, user: User = Depends(current_user), db: Session = Depends(db_session)):
     invitation = db.get(EnterpriseInvitation, invitation_id)
     if not invitation:
         raise HTTPException(404, "邀请不存在")
@@ -2311,13 +2458,15 @@ def resend_enterprise_invitation(invitation_id: str, user: User = Depends(curren
     invitee.is_active = True
     invitation.status = "pending"
     invitation.expires_at = now() + timedelta(days=1)
+    request_platform_url = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    login_username = invitee.username or invitee.email or invitee.phone or invitation.target
     delivery = "开发环境短信发送接口已预留，临时密码请通过接口响应获取"
     if invitation.channel == "email":
-        sent, error = send_invitation_email(db, invitation.target, db.get(Enterprise, invitation.enterprise_id).name, temp_password, invitation.expires_at)
+        sent, error = send_invitation_email(db, invitation.target, db.get(Enterprise, invitation.enterprise_id).name, login_username, temp_password, invitation.expires_at, request_platform_url)
         delivery = "邀请邮件已发送" if sent else f"邮件未发送：{error}"
     audit(db, user.email or user.phone or user.id, "resend_enterprise_invitation", "enterprise_invitation", invitation.id, invitation.target)
     db.commit()
-    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password, "delivery": delivery}
+    return {"id": invitation.id, "status": invitation.status, "expires_at": invitation.expires_at, "temporary_password": temp_password, "delivery": delivery, "platform_url": request_platform_url, "login_username": login_username, "invitation_message": f"平台地址：{request_platform_url}\n用户名：{login_username}\n临时密码：{temp_password}\n有效期至：{invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S')}"}
 
 
 @app.get("/api/enterprise/my-invitations")
@@ -2470,6 +2619,22 @@ def update_notification_settings(body: NotificationSettingsBody, user: User = De
     return notification_settings(user, db)
 
 
+@app.get("/api/notifications")
+def platform_notifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    items = db.scalars(select(PlatformNotification).where(PlatformNotification.recipient_user_id == user.id).order_by(PlatformNotification.created_at.desc()).limit(100)).all()
+    return {"unread": sum(1 for item in items if item.status == "unread"), "items": [{"id": x.id, "title": x.title, "content": x.content, "target_type": x.target_type, "target_id": x.target_id, "status": x.status, "created_at": x.created_at} for x in items]}
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def read_platform_notification(notification_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.scalar(select(PlatformNotification).where(PlatformNotification.id == notification_id, PlatformNotification.recipient_user_id == user.id))
+    if not item:
+        raise HTTPException(404, "通知不存在")
+    item.status = "read"
+    db.commit()
+    return {"id": item.id, "status": item.status}
+
+
 @app.get("/api/admin/platform-roles")
 def platform_roles(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
@@ -2485,22 +2650,25 @@ def assign_platform_role(body: PlatformRoleAssignmentBody, user: User = Depends(
 
 @app.get("/api/dashboard")
 def dashboard(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
-    products = db.scalar(select(func.count(Product.id)).where(Product.enterprise_id == enterprise.id)) or 0
-    orders = db.scalar(select(func.count(Order.id)).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))) or 0
-    active = db.scalar(select(func.count(Order.id)).where(Order.main_status.in_(["pending_review", "pending_fulfillment", "fulfilling", "pending_confirmation"]))) or 0
-    completed = db.scalar(select(func.count(Order.id)).where(Order.main_status == "completed")) or 0
-    revenue = db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(Order.provider_enterprise_id == enterprise.id)) or 0
-    return {"metrics": {"products": products, "orders": orders, "active_orders": active, "completed_orders": completed, "revenue": float(revenue)}, "status_breakdown": [{"label": "履约中", "value": active, "color": "orange"}, {"label": "已完成", "value": completed, "color": "green"}], "notice": "首版外部连接器接口暂未开发，当前工作台展示平台内部运营闭环。"}
+    platform_scope = user.platform_role in {"super_admin", "platform_operator", "security_compliance"}
+    enterprise = None if platform_scope else first_enterprise(db, user)
+    product_filter = True if platform_scope else Product.enterprise_id == enterprise.id
+    order_filter = True if platform_scope else or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id)
+    products = db.scalar(select(func.count(Product.id)).where(product_filter)) or 0
+    orders = db.scalar(select(func.count(Order.id)).where(order_filter)) or 0
+    active = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status.in_(["pending_review", "pending_fulfillment", "fulfilling", "pending_confirmation"]))) or 0
+    completed = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status == "completed")) or 0
+    revenue = db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(order_filter, Order.provider_enterprise_id == (None if platform_scope else enterprise.id))) if not platform_scope else db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(Order.payment_status == "paid"))
+    return {"metrics": {"products": products, "orders": orders, "active_orders": active, "completed_orders": completed, "revenue": float(revenue or 0)}, "status_breakdown": [{"label": "履约中", "value": active, "color": "orange"}, {"label": "已完成", "value": completed, "color": "green"}], "notice": "首版外部连接器接口暂未开发，当前工作台展示平台内部运营闭环。"}
 
 
 def product_out(p: Product) -> dict[str, Any]:
-    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "quota_unit": x.quota_unit or "", "quota_amount": x.quota_amount or 0, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "logo_thumbnail_file_id": p.logo_thumbnail_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
-    if user.platform_role in {"super_admin", "platform_operator", "security_compliance"}:
+    if user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
         product = db.get(Product, product_id)
     else:
         enterprise = first_enterprise(db, user)
@@ -2554,8 +2722,27 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
         product = db.scalar(select(Product).where(Product.id == product_id, Product.status == "published"))
         if not product:
             raise HTTPException(404, "产品不存在或未发布")
-        return product_out(product)
-    return product_out(product_for_enterprise(product_id, user, db))
+        result = product_out(product)
+    else:
+        result = product_out(product_for_enterprise(product_id, user, db))
+    review_actions = (
+        "submit_product_review",
+        "enter_product_security_review",
+        "approve_product",
+        "reject_product",
+        "business_approve_product",
+        "business_reject_product",
+        "quality_approve_product",
+        "quality_reject_product",
+        "approve_product_security",
+        "reject_product_security",
+        "operation_approve_product",
+        "operation_reject_product",
+        "withdraw_product_review",
+    )
+    review_items = db.scalars(select(AuditLog).where(AuditLog.target_type == "product", AuditLog.target_id == product_id, AuditLog.action.in_(review_actions)).order_by(AuditLog.created_at.asc())).all()
+    result["review_logs"] = [{"id": item.id, "actor": item.actor, "action": item.action, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in review_items]
+    return result
 
 
 @app.get("/api/products/{product_id}/access-grants")
@@ -2712,7 +2899,25 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
         raise HTTPException(409, "当前产品状态不允许提交审核")
     product.status = "pending_review"
     product.review_comment = ""
-    audit(db, user.email, "submit_product_review", "product", product.id)
+    notify_platform_role(db, "business_reviewer", "产品待业务审核", f"产品“{product.name}”已提交审核，请进行业务审核。", "product", product.id)
+    audit(db, user.email, "submit_product_review", "product", product.id, after={"status": product.status})
+    db.commit()
+    return product_out(product)
+
+
+@app.post("/api/products/{product_id}/withdraw")
+def withdraw_product(product_id: str, body: ProductUnpublishBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db)
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        require_enterprise_admin(db, user, product.enterprise_id)
+    if product.status != "pending_review":
+        raise HTTPException(409, "只有待审核产品可以撤回")
+    before = {"status": product.status, "review_comment": product.review_comment or ""}
+    product.status = "draft"
+    product.review_comment = body.reason.strip()
+    product.reviewed_by = user.email or user.phone or user.id
+    product.reviewed_at = now()
+    audit(db, user.email or user.phone or user.id, "withdraw_product_review", "product", product.id, body.reason.strip(), before=before, after={"status": product.status, "review_comment": product.review_comment})
     db.commit()
     return product_out(product)
 
@@ -2731,6 +2936,9 @@ def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.in
         client.status = "active"
         existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if existing_saas:
+            existing_saas.client_id = client.client_id
+            existing_saas.client_secret = client.client_secret
+            existing_saas.scope = client.scope
             existing_saas.token_url = platform_oauth_token_url()
             existing_saas.auth_mode = "oauth2"
         return client
@@ -2743,6 +2951,7 @@ def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.in
     if existing_saas:
         existing_saas.client_id = client_id
         existing_saas.client_secret = client_secret
+        existing_saas.scope = client.scope
         existing_saas.token_url = platform_oauth_token_url()
         existing_saas.auth_mode = "oauth2"
     return client
@@ -2797,29 +3006,36 @@ async def platform_oauth_introspect(request: Request):
 
 @app.post("/api/products/{product_id}/review")
 def review_product(product_id: str, body: ProductReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        require_enterprise_admin(db, user, product.enterprise_id)
-    if product.status != "pending_review":
-        raise HTTPException(409, "只有待审核产品可以审核")
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "产品不存在")
+    stage_by_status = {"pending_review": "business", "quality_review": "quality", "operation_review": "operation"}
+    stage = stage_by_status.get(product.status)
+    if not stage:
+        raise HTTPException(409, "当前产品不在业务、质量或运营审核环节")
+    require_product_review_role(user, stage)
     if body.decision not in {"approve", "reject"}:
         raise HTTPException(400, "审核结论必须是 approve 或 reject")
     if body.decision == "reject" and not body.comment.strip():
         raise HTTPException(400, "驳回时必须填写审核意见")
-    if body.decision == "approve" and product.product_type == "dataset":
-        scan = run_product_security_scan(product, db, user.email or user.phone or user.id)
+    actor = user.email or user.phone or user.id
+    before_status = product.status
+    security_scan = None
+    if body.decision == "reject":
+        product.status = "rejected"
+    elif stage == "business":
+        product.status = "quality_review"
+        notify_platform_role(db, "quality_reviewer", "产品待质量审核", f"产品“{product.name}”已通过业务审核，请进行质量审核。", "product", product.id)
+    elif stage == "quality":
         product.status = "security_review"
-        product.review_comment = "业务审核通过，等待安全合规人员确认"
-        product.reviewed_by = user.email or user.phone or user.id
-        product.reviewed_at = now()
-        audit(db, user.email or user.phone or user.id, "enter_product_security_review", "product", product.id, scan.id)
-        db.commit()
-        return product_out(product) | {"security_report": security_scan_out(scan)}
-    product.status = "published" if body.decision == "approve" else "rejected"
-    product.review_comment = body.comment.strip()
-    product.reviewed_by = user.email
+        security_scan = run_product_security_scan(product, db, actor)
+        notify_platform_role(db, "security_compliance", "产品待安全审核", f"产品“{product.name}”已通过质量审核，请查看病毒和数据安全扫描报告。", "product", product.id)
+    elif stage == "operation":
+        product.status = "published"
+    product.review_comment = body.comment.strip() or ("已通过，进入" + {"business": "质量审核", "quality": "安全审核", "operation": "发布"}[stage])
+    product.reviewed_by = actor
     product.reviewed_at = now()
-    if body.decision == "approve" and product.product_type == "saas":
+    if body.decision == "approve" and stage == "operation" and product.product_type == "saas":
         config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if not config:
             client_id = "market_" + secrets.token_urlsafe(12)
@@ -2827,30 +3043,31 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
             config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
             db.add(config)
-    if body.decision == "approve" and product.product_type in {"api", "model", "saas"}:
+    if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model", "saas"}:
         client = ensure_oauth_client(db, product)
         route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
         if route:
             route.upstream_client_id = client.client_id
             route.upstream_client_secret = client.client_secret
         audit(db, user.email or user.phone or user.id, "ensure_platform_oauth_client", "oauth_client", client.id, product.product_type)
-    if body.decision == "approve" and product.product_type in {"api", "model"}:
+    if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model"}:
         route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
         if route:
             gateway_auto_publish(route, product, db, user.email or user.phone or user.id)
         else:
             audit(db, user.email or user.phone or user.id, "gateway_route_pending_config", "product", product.id, "产品已审核，但尚未保存网关配置")
-    audit(db, user.email, "approve_product" if body.decision == "approve" else "reject_product", "product", product.id, product.review_comment)
+    audit(db, actor, f"{stage}_{'approve' if body.decision == 'approve' else 'reject'}_product", "product", product.id, product.review_comment, before={"status": before_status}, after={"status": product.status})
     db.commit()
-    return product_out(product)
+    return product_out(product) | ({"security_report": security_scan_out(security_scan)} if security_scan else {})
 
 
 @app.get("/api/products/{product_id}/security-report")
 def product_security_report(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_security_operator(user)
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+        raise HTTPException(403, "当前角色无权查看产品安全报告")
     product = db.get(Product, product_id)
-    if not product or product.product_type != "dataset":
-        raise HTTPException(404, "数据集产品不存在")
+    if not product:
+        raise HTTPException(404, "产品不存在")
     scan = db.scalar(select(ProductSecurityScan).where(ProductSecurityScan.product_id == product.id).order_by(ProductSecurityScan.scanned_at.desc()))
     if not scan:
         raise HTTPException(404, "该数据集尚未生成安全审核报告")
@@ -2859,10 +3076,10 @@ def product_security_report(product_id: str, user: User = Depends(current_user),
 
 @app.post("/api/products/{product_id}/security-review")
 def review_product_security(product_id: str, body: ProductSecurityReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_security_operator(user)
+    require_product_review_role(user, "security")
     product = db.get(Product, product_id)
-    if not product or product.product_type != "dataset":
-        raise HTTPException(404, "数据集产品不存在")
+    if not product:
+        raise HTTPException(404, "产品不存在")
     if product.status != "security_review":
         raise HTTPException(409, "当前数据集不在安全审核环节")
     if body.decision not in {"approve", "reject"}:
@@ -2877,11 +3094,13 @@ def review_product_security(product_id: str, body: ProductSecurityReviewBody, us
     scan.reviewed_by = actor
     scan.reviewed_at = now()
     scan.review_comment = body.comment.strip()
-    product.status = "published" if body.decision == "approve" else "rejected"
+    product.status = "operation_review" if body.decision == "approve" else "rejected"
     product.review_comment = body.comment.strip() or "安全审核通过"
     product.reviewed_by = actor
     product.reviewed_at = now()
-    audit(db, actor, "approve_product_security" if body.decision == "approve" else "reject_product_security", "product", product.id, body.comment.strip())
+    if body.decision == "approve":
+        notify_platform_role(db, "platform_operator", "产品待运营审核", f"产品“{product.name}”已通过安全审核，请执行运营审核发布。", "product", product.id)
+    audit(db, actor, "approve_product_security" if body.decision == "approve" else "reject_product_security", "product", product.id, body.comment.strip(), before={"status": "security_review"}, after={"status": product.status})
     db.commit()
     return product_out(product) | {"security_report": security_scan_out(scan)}
 
@@ -2910,6 +3129,73 @@ def security_scan_out(scan: ProductSecurityScan | None) -> dict[str, Any] | None
     return {"id": scan.id, "product_id": scan.product_id, "engine": scan.engine, "status": scan.status, "findings_count": scan.findings_count, "high_risk_count": scan.high_risk_count, "scanned_at": scan.scanned_at, "reviewed_by": scan.reviewed_by, "reviewed_at": scan.reviewed_at, "review_comment": scan.review_comment, "report": report}
 
 
+def clamav_scan(content: bytes) -> tuple[str, str]:
+    """Scan an uploaded object through the in-cluster clamd INSTREAM protocol."""
+    if not CLAMAV_ENABLED:
+        return "disabled", "ClamAV scanning is disabled by configuration"
+    try:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=30) as connection:
+            connection.sendall(b"zINSTREAM\0")
+            for offset in range(0, len(content), 1024 * 1024):
+                chunk = content[offset:offset + 1024 * 1024]
+                connection.sendall(struct.pack("!I", len(chunk)))
+                connection.sendall(chunk)
+            connection.sendall(struct.pack("!I", 0))
+            response = connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip()
+        if "FOUND" in response:
+            return "infected", response
+        if response.endswith("OK"):
+            return "clean", response
+        return "error", response or "ClamAV returned an empty response"
+    except (OSError, TimeoutError) as exc:
+        return "unavailable", str(exc)[:240]
+
+
+def clamav_scan_stream(fileobj, size: int) -> tuple[str, str]:
+    """Scan an UploadFile stream without materializing the whole object."""
+    if not CLAMAV_ENABLED:
+        return "disabled", "ClamAV scanning is disabled by configuration"
+    try:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=30) as connection:
+            connection.sendall(b"zINSTREAM\0")
+            remaining = size
+            while remaining:
+                chunk = fileobj.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                connection.sendall(struct.pack("!I", len(chunk)))
+                connection.sendall(chunk)
+                remaining -= len(chunk)
+            connection.sendall(struct.pack("!I", 0))
+            response = connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip()
+        if remaining:
+            return "error", "上传文件流长度与声明大小不一致"
+        if "FOUND" in response:
+            return "infected", response
+        if response.endswith("OK"):
+            return "clean", response
+        return "error", response or "ClamAV returned an empty response"
+    except (OSError, TimeoutError) as exc:
+        return "unavailable", str(exc)[:240]
+
+
+def clamav_version() -> str:
+    """Read the running clamd version for security reports."""
+    if not CLAMAV_ENABLED:
+        return "disabled"
+    try:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=5) as connection:
+            connection.sendall(b"VERSION\0")
+            return connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip() or "unknown"
+    except (OSError, TimeoutError):
+        return "unavailable"
+
+
+def presidio_version() -> str:
+    """Return the analyzer package version used by the in-cluster service."""
+    return os.getenv("PRESIDIO_VERSION", "2.2.364")
+
+
 def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
     """Call the in-cluster Presidio Analyzer; no data leaves Kubernetes."""
     if not text_value.strip():
@@ -2919,9 +3205,83 @@ def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
         response = httpx.post(url, json={"text": text_value[:200000], "language": "en"}, timeout=30)
         response.raise_for_status()
         items = response.json()
-        return [{"entity": item.get("entity_type", "UNKNOWN"), "score": item.get("score", 0), "start": item.get("start"), "end": item.get("end"), "source": "presidio"} for item in items if isinstance(item, dict)], "available"
+        entity_labels = {
+            "PERSON": "个人姓名",
+            "PHONE_NUMBER": "电话号码",
+            "EMAIL_ADDRESS": "邮箱地址",
+            "LOCATION": "地理位置",
+            "ORGANIZATION": "组织机构",
+            "CREDIT_CARD": "银行卡/信用卡号",
+            "IBAN_CODE": "银行账户",
+            "IP_ADDRESS": "IP地址",
+            "URL": "网址",
+        }
+        findings = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            entity = item.get("entity_type", "UNKNOWN")
+            start = int(item.get("start") or 0)
+            end = int(item.get("end") or start)
+            matched = text_value[start:end].replace("\n", " ").strip()
+            line_start = text_value.rfind("\n", 0, start) + 1
+            line_end = text_value.find("\n", end)
+            if line_end < 0:
+                line_end = len(text_value)
+            line_content = text_value[line_start:line_end].strip()
+            findings.append({
+                "entity": entity,
+                "entity_label": entity_labels.get(entity, entity),
+                "score": item.get("score", 0),
+                "matched_text": matched[:240],
+                "line_number": text_value.count("\n", 0, start) + 1,
+                "line_content": line_content[:1000],
+                "message": f"检测到{entity_labels.get(entity, entity)}：{matched[:240] or '未提取到具体内容'}",
+                "source": "presidio",
+            })
+        return filter_presidio_dataset_false_positives(findings), "available"
     except (httpx.HTTPError, ValueError) as exc:
         return [{"entity": "PRESIDIO_UNAVAILABLE", "severity": "medium", "message": str(exc)[:240], "source": "platform"}], "unavailable"
+
+
+def filter_presidio_dataset_false_positives(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Suppress known English-model false positives in Chinese dataset records."""
+    filtered = []
+    dataset_id = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{2,40}$")
+    for finding in findings:
+        entity = finding.get("entity")
+        matched = str(finding.get("matched_text") or "").strip()
+        has_cjk = bool(re.search(r"[\u3400-\u9fff]", matched))
+        if dataset_id.fullmatch(matched) or re.fullmatch(r"(?:v|ver)[0-9]+", matched, re.IGNORECASE):
+            continue
+        if entity == "LOCATION" and has_cjk:
+            continue
+        if entity == "PERSON" and (has_cjk and len(re.sub(r"[^\u3400-\u9fff]", "", matched)) > 6 or ("-" in matched and any(char.isdigit() for char in matched))):
+            continue
+        filtered.append(finding)
+    return filtered
+
+
+def enrich_legacy_presidio_findings(text_value: str, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert older coordinate-only findings into readable report entries."""
+    enriched = []
+    for item in findings:
+        if not isinstance(item, dict) or "start" not in item:
+            enriched.append(item)
+            continue
+        start = int(item.get("start") or 0)
+        end = int(item.get("end") or start)
+        matched = text_value[start:end].replace("\n", " ").strip()
+        line_start = text_value.rfind("\n", 0, start) + 1
+        line_end = text_value.find("\n", end)
+        if line_end < 0:
+            line_end = len(text_value)
+        line_content = text_value[line_start:line_end].strip()
+        entity = item.get("entity", "UNKNOWN")
+        labels = {"PERSON": "个人姓名", "PHONE_NUMBER": "电话号码", "EMAIL_ADDRESS": "邮箱地址", "LOCATION": "地理位置", "ORGANIZATION": "组织机构", "CREDIT_CARD": "银行卡/信用卡号", "IBAN_CODE": "银行账户", "IP_ADDRESS": "IP地址", "URL": "网址"}
+        label = labels.get(entity, entity)
+        enriched.append({**item, "entity_label": label, "matched_text": matched[:240], "line_number": text_value.count("\n", 0, start) + 1, "line_content": line_content[:1000], "message": f"检测到{label}：{matched[:240] or '未提取到具体内容'}"})
+    return enriched
 
 
 def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
@@ -2939,18 +3299,99 @@ def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
     return findings
 
 
-def read_product_sample(file_item: FileObject) -> str:
+def read_product_sample(file_item: FileObject, raw_content: bytes | None = None) -> str:
     if not MINIO_ENDPOINT or file_item.size <= 0:
         return ""
-    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml"))):
+    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".jsonl", ".md", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz", ".rar", ".7z"))):
         return ""
-    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
-    response = client.get_object(MINIO_BUCKET, file_item.object_name)
+    response = None
+    temp_path = None
+    if raw_content is None:
+        client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+        response = client.get_object(MINIO_BUCKET, file_item.object_name)
     try:
-        return response.read(2_000_000).decode("utf-8", errors="ignore")
+        if raw_content is not None:
+            sample = raw_content
+        elif file_item.size > 100 * 1024 * 1024:
+            # Archive indexes can be at the end of large files. Spool to disk
+            # so extraction is seekable without holding the object in memory.
+            with tempfile.NamedTemporaryFile(prefix="market-presidio-", suffix=".archive", delete=False) as handle:
+                temp_path = handle.name
+                while True:
+                    chunk = response.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+            sample = b""
+        else:
+            sample = response.read(file_item.size)
+        name = file_item.original_name.lower()
+        if name.endswith(".zip"):
+            archive_source = temp_path or BytesIO(sample)
+            with zipfile.ZipFile(archive_source) as archive:
+                text_parts = []
+                for entry in archive.infolist()[:50]:
+                    if entry.is_dir() or not entry.filename.lower().endswith((".txt", ".csv", ".json", ".jsonl", ".md", ".xml")):
+                        continue
+                    text_parts.append(archive.open(entry).read(2_000_000).decode("utf-8", errors="ignore"))
+                return "\n".join(text_parts)
+        if name.endswith((".tar", ".tgz", ".tar.gz")):
+            archive = tarfile.open(name=temp_path, mode="r:*") if temp_path else tarfile.open(fileobj=BytesIO(sample), mode="r:*")
+            with archive:
+                text_parts = []
+                for entry in archive.getmembers()[:50]:
+                    if not entry.isfile() or not entry.name.lower().endswith((".txt", ".csv", ".json", ".jsonl", ".md", ".xml")):
+                        continue
+                    handle = archive.extractfile(entry)
+                    if handle:
+                        text_parts.append(handle.read(2_000_000).decode("utf-8", errors="ignore"))
+                return "\n".join(text_parts)
+        if name.endswith((".rar", ".7z")):
+            archive_path = temp_path
+            temporary_archive = None
+            if not archive_path:
+                with tempfile.NamedTemporaryFile(prefix="market-presidio-", suffix=os.path.splitext(name)[1], delete=False) as handle:
+                    temporary_archive = handle.name
+                    handle.write(sample)
+                archive_path = temporary_archive
+            try:
+                with tempfile.TemporaryDirectory(prefix="market-presidio-extract-") as extract_dir:
+                    if name.endswith(".rar") and shutil.which("unar"):
+                        extraction_command = ["unar", "-f", "-o", extract_dir, archive_path]
+                    else:
+                        extraction_command = ["7z", "x", "-y", f"-o{extract_dir}", archive_path]
+                    result = subprocess.run(extraction_command, capture_output=True, text=True, timeout=120)
+                    text_parts = []
+                    for root, _, names in os.walk(extract_dir):
+                        for entry_name in names:
+                            if not entry_name.lower().endswith((".txt", ".csv", ".json", ".jsonl", ".md", ".xml")):
+                                continue
+                            with open(os.path.join(root, entry_name), "rb") as handle:
+                                text_parts.append(handle.read(2_000_000).decode("utf-8", errors="ignore"))
+                            if len(text_parts) >= 50:
+                                break
+                        if len(text_parts) >= 50:
+                            break
+                    # 7z may return 2 for a partially damaged archive while
+                    # still extracting readable entries. Scan those entries
+                    # instead of discarding the usable sample altogether.
+                    return "\n".join(text_parts)
+            finally:
+                if temporary_archive:
+                    try:
+                        os.unlink(temporary_archive)
+                    except OSError:
+                        pass
+        return sample.decode("utf-8", errors="ignore")
     finally:
-        response.close()
-        response.release_conn()
+        if response is not None:
+            response.close()
+            response.release_conn()
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def run_product_security_scan(product: Product, db: Session, actor: str) -> ProductSecurityScan:
@@ -2958,17 +3399,24 @@ def run_product_security_scan(product: Product, db: Session, actor: str) -> Prod
     text_parts = [metadata_text]
     files = db.scalars(select(FileObject).where(FileObject.product_id == product.id, FileObject.status != "deleted")).all()
     file_reports = []
+    file_findings = []
     for item in files:
         try:
             sample = read_product_sample(item)
+            file_presidio_findings, file_presidio_status = (presidio_analyze(sample) if item.scan_status == "clean" and sample else ([], "not_scanned"))
+            try:
+                stored_scan = json.loads(item.scan_report or "{}")
+            except json.JSONDecodeError:
+                stored_scan = {"clamav_report": item.scan_report}
             if sample:
                 text_parts.append(sample)
-            file_reports.append({"file_id": item.id, "name": item.original_name, "sample_scanned": bool(sample), "size": item.size})
+            file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": stored_scan.get("clamav_status", item.scan_status), "clamav_report": stored_scan.get("clamav_report", item.scan_report), "sample_scanned": bool(sample), "presidio_status": file_presidio_status, "presidio_findings": file_presidio_findings})
+            file_findings.extend(file_presidio_findings)
         except Exception as exc:
-            file_reports.append({"file_id": item.id, "name": item.original_name, "sample_scanned": False, "error": str(exc)[:240]})
+            file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": item.scan_status, "clamav_report": item.scan_report, "sample_scanned": False, "presidio_status": "error", "error": str(exc)[:240]})
     combined = "\n".join(text_parts)
     presidio_findings, presidio_status = presidio_analyze(combined)
-    findings = market_sensitive_patterns(combined) + presidio_findings
+    findings = market_sensitive_patterns(combined) + presidio_findings + file_findings
     metadata_violations = product_security_policy_violations(product)
     if metadata_violations:
         findings.append({"entity": "PRODUCT_METADATA", "severity": "high", "message": "登记元数据缺少：" + "、".join(metadata_violations), "source": "market-policy"})
@@ -3143,6 +3591,10 @@ def apisix_native_upstream() -> bool:
     return os.getenv("APISIX_NATIVE_UPSTREAM", "false").lower() == "true"
 
 
+def apisix_policy_redis():
+    return redis.Redis.from_url(os.getenv("REDIS_URL", "redis://market-redis:6379/0"), decode_responses=True)
+
+
 def apisix_admin_request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     base_url = os.getenv("APISIX_ADMIN_URL", "http://market-apisix-admin:9180/apisix/admin").rstrip("/")
     admin_key = os.getenv("APISIX_ADMIN_KEY", "")
@@ -3169,6 +3621,7 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     plugins = {
         "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
         "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "consumer_name" if apisix_native_auth() else "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2},
+        "market-gateway-quota": {"route_key": route.route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "lookup_consumer": True},
     }
     if apisix_native_auth():
         plugins["key-auth"] = {"header": "X-API-Key", "query": "api_key"}
@@ -3201,7 +3654,81 @@ def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, 
     route_key = route.route_key if route else "unknown"
     daily_quota = credential.daily_quota if credential.daily_quota is not None else (route.daily_quota if route else 0)
     monthly_quota = credential.monthly_quota if credential.monthly_quota is not None else (route.monthly_quota if route else 0)
-    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}, "market-gateway-quota": {"route_key": route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0}}})
+    apisix_admin_request("PUT", f"/consumers/{credential.apisix_consumer_name}", {"username": credential.apisix_consumer_name, "plugins": {"key-auth": {"key": raw_key}, "market-gateway-quota": {"route_key": route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "total_quota": credential.total_quota or 0}}})
+    try:
+        apisix_policy_redis().hset(f"market:apisix:credential:{credential.apisix_consumer_name}", mapping={"status": credential.status, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "total_quota": credential.total_quota or 0})
+    except redis.RedisError as exc:
+        raise RuntimeError(f"API 凭据策略缓存同步失败：{exc}") from exc
+    return True
+
+
+def api_entitlement_policy(db: Session, enterprise_id: str, route: ApiGatewayRoute) -> dict[str, int]:
+    """Aggregate active paid orders into one enterprise/API entitlement."""
+    orders = db.scalars(select(Order).where(
+        Order.buyer_enterprise_id == enterprise_id,
+        Order.product_id == route.product_id,
+        Order.payment_status == "paid",
+        Order.main_status.not_in(("cancelled", "closed")),
+        Order.refunded_amount == 0,
+    )).all()
+    versions = {x.id: x for x in db.scalars(select(ProductReleaseVersion).where(ProductReleaseVersion.id.in_([o.product_version_id for o in orders]))).all()} if orders else {}
+    limits = {"rate_limit_per_minute": 0, "daily_quota": 0, "monthly_quota": 0, "total_quota": 0}
+    for order in orders:
+        version = versions.get(order.product_version_id)
+        if not version:
+            continue
+        limits["rate_limit_per_minute"] = max(limits["rate_limit_per_minute"], int(version.rate_limit_per_minute or 0))
+        for key, value in (("daily_quota", version.daily_quota), ("monthly_quota", version.monthly_quota), ("total_quota", version.quota_amount)):
+            value = int(value or 0)
+            if value == 0:
+                limits[key] = 0
+            elif limits[key] != 0:
+                limits[key] += value
+    return limits
+
+
+def refresh_enterprise_api_credentials(db: Session, enterprise_id: str, route: ApiGatewayRoute) -> None:
+    """Refresh shared enterprise credentials after an order entitlement changes."""
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    has_orders = db.scalar(select(func.count(Order.id)).where(
+        Order.buyer_enterprise_id == enterprise_id,
+        Order.product_id == route.product_id,
+        Order.payment_status == "paid",
+        Order.main_status.not_in(("cancelled", "closed")),
+        Order.refunded_amount == 0,
+    )) > 0
+    items = db.scalars(select(ApiCredential).where(
+        ApiCredential.route_id == route.id,
+        ApiCredential.enterprise_id == enterprise_id,
+        ApiCredential.order_id == "",
+    )).all()
+    for credential in items:
+        if has_orders:
+            credential.status = "active"
+            credential.rate_limit_per_minute = policy["rate_limit_per_minute"] or None
+            credential.daily_quota = policy["daily_quota"] or None
+            credential.monthly_quota = policy["monthly_quota"] or None
+            credential.total_quota = policy["total_quota"]
+            sync_apisix_consumer_policy(credential, route)
+        else:
+            credential.status = "revoked"
+            remove_apisix_consumer(credential)
+
+
+def sync_apisix_consumer_policy(credential: ApiCredential, route: ApiGatewayRoute) -> bool:
+    """Update APISIX/Redis policy without changing the existing secret."""
+    if not apisix_enabled():
+        return True
+    if not credential.apisix_consumer_name:
+        credential.apisix_consumer_name = f"market-consumer-{credential.id}"
+    daily_quota = credential.daily_quota if credential.daily_quota is not None else (route.daily_quota or 0)
+    monthly_quota = credential.monthly_quota if credential.monthly_quota is not None else (route.monthly_quota or 0)
+    apisix_policy_redis().hset(f"market:apisix:credential:{credential.apisix_consumer_name}", mapping={
+        "status": credential.status,
+        "daily_quota": daily_quota,
+        "monthly_quota": monthly_quota,
+        "total_quota": credential.total_quota or 0,
+    })
     return True
 
 
@@ -3296,7 +3823,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -3460,15 +3987,25 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
 @app.get("/api/orders/{order_id}/api-credentials")
 def list_order_api_credentials(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
-    items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id).order_by(ApiCredential.created_at.desc())).all()
-    return {"order_id": order.id, "product_id": product.id, "product_name": product.name, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "items": [api_credential_out(x, route) for x in items]}
+    items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == "").order_by(ApiCredential.created_at.desc())).all()
+    return {"order_id": order.id, "product_id": product.id, "product_name": product.name, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared_scope": "enterprise", "items": [api_credential_out(x, route) for x in items]}
 
 
 @app.post("/api/orders/{order_id}/api-credentials")
 def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
+    version = db.get(ProductReleaseVersion, order.product_version_id)
+    if not version:
+        raise HTTPException(409, "订单对应的 API 版本不存在")
+    credential = db.scalar(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == "").order_by(ApiCredential.created_at.desc()))
+    if credential and credential.status in {"active", "exhausted"}:
+        refresh_enterprise_api_credentials(db, enterprise_id, route)
+        db.commit()
+        db.refresh(credential)
+        return {**api_credential_out(credential, route), "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "该企业已有共享 API 凭据，本次订单已合并额度；API Key 不会重复生成，请继续使用原凭据"}
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=order.product_version_id, name=body.name.strip() or f"{product.name} API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute, daily_quota=body.daily_quota, monthly_quota=body.monthly_quota, expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -3476,16 +4013,16 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
-    audit(db, user.email or user.phone or user.id, "create_order_api_credential", "api_credential", credential.id, order.order_no)
+    audit(db, user.email or user.phone or user.id, "create_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": "API Key 仅在本次响应中返回，请妥善保存"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key，仅在本次生成响应中返回，请妥善保存；同企业其它已支付订单会合并到该凭证"}
 
 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/revoke")
 def revoke_order_api_credential(order_id: str, credential_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, _, route, enterprise_id = api_order_context(order_id, user, db)
-    credential = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id))
+    credential = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == ""))
     if not credential:
         raise HTTPException(404, "API 凭据不存在")
     if credential.status != "active":
@@ -3496,7 +4033,7 @@ def revoke_order_api_credential(order_id: str, credential_id: str, user: User = 
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据从 APISIX Consumer 停用失败：{exc}") from exc
-    audit(db, user.email or user.phone or user.id, "revoke_order_api_credential", "api_credential", credential.id, order.order_no)
+    audit(db, user.email or user.phone or user.id, "revoke_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     return {"id": credential.id, "status": credential.status}
 
@@ -3504,12 +4041,13 @@ def revoke_order_api_credential(order_id: str, credential_id: str, user: User = 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/regenerate")
 def regenerate_order_api_credential(order_id: str, credential_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
-    old = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id))
+    old = db.scalar(select(ApiCredential).where(ApiCredential.id == credential_id, ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == ""))
     if not old:
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id=order.id, product_version_id=old.product_version_id, name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=old.rate_limit_per_minute, daily_quota=old.daily_quota, monthly_quota=old.monthly_quota, expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=policy["rate_limit_per_minute"] or old.rate_limit_per_minute, daily_quota=policy["daily_quota"] or old.daily_quota, monthly_quota=policy["monthly_quota"] or old.monthly_quota, total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -3518,7 +4056,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据重生成同步 APISIX Consumer 失败：{exc}") from exc
-    audit(db, user.email or user.phone or user.id, "regenerate_order_api_credential", "api_credential", credential.id, f"{order.order_no} from={old.id}")
+    audit(db, user.email or user.phone or user.id, "regenerate_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};from={old.id}")
     db.commit()
     db.refresh(credential)
     return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用，新 API Key 仅在本次响应中返回，请妥善保存"}
@@ -3552,7 +4090,21 @@ def gateway_usage(product_id: str, user: User = Depends(current_user), db: Sessi
     return {"summary": {"total": total, "success": success, "error": total - success, "avg_latency_ms": round(sum(x.latency_ms for x in rows) / total, 1) if total else 0}, "items": [{"method": x.method, "path": x.path, "status_code": x.status_code, "latency_ms": x.latency_ms, "request_bytes": x.request_bytes, "response_bytes": x.response_bytes, "created_at": x.created_at} for x in rows]}
 
 
-SAAS_CYCLES = {"monthly": 30, "quarterly": 90, "annual": 365, "perpetual": None}
+SAAS_CYCLES = {"monthly": 1, "quarterly": 3, "annual": 12, "perpetual": None}
+
+
+def add_calendar_months(value: datetime, months: int) -> datetime:
+    """Advance a subscription by calendar months, clamping missing days to month end."""
+    month_index = value.year * 12 + value.month - 1 + months
+    year, month_index = divmod(month_index, 12)
+    month = month_index + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def subscription_expiry(start: datetime, cycle: str) -> datetime | None:
+    months = SAAS_CYCLES.get(cycle)
+    return None if months is None else add_calendar_months(start, months)
 SAAS_CYCLE_LABELS = {"monthly": "月付", "quarterly": "季付", "annual": "年付", "perpetual": "永久"}
 _saas_tokens: dict[str, tuple[str, datetime]] = {}
 
@@ -3729,7 +4281,7 @@ def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: 
         raise HTTPException(400, "SaaS 版本或第三方接口配置不可用")
     saas_cycle_price(version, body.billing_cycle)
     starts = now()
-    expires = None if body.billing_cycle == "perpetual" else starts + timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    expires = subscription_expiry(starts, body.billing_cycle)
     subscription = SaaSSubscription(enterprise_id=enterprise.id, product_id=product.id, version_id=version.id, billing_cycle=body.billing_cycle, status="provisioning", starts_at=starts, expires_at=expires, created_by=user.email or user.phone or user.id)
     db.add(subscription)
     db.flush()
@@ -3767,8 +4319,8 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
     subscription, product, version, config = subscription_context(subscription_id, user, db)
     amount = saas_cycle_price(version, body.billing_cycle)
     result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}")
-    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at += timedelta(days=SAAS_CYCLES[body.billing_cycle])
-    elif body.billing_cycle != "perpetual": subscription.expires_at = now() + timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
+    elif body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(now(), body.billing_cycle)
     else: subscription.expires_at = None
     add_saas_order(db, subscription, product, version, amount, "renew", paid=True)
     db.commit()
@@ -3784,7 +4336,7 @@ def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User =
     current_price = saas_cycle_price(current_version, subscription.billing_cycle)
     target_price = saas_cycle_price(target, body.billing_cycle)
     remaining_days = max(0, (subscription.expires_at - now()).days) if subscription.expires_at else 0
-    total_days = SAAS_CYCLES.get(subscription.billing_cycle) or 365
+    total_days = max(1, ((subscription.expires_at - subscription.starts_at).total_seconds() / 86400) if subscription.expires_at and subscription.starts_at else 365)
     prorated_current = (current_price * Decimal(str(remaining_days)) / Decimal(str(total_days))).quantize(Decimal("0.01"))
     prorated_target = (target_price * Decimal(str(remaining_days)) / Decimal(str(total_days))).quantize(Decimal("0.01"))
     difference = (prorated_target - prorated_current).quantize(Decimal("0.01"))
@@ -3913,8 +4465,11 @@ def order_out(o: Order) -> dict[str, Any]:
 
 @app.get("/api/orders")
 def orders(q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
-    stmt = select(Order).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))
+    if user.platform_role in {"super_admin", "platform_operator", "security_compliance"}:
+        stmt = select(Order)
+    else:
+        enterprise = first_enterprise(db, user)
+        stmt = select(Order).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))
     if q:
         stmt = stmt.where(or_(Order.order_no.ilike(f"%{q}%"), Order.product_name.ilike(f"%{q}%"), Order.buyer_name.ilike(f"%{q}%")))
     if status:
@@ -3964,7 +4519,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if not item:
         raise HTTPException(400, "不支持的订单动作")
     domain, expected, target, label = item
-    if body.action in {"confirm_payment", "cancel_order"}:
+    if body.action in {"confirm_payment", "cancel_order", "accept_delivery", "reject_delivery"}:
         require_enterprise_admin(db, user, order.buyer_enterprise_id)
     if domain == "main":
         current = order.main_status
@@ -3983,6 +4538,9 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             raise HTTPException(409, "当前订单状态不允许取消")
         old_main = order.main_status
         order.main_status = "cancelled"
+        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id))
+        if route:
+            refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
         log_state(db, order, "main", old_main, "cancelled", body.action, user, body.reason)
         audit(db, user.email or user.phone or user.id, body.action, "order", order.id, body.reason)
         db.commit()
@@ -4044,6 +4602,10 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         payment.status = "refunded" if fully_refunded else "paid"
         refund_target = "refunded" if fully_refunded else "paid"
         order.payment_status = refund_target
+        if refund_target == "refunded" or order.refunded_amount > 0:
+            route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id))
+            if route:
+                refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
         if order.after_sales_status == "processing":
             old_after_sales = order.after_sales_status
             order.after_sales_status = "resolved"
@@ -4074,6 +4636,17 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             log_state(db, order, "main", "fulfilling", "pending_confirmation", "交付完成/待确认", user, body.reason)
         if body.action == "accept_delivery":
             order.main_status = "pending_confirmation"
+            task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
+            if task:
+                task.status = "completed"
+                task.note = body.reason or task.note
+        if body.action == "reject_delivery":
+            order.main_status = "fulfilling"
+            task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
+            if task:
+                task.status = "preparing"
+                task.last_error = body.reason or "购买方拒绝履约结果"
+                task.note = body.reason or task.note
         if body.action == "confirm_order":
             order.delivery_status = "accepted"
         if body.action == "retry_delivery":
@@ -4122,10 +4695,74 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
     return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count, "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at, "sla_due_at": task.sla_due_at}, "order": order_out(order)}
 
 
+def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[DeliveryTask, Order]:
+    task = db.get(DeliveryTask, task_id)
+    if not task:
+        raise HTTPException(404, "交付任务不存在")
+    order = db.get(Order, task.order_id)
+    if not order:
+        raise HTTPException(404, "关联订单不存在")
+    if user.platform_role in {"super_admin", "platform_operator", "delivery_monitor"}:
+        return task, order
+    membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]), Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"])))
+    if not membership:
+        raise HTTPException(403, "无权访问该履约任务")
+    return task, order
+
+
+@app.post("/api/delivery-tasks/{task_id}/attachments")
+def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), description: str = Form(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    task, order = delivery_task_access(task_id, user, db)
+    if task.status in {"completed", "cancelled"}:
+        raise HTTPException(409, "履约任务已完成，不能继续上传附件")
+    upload.file.seek(0, 2)
+    size = upload.file.tell()
+    upload.file.seek(0)
+    if size > 100 * 1024 * 1024:
+        raise HTTPException(413, "履约附件不能超过100MB")
+    scan_status, scan_report = clamav_scan_stream(upload.file, size)
+    if scan_status == "infected":
+        audit(db, user.email or user.phone or user.id, "reject_infected_delivery_attachment", "delivery_task", task.id, scan_report, category="security", business_domain="delivery", order_id=order.id, risk_level="high")
+        db.commit()
+        raise HTTPException(400, "履约附件未通过病毒扫描")
+    upload.file.seek(0)
+    hasher = hashlib.sha256()
+    while True:
+        chunk = upload.file.read(1024 * 1024)
+        if not chunk:
+            break
+        hasher.update(chunk)
+    upload.file.seek(0)
+    filename = upload.filename or "delivery-attachment"
+    object_name = f"delivery/{order.id}/{task.id}/{secrets.token_hex(6)}-{filename}"
+    if not MINIO_ENDPOINT:
+        raise HTTPException(503, "文件存储服务未配置")
+    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+    if not client.bucket_exists(MINIO_BUCKET):
+        client.make_bucket(MINIO_BUCKET)
+    client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
+    file_item = FileObject(owner_id=user.id, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role="delivery_attachment", version="", description=description, status="active", scan_status=scan_status, scan_report=scan_report, scanned_at=now())
+    db.add(file_item)
+    db.flush()
+    attachment = DeliveryAttachment(task_id=task.id, file_id=file_item.id, description=description, uploaded_by=user.email or user.phone or user.id)
+    db.add(attachment)
+    audit(db, user.email or user.phone or user.id, "upload_delivery_attachment", "delivery_attachment", attachment.id, filename, category="delivery", business_domain="delivery", order_id=order.id, after={"file_id": file_item.id, "size": size, "scan_status": scan_status})
+    db.commit()
+    return {"id": attachment.id, "task_id": task.id, "file_id": file_item.id, "name": filename, "description": description, "uploaded_by": attachment.uploaded_by, "created_at": attachment.created_at}
+
+
+@app.get("/api/delivery-tasks/{task_id}/attachments")
+def list_delivery_attachments(task_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    task, _ = delivery_task_access(task_id, user, db)
+    rows = db.scalars(select(DeliveryAttachment).where(DeliveryAttachment.task_id == task.id).order_by(DeliveryAttachment.created_at.desc())).all()
+    files = {x.id: x for x in db.scalars(select(FileObject).where(FileObject.id.in_([item.file_id for item in rows]))).all()} if rows else {}
+    return {"items": [{"id": x.id, "task_id": x.task_id, "file_id": x.file_id, "name": files.get(x.file_id).original_name if files.get(x.file_id) else "", "description": x.description, "uploaded_by": x.uploaded_by, "created_at": x.created_at} for x in rows]}
+
+
 @app.get("/api/delivery-tasks")
 def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
     items = db.scalars(select(DeliveryTask).order_by(DeliveryTask.created_at.desc())).all()
-    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/after-sales")
@@ -4881,8 +5518,19 @@ def export_settlement_report(status: str | None = None, start: str | None = None
 
 
 @app.get("/api/audit-logs")
-def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: datetime | None = None, end: datetime | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_audit_viewer(user)
+    def parse_filter_date(value: str | None, field: str) -> datetime | None:
+        if not value or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"{field}必须是有效的ISO日期时间") from exc
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    start_at = parse_filter_date(start, "start")
+    end_at = parse_filter_date(end, "end")
     stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
     filters = []
     if category:
@@ -4900,10 +5548,10 @@ def audit_logs(category: str | None = None, q: str | None = None, actor: str | N
         filters.append(AuditLog.rule_version == rule_version)
     if risk_level:
         filters.append(AuditLog.risk_level == risk_level)
-    if start:
-        filters.append(AuditLog.created_at >= start)
-    if end:
-        filters.append(AuditLog.created_at <= end)
+    if start_at:
+        filters.append(AuditLog.created_at >= start_at)
+    if end_at:
+        filters.append(AuditLog.created_at <= end_at)
     stmt = stmt.where(*filters)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     items = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()
@@ -5182,20 +5830,155 @@ def sla_results(user: User = Depends(current_user), db: Session = Depends(db_ses
 
 
 def file_out(item: FileObject) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "created_at": item.created_at}
+    try:
+        scan = json.loads(item.scan_report or "{}")
+    except json.JSONDecodeError:
+        scan = {"clamav_report": item.scan_report}
+    findings = scan.get("presidio_findings", [])
+    if any(isinstance(entry, dict) and "start" in entry and "matched_text" not in entry for entry in findings):
+        try:
+            findings = enrich_legacy_presidio_findings(read_product_sample(item), findings)
+        except Exception:
+            pass
+    findings = filter_presidio_dataset_false_positives(findings)
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_version": presidio_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": findings, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
+
+
+def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
+    """Build a dependency-free PDF report; JSON details remain available in the API."""
+    try:
+        raw = json.loads(item.scan_report or "{}")
+    except json.JSONDecodeError:
+        raw = {"result": item.scan_report}
+    clamav_status = raw.get("clamav_status", item.scan_status)
+    clamav_report = raw.get("clamav_report", item.scan_report)
+    presidio_status = raw.get("presidio_status", "not_scanned")
+    presidio_findings = raw.get("presidio_findings", [])
+    result = "通过" if clamav_status == "clean" else "发现风险" if clamav_status == "infected" else clamav_status
+    lines = [
+        "Market File Security Scan Report",
+        f"File name: {item.original_name}",
+        f"File size: {item.size} bytes",
+        "Virus scanner: ClamAV",
+        f"Virus scanner version: {clamav_version()}",
+        f"Virus scan result: {clamav_status}",
+        f"Conclusion: {result}",
+        f"Conclusion date: {(item.scanned_at or now()).isoformat()}",
+    ]
+    if report_type in {"combined", "clamav"}:
+        lines.append("ClamAV detail: " + str(clamav_report))
+    if report_type in {"combined", "presidio"}:
+        lines.extend([f"Presidio version: {presidio_version()}", f"Presidio result: {presidio_status}", "Presidio findings: " + json.dumps(presidio_findings, ensure_ascii=True)[:1800]])
+    # Keep the original Helvetica look for ASCII and switch only non-ASCII
+    # runs to the Adobe GB CID font so Chinese text remains readable.
+    def render_line(value: str) -> str:
+        runs = []
+        current = ""
+        current_ascii = None
+        for char in str(value):
+            is_ascii = ord(char) < 128
+            if current_ascii is not None and is_ascii != current_ascii:
+                encoded = current.encode("ascii").hex().upper() if current_ascii else current.encode("utf-16-be").hex().upper()
+                runs.append(f"/{'F1' if current_ascii else 'F2'} 9 Tf <{encoded}> Tj")
+                current = ""
+            current += char
+            current_ascii = is_ascii
+        if current:
+            encoded = current.encode("ascii").hex().upper() if current_ascii else current.encode("utf-16-be").hex().upper()
+            runs.append(f"/{'F1' if current_ascii else 'F2'} 9 Tf <{encoded}> Tj")
+        return " ".join(runs) + " T*"
+
+    stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(render_line(line) for line in lines) + " ET"
+    objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R /F2 5 0 R >> >> /Contents 6 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        "<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [7 0 R] >>",
+        f"<< /Length {len(stream.encode('ascii'))} >>\nstream\n{stream}\nendstream",
+        "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> /DW 1000 >>",
+    ]
+    pdf = "%PDF-1.4\n"; offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(len(pdf.encode("ascii")))
+        pdf += f"{index} 0 obj\n{obj}\nendobj\n"
+    xref = len(pdf.encode("ascii"))
+    pdf += f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n"
+    pdf += "".join(f"{offset:010d} 00000 n \n" for offset in offsets[1:])
+    pdf += f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF"
+    return pdf.encode("ascii")
+
+
+@app.get("/api/files/{file_id}/scan-report.pdf")
+def download_scan_report(file_id: str, report_type: str = Query(default="combined"), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    item = db.get(FileObject, file_id)
+    if not item:
+        raise HTTPException(404, "文件不存在")
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"} and item.owner_id != user.id:
+        raise HTTPException(403, "无权查看扫描报告")
+    if report_type not in {"combined", "clamav", "presidio"}:
+        raise HTTPException(400, "报告类型必须是 combined、clamav 或 presidio")
+    report_name = f"{item.original_name}.{report_type}.scan-report.pdf"
+    return Response(content=scan_report_pdf(item, report_type), media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename=scan-report.pdf; filename*=UTF-8''{quote(report_name)}"})
+
+
+def validate_product_archive(content: bytes, filename: str) -> None:
+    """Reject unsafe archive metadata before persisting a product data file."""
+    lower_name = filename.lower()
+    if lower_name.endswith((".zip",)):
+        try:
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                entries = archive.infolist()
+                if len(entries) > 100_000:
+                    raise HTTPException(400, "压缩包文件数量超过安全上限")
+                total_size = sum(item.file_size for item in entries)
+                if total_size > 50 * 1024 * 1024 * 1024:
+                    raise HTTPException(400, "压缩包解压后总大小超过安全上限")
+                for item in entries:
+                    name = item.filename.replace("\\", "/")
+                    if name.startswith("/") or "../" in name.split("/"):
+                        raise HTTPException(400, "压缩包包含路径穿越条目")
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "ZIP压缩包结构无效") from exc
+    elif lower_name.endswith((".tar", ".tgz", ".tar.gz")):
+        try:
+            with tarfile.open(fileobj=BytesIO(content), mode="r:*") as archive:
+                entries = archive.getmembers()
+                if len(entries) > 100_000:
+                    raise HTTPException(400, "压缩包文件数量超过安全上限")
+                total_size = sum(item.size for item in entries if item.isfile())
+                if total_size > 50 * 1024 * 1024 * 1024:
+                    raise HTTPException(400, "压缩包解压后总大小超过安全上限")
+                for item in entries:
+                    name = item.name.replace("\\", "/")
+                    if name.startswith("/") or "../" in name.split("/") or item.issym() or item.islnk():
+                        raise HTTPException(400, "压缩包包含路径穿越或链接条目")
+        except tarfile.TarError as exc:
+            raise HTTPException(400, "TAR压缩包结构无效") from exc
+    elif lower_name.endswith(".rar"):
+        if not content.startswith(b"Rar!\x1a\x07"):
+            raise HTTPException(400, "RAR压缩包文件头无效")
+    elif lower_name.endswith(".7z"):
+        if not content.startswith(b"7z\xbc\xaf\x27\x1c"):
+            raise HTTPException(400, "7z压缩包文件头无效")
 
 
 @app.get("/api/products/{product_id}/files")
 def product_files(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product_for_enterprise(product_id, user, db)
     items = db.scalars(select(FileObject).where(FileObject.product_id == product_id).order_by(FileObject.created_at.desc())).all()
-    return {"items": [file_out(item) for item in items]}
+    # 详情页只展示当前 Logo，历史 Logo 和缩略图仍保留在存储中供审计追溯。
+    logos = [item for item in items if item.file_role == "product_logo"]
+    latest_logo_id = logos[0].id if logos else ""
+    visible = [item for item in items if item.file_role != "product_logo_thumbnail" and (item.file_role != "product_logo" or item.id == latest_logo_id)]
+    return {"items": [file_out(item) for item in visible]}
 
 
 @app.post("/api/files/upload")
 def upload_file(
     upload: UploadFile = File(...),
     product_id: str | None = Form(default=None),
+    version_id: str | None = Form(default=None),
     file_role: str = Form(default="product_data"),
     version: str = Form(default="v1.0"),
     description: str = Form(default=""),
@@ -5203,33 +5986,165 @@ def upload_file(
     db: Session = Depends(db_session),
 ):
     if product_id:
-        product_for_enterprise(product_id, user, db)
-    content = upload.file.read()
-    object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{upload.filename}"
+        product = product_for_enterprise(product_id, user, db)
+        if file_role in {"product_data", "product_logo"} and product.status not in {"draft", "rejected", "security_unpublished"}:
+            raise HTTPException(409, "已发布或审核中的产品不可替换文件")
+    version_item = None
+    if version_id:
+        version_item = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product_id))
+        if not version_item:
+            raise HTTPException(400, "产品版本不存在或不属于该产品")
+    filename = upload.filename or "file"
+    lower_name = filename.lower()
+    upload.file.seek(0, 2)
+    size = upload.file.tell()
+    upload.file.seek(0)
+    content = b""
+    if file_role == "product_data":
+        allowed = (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".rar", ".7z")
+        if not lower_name.endswith(allowed):
+            raise HTTPException(400, "数据文件仅支持 zip、tar、tar.gz、tgz、bz2、xz、rar 或 7z 压缩格式")
+        if size >= 10 * 1024 * 1024 * 1024:
+            raise HTTPException(413, "数据文件必须小于10GB")
+        if size <= 100 * 1024 * 1024 or lower_name.endswith((".rar", ".7z")):
+            content = upload.file.read() if size <= 100 * 1024 * 1024 else upload.file.read(1024 * 1024)
+        else:
+            content = upload.file.read(1024 * 1024)
+        upload.file.seek(0)
+        if size <= 100 * 1024 * 1024 or lower_name.endswith((".rar", ".7z")):
+            validate_product_archive(content, filename)
+    if file_role == "product_logo":
+        name = lower_name
+        content = upload.file.read()
+        upload.file.seek(0)
+        if not (name.endswith(".svg") or (upload.content_type or "").startswith("image/")):
+            raise HTTPException(400, "Logo仅支持SVG和图片格式")
+        if name.endswith(".svg"):
+            svg_text = content.decode("utf-8", errors="ignore").lower()
+            if "<script" in svg_text or "javascript:" in svg_text or "external" in svg_text or re.search(r"\son[a-z]+\s*=", svg_text):
+                raise HTTPException(400, "SVG包含脚本、外部资源或事件属性，无法上传")
+            root = re.search(r"<svg\b([^>]*)>", svg_text)
+            attributes = root.group(1) if root else ""
+            has_exact_size = bool(re.search(r"\bwidth\s*=\s*['\"]380(?:px)?['\"]", attributes) and re.search(r"\bheight\s*=\s*['\"]280(?:px)?['\"]", attributes))
+            has_exact_viewbox = bool(re.search(r"\bviewbox\s*=\s*['\"]0\s+0\s+380\s+280['\"]", attributes))
+            if not (has_exact_size or has_exact_viewbox):
+                raise HTTPException(400, "SVG Logo必须声明380×280尺寸或对应viewBox")
+        else:
+            try:
+                with Image.open(BytesIO(content)) as image:
+                    if image.size != (380, 280):
+                        raise HTTPException(400, "Logo图片尺寸必须为380×280")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(400, "Logo图片无法解析") from exc
+    scan_status, scan_report = ("not_scanned", "")
+    if file_role in {"product_data", "product_logo"}:
+        scan_status, scan_report = clamav_scan_stream(upload.file, size)
+        if scan_status == "infected":
+            audit(db, user.email, "reject_infected_file", "file", filename, scan_report, category="security", business_domain="product")
+            raise HTTPException(400, "文件未通过ClamAV病毒扫描")
+    upload.file.seek(0)
+    hasher = hashlib.sha256()
+    while True:
+        chunk = upload.file.read(1024 * 1024)
+        if not chunk:
+            break
+        hasher.update(chunk)
+    upload.file.seek(0)
+    object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{filename}"
     if MINIO_ENDPOINT:
         client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
         if not client.bucket_exists(MINIO_BUCKET):
             client.make_bucket(MINIO_BUCKET)
-        from io import BytesIO
-        client.put_object(MINIO_BUCKET, object_name, BytesIO(content), length=len(content), content_type=upload.content_type or "application/octet-stream")
-    item = FileObject(owner_id=user.id, product_id=product_id, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version, description=description)
+        client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
+    if file_role == "product_logo" and product_id:
+        old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role.in_(["product_logo", "product_logo_thumbnail"]), FileObject.status != "deleted")).all()
+        for old_file in old_files:
+            old_file.status = "deleted"
+    if file_role == "product_data" and product_id:
+        version_filter = FileObject.version_id == version_item.id if version_item else FileObject.version_id.is_(None)
+        old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role == "product_data", version_filter, FileObject.status != "deleted")).all()
+        for old_file in old_files:
+            old_file.status = "deleted"
+    if file_role in {"product_data", "product_logo"} and product_id:
+        # A replacement invalidates all aggregate Presidio/security reports that
+        # may still contain findings from the previous file.
+        old_scans = db.scalars(select(ProductSecurityScan).where(ProductSecurityScan.product_id == product_id)).all()
+        for old_scan in old_scans:
+            db.delete(old_scan)
+    item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=json.dumps({"clamav_status": scan_status, "clamav_report": scan_report}, ensure_ascii=False), scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
-    audit(db, user.email, "upload_file", "file", item.id, item.original_name)
+    db.flush()
+    if file_role == "product_data" and scan_status == "clean":
+        try:
+            sample = read_product_sample(item, content if size <= 100 * 1024 * 1024 else None)
+            presidio_findings, presidio_status = presidio_analyze(sample) if sample else ([], "not_scanned")
+            item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": presidio_status, "presidio_findings": presidio_findings, "sample_scanned": bool(sample)}, ensure_ascii=False)
+        except Exception as exc:
+            item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": "error", "presidio_findings": [], "presidio_error": str(exc)[:240]}, ensure_ascii=False)
+    if file_role == "product_logo" and product_id and not lower_name.endswith(".svg") and MINIO_ENDPOINT:
+        try:
+            with Image.open(BytesIO(content)) as image:
+                image = image.convert("RGBA")
+                image.thumbnail((190, 140), Image.Resampling.LANCZOS)
+                thumbnail_content = BytesIO()
+                image.save(thumbnail_content, format="PNG", optimize=True)
+                thumbnail_bytes = thumbnail_content.getvalue()
+            thumbnail_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{filename}.thumb.png"
+            client.put_object(MINIO_BUCKET, thumbnail_name, BytesIO(thumbnail_bytes), length=len(thumbnail_bytes), content_type="image/png")
+            thumbnail = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=thumbnail_name, original_name=f"{filename}.thumb.png", content_type="image/png", size=len(thumbnail_bytes), checksum=hashlib.sha256(thumbnail_bytes).hexdigest(), file_role="product_logo_thumbnail", version=item.version, description="Logo缩略图", status="active", scan_status="clean", scan_report="由平台生成", scanned_at=now())
+            db.add(thumbnail)
+            db.flush()
+            product.logo_thumbnail_file_id = thumbnail.id
+        except Exception as exc:
+            audit(db, user.email, "generate_logo_thumbnail_failed", "file", item.id, str(exc)[:240], category="security", business_domain="product", risk_level="warning")
+    if file_role == "product_logo" and product_id:
+        product.logo_file_id = item.id
+    audit(db, user.email, "upload_file", "file", item.id, f"{item.original_name}; scan={scan_status}; size={size}", category="security" if file_role == "product_data" else "ops", business_domain="product")
     db.commit()
     db.refresh(item)
     return file_out(item)
 
 
 @app.get("/api/files/{file_id}/download")
-def download_file(file_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def download_file(file_id: str, order_id: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     """Serve persisted identity/license files to their owner or authorized reviewers."""
     item = db.get(FileObject, file_id)
     if not item or item.status == "deleted":
         raise HTTPException(404, "文件不存在")
-    reviewer = user.platform_role in {"super_admin", "platform_operator"}
+    reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
+    if item.file_role == "delivery_attachment" and not owner and not reviewer:
+        attachment = db.scalar(select(DeliveryAttachment).where(DeliveryAttachment.file_id == item.id))
+        task = db.get(DeliveryTask, attachment.task_id) if attachment else None
+        order = db.get(Order, task.order_id) if task else None
+        member = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]) if order else False, Membership.status == "active")) if order else None
+        owner = bool(member)
     if not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
+    download_log = None
+    if item.file_role == "product_data":
+        if reviewer:
+            order = None
+        elif not order_id:
+            raise HTTPException(400, "下载产品数据文件必须提供订单号")
+        else:
+            order = db.get(Order, order_id)
+            enterprise = first_enterprise(db, user)
+            member = db.scalar(select(Membership).where(Membership.enterprise_id == enterprise.id, Membership.user_id == user.id, Membership.status == "active"))
+            if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or (order.buyer_enterprise_id != enterprise.id and not reviewer) or (not reviewer and not member):
+                raise HTTPException(403, "当前用户没有该订单文件的下载权限")
+            product = db.get(Product, item.product_id)
+            download_limit = int(product.download_limit or 0) if product else 0
+            used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
+            download_log = FileDownloadLog(file_id=item.id, order_id=order.id, user_id=user.id, success=False)
+            if download_limit > 0 and used >= download_limit:
+                download_log.detail = f"下载次数已达上限：{used}/{download_limit}"
+                db.add(download_log)
+                audit(db, user.email or user.phone or user.id, "download_file_denied", "file", item.id, download_log.detail, category="delivery", business_domain="product", order_id=order.id, risk_level="warning")
+                db.commit()
+                raise HTTPException(429, "该订单的文件下载次数已用尽")
     if not MINIO_ENDPOINT:
         raise HTTPException(503, "文件存储服务未配置")
     client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
@@ -5240,4 +6155,25 @@ def download_file(file_id: str, user: User = Depends(current_user), db: Session 
         response.release_conn()
     except Exception as exc:
         raise HTTPException(404, "文件内容不存在") from exc
-    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f'inline; filename="{item.original_name}"'})
+    if download_log:
+        download_log.success = True
+        download_log.detail = "下载成功"
+        db.add(download_log)
+        audit(db, user.email or user.phone or user.id, "download_file", "file", item.id, item.original_name, category="delivery", business_domain="product", order_id=download_log.order_id)
+        db.commit()
+    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"inline; filename=download; filename*=UTF-8''{quote(item.original_name)}"})
+
+
+@app.get("/api/orders/{order_id}/product-files")
+def order_product_files(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order = db.get(Order, order_id)
+    if not order or order.payment_status != "paid":
+        raise HTTPException(404, "订单不存在或尚未支付")
+    enterprise = first_enterprise(db, user)
+    reviewer = user.platform_role in {"super_admin", "platform_operator"}
+    if not reviewer and order.buyer_enterprise_id != enterprise.id:
+        raise HTTPException(403, "无权查看该订单文件")
+    items = db.scalars(select(FileObject).where(FileObject.product_id == order.product_id, FileObject.version_id == order.product_version_id, FileObject.file_role == "product_data", FileObject.status != "deleted")).all()
+    product = db.get(Product, order.product_id)
+    limit = int(product.download_limit or 0) if product else 0
+    return {"download_limit": limit, "items": [{**file_out(item), "downloaded": db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0, "download_url": f"/api/files/{item.id}/download?order_id={order.id}"} for item in items]}

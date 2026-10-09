@@ -56,9 +56,15 @@ const loading = ref(false);
 const toast = ref("");
 const dashboard = ref(null);
 const products = ref([]);
+const productFiles = ref([]);
+const productLogoPreview = ref("");
+const securityReport = ref(null);
+const fileReportViewer = ref(null);
+const productReviewMode = ref(false);
 const productDirectories = ref([]);
 const orders = ref([]);
 const selectedOrder = ref(null);
+const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
 const apiOrderState = ref({
   available: false,
@@ -168,6 +174,7 @@ const roleForm = ref({
 const verification = ref({ personal: null, enterprise: null });
 const identityReview = ref(null);
 const identityReviewImages = ref({ front: "", back: "", license: "" });
+const personalEditImages = ref({ front: "", back: "" });
 const identityReviewComment = ref("");
 const identityImagePreview = ref(null);
 const verificationForm = ref({
@@ -201,6 +208,8 @@ const emptyProductVersion = () => ({
   rate_limit_per_minute: 60,
   daily_quota: 10000,
   monthly_quota: 0,
+  quota_unit: "",
+  quota_amount: 0,
   status: "active",
 });
 const emptyProductForm = () => ({
@@ -212,6 +221,11 @@ const emptyProductForm = () => ({
   description: "",
   usage_scenarios: "",
   delivery_method: "file",
+  upstream_url: "",
+  application_url: "",
+  integration_api_url: "",
+  download_limit: 0,
+  logo_file_id: "",
   pricing_strategy: "",
   versions: [emptyProductVersion()],
   quality_level: "标准",
@@ -259,6 +273,11 @@ const filteredTasks = computed(() =>
 const selectedProductSettlementRule = computed(() =>
   settlementRules.value.find((rule) => rule.id === productForm.value.settlement_rule_id) || null,
 );
+const visibleProductFiles = computed(() => {
+  const files = productFiles.value.filter((item) => item.file_role !== "product_logo_thumbnail");
+  const logo = files.find((item) => item.file_role === "product_logo");
+  return [...files.filter((item) => item.file_role !== "product_logo"), ...(logo ? [logo] : [])];
+});
 
 const statusLabels = {
   created: "创建",
@@ -330,12 +349,18 @@ function fmtDate(value) {
     ? new Date(value).toLocaleString("zh-CN", { hour12: false })
     : "-";
 }
+const presidioEntityLabels = { PERSON: "个人姓名", PHONE_NUMBER: "电话号码", EMAIL_ADDRESS: "邮箱地址", LOCATION: "地理位置", ORGANIZATION: "组织机构", CREDIT_CARD: "银行卡/信用卡号", IBAN_CODE: "银行账户", IP_ADDRESS: "IP地址", URL: "网址" };
+function presidioEntityLabel(value) { return presidioEntityLabels[value] || value || "敏感信息"; }
+function presidioScore(value) { return value === undefined || value === null ? "-" : `${(Number(value) * 100).toFixed(1)}%`; }
 function label(value) {
   return statusLabels[value] || value;
 }
 function participantLabel(value) {
   return { platform: "平台运营方", provider: "数据/服务提供方", service: "数据服务方", expert: "专家", channel: "渠道" }[value] || value;
 }
+const productReviewActionLabels = { submit_product_review: "提交审核", enter_product_security_review: "进入安全审核", approve_product: "审核通过", reject_product: "审核拒绝", business_approve_product: "业务审核通过", business_reject_product: "业务审核拒绝", quality_approve_product: "质量审核通过", quality_reject_product: "质量审核拒绝", approve_product_security: "安全审核通过", reject_product_security: "安全审核拒绝", operation_approve_product: "运营审核通过", operation_reject_product: "运营审核拒绝", withdraw_product_review: "撤回审核" };
+function productReviewActionLabel(value) { return productReviewActionLabels[value] || value; }
+function productReviewResult(item) { const status = item.after?.status; if (item.action.includes("reject") || status === "rejected") return "拒绝"; if (item.action.includes("approve") || status === "published" || status === "quality_review" || status === "security_review" || status === "operation_review") return "通过"; if (item.action === "withdraw_product_review") return "撤回"; return item.result === "success" ? "已提交" : item.result || "已记录"; }
 function notify(message) {
   toast.value = message;
   window.setTimeout(() => {
@@ -607,10 +632,10 @@ async function assignServiceLevel() {
 }
 async function inviteEnterpriseMember() {
   if (!inviteTarget.value.trim()) return notify("请输入已注册用户的邮箱或手机号");
-  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim(), department_id: inviteDepartmentId.value, channel: inviteChannel.value }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(data.temporary_password ? `邀请已创建，临时密码：${data.temporary_password}` : "邀请已创建"); inviteTarget.value = ""; inviteDepartmentId.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
+  try { const { data } = await api.post("/enterprise/invitations", { target: inviteTarget.value.trim(), department_id: inviteDepartmentId.value, channel: inviteChannel.value }, { params: { enterprise_id: enterpriseManageModal.value?.id } }); notify(data.invitation_message ? `邀请已创建\n${data.invitation_message}` : "邀请已创建"); inviteTarget.value = ""; inviteDepartmentId.value = ""; await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "邀请发送失败"); }
 }
 async function resendEnterpriseInvitation(item) {
-  try { const { data } = await api.post(`/enterprise/invitations/${item.id}/resend`); notify(`邀请已重新发送，临时密码：${data.temporary_password}`); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "重新邀请失败"); }
+  try { const { data } = await api.post(`/enterprise/invitations/${item.id}/resend`); notify(data.invitation_message ? `邀请已重新发送\n${data.invitation_message}` : "邀请已重新发送"); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "重新邀请失败"); }
 }
 async function acceptEnterpriseInvitation(item) {
   try { await api.post(`/enterprise/invitations/${item.token}/accept`); notify(`已加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "接受邀请失败"); }
@@ -784,7 +809,11 @@ async function openOrder(order) {
     gateway_base_path: "",
   };
   apiCredentialReveal.value = null;
+  orderProductFiles.value = { download_limit: 0, items: [] };
   const requests = [];
+  if (data.order.payment_status === "paid") {
+    requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { orderProductFiles.value = files; }).catch(() => {}));
+  }
   if (data.order.subscription_id) {
     const id = data.order.subscription_id;
     requests.push(
@@ -810,6 +839,21 @@ async function openOrder(order) {
       .catch(() => {}),
   );
   await Promise.all(requests);
+}
+async function downloadOrderProductFile(file) {
+  if (!selectedOrder.value) return;
+  try {
+    const response = await api.get(`/files/${file.id}/download`, { params: { order_id: selectedOrder.value.order.id }, responseType: "blob" });
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = file.original_name;
+    link.click();
+    URL.revokeObjectURL(url);
+    await openOrder(selectedOrder.value.order);
+  } catch (error) {
+    notify(error.response?.data?.detail || "文件下载失败");
+  }
 }
 async function transition(action) {
   if (!selectedOrder.value) return;
@@ -923,10 +967,10 @@ async function createOrderApiCredential() {
     const { data } = await api.post(`/orders/${order.id}/api-credentials`, {
       name: `${order.product_name} API 凭据`,
     });
-    apiCredentialReveal.value = data;
+    apiCredentialReveal.value = data.api_key ? data : null;
     await openOrder(order);
-    apiCredentialReveal.value = data;
-    notify("API 凭据已生成，请立即保存 API Key");
+    apiCredentialReveal.value = data.api_key ? data : null;
+    notify(data.api_key ? "企业共享 API 凭据已生成，请立即保存 API Key" : "已复用企业共享 API 凭据，本次订单额度已合并");
   } catch (error) {
     notify(error.response?.data?.detail || "API 凭据生成失败");
   }
@@ -974,13 +1018,30 @@ async function copyApiCredential() {
 }
 async function createProduct() {
   try {
-    await api.post("/products", {
+    const { data } = await api.post("/products", {
       ...productForm.value,
       catalog_name:
         productForm.value.catalog_name ||
         productDirectories.value[0]?.value ||
         "未分类",
     });
+    if (productForm.value.logoFile) {
+      const form = new FormData();
+      form.append("upload", productForm.value.logoFile);
+      form.append("product_id", data.id);
+      form.append("file_role", "product_logo");
+      const uploaded = await api.post("/files/upload", form);
+      await api.put(`/products/${data.id}`, { ...productForm.value, logo_file_id: uploaded.data.id, logoFile: undefined });
+    }
+    if (productForm.value.fileUpload) {
+      const form = new FormData();
+      form.append("upload", productForm.value.fileUpload);
+      form.append("product_id", data.id);
+      form.append("file_role", "product_data");
+      form.append("version_id", data.versions?.[0]?.id || "");
+      form.append("version", data.versions?.[0]?.version_code || "v1.0");
+      await api.post("/files/upload", form);
+    }
     showProductForm.value = false;
     productForm.value = {
       ...emptyProductForm(),
@@ -995,6 +1056,7 @@ async function createProduct() {
 function openNewProduct() {
   productDetailMode.value = false;
   productReadOnlyMode.value = false;
+  productReviewMode.value = false;
   selectedProductId.value = "";
   productForm.value = {
     ...emptyProductForm(),
@@ -1002,24 +1064,110 @@ function openNewProduct() {
   };
   showProductForm.value = true;
 }
-function openProductDetail(product) {
+async function openProductDetail(product, review = false) {
   selectedProductId.value = product.id;
   productDetailMode.value = true;
-  productReadOnlyMode.value = product.status !== "draft";
+  productReviewMode.value = review && canReviewProduct(product);
+  productReadOnlyMode.value = !["draft", "rejected"].includes(product.status);
+  let detail = product;
+  try {
+    const response = await api.get(`/products/${product.id}`);
+    detail = response.data;
+  } catch {
+    detail = product;
+  }
   productForm.value = JSON.parse(JSON.stringify({
     ...emptyProductForm(),
-    ...product,
-    versions: product.versions?.length ? product.versions : [emptyProductVersion()],
+    ...detail,
+    versions: detail.versions?.length ? detail.versions : [emptyProductVersion()],
   }));
+  productForm.value.logoFile = null;
+  productFiles.value = [];
+  productLogoPreview.value = "";
+  try {
+    const { data } = await api.get(`/products/${product.id}/files`);
+    productFiles.value = data.items || [];
+    if (detail.logo_thumbnail_file_id) {
+      const response = await api.get(`/files/${detail.logo_thumbnail_file_id}/download`, { responseType: "blob" });
+      productLogoPreview.value = URL.createObjectURL(response.data);
+    }
+  } catch {
+    productFiles.value = [];
+  }
   showProductForm.value = true;
+}
+function isPlatformRole() {
+  return ["super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.value?.platform_role);
+}
+async function downloadProductFile(file, reportType = "") {
+  try {
+    const suffix = reportType ? `?report_type=${reportType}` : "";
+    const endpoint = reportType ? `/files/${file.id}/scan-report.pdf` : `/files/${file.id}/download`;
+    const { data } = await api.get(`${endpoint}${suffix}`, { responseType: "blob" });
+    const url = URL.createObjectURL(data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = reportType ? `${file.original_name}.${reportType}.scan-report.pdf` : file.original_name;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    notify(error.response?.data?.detail || "文件下载失败");
+  }
+}
+async function viewProductReport(file, reportType) {
+  try {
+    const { data } = await api.get(`/files/${file.id}/scan-report.pdf?report_type=${reportType}`, { responseType: "blob" });
+    const url = URL.createObjectURL(data);
+    window.open(url, "_blank", "noopener");
+  } catch (error) {
+    notify(error.response?.data?.detail || "报告打开失败");
+  }
+}
+function openFileReport(file, reportType) {
+  fileReportViewer.value = { file, reportType };
+}
+async function reviewProductFromDetail(decision) {
+  const product = productForm.value;
+  if (product.status === "security_review") {
+    const comment = window.prompt(decision === "approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", decision === "approve" ? "安全审核通过" : "");
+    if (!comment) return;
+    await api.post(`/products/${product.id}/security-review`, { decision, comment });
+  } else {
+    const comment = window.prompt(decision === "approve" ? "请输入审核意见" : "请输入驳回原因", decision === "approve" ? "审核通过" : "");
+    if (!comment) return;
+    await api.post(`/products/${product.id}/review`, { decision, comment });
+  }
+  showProductForm.value = false;
+  productReviewMode.value = false;
+  notify(decision === "approve" ? "审核已通过" : "产品已驳回");
+  await loadViewData("products");
 }
 async function saveProductEdit() {
   if (!selectedProductId.value || productReadOnlyMode.value) return;
   try {
-    await api.put(`/products/${selectedProductId.value}`, {
+    const payload = {
       ...productForm.value,
       catalog_name: productForm.value.catalog_name || "未分类",
-    });
+      logoFile: undefined,
+    };
+    if (productForm.value.logoFile) {
+      const form = new FormData();
+      form.append("upload", productForm.value.logoFile);
+      form.append("product_id", selectedProductId.value);
+      form.append("file_role", "product_logo");
+      const uploaded = await api.post("/files/upload", form);
+      payload.logo_file_id = uploaded.data.id;
+    }
+    if (productForm.value.fileUpload) {
+      const form = new FormData();
+      form.append("upload", productForm.value.fileUpload);
+      form.append("product_id", selectedProductId.value);
+      form.append("file_role", "product_data");
+      form.append("version_id", productForm.value.versions[0]?.id || "");
+      form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
+      await api.post("/files/upload", form);
+    }
+    await api.put(`/products/${selectedProductId.value}`, payload);
     showProductForm.value = false;
     notify("产品信息已保存");
     await loadViewData("products");
@@ -1043,12 +1191,26 @@ function removeProductVersion(index) {
     return notify("至少保留一个产品版本");
   productForm.value.versions.splice(index, 1);
 }
+function canReviewProduct(product) {
+  const role = user.value?.platform_role;
+  if (!["pending_review", "quality_review", "security_review", "operation_review"].includes(product.status)) return false;
+  if (role === "super_admin") return true;
+  if (product.status === "pending_review") return ["product_manager", "business_reviewer"].includes(role);
+  if (product.status === "quality_review") return role === "quality_reviewer";
+  if (product.status === "security_review") return ["security_compliance", "platform_operator"].includes(role);
+  if (product.status === "operation_review") return role === "platform_operator";
+  return false;
+}
 async function productAction(product, action) {
   try {
     if (action === "unpublish") {
       const reason = window.prompt("请输入下架原因", "产品提供方主动下架");
       if (!reason) return;
       await api.post(`/products/${product.id}/unpublish`, { reason });
+    } else if (action === "withdraw") {
+      const reason = window.prompt("请输入撤回原因", "企业管理员撤回审核");
+      if (!reason) return;
+      await api.post(`/products/${product.id}/withdraw`, { reason });
     } else if (action === "security_check") {
       const { data } = await api.post(`/products/${product.id}/security-check`);
       notify(data.unpublished ? "安全策略检查发现问题，产品已自动下架" : "安全策略检查通过");
@@ -1056,9 +1218,7 @@ async function productAction(product, action) {
       return;
     } else if (action === "security_report") {
       const { data } = await api.get(`/products/${product.id}/security-report`);
-      const report = data.security_report?.report || {};
-      const findings = (report.findings || []).map((item) => `${item.severity || "提示"} · ${item.message || item.entity}`).join("\n");
-      window.alert(`安全审核报告\n扫描引擎：${data.security_report?.engine}\n发现项：${data.security_report?.findings_count}\n高风险：${data.security_report?.high_risk_count}\n\n${findings || "未发现自动识别项"}`);
+      securityReport.value = data.security_report;
       return;
     } else if (action === "security_approve" || action === "security_reject") {
       let comment = window.prompt(action === "security_approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", action === "security_approve" ? "安全审核通过" : "");
@@ -1408,12 +1568,23 @@ async function openPersonalReview(item) {
   identityReviewImages.value = { front: "", back: "", license: "" };
   await Promise.all([loadReviewImage(item.id_front_file_id, "front"), loadReviewImage(item.id_back_file_id, "back")]);
 }
-function openPersonalEdit(item) {
+async function openPersonalEdit(item) {
   editingPersonalVerification.value = item;
   Object.assign(verificationForm.value, { id_name: item.id_name || "", id_number: item.id_number || "", phone: item.phone || user.value?.phone || "", enterprise_id: item.enterprise_id || "", enterprise_role: item.enterprise_role || "", phone_code: "123456" });
   verificationFiles.value.front = null;
   verificationFiles.value.back = null;
+  personalEditImages.value = { front: "", back: "" };
   showPersonalVerification.value = true;
+  await Promise.all([loadPersonalEditImage(item.id_front_file_id, "front"), loadPersonalEditImage(item.id_back_file_id, "back")]);
+}
+async function loadPersonalEditImage(fileId, key) {
+  if (!fileId) return;
+  try {
+    const response = await api.get(`/files/${fileId}/download`, { responseType: "blob" });
+    personalEditImages.value = { ...personalEditImages.value, [key]: URL.createObjectURL(response.data) };
+  } catch (error) {
+    notify(error.response?.data?.detail || "身份证图片加载失败");
+  }
 }
 async function openEnterpriseReview(item) {
   identityReview.value = { kind: "enterprise", item };
@@ -1560,7 +1731,7 @@ function nextActions(order) {
   if (order.delivery_status === "preparing")
     actions.push(["submit_delivery", "提交交付物"]);
   if (order.delivery_status === "pending_acceptance")
-    actions.push(["accept_delivery", "验收通过"]);
+    actions.push(["accept_delivery", "验收通过"], ["reject_delivery", "拒绝并退回整改"]);
   if (order.main_status === "pending_confirmation")
     actions.push(["confirm_order", "确认完成"]);
   if (order.delivery_status === "exception")
@@ -2204,15 +2375,19 @@ onUnmounted(() => {
                       <span
                         :class="[
                           'status-pill',
-                          `status-${product.status === 'published' ? 'done' : product.status === 'pending_review' || product.status === 'security_review' ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
+                          `status-${product.status === 'published' ? 'done' : ['pending_review','quality_review','security_review','operation_review'].includes(product.status) ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
                         ]"
                         >{{
                           product.status === "published"
                             ? "已发布"
                             : product.status === "pending_review"
-                              ? "待审核"
-                              : product.status === "security_review"
-                                ? "安全审核中"
+                            ? "业务审核"
+                            : product.status === "quality_review"
+                              ? "质量审核"
+                            : product.status === "security_review"
+                              ? "安全审核中"
+                              : product.status === "operation_review"
+                                ? "运营审核"
                               : product.status === "rejected"
                                 ? "已驳回"
                                 : product.status === "security_unpublished"
@@ -2222,7 +2397,12 @@ onUnmounted(() => {
                       >
                     </td>
                     <td>
-                      <div class="table-actions">
+                      <div v-if="isPlatformRole()" class="table-actions">
+                        <button v-if="canReviewProduct(product)" class="text-btn" @click="openProductDetail(product, true)">审核</button>
+                        <button v-if="product.status === 'published' && ['super_admin', 'platform_operator'].includes(user?.platform_role)" class="text-btn danger-text" @click="productAction(product, 'unpublish')">下架</button>
+                        <span v-if="!canReviewProduct(product) && !(product.status === 'published' && ['super_admin', 'platform_operator'].includes(user?.platform_role))" class="muted">-</span>
+                      </div>
+                      <div v-else class="table-actions">
                         <button
                           v-if="
                             product.status === 'draft' ||
@@ -2233,35 +2413,17 @@ onUnmounted(() => {
                         >
                           提交审核</button
                         ><button
-                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
-                          class="text-btn"
-                          @click="productAction(product, 'security_report')"
-                        >
-                          查看安全报告</button
-                        ><button
-                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
-                          class="text-btn"
-                          @click="productAction(product, 'security_approve')"
-                        >
-                          安全通过</button
-                        ><button
-                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
-                          class="text-btn danger-text"
-                          @click="productAction(product, 'security_reject')"
-                        >
-                          安全驳回</button
-                        ><button
-                          v-if="product.status === 'pending_review'"
+                          v-if="canReviewProduct(product)"
                           class="text-btn"
                           @click="productAction(product, 'review')"
                         >
                           通过</button
                         ><button
-                          v-if="product.status === 'pending_review'"
-                          class="text-btn danger-text"
-                          @click="productAction(product, 'reject')"
+                          v-if="product.status === 'pending_review' && (['super_admin', 'enterprise_admin'].includes(user?.enterprise_role))"
+                          class="text-btn"
+                          @click="productAction(product, 'withdraw')"
                         >
-                          驳回</button
+                          撤回</button
                         ><button
                           v-if="product.status === 'published' && (['super_admin', 'platform_operator'].includes(user?.platform_role) || ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role))"
                           class="text-btn danger-text"
@@ -2768,10 +2930,9 @@ onUnmounted(() => {
                     <td>
                       <div class="table-actions" v-if="personalForUser(item.id)">
                         <template v-if="canReviewIdentity() && personalForUser(item.id)?.status === 'pending_review'">
-                          <button class="text-btn" @click="reviewPersonal(personalForUser(item.id), 'approve')">通过</button>
-                          <button class="text-btn danger-text" @click="reviewPersonal(personalForUser(item.id), 'reject')">拒绝</button>
+                          <button class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
                         </template>
-                        <button v-if="canReviewIdentity() && ['pending', 'pending_review'].includes(personalForUser(item.id)?.status)" class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
+                        <button v-else-if="canReviewIdentity() && ['pending', 'pending_review'].includes(personalForUser(item.id)?.status)" class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
                       </div>
                       <span v-else class="muted">-</span>
                     </td>
@@ -3200,6 +3361,14 @@ onUnmounted(() => {
             >
           </div>
         </div>
+        <div v-if="orderProductFiles.items.length" class="drawer-section">
+          <div class="drawer-section-title">数据文件交付</div>
+          <p class="muted">本订单下载次数：{{ orderProductFiles.download_limit === 0 ? '不限制' : `${orderProductFiles.items[0]?.downloaded || 0}/${orderProductFiles.download_limit}` }}</p>
+          <div v-for="file in orderProductFiles.items" :key="file.id" class="file-status-row">
+            <span>{{ file.original_name }}<small class="muted"> · 已下载{{ file.downloaded }}次</small></span>
+            <button class="secondary-btn" @click="downloadOrderProductFile(file)">下载</button>
+          </div>
+        </div>
         <div class="drawer-section">
           <div class="drawer-section-title">状态时间轴</div>
           <div class="timeline">
@@ -3297,10 +3466,10 @@ onUnmounted(() => {
           v-if="apiOrderState.available"
           class="drawer-section api-order-panel"
         >
-          <div class="drawer-section-title">API 调用凭据</div>
+          <div class="drawer-section-title">API 调用凭据（企业共享）</div>
           <p class="muted">
             网关路径：{{ apiOrderState.gateway_base_path }} ·
-            凭据原文仅在生成或重新生成时显示。
+            同一企业购买同一 API 服务的多个订单共用一套凭据，订单额度自动合并；凭据原文仅在首次生成或重新生成时显示。
           </p>
           <div class="action-list">
             <button class="secondary-btn" @click="createOrderApiCredential">
@@ -3317,6 +3486,7 @@ onUnmounted(() => {
               ><small
                 >{{ item.key_prefix }} ·
                 {{ item.status === "active" ? "启用中" : "已停用" }} ·
+                企业共享总额度 {{ item.total_quota || "不限" }} ·
                 {{ fmtDate(item.created_at) }}</small
               >
             </div>
@@ -3372,6 +3542,18 @@ onUnmounted(() => {
             <p v-if="productDetailMode" class="modal-status-line">
               当前状态：{{ productForm.status === "published" ? "已发布" : productForm.status === "pending_review" ? "待审核" : productForm.status === "security_review" ? "安全审核中" : productForm.status === "security_unpublished" ? "安全下架" : productForm.status === "rejected" ? "已驳回" : "草稿" }} · {{ productForm.review_comment || "暂无审核意见" }}
             </p>
+            <div v-if="productDetailMode" class="product-review-log-section">
+              <div class="form-section-title">审核日志</div>
+              <div v-if="productForm.review_logs?.length" class="product-review-log-list">
+                <div v-for="item in productForm.review_logs" :key="item.id" class="product-review-log-row">
+                  <strong>{{ productReviewActionLabel(item.action) }}</strong>
+                  <span>{{ item.actor }} · {{ fmtDate(item.created_at) }}</span>
+                  <b :class="['status-pill', productReviewResult(item) === '拒绝' ? 'status-blocked' : productReviewResult(item) === '通过' ? 'status-done' : 'status-review']">{{ productReviewResult(item) }}</b>
+                  <small>{{ item.detail || item.after?.review_comment || '无审核说明' }}</small>
+                </div>
+              </div>
+              <div v-else class="muted">暂无审核日志</div>
+            </div>
           </div>
           <button
             type="button"
@@ -3442,7 +3624,6 @@ onUnmounted(() => {
           <label
             >交付方式<select v-model="productForm.delivery_method">
               <option value="file">文件下载</option>
-              <option value="object_storage">对象存储交付</option>
               <option value="api">API 服务</option>
               <option value="model_api">模型 API</option>
               <option value="tenant_access">租户/权限开通</option>
@@ -3451,6 +3632,41 @@ onUnmounted(() => {
               <option value="custom">定制开发</option>
             </select></label
           >
+        </div>
+        <div v-if="productForm.delivery_method === 'file'" class="form-grid">
+          <label>数据文件（压缩包）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz,.bz2,.xz,.rar,.7z" @change="productForm.fileUpload = $event.target.files[0]" /></label>
+          <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
+        </div>
+        <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
+          <label class="wide">提供方后端访问URL<input v-model="productForm.upstream_url" type="url" required placeholder="https://provider.example.com/api" /></label>
+        </div>
+        <div v-if="productForm.delivery_method === 'tenant_access'" class="form-grid">
+          <label>应用访问URL<input v-model="productForm.application_url" type="url" required /></label>
+          <label>租户/权限开通API URL<input v-model="productForm.integration_api_url" type="url" required /></label>
+        </div>
+        <div class="form-grid">
+          <label>产品Logo（380×280）<input type="file" accept="image/*,.svg" @change="productForm.logoFile = $event.target.files[0]" /></label>
+          <label>Logo说明<small class="muted">支持SVG及常见图片格式，提交后执行尺寸和安全校验。</small></label>
+        </div>
+        <div v-if="productDetailMode && productFiles.length" class="product-file-status">
+          <div class="form-section-title">已上传文件与安全状态</div>
+          <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
+          <div v-for="file in visibleProductFiles" :key="file.id" class="file-status-row product-file-row">
+            <div class="product-file-name"><strong>{{ file.original_name }}</strong><small class="muted"> · {{ file.version || "产品级" }} · {{ file.size }} bytes</small></div>
+            <div class="product-file-scan">
+              <button class="text-btn" @click="downloadProductFile(file)">下载文件</button>
+              <template v-if="file.file_role === 'product_logo'">
+                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
+                <button class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+              </template>
+              <template v-else>
+                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
+                <button class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+                <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
+                <button class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
+              </template>
+            </div>
+          </div>
         </div>
         <div class="version-editor">
           <div class="version-editor-head">
@@ -3466,7 +3682,7 @@ onUnmounted(() => {
               v-for="(version, index) in productForm.versions"
             :key="index"
             class="version-row"
-            :class="{ 'api-version-row': productForm.product_type === 'api' }"
+            :class="{ 'api-version-row': ['api', 'model'].includes(productForm.product_type) }"
           >
             <label
               >版本号<input v-model="version.version_code" required /></label
@@ -3484,12 +3700,16 @@ onUnmounted(() => {
                 min="0"
                 step="0.01"
                 required /></label
-            ><label v-if="productForm.product_type === 'api'" title="该版本每分钟允许的最大调用次数"
+            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="该版本每分钟允许的最大调用次数"
               >每分钟限流<input v-model.number="version.rate_limit_per_minute" type="number" min="1" required /></label
-            ><label v-if="productForm.product_type === 'api'" title="该版本每日允许的最大调用次数"
+            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="该版本每日允许的最大调用次数"
               >每日配额<input v-model.number="version.daily_quota" type="number" min="1" required /></label
-            ><label v-if="productForm.product_type === 'api'" title="0 表示不单独限制月配额"
+            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="0 表示不单独限制月配额"
               >每月配额<input v-model.number="version.monthly_quota" type="number" min="0" /></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
+              额度单位<select v-model="version.quota_unit"><option value="1000">千次</option><option value="10000">万次</option></select></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
+              购买额度<input v-model.number="version.quota_amount" type="number" min="0" step="1" /></label
             ><label class="version-description"
               >版本简要介绍<textarea
                 v-model="version.description"
@@ -3616,10 +3836,30 @@ onUnmounted(() => {
           >
         </div>
         </fieldset>
+        <div v-if="productReviewMode" class="review-action-bar">
+          <button type="button" class="primary-btn" @click="reviewProductFromDetail('approve')">通过审核</button>
+          <button type="button" class="secondary-btn danger-text" @click="reviewProductFromDetail('reject')">拒绝审核</button>
+        </div>
         <button v-if="!productReadOnlyMode" class="primary-btn full-btn" type="submit">
           {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
       </form>
+    </div>
+    <div v-if="fileReportViewer" class="modal-scrim" @click="fileReportViewer = null">
+      <section class="modal-card security-report-modal" @click.stop>
+        <div class="drawer-head"><div><span class="eyebrow">FILE SCAN REPORT</span><h2>{{ fileReportViewer.reportType === 'clamav' ? '病毒扫描报告' : 'Presidio扫描报告' }}</h2></div><button type="button" class="icon-btn" @click="fileReportViewer = null"><X :size="19" /></button></div>
+        <div class="state-grid"><div><small>文件名称</small><strong>{{ fileReportViewer.file.original_name }}</strong></div><div><small>文件大小</small><strong>{{ fileReportViewer.file.size }} bytes</strong></div><div><small>扫描工具</small><strong>{{ fileReportViewer.reportType === 'clamav' ? 'ClamAV' : 'Presidio' }}</strong></div><div v-if="fileReportViewer.reportType === 'clamav'"><small>病毒引擎版本</small><strong>{{ fileReportViewer.file.clamav_version || '未返回' }}</strong></div><div v-else><small>Presidio版本</small><strong>{{ fileReportViewer.file.presidio_version || '未返回' }}</strong></div><div><small>扫描结论</small><strong>{{ fileReportViewer.reportType === 'clamav' ? (fileReportViewer.file.clamav_status === 'clean' ? '通过' : fileReportViewer.file.clamav_status) : (fileReportViewer.file.presidio_status === 'available' ? '完成' : fileReportViewer.file.presidio_status) }}</strong></div><div><small>扫描时间</small><strong>{{ fmtDate(fileReportViewer.file.scanned_at) }}</strong></div></div>
+        <div class="drawer-section report-detail-scroll"><div class="drawer-section-title">扫描详情</div><pre v-if="fileReportViewer.reportType === 'clamav'" class="scan-report-detail">{{ fileReportViewer.file.clamav_report }}</pre><div v-else-if="fileReportViewer.file.presidio_findings?.length" class="presidio-finding-list"><article v-for="(finding, index) in fileReportViewer.file.presidio_findings" :key="`${finding.entity}-${index}`" class="presidio-finding-card"><div class="presidio-finding-head"><strong>{{ finding.entity_label || presidioEntityLabel(finding.entity) }}</strong><span>置信度 {{ presidioScore(finding.score) }}</span></div><p>{{ finding.message || `检测到${presidioEntityLabel(finding.entity)}` }}</p><div><small>命中内容</small><code>{{ finding.matched_text || '未提取到具体内容' }}</code></div><div><small>所在行 {{ finding.line_number || '-' }}</small><span class="presidio-line-content">{{ finding.line_content || '-' }}</span></div></article></div><p v-else class="muted">未发现Presidio敏感信息。</p></div>
+        <div class="security-report-actions"><button class="primary-btn full-btn" @click="downloadProductFile(fileReportViewer.file, fileReportViewer.reportType)">下载{{ fileReportViewer.reportType === 'clamav' ? '病毒' : 'Presidio' }}报告</button></div>
+      </section>
+    </div>
+    <div v-if="securityReport" class="modal-scrim" @click="securityReport = null">
+      <section class="modal-card security-report-modal" @click.stop>
+        <div class="drawer-head"><div><span class="eyebrow">SECURITY REPORT</span><h2>数据集安全审核报告</h2></div><button type="button" class="icon-btn" @click="securityReport = null"><X :size="19" /></button></div>
+        <div class="state-grid"><div><small>扫描引擎</small><strong>{{ securityReport.engine }}</strong></div><div><small>扫描状态</small><strong>{{ securityReport.status }}</strong></div><div><small>发现项</small><strong>{{ securityReport.findings_count }}</strong></div><div><small>高风险</small><strong>{{ securityReport.high_risk_count }}</strong></div><div><small>Presidio</small><strong>{{ securityReport.report?.presidio_status || '未返回' }}</strong></div></div>
+        <div class="drawer-section"><div class="drawer-section-title">自动识别结果</div><div v-if="securityReport.report?.findings?.length" class="security-finding-list"><div v-for="(finding, index) in securityReport.report.findings" :key="`${finding.entity}-${index}`" class="security-finding"><span>{{ finding.entity }}</span><small>{{ finding.message || finding.severity || '发现敏感信息' }}<template v-if="finding.count"> · {{ finding.count }}处</template></small></div></div><p v-else class="muted">未发现自动识别项，仍需安全审核人员结合授权和脱敏材料确认。</p></div>
+        <div class="drawer-section"><div class="drawer-section-title">文件扫描明细</div><div v-for="file in securityReport.report?.files || []" :key="file.file_id" class="file-status-row"><span>{{ file.name }}</span><span><small>{{ file.clamav_status || (file.sample_scanned ? '已提取样本' : '未提取样本') }} · Presidio {{ file.presidio_status || '未执行' }}</small><a class="text-btn" :href="`/api/files/${file.file_id}/scan-report.pdf`" target="_blank" download>查看/下载 PDF 报告</a></span></div></div>
+      </section>
     </div>
     <div v-if="showProfileContact" class="modal-scrim" @click="showProfileContact = false">
       <form class="modal-card" @submit.prevent="updateProfileContact" @click.stop>
@@ -3662,20 +3902,21 @@ onUnmounted(() => {
         ><label
           >身份证号码<input v-model="verificationForm.id_number" required
         /></label>
-        <div class="form-grid">
-          <label
-            >身份证正面<input
-              type="file"
-              accept="image/*"
-              @change="verificationFiles.front = $event.target.files[0]"
-              :required="!editingPersonalVerification" /></label
-          ><label
-            >身份证反面<input
-              type="file"
-              accept="image/*"
-              @change="verificationFiles.back = $event.target.files[0]"
-              :required="!editingPersonalVerification"
-          /></label>
+        <div class="form-grid identity-edit-files">
+          <div class="identity-edit-file">
+            <span class="field-label">身份证正面</span>
+            <img v-if="personalEditImages.front" :src="personalEditImages.front" alt="身份证正面" class="identity-edit-thumb" @click="identityImagePreview = { url: personalEditImages.front, title: '身份证正面' }" />
+            <span v-else-if="editingPersonalVerification" class="muted">暂无已上传图片</span>
+            <input type="file" accept="image/*" @change="verificationFiles.front = $event.target.files[0]" :required="!editingPersonalVerification" />
+            <small v-if="editingPersonalVerification" class="muted">选择新文件可替换原图片</small>
+          </div>
+          <div class="identity-edit-file">
+            <span class="field-label">身份证反面</span>
+            <img v-if="personalEditImages.back" :src="personalEditImages.back" alt="身份证反面" class="identity-edit-thumb" @click="identityImagePreview = { url: personalEditImages.back, title: '身份证反面' }" />
+            <span v-else-if="editingPersonalVerification" class="muted">暂无已上传图片</span>
+            <input type="file" accept="image/*" @change="verificationFiles.back = $event.target.files[0]" :required="!editingPersonalVerification" />
+            <small v-if="editingPersonalVerification" class="muted">选择新文件可替换原图片</small>
+          </div>
         </div>
         <label>手机号<input v-model="verificationForm.phone" required /></label
         ><label

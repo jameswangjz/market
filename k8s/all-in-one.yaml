@@ -34,6 +34,91 @@ data:
   APISIX_NATIVE_AUTH: 'true'
   APISIX_NATIVE_UPSTREAM: 'true'
   PRESIDIO_ANALYZER_URL: http://market-presidio-analyzer:3000/analyze
+  CLAMAV_HOST: market-clamav
+  CLAMAV_PORT: '3310'
+  CLAMAV_ENABLED: 'true'
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-clamav-data
+  namespace: market
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-clamav
+  namespace: market
+  labels: {app: market-clamav}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: market-clamav}
+  template:
+    metadata:
+      labels: {app: market-clamav}
+    spec:
+      containers:
+        - name: clamav
+          image: clamav/clamav:1.4
+          ports:
+            - containerPort: 3310
+          volumeMounts:
+            - name: clamav-data
+              mountPath: /var/lib/clamav
+          readinessProbe:
+            tcpSocket: {port: 3310}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          livenessProbe:
+            tcpSocket: {port: 3310}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+      volumes:
+        - name: clamav-data
+          persistentVolumeClaim: {claimName: market-clamav-data}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-clamav
+  namespace: market
+spec:
+  selector: {app: market-clamav}
+  ports:
+    - name: clamd
+      port: 3310
+      targetPort: 3310
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-clamav-freshclam
+  namespace: market
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: freshclam
+              image: clamav/clamav:1.4
+              command: ["freshclam", "--foreground"]
+              volumeMounts:
+                - name: clamav-data
+                  mountPath: /var/lib/clamav
+          volumes:
+            - name: clamav-data
+              persistentVolumeClaim: {claimName: market-clamav-data}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

@@ -35,6 +35,7 @@ class ProductReleaseVersion(Base):
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
     daily_quota: Mapped[int] = mapped_column(Integer, default=10000)
     monthly_quota: Mapped[int] = mapped_column(Integer, default=0)
+    quota_amount: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(30), index=True)
 
 
@@ -43,6 +44,7 @@ class Order(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     payment_status: Mapped[str] = mapped_column(String(30))
     main_status: Mapped[str] = mapped_column(String(30))
+    refunded_amount: Mapped[float] = mapped_column(Integer, default=0)
 
 
 class ApiGatewayRoute(Base):
@@ -77,6 +79,7 @@ class ApiCredential(Base):
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
     daily_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
     monthly_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_quota: Mapped[int] = mapped_column(Integer, default=0)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -106,19 +109,23 @@ QUOTA_SCRIPT = """
 local minute = redis.call('INCR', KEYS[1])
 local day = redis.call('INCR', KEYS[2])
 local month = redis.call('INCR', KEYS[3])
+local total = redis.call('INCR', KEYS[4])
 redis.call('EXPIRE', KEYS[1], ARGV[1])
 redis.call('EXPIRE', KEYS[2], ARGV[2])
 redis.call('EXPIRE', KEYS[3], ARGV[3])
-local minute_limit = tonumber(ARGV[4])
-local day_limit = tonumber(ARGV[5])
-local month_limit = tonumber(ARGV[6])
-if minute > minute_limit or day > day_limit or (month_limit > 0 and month > month_limit) then
+redis.call('EXPIRE', KEYS[4], ARGV[4])
+local minute_limit = tonumber(ARGV[5])
+local day_limit = tonumber(ARGV[6])
+local month_limit = tonumber(ARGV[7])
+local total_limit = tonumber(ARGV[8])
+if minute > minute_limit or day > day_limit or (month_limit > 0 and month > month_limit) or (total_limit > 0 and total > total_limit) then
   redis.call('DECR', KEYS[1])
   redis.call('DECR', KEYS[2])
   redis.call('DECR', KEYS[3])
-  return {0, minute, day, month}
+  redis.call('DECR', KEYS[4])
+  return {0, minute, day, month, total}
 end
-return {1, minute, day, month}
+return {1, minute, day, month, total}
 """
 
 
@@ -176,21 +183,25 @@ def check_quota(credential: ApiCredential, route: ApiGatewayRoute, version: Prod
     minute_key = f"market:gateway:minute:{credential.id}:{now_epoch // 60}"
     day_key = f"market:gateway:day:{credential.id}:{datetime.now(timezone.utc).date().isoformat()}"
     month_key = f"market:gateway:month:{credential.id}:{datetime.now(timezone.utc).strftime('%Y-%m')}"
+    total_key = f"market:gateway:total:{credential.id}"
     try:
         result = redis_client.eval(
             QUOTA_SCRIPT,
-            3,
+            4,
             minute_key,
             day_key,
             month_key,
+            total_key,
             70,
             86400,
             2678400,
+            31536000,
             minute_limit,
             daily_limit,
             monthly_limit or 0,
+            credential.total_quota or 0,
         )
-        allowed, minute_count, daily_count, monthly_count = (int(value) for value in result)
+        allowed, minute_count, daily_count, monthly_count, total_count = (int(value) for value in result)
     except redis.RedisError:
         raise HTTPException(503, "API 网关限流服务暂不可用")
     if not allowed:
@@ -200,6 +211,17 @@ def check_quota(credential: ApiCredential, route: ApiGatewayRoute, version: Prod
             raise HTTPException(429, "超过 API 每日调用配额")
         if monthly_limit and monthly_count > monthly_limit:
             raise HTTPException(429, "超过 API 每月调用配额")
+        if credential.total_quota and total_count >= credential.total_quota:
+            credential.status = "exhausted"
+            db = SessionLocal()
+            try:
+                stored = db.get(ApiCredential, credential.id)
+                if stored:
+                    stored.status = "exhausted"
+                    db.commit()
+            finally:
+                db.close()
+            raise HTTPException(403, "订单 API 调用额度已耗尽，访问凭据已回收")
 
 
 def record_usage(db: Session, route: ApiGatewayRoute, credential: ApiCredential, request: Request, status_code: int, latency_ms: int, request_bytes: int, response_bytes: int):
@@ -232,11 +254,20 @@ async def proxy(route_key: str, path: str, request: Request):
         if not credential or (credential.expires_at and credential.expires_at < datetime.now(timezone.utc)):
             db.close()
             raise HTTPException(401, "API Key 无效或已过期")
-        if credential and credential.order_id:
+        if credential.order_id:
             order = db.get(Order, credential.order_id)
-            if not order or order.payment_status != "paid" or order.main_status in {"cancelled", "closed"}:
-                db.close()
-                raise HTTPException(403, "订单授权已失效")
+            valid = order and order.payment_status == "paid" and float(order.refunded_amount or 0) == 0 and order.main_status not in {"cancelled", "closed"}
+        else:
+            valid = db.scalar(select(Order.id).where(
+                Order.buyer_enterprise_id == credential.enterprise_id,
+                Order.product_id == route.product_id,
+                Order.payment_status == "paid",
+                Order.refunded_amount == 0,
+                Order.main_status.not_in(("cancelled", "closed")),
+            ).limit(1)) is not None
+        if not valid:
+            db.close()
+            raise HTTPException(403, "企业 API 授权已失效")
         version = db.get(ProductReleaseVersion, credential.product_version_id) if credential.product_version_id else None
         check_quota(credential, route, version)
     else:
