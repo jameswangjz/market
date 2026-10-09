@@ -667,12 +667,33 @@ function memberAccountStatusLabel(item) {
 }
 async function updateMemberStatus(item, action) {
   const labels = { disable: "禁用", enable: "解禁", delete: "删除" };
-  if (action === "delete" && !window.confirm(`确认将用户“${item.name}”标记为已删除吗？删除后不能登录，也不能获得应用访问权限。`)) return;
+  const membership = item.membership_id ? item : managedEnterpriseMembership(item);
+  if (!membership) return notify("未找到该用户在当前企业中的成员关系");
+  if (action === "delete" && !window.confirm(`确认将用户“${item.name || "该成员"}”标记为已删除吗？删除后不能登录，也不能获得应用访问权限。`)) return;
   try {
-    await api.patch(`/enterprise/members/${item.membership_id}/status`, { action });
+    await api.patch(`/enterprise/members/${membership.membership_id}/status`, { action });
     notify(`成员已${labels[action]}`);
-    await loadEnterpriseManagement();
+    if (enterpriseManageModal.value?.id) await loadEnterpriseManagement();
+    else await loadViewData("users");
   } catch (error) { notify(error.response?.data?.detail || `成员${labels[action]}失败`); }
+}
+function managedEnterpriseMembership(item) {
+  return (item.enterprise_memberships || []).find((membership) => membership.enterprise_id === enterprise.value?.id);
+}
+function canManageMemberAccount(item) {
+  const membership = managedEnterpriseMembership(item);
+  return user.value?.enterprise_role === "super_admin" && membership && item.id !== user.value?.id && membership.role !== "super_admin";
+}
+async function transferEnterpriseSuperAdmin(item) {
+  const membership = managedEnterpriseMembership(item);
+  if (!membership) return notify("未找到该用户在当前企业中的成员关系");
+  if (!window.confirm(`确认将企业超级管理员转移给“${item.name}”吗？当前账号将降为企业普通用户。`)) return;
+  try {
+    await api.post(`/enterprise/${enterprise.value.id}/transfer-super-admin`, { target_membership_id: membership.membership_id });
+    notify("企业超级管理员已转移");
+    await loadViewData("users");
+    await loadSession();
+  } catch (error) { notify(error.response?.data?.detail || "企业超级管理员转移失败"); }
 }
 async function deleteDepartment(item) {
   if (!window.confirm(`确认删除部门“${item.name}”吗？`)) return;
@@ -2972,13 +2993,19 @@ onUnmounted(() => {
                     <td>{{ item.is_active ? "正常" : "已禁用" }}</td>
                     <td>{{ fmtDate(item.created_at) }}</td>
                     <td>
-                      <div class="table-actions" v-if="personalForUser(item.id)">
+                      <div class="table-actions">
                         <template v-if="canReviewIdentity() && personalForUser(item.id)?.status === 'pending_review'">
                           <button class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
                         </template>
                         <button v-else-if="canReviewIdentity() && ['pending', 'pending_review'].includes(personalForUser(item.id)?.status)" class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
+                        <template v-if="canManageMemberAccount(item)">
+                          <button v-if="item.is_active && item.activation_status !== 'deleted'" class="text-btn" @click="updateMemberStatus(item, 'disable')">禁用</button>
+                          <button v-if="!item.is_active && item.activation_status !== 'deleted'" class="text-btn" @click="updateMemberStatus(item, 'enable')">解禁</button>
+                          <button v-if="item.activation_status !== 'deleted'" class="text-btn danger-text" @click="updateMemberStatus(item, 'delete')">删除</button>
+                          <button class="text-btn" @click="transferEnterpriseSuperAdmin(item)">转移超级管理员</button>
+                        </template>
+                        <span v-if="!personalForUser(item.id) && !canManageMemberAccount(item)" class="muted">-</span>
                       </div>
-                      <span v-else class="muted">-</span>
                     </td>
                   </tr>
                 </tbody>
@@ -4053,7 +4080,7 @@ onUnmounted(() => {
         <div v-else class="enterprise-manage-section">
           <div class="panel-heading"><div><h3>企业成员与部门归属</h3><span class="muted">企业超级管理员和企业管理员可维护成员</span></div></div>
           <div class="member-role-hint">企业注册人自动成为企业超级管理员，该角色不可降级；请先通过“邀请用户”加入普通成员，再为其指定企业管理员角色。</div>
-          <div class="table-wrap"><table class="data-table compact"><thead><tr><th>成员</th><th>角色</th><th>部门</th><th>实名认证</th><th>账号状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in enterpriseMembers" :key="item.membership_id"><td><strong>{{ item.name }}</strong><small>{{ item.email || item.phone || '-' }}</small></td><td><select class="status-select" :title="item.role === 'super_admin' ? '企业注册人自动成为超级管理员，不可调整' : '调整企业成员角色'" :value="item.role" @change="updateMemberRole(item, $event.target.value)" :disabled="item.role === 'super_admin' || memberAccountStatusLabel(item) === '已删除'"><option value="member">普通成员</option><option value="enterprise_admin">企业管理员</option><option value="super_admin">企业超级管理员</option></select></td><td><select class="status-select" :value="item.department_id" @change="updateMemberDepartment(item, $event.target.value)" :disabled="memberAccountStatusLabel(item) === '已删除'"><option value="">未分配</option><option v-for="department in enterpriseDepartments" :key="department.id" :value="department.id">{{ department.name }}</option></select></td><td><span class="status-pill status-done">{{ item.verified_status === 'verified' ? '已实名' : item.verified_status }}</span></td><td><span :class="['status-pill', memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活' ? 'status-done' : memberAccountStatusLabel(item) === '已禁用' ? 'status-review' : 'status-blocked']">{{ memberAccountStatusLabel(item) }}</span></td><td><div class="table-actions" v-if="item.role !== 'super_admin'"><button v-if="memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活'" class="text-btn" @click="updateMemberStatus(item, 'disable')">禁用</button><button v-if="memberAccountStatusLabel(item) === '已禁用'" class="text-btn" @click="updateMemberStatus(item, 'enable')">解禁</button><button v-if="memberAccountStatusLabel(item) !== '已删除'" class="text-btn danger-text" @click="updateMemberStatus(item, 'delete')">删除</button></div><span v-else class="muted">不可操作</span></td></tr><tr v-if="!enterpriseMembers.length"><td colspan="6"><div class="empty-state">暂无企业成员</div></td></tr></tbody></table></div>
+          <div class="table-wrap"><table class="data-table compact"><thead><tr><th>成员</th><th>角色</th><th>部门</th><th>实名认证</th><th>账号状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in enterpriseMembers" :key="item.membership_id"><td><strong>{{ item.name }}</strong><small>{{ item.email || item.phone || '-' }}</small></td><td><select class="status-select" :title="item.role === 'super_admin' ? '企业超级管理员不可在此调整' : '调整企业成员角色'" :value="item.role" @change="updateMemberRole(item, $event.target.value)" :disabled="item.role === 'super_admin' || memberAccountStatusLabel(item) === '已删除'"><option value="member">普通成员</option><option value="enterprise_admin">企业管理员</option></select></td><td><select class="status-select" :value="item.department_id" @change="updateMemberDepartment(item, $event.target.value)" :disabled="memberAccountStatusLabel(item) === '已删除'"><option value="">未分配</option><option v-for="department in enterpriseDepartments" :key="department.id" :value="department.id">{{ department.name }}</option></select></td><td><span class="status-pill status-done">{{ item.verified_status === 'verified' ? '已实名' : item.verified_status }}</span></td><td><span :class="['status-pill', memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活' ? 'status-done' : memberAccountStatusLabel(item) === '已禁用' ? 'status-review' : 'status-blocked']">{{ memberAccountStatusLabel(item) }}</span></td><td><div class="table-actions" v-if="user?.enterprise_role === 'super_admin' && item.role !== 'super_admin'"><button v-if="memberAccountStatusLabel(item) === '正常' || memberAccountStatusLabel(item) === '待激活'" class="text-btn" @click="updateMemberStatus(item, 'disable')">禁用</button><button v-if="memberAccountStatusLabel(item) === '已禁用'" class="text-btn" @click="updateMemberStatus(item, 'enable')">解禁</button><button v-if="memberAccountStatusLabel(item) !== '已删除'" class="text-btn danger-text" @click="updateMemberStatus(item, 'delete')">删除</button></div><span v-else class="muted">不可操作</span></td></tr><tr v-if="!enterpriseMembers.length"><td colspan="6"><div class="empty-state">暂无企业成员</div></td></tr></tbody></table></div>
         </div>
       </section>
     </div>

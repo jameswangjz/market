@@ -994,6 +994,10 @@ class MembershipStatusBody(BaseModel):
     action: str = Field(pattern="^(disable|enable|delete)$")
 
 
+class TransferSuperAdminBody(BaseModel):
+    target_membership_id: str
+
+
 class NotificationSettingsBody(BaseModel):
     sms_provider: str = ""
     sms_endpoint: str = ""
@@ -2560,10 +2564,11 @@ def update_enterprise_member_status(membership_id: str, body: MembershipStatusBo
     target = db.get(Membership, membership_id)
     if not target or target.status not in {"active", "pending_activation", "disabled", "deleted"}:
         raise HTTPException(404, "企业成员不存在")
-    if user.platform_role in {"super_admin", "platform_operator"}:
-        enterprise_management_scope(db, user, target.enterprise_id)
-    else:
-        require_enterprise_admin(db, user, target.enterprise_id)
+    if user.platform_role:
+        raise HTTPException(403, "只有企业超级管理员可以执行成员账号状态操作")
+    operator = require_enterprise_admin(db, user, target.enterprise_id)
+    if operator.role != "super_admin":
+        raise HTTPException(403, "只有企业超级管理员可以执行成员账号状态操作")
     target_user = db.get(User, target.user_id)
     if not target_user:
         raise HTTPException(404, "成员用户不存在")
@@ -2597,6 +2602,33 @@ def update_enterprise_member_status(membership_id: str, body: MembershipStatusBo
     audit(db, user.email or user.phone or user.id, action_name, "membership", target.id, target_user.email or target_user.phone or target_user.id, category="auth", business_domain="enterprise", before=before, after=after)
     db.commit()
     return {"membership_id": target.id, "user_id": target_user.id, "action": body.action, "account_status": "deleted" if target_user.activation_status == "deleted" else "disabled" if not target_user.is_active else "active", "membership_status": target.status}
+
+
+@app.post("/api/enterprise/{enterprise_id}/transfer-super-admin")
+def transfer_enterprise_super_admin(enterprise_id: str, body: TransferSuperAdminBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if user.platform_role:
+        raise HTTPException(403, "只有企业超级管理员可以转移企业超级管理员角色")
+    current = require_enterprise_admin(db, user, enterprise_id)
+    if current.role != "super_admin":
+        raise HTTPException(403, "只有企业超级管理员可以转移企业超级管理员角色")
+    target = db.get(Membership, body.target_membership_id)
+    if not target or target.enterprise_id != enterprise_id or target.status != "active":
+        raise HTTPException(404, "目标用户不是该企业的有效成员")
+    if target.user_id == user.id:
+        raise HTTPException(400, "不能将企业超级管理员转移给当前用户")
+    target_user = db.get(User, target.user_id)
+    if not target_user or target_user.platform_role or not target_user.is_active or target_user.activation_status == "deleted":
+        raise HTTPException(400, "目标用户已被禁用、删除或属于平台角色，不能成为企业超级管理员")
+    if target.role == "super_admin":
+        raise HTTPException(409, "该用户已经是企业超级管理员")
+    enterprise = db.get(Enterprise, enterprise_id)
+    before = {"current_super_admin": user.id, "target_role": target.role}
+    current.role = "member"
+    target.role = "super_admin"
+    after = {"current_super_admin": target.user_id, "old_super_admin_role": current.role, "target_role": target.role}
+    audit(db, user.email or user.phone or user.id, "transfer_enterprise_super_admin", "enterprise", enterprise_id, f"转移企业超级管理员：{user.id} -> {target.user_id}", category="auth", business_domain="enterprise", before=before, after=after)
+    db.commit()
+    return {"enterprise_id": enterprise_id, "enterprise_name": enterprise.name if enterprise else "", "old_super_admin_user_id": user.id, "new_super_admin_user_id": target.user_id, "old_role": "member", "new_role": "super_admin"}
 
 
 @app.get("/api/enterprise/departments")
@@ -5674,7 +5706,12 @@ def users(user: User = Depends(current_user), db: Session = Depends(db_session))
         enterprise_rows = db.execute(select(Membership.user_id, Enterprise.name).join(Enterprise, Enterprise.id == Membership.enterprise_id).where(Membership.user_id.in_(user_ids), Membership.status.in_(["active", "pending_activation", "disabled"]))).all()
         for user_id, enterprise_name in enterprise_rows:
             enterprise_names.setdefault(user_id, []).append(enterprise_name)
-    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "enterprise_name": "平台" if x.platform_role else "、".join(dict.fromkeys(enterprise_names.get(x.id, []))), "created_at": x.created_at} for x in items]}
+    membership_details: dict[str, list[dict[str, str]]] = {}
+    if user_ids:
+        detail_rows = db.execute(select(Membership, Enterprise).join(Enterprise, Enterprise.id == Membership.enterprise_id).where(Membership.user_id.in_(user_ids), Membership.status.in_(["active", "pending_activation", "disabled"]))).all()
+        for membership, enterprise in detail_rows:
+            membership_details.setdefault(membership.user_id, []).append({"membership_id": membership.id, "enterprise_id": enterprise.id, "enterprise_name": enterprise.name, "role": membership.role, "status": membership.status})
+    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "enterprise_name": "平台" if x.platform_role else "、".join(dict.fromkeys(enterprise_names.get(x.id, []))), "enterprise_memberships": membership_details.get(x.id, []), "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/admin/enterprises")
