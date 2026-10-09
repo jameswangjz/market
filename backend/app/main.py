@@ -3220,6 +3220,28 @@ def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
         return [{"entity": "PRESIDIO_UNAVAILABLE", "severity": "medium", "message": str(exc)[:240], "source": "platform"}], "unavailable"
 
 
+def enrich_legacy_presidio_findings(text_value: str, findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert older coordinate-only findings into readable report entries."""
+    enriched = []
+    for item in findings:
+        if not isinstance(item, dict) or "start" not in item:
+            enriched.append(item)
+            continue
+        start = int(item.get("start") or 0)
+        end = int(item.get("end") or start)
+        matched = text_value[start:end].replace("\n", " ").strip()
+        line_start = text_value.rfind("\n", 0, start) + 1
+        line_end = text_value.find("\n", end)
+        if line_end < 0:
+            line_end = len(text_value)
+        line_content = text_value[line_start:line_end].strip()
+        entity = item.get("entity", "UNKNOWN")
+        labels = {"PERSON": "个人姓名", "PHONE_NUMBER": "电话号码", "EMAIL_ADDRESS": "邮箱地址", "LOCATION": "地理位置", "ORGANIZATION": "组织机构", "CREDIT_CARD": "银行卡/信用卡号", "IBAN_CODE": "银行账户", "IP_ADDRESS": "IP地址", "URL": "网址"}
+        label = labels.get(entity, entity)
+        enriched.append({**item, "entity_label": label, "matched_text": matched[:240], "line_number": text_value.count("\n", 0, start) + 1, "line_content": line_content[:1000], "message": f"检测到{label}：{matched[:240] or '未提取到具体内容'}"})
+    return enriched
+
+
 def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
     patterns = [
         ("CHINA_ID_NUMBER", r"(?<!\d)\d{17}[0-9Xx](?!\d)", "high", "疑似身份证号码"),
@@ -5770,7 +5792,13 @@ def file_out(item: FileObject) -> dict[str, Any]:
         scan = json.loads(item.scan_report or "{}")
     except json.JSONDecodeError:
         scan = {"clamav_report": item.scan_report}
-    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": scan.get("presidio_findings", []), "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
+    findings = scan.get("presidio_findings", [])
+    if any(isinstance(entry, dict) and "start" in entry and "matched_text" not in entry for entry in findings):
+        try:
+            findings = enrich_legacy_presidio_findings(read_product_sample(item), findings)
+        except Exception:
+            pass
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "clamav_version": clamav_version(), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": findings, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
 
 
 def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
