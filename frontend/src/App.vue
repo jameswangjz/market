@@ -1062,7 +1062,7 @@ async function openProductDetail(product, review = false) {
   selectedProductId.value = product.id;
   productDetailMode.value = true;
   productReviewMode.value = review && canReviewProduct(product);
-  productReadOnlyMode.value = product.status !== "draft";
+  productReadOnlyMode.value = !["draft", "rejected"].includes(product.status);
   productForm.value = JSON.parse(JSON.stringify({
     ...emptyProductForm(),
     ...product,

@@ -5873,6 +5873,11 @@ def upload_file(
         old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role.in_(["product_logo", "product_logo_thumbnail"]), FileObject.status != "deleted")).all()
         for old_file in old_files:
             old_file.status = "deleted"
+    if file_role == "product_data" and product_id:
+        version_filter = FileObject.version_id == version_item.id if version_item else FileObject.version_id.is_(None)
+        old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role == "product_data", version_filter, FileObject.status != "deleted")).all()
+        for old_file in old_files:
+            old_file.status = "deleted"
     item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=json.dumps({"clamav_status": scan_status, "clamav_report": scan_report}, ensure_ascii=False), scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
     db.flush()
