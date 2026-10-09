@@ -3242,9 +3242,13 @@ def run_product_security_scan(product: Product, db: Session, actor: str) -> Prod
         try:
             sample = read_product_sample(item)
             file_presidio_findings, file_presidio_status = (presidio_analyze(sample) if item.scan_status == "clean" and sample else ([], "not_scanned"))
+            try:
+                stored_scan = json.loads(item.scan_report or "{}")
+            except json.JSONDecodeError:
+                stored_scan = {"clamav_report": item.scan_report}
             if sample:
                 text_parts.append(sample)
-            file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": item.scan_status, "clamav_report": item.scan_report, "sample_scanned": bool(sample), "presidio_status": file_presidio_status, "presidio_findings": file_presidio_findings})
+            file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": stored_scan.get("clamav_status", item.scan_status), "clamav_report": stored_scan.get("clamav_report", item.scan_report), "sample_scanned": bool(sample), "presidio_status": file_presidio_status, "presidio_findings": file_presidio_findings})
             file_findings.extend(file_presidio_findings)
         except Exception as exc:
             file_reports.append({"file_id": item.id, "name": item.original_name, "size": item.size, "clamav_status": item.scan_status, "clamav_report": item.scan_report, "sample_scanned": False, "presidio_status": "error", "error": str(exc)[:240]})
@@ -5664,27 +5668,38 @@ def sla_results(user: User = Depends(current_user), db: Session = Depends(db_ses
 
 
 def file_out(item: FileObject) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "scanned_at": item.scanned_at, "created_at": item.created_at}
+    try:
+        scan = json.loads(item.scan_report or "{}")
+    except json.JSONDecodeError:
+        scan = {"clamav_report": item.scan_report}
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "clamav_status": scan.get("clamav_status", item.scan_status), "clamav_report": scan.get("clamav_report", item.scan_report), "presidio_status": scan.get("presidio_status", "not_scanned"), "presidio_findings": scan.get("presidio_findings", []), "scan_report_url": f"/api/files/{item.id}/scan-report.pdf", "clamav_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=clamav", "presidio_report_url": f"/api/files/{item.id}/scan-report.pdf?report_type=presidio", "download_url": f"/api/files/{item.id}/download", "scanned_at": item.scanned_at, "created_at": item.created_at}
 
 
-def scan_report_pdf(item: FileObject) -> bytes:
+def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
     """Build a dependency-free PDF report; JSON details remain available in the API."""
     try:
         raw = json.loads(item.scan_report or "{}")
     except json.JSONDecodeError:
         raw = {"result": item.scan_report}
-    result = "通过" if item.scan_status == "clean" else "发现风险" if item.scan_status == "infected" else item.scan_status
+    clamav_status = raw.get("clamav_status", item.scan_status)
+    clamav_report = raw.get("clamav_report", item.scan_report)
+    presidio_status = raw.get("presidio_status", "not_scanned")
+    presidio_findings = raw.get("presidio_findings", [])
+    result = "通过" if clamav_status == "clean" else "发现风险" if clamav_status == "infected" else clamav_status
     lines = [
         "Market File Security Scan Report",
         f"File name: {item.original_name}",
         f"File size: {item.size} bytes",
         "Virus scanner: ClamAV",
         f"Virus scanner version: {clamav_version()}",
-        f"Virus scan result: {item.scan_status}",
+        f"Virus scan result: {clamav_status}",
         f"Conclusion: {result}",
         f"Conclusion date: {(item.scanned_at or now()).isoformat()}",
-        "Presidio report: " + json.dumps(raw, ensure_ascii=True)[:1800],
     ]
+    if report_type in {"combined", "clamav"}:
+        lines.append("ClamAV detail: " + str(clamav_report))
+    if report_type in {"combined", "presidio"}:
+        lines.extend([f"Presidio result: {presidio_status}", "Presidio findings: " + json.dumps(presidio_findings, ensure_ascii=True)[:1800]])
     escape = lambda value: str(value).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     stream = "BT /F1 9 Tf 48 780 Td 12 TL " + " ".join(f"({escape(line)}) Tj T*" for line in lines) + " ET"
     objects = [
@@ -5706,13 +5721,15 @@ def scan_report_pdf(item: FileObject) -> bytes:
 
 
 @app.get("/api/files/{file_id}/scan-report.pdf")
-def download_scan_report(file_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def download_scan_report(file_id: str, report_type: str = Query(default="combined"), user: User = Depends(current_user), db: Session = Depends(db_session)):
     item = db.get(FileObject, file_id)
     if not item:
         raise HTTPException(404, "文件不存在")
     if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"} and item.owner_id != user.id:
         raise HTTPException(403, "无权查看扫描报告")
-    return Response(content=scan_report_pdf(item), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{item.original_name}.scan-report.pdf"'})
+    if report_type not in {"combined", "clamav", "presidio"}:
+        raise HTTPException(400, "报告类型必须是 combined、clamav 或 presidio")
+    return Response(content=scan_report_pdf(item, report_type), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{item.original_name}.{report_type}.scan-report.pdf"'})
 
 
 def validate_product_archive(content: bytes, filename: str) -> None:
@@ -5760,7 +5777,11 @@ def validate_product_archive(content: bytes, filename: str) -> None:
 def product_files(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product_for_enterprise(product_id, user, db)
     items = db.scalars(select(FileObject).where(FileObject.product_id == product_id).order_by(FileObject.created_at.desc())).all()
-    return {"items": [file_out(item) for item in items]}
+    # 详情页只展示当前 Logo，历史 Logo 和缩略图仍保留在存储中供审计追溯。
+    logos = [item for item in items if item.file_role == "product_logo"]
+    latest_logo_id = logos[0].id if logos else ""
+    visible = [item for item in items if item.file_role != "product_logo_thumbnail" and (item.file_role != "product_logo" or item.id == latest_logo_id)]
+    return {"items": [file_out(item) for item in visible]}
 
 
 @app.post("/api/files/upload")
@@ -5828,7 +5849,7 @@ def upload_file(
             except Exception as exc:
                 raise HTTPException(400, "Logo图片无法解析") from exc
     scan_status, scan_report = ("not_scanned", "")
-    if file_role == "product_data":
+    if file_role in {"product_data", "product_logo"}:
         scan_status, scan_report = clamav_scan_stream(upload.file, size)
         if scan_status == "infected":
             audit(db, user.email, "reject_infected_file", "file", filename, scan_report, category="security", business_domain="product")
@@ -5847,9 +5868,20 @@ def upload_file(
         if not client.bucket_exists(MINIO_BUCKET):
             client.make_bucket(MINIO_BUCKET)
         client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
-    item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=scan_report, scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
+    if file_role == "product_logo" and product_id:
+        old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role.in_(["product_logo", "product_logo_thumbnail"]), FileObject.status != "deleted")).all()
+        for old_file in old_files:
+            old_file.status = "deleted"
+    item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=json.dumps({"clamav_status": scan_status, "clamav_report": scan_report}, ensure_ascii=False), scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
     db.flush()
+    if file_role == "product_data" and scan_status == "clean":
+        try:
+            sample = read_product_sample(item)
+            presidio_findings, presidio_status = presidio_analyze(sample) if sample else ([], "not_scanned")
+            item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": presidio_status, "presidio_findings": presidio_findings, "sample_scanned": bool(sample)}, ensure_ascii=False)
+        except Exception as exc:
+            item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": "error", "presidio_findings": [], "presidio_error": str(exc)[:240]}, ensure_ascii=False)
     if file_role == "product_logo" and product_id and not lower_name.endswith(".svg") and MINIO_ENDPOINT:
         try:
             with Image.open(BytesIO(content)) as image:
@@ -5892,23 +5924,26 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         raise HTTPException(403, "无权查看该文件")
     download_log = None
     if item.file_role == "product_data":
-        if not order_id:
+        if reviewer:
+            order = None
+        elif not order_id:
             raise HTTPException(400, "下载产品数据文件必须提供订单号")
-        order = db.get(Order, order_id)
-        enterprise = first_enterprise(db, user)
-        member = db.scalar(select(Membership).where(Membership.enterprise_id == enterprise.id, Membership.user_id == user.id, Membership.status == "active"))
-        if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or (order.buyer_enterprise_id != enterprise.id and not reviewer) or (not reviewer and not member):
-            raise HTTPException(403, "当前用户没有该订单文件的下载权限")
-        product = db.get(Product, item.product_id)
-        download_limit = int(product.download_limit or 0) if product else 0
-        used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
-        download_log = FileDownloadLog(file_id=item.id, order_id=order.id, user_id=user.id, success=False)
-        if download_limit > 0 and used >= download_limit:
-            download_log.detail = f"下载次数已达上限：{used}/{download_limit}"
-            db.add(download_log)
-            audit(db, user.email or user.phone or user.id, "download_file_denied", "file", item.id, download_log.detail, category="delivery", business_domain="product", order_id=order.id, risk_level="warning")
-            db.commit()
-            raise HTTPException(429, "该订单的文件下载次数已用尽")
+        else:
+            order = db.get(Order, order_id)
+            enterprise = first_enterprise(db, user)
+            member = db.scalar(select(Membership).where(Membership.enterprise_id == enterprise.id, Membership.user_id == user.id, Membership.status == "active"))
+            if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or (order.buyer_enterprise_id != enterprise.id and not reviewer) or (not reviewer and not member):
+                raise HTTPException(403, "当前用户没有该订单文件的下载权限")
+            product = db.get(Product, item.product_id)
+            download_limit = int(product.download_limit or 0) if product else 0
+            used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
+            download_log = FileDownloadLog(file_id=item.id, order_id=order.id, user_id=user.id, success=False)
+            if download_limit > 0 and used >= download_limit:
+                download_log.detail = f"下载次数已达上限：{used}/{download_limit}"
+                db.add(download_log)
+                audit(db, user.email or user.phone or user.id, "download_file_denied", "file", item.id, download_log.detail, category="delivery", business_domain="product", order_id=order.id, risk_level="warning")
+                db.commit()
+                raise HTTPException(429, "该订单的文件下载次数已用尽")
     if not MINIO_ENDPOINT:
         raise HTTPException(503, "文件存储服务未配置")
     client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)

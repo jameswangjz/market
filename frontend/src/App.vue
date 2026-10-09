@@ -59,6 +59,7 @@ const products = ref([]);
 const productFiles = ref([]);
 const productLogoPreview = ref("");
 const securityReport = ref(null);
+const productReviewMode = ref(false);
 const productDirectories = ref([]);
 const orders = ref([]);
 const selectedOrder = ref(null);
@@ -271,6 +272,11 @@ const filteredTasks = computed(() =>
 const selectedProductSettlementRule = computed(() =>
   settlementRules.value.find((rule) => rule.id === productForm.value.settlement_rule_id) || null,
 );
+const visibleProductFiles = computed(() => {
+  const files = productFiles.value.filter((item) => item.file_role !== "product_logo_thumbnail");
+  const logo = files.find((item) => item.file_role === "product_logo");
+  return [...files.filter((item) => item.file_role !== "product_logo"), ...(logo ? [logo] : [])];
+});
 
 const statusLabels = {
   created: "创建",
@@ -1043,6 +1049,7 @@ async function createProduct() {
 function openNewProduct() {
   productDetailMode.value = false;
   productReadOnlyMode.value = false;
+  productReviewMode.value = false;
   selectedProductId.value = "";
   productForm.value = {
     ...emptyProductForm(),
@@ -1050,9 +1057,10 @@ function openNewProduct() {
   };
   showProductForm.value = true;
 }
-async function openProductDetail(product) {
+async function openProductDetail(product, review = false) {
   selectedProductId.value = product.id;
   productDetailMode.value = true;
+  productReviewMode.value = review && canReviewProduct(product);
   productReadOnlyMode.value = product.status !== "draft";
   productForm.value = JSON.parse(JSON.stringify({
     ...emptyProductForm(),
@@ -1073,6 +1081,49 @@ async function openProductDetail(product) {
     productFiles.value = [];
   }
   showProductForm.value = true;
+}
+function isPlatformRole() {
+  return ["super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.value?.platform_role);
+}
+async function downloadProductFile(file, reportType = "") {
+  try {
+    const suffix = reportType ? `?report_type=${reportType}` : "";
+    const endpoint = reportType ? `/files/${file.id}/scan-report.pdf` : `/files/${file.id}/download`;
+    const { data } = await api.get(`${endpoint}${suffix}`, { responseType: "blob" });
+    const url = URL.createObjectURL(data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = reportType ? `${file.original_name}.${reportType}.scan-report.pdf` : file.original_name;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    notify(error.response?.data?.detail || "文件下载失败");
+  }
+}
+async function viewProductReport(file, reportType) {
+  try {
+    const { data } = await api.get(`/files/${file.id}/scan-report.pdf?report_type=${reportType}`, { responseType: "blob" });
+    const url = URL.createObjectURL(data);
+    window.open(url, "_blank", "noopener");
+  } catch (error) {
+    notify(error.response?.data?.detail || "报告打开失败");
+  }
+}
+async function reviewProductFromDetail(decision) {
+  const product = productForm.value;
+  if (product.status === "security_review") {
+    const comment = window.prompt(decision === "approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", decision === "approve" ? "安全审核通过" : "");
+    if (!comment) return;
+    await api.post(`/products/${product.id}/security-review`, { decision, comment });
+  } else {
+    const comment = window.prompt(decision === "approve" ? "请输入审核意见" : "请输入驳回原因", decision === "approve" ? "审核通过" : "");
+    if (!comment) return;
+    await api.post(`/products/${product.id}/review`, { decision, comment });
+  }
+  showProductForm.value = false;
+  productReviewMode.value = false;
+  notify(decision === "approve" ? "审核已通过" : "产品已驳回");
+  await loadViewData("products");
 }
 async function saveProductEdit() {
   if (!selectedProductId.value || productReadOnlyMode.value) return;
@@ -1125,9 +1176,11 @@ function removeProductVersion(index) {
 }
 function canReviewProduct(product) {
   const role = user.value?.platform_role;
+  if (!["pending_review", "quality_review", "security_review", "operation_review"].includes(product.status)) return false;
   if (role === "super_admin") return true;
   if (product.status === "pending_review") return ["product_manager", "business_reviewer"].includes(role);
   if (product.status === "quality_review") return role === "quality_reviewer";
+  if (product.status === "security_review") return ["security_compliance", "platform_operator"].includes(role);
   if (product.status === "operation_review") return role === "platform_operator";
   return false;
 }
@@ -2327,7 +2380,11 @@ onUnmounted(() => {
                       >
                     </td>
                     <td>
-                      <div class="table-actions">
+                      <div v-if="isPlatformRole()" class="table-actions">
+                        <button v-if="canReviewProduct(product)" class="text-btn" @click="openProductDetail(product, true)">审核</button>
+                        <span v-else class="muted">-</span>
+                      </div>
+                      <div v-else class="table-actions">
                         <button
                           v-if="
                             product.status === 'draft' ||
@@ -2338,35 +2395,11 @@ onUnmounted(() => {
                         >
                           提交审核</button
                         ><button
-                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
-                          class="text-btn"
-                          @click="productAction(product, 'security_report')"
-                        >
-                          查看安全报告</button
-                        ><button
-                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
-                          class="text-btn"
-                          @click="productAction(product, 'security_approve')"
-                        >
-                          安全通过</button
-                        ><button
-                          v-if="product.status === 'security_review' && ['super_admin', 'platform_operator', 'security_compliance'].includes(user?.platform_role)"
-                          class="text-btn danger-text"
-                          @click="productAction(product, 'security_reject')"
-                        >
-                          安全驳回</button
-                        ><button
                           v-if="canReviewProduct(product)"
                           class="text-btn"
                           @click="productAction(product, 'review')"
                         >
                           通过</button
-                        ><button
-                          v-if="canReviewProduct(product)"
-                          class="text-btn danger-text"
-                          @click="productAction(product, 'reject')"
-                        >
-                          驳回</button
                         ><button
                           v-if="product.status === 'pending_review' && (['super_admin', 'enterprise_admin'].includes(user?.enterprise_role))"
                           class="text-btn"
@@ -3588,11 +3621,24 @@ onUnmounted(() => {
         <div v-if="productDetailMode && productFiles.length" class="product-file-status">
           <div class="form-section-title">已上传文件与安全状态</div>
           <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
-          <div v-for="file in productFiles.filter((item) => item.file_role !== 'product_logo_thumbnail')" :key="file.id" class="file-status-row">
-            <span>{{ file.original_name }}<small class="muted"> · {{ file.version || "产品级" }}</small></span>
-            <a v-if="file.scan_status !== 'not_scanned'" class="status-pill scan-report-link" :href="file.scan_report_url" target="_blank" download>
-              {{ file.file_role === 'product_logo' ? 'Logo已保存' : file.scan_status === 'clean' ? '病毒扫描通过' : file.scan_status === 'unavailable' ? '待安全扫描' : file.scan_status === 'infected' ? '扫描未通过' : '待扫描' }}
-            </a><span v-else class="status-pill status-review">待扫描</span>
+          <div v-for="file in visibleProductFiles" :key="file.id" class="file-status-row product-file-row">
+            <div class="product-file-name"><strong>{{ file.original_name }}</strong><small class="muted"> · {{ file.version || "产品级" }} · {{ file.size }} bytes</small></div>
+            <div class="product-file-scan">
+              <button class="text-btn" @click="downloadProductFile(file)">下载文件</button>
+              <template v-if="file.file_role === 'product_logo'">
+                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
+                <button class="text-btn" @click="viewProductReport(file, 'clamav')">查看报告</button>
+                <button class="text-btn" @click="downloadProductFile(file, 'clamav')">下载报告</button>
+              </template>
+              <template v-else>
+                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
+                <button class="text-btn" @click="viewProductReport(file, 'clamav')">病毒报告</button>
+                <button class="text-btn" @click="downloadProductFile(file, 'clamav')">下载病毒报告</button>
+                <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
+                <button class="text-btn" @click="viewProductReport(file, 'presidio')">Presidio报告</button>
+                <button class="text-btn" @click="downloadProductFile(file, 'presidio')">下载Presidio报告</button>
+              </template>
+            </div>
           </div>
         </div>
         <div class="version-editor">
@@ -3763,6 +3809,10 @@ onUnmounted(() => {
           >
         </div>
         </fieldset>
+        <div v-if="productReviewMode" class="review-action-bar">
+          <button type="button" class="primary-btn" @click="reviewProductFromDetail('approve')">通过审核</button>
+          <button type="button" class="secondary-btn danger-text" @click="reviewProductFromDetail('reject')">拒绝审核</button>
+        </div>
         <button v-if="!productReadOnlyMode" class="primary-btn full-btn" type="submit">
           {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>

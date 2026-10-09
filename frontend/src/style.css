@@ -89,3 +89,4 @@
 @media (max-width: 720px) { .settlement-context-grid, .settlement-adjust-form-grid { grid-template-columns: 1fr; } .settlement-adjust-head, .settlement-adjust-grid label { grid-template-columns: 1fr 100px 110px; gap: 6px; } }
 :root { --ui-scale: 1; }
 .app-shell, .login-shell { zoom: var(--ui-scale); }
+.product-file-row{align-items:flex-start;flex-wrap:wrap}.product-file-name{min-width:220px;flex:1}.product-file-scan{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}.review-action-bar{display:flex;justify-content:flex-end;gap:8px;margin:14px 0 8px;padding-top:12px;border-top:1px solid #eceef1}
