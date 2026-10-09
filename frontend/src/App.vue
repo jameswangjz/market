@@ -3665,26 +3665,6 @@ onUnmounted(() => {
           <label>产品Logo（380×280）<input type="file" accept="image/*,.svg" @change="productForm.logoFile = $event.target.files[0]" /></label>
           <label>Logo说明<small class="muted">支持SVG及常见图片格式，提交后执行尺寸和安全校验。</small></label>
         </div>
-        <div v-if="productDetailMode && productFiles.length" class="product-file-status">
-          <div class="form-section-title">已上传文件与安全状态</div>
-          <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
-          <div v-for="file in visibleProductFiles" :key="file.id" class="file-status-row product-file-row">
-            <div class="product-file-name"><strong>{{ file.original_name }}</strong><small class="muted"> · {{ file.version || "产品级" }} · {{ file.size }} bytes</small></div>
-            <div class="product-file-scan">
-              <button type="button" class="text-btn" @click="downloadProductFile(file)">下载文件</button>
-              <template v-if="file.file_role === 'product_logo'">
-                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
-              </template>
-              <template v-else>
-                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
-                <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
-                <button type="button" class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
-              </template>
-            </div>
-          </div>
-        </div>
         <div class="version-editor">
           <div class="version-editor-head">
             <div>
@@ -3853,6 +3833,26 @@ onUnmounted(() => {
           >
         </div>
         </fieldset>
+        <div v-if="productDetailMode && productFiles.length" class="product-file-status">
+          <div class="form-section-title">已上传文件与安全状态</div>
+          <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
+          <div v-for="file in visibleProductFiles" :key="file.id" class="file-status-row product-file-row">
+            <div class="product-file-name"><strong>{{ file.original_name }}</strong><small class="muted"> · {{ file.version || "产品级" }} · {{ file.size }} bytes</small></div>
+            <div class="product-file-scan">
+              <button type="button" class="text-btn" @click="downloadProductFile(file)">下载文件</button>
+              <template v-if="file.file_role === 'product_logo'">
+                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
+                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+              </template>
+              <template v-else>
+                <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
+                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+                <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
+                <button type="button" class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
+              </template>
+            </div>
+          </div>
+        </div>
         </div>
         <div v-if="productReviewMode" class="review-action-bar">
           <button type="button" class="primary-btn" @click="reviewProductFromDetail('approve')">通过审核</button>
