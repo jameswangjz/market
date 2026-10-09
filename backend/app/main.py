@@ -3157,6 +3157,18 @@ def clamav_scan_stream(fileobj, size: int) -> tuple[str, str]:
         return "unavailable", str(exc)[:240]
 
 
+def clamav_version() -> str:
+    """Read the running clamd version for security reports."""
+    if not CLAMAV_ENABLED:
+        return "disabled"
+    try:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=5) as connection:
+            connection.sendall(b"VERSION\0")
+            return connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip() or "unknown"
+    except (OSError, TimeoutError):
+        return "unavailable"
+
+
 def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
     """Call the in-cluster Presidio Analyzer; no data leaves Kubernetes."""
     if not text_value.strip():
@@ -5667,7 +5679,7 @@ def scan_report_pdf(item: FileObject) -> bytes:
         f"File name: {item.original_name}",
         f"File size: {item.size} bytes",
         "Virus scanner: ClamAV",
-        "Virus scanner version: deployed ClamAV service",
+        f"Virus scanner version: {clamav_version()}",
         f"Virus scan result: {item.scan_status}",
         f"Conclusion: {result}",
         f"Conclusion date: {(item.scanned_at or now()).isoformat()}",
