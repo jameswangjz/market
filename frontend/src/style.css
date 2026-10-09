@@ -75,6 +75,8 @@
 .modal-card .drawer-head .eyebrow{color:#ff6a00}
 .modal-card .modal-actions{padding-top:16px;border-top:1px solid #f0f1f3}
 .modal-card .panel-heading{margin-bottom:14px}
+.department-multi-select{min-width:130px;min-height:58px}
+.enterprise-manage-section .inline-form select[multiple]{min-width:150px;min-height:58px}
 .verification-review-modal { width: min(820px, calc(100% - 32px)); max-height: 92vh; overflow: auto; }
 .identity-review-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 18px 0; }
 .identity-review-images.single { grid-template-columns: minmax(0, 360px); }
