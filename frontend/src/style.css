@@ -74,6 +74,12 @@
 .identity-review-images > div { border: 1px solid #e5e6eb; border-radius: 8px; padding: 10px; background: #fafbfc; }
 .identity-review-images small, .review-long-text small { display: block; color: #86909c; font-size: 11px; margin-bottom: 8px; }
 .identity-review-images img { display: block; width: 100%; height: 150px; object-fit: contain; background: #fff; cursor: zoom-in; border-radius: 5px; }
+.identity-edit-files { align-items: start; }
+.identity-edit-file { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.identity-edit-file .field-label { color: #344054; font-size: 12px; font-weight: 600; }
+.identity-edit-thumb { display: block; width: 100%; height: 140px; object-fit: contain; background: #f7f8fa; border: 1px solid #e5e6eb; border-radius: 6px; cursor: zoom-in; }
+.identity-edit-file input[type="file"] { width: 100%; font-size: 12px; }
+.identity-edit-file small { font-size: 11px; }
 .review-long-text { border: 1px solid #e5e6eb; border-radius: 8px; padding: 12px; margin: 14px 0; }
 .review-long-text p { margin: 0; font-size: 12px; line-height: 1.7; color: #344054; white-space: pre-wrap; }
 .review-comment textarea { min-height: 78px; resize: vertical; }

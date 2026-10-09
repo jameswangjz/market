@@ -168,6 +168,7 @@ const roleForm = ref({
 const verification = ref({ personal: null, enterprise: null });
 const identityReview = ref(null);
 const identityReviewImages = ref({ front: "", back: "", license: "" });
+const personalEditImages = ref({ front: "", back: "" });
 const identityReviewComment = ref("");
 const identityImagePreview = ref(null);
 const verificationForm = ref({
@@ -1408,12 +1409,23 @@ async function openPersonalReview(item) {
   identityReviewImages.value = { front: "", back: "", license: "" };
   await Promise.all([loadReviewImage(item.id_front_file_id, "front"), loadReviewImage(item.id_back_file_id, "back")]);
 }
-function openPersonalEdit(item) {
+async function openPersonalEdit(item) {
   editingPersonalVerification.value = item;
   Object.assign(verificationForm.value, { id_name: item.id_name || "", id_number: item.id_number || "", phone: item.phone || user.value?.phone || "", enterprise_id: item.enterprise_id || "", enterprise_role: item.enterprise_role || "", phone_code: "123456" });
   verificationFiles.value.front = null;
   verificationFiles.value.back = null;
+  personalEditImages.value = { front: "", back: "" };
   showPersonalVerification.value = true;
+  await Promise.all([loadPersonalEditImage(item.id_front_file_id, "front"), loadPersonalEditImage(item.id_back_file_id, "back")]);
+}
+async function loadPersonalEditImage(fileId, key) {
+  if (!fileId) return;
+  try {
+    const response = await api.get(`/files/${fileId}/download`, { responseType: "blob" });
+    personalEditImages.value = { ...personalEditImages.value, [key]: URL.createObjectURL(response.data) };
+  } catch (error) {
+    notify(error.response?.data?.detail || "身份证图片加载失败");
+  }
 }
 async function openEnterpriseReview(item) {
   identityReview.value = { kind: "enterprise", item };
@@ -2768,10 +2780,9 @@ onUnmounted(() => {
                     <td>
                       <div class="table-actions" v-if="personalForUser(item.id)">
                         <template v-if="canReviewIdentity() && personalForUser(item.id)?.status === 'pending_review'">
-                          <button class="text-btn" @click="reviewPersonal(personalForUser(item.id), 'approve')">通过</button>
-                          <button class="text-btn danger-text" @click="reviewPersonal(personalForUser(item.id), 'reject')">拒绝</button>
+                          <button class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
                         </template>
-                        <button v-if="canReviewIdentity() && ['pending', 'pending_review'].includes(personalForUser(item.id)?.status)" class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
+                        <button v-else-if="canReviewIdentity() && ['pending', 'pending_review'].includes(personalForUser(item.id)?.status)" class="text-btn" @click="openPersonalReview(personalForUser(item.id))">实名审核</button>
                       </div>
                       <span v-else class="muted">-</span>
                     </td>
@@ -3662,20 +3673,21 @@ onUnmounted(() => {
         ><label
           >身份证号码<input v-model="verificationForm.id_number" required
         /></label>
-        <div class="form-grid">
-          <label
-            >身份证正面<input
-              type="file"
-              accept="image/*"
-              @change="verificationFiles.front = $event.target.files[0]"
-              :required="!editingPersonalVerification" /></label
-          ><label
-            >身份证反面<input
-              type="file"
-              accept="image/*"
-              @change="verificationFiles.back = $event.target.files[0]"
-              :required="!editingPersonalVerification"
-          /></label>
+        <div class="form-grid identity-edit-files">
+          <div class="identity-edit-file">
+            <span class="field-label">身份证正面</span>
+            <img v-if="personalEditImages.front" :src="personalEditImages.front" alt="身份证正面" class="identity-edit-thumb" @click="identityImagePreview = { url: personalEditImages.front, title: '身份证正面' }" />
+            <span v-else-if="editingPersonalVerification" class="muted">暂无已上传图片</span>
+            <input type="file" accept="image/*" @change="verificationFiles.front = $event.target.files[0]" :required="!editingPersonalVerification" />
+            <small v-if="editingPersonalVerification" class="muted">选择新文件可替换原图片</small>
+          </div>
+          <div class="identity-edit-file">
+            <span class="field-label">身份证反面</span>
+            <img v-if="personalEditImages.back" :src="personalEditImages.back" alt="身份证反面" class="identity-edit-thumb" @click="identityImagePreview = { url: personalEditImages.back, title: '身份证反面' }" />
+            <span v-else-if="editingPersonalVerification" class="muted">暂无已上传图片</span>
+            <input type="file" accept="image/*" @change="verificationFiles.back = $event.target.files[0]" :required="!editingPersonalVerification" />
+            <small v-if="editingPersonalVerification" class="muted">选择新文件可替换原图片</small>
+          </div>
         </div>
         <label>手机号<input v-model="verificationForm.phone" required /></label
         ><label
