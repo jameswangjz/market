@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import calendar
 import os
 import re
 import secrets
@@ -1809,6 +1810,23 @@ def startup():
             ("BE-031", "后端 Agent", "企业部门、邀请、成员角色和部门归属接口", "用户与企业", "P0", "done", "BE-007", "部门 CRUD、邀请接受、角色调整、成员部门调整和审计可用", 100),
             ("FE-015", "前端 Agent", "企业成员、部门、邀请和角色管理页面", "用户与企业", "P0", "done", "BE-031", "企业管理员可邀请用户、维护部门和调整成员角色/部门", 100),
             ("QA-008", "部署测试 Agent", "企业组织权限、邀请和部门端到端验证", "用户与企业", "P0", "done", "BE-031,FE-015", "普通成员越权拒绝，管理员流程和删除保护通过", 100),
+            ("SEC-001", "后端 Agent", "文件格式、MIME、10GB大小和压缩包安全校验", "文件安全", "P0", "in_progress", "BE-002", "非法格式、超限文件和压缩炸弹被拒绝", 10),
+            ("SEC-002", "部署测试 Agent", "ClamAV服务及病毒库持久化部署", "文件安全", "P0", "todo", "SEC-001", "ClamAV在Kubernetes中Ready，病毒库可持久化", 0),
+            ("SEC-003", "部署测试 Agent", "ClamAV病毒库定时更新和版本监控", "文件安全", "P0", "todo", "SEC-002", "定时更新失败可告警，版本可查询", 0),
+            ("SEC-004", "后端 Agent", "文件ClamAV扫描接口和扫描报告", "文件安全", "P0", "todo", "SEC-002", "上传文件得到扫描状态、报告和病毒命中结果", 0),
+            ("SEC-005", "后端 Agent", "文件Presidio内容扫描和安全审核报告", "文件安全", "P0", "todo", "SEC-004", "可解析内容完成敏感信息扫描，报告可供审核人员查看", 0),
+            ("PROD-001", "后端 Agent", "产品Logo上传、精确尺寸校验、SVG清洗和缩略图", "产品登记", "P0", "todo", "BE-002", "产品Logo可持久化，恶意SVG被拒绝，缩略图可展示", 0),
+            ("PROD-002", "后端 Agent", "产品版本文件绑定和已发布版本不可覆盖", "产品登记", "P0", "todo", "SEC-001,PROD-001", "新版本使用新文件，历史订单文件不被覆盖", 0),
+            ("PROD-003", "后端 Agent", "产品审核撤回、原因和权限控制", "产品审核", "P0", "todo", "BE-002", "企业管理员仅能撤回本企业待审核产品，撤回留痕", 0),
+            ("API-001", "后端 Agent", "API/模型API额度单位和订单独立授权", "API交付", "P0", "todo", "BE-009", "千次/万次转换为整数，订单额度独立扣减", 0),
+            ("API-002", "后端 Agent", "取消、退款、额度耗尽后的网关访问回收", "API交付", "P0", "todo", "API-001", "取消/退款/耗尽后凭据和路由访问不可用", 0),
+            ("SAAS-001", "后端 Agent", "SaaS按购买日对应日期计算月付到期时间", "SaaS订阅", "P0", "in_progress", "BE-007", "1月31日、闰年2月、大小月和提前续费测试通过", 10),
+            ("SAAS-002", "后端 Agent", "SaaS订单独立租户标识和多租户订阅隔离", "SaaS订阅", "P0", "todo", "SAAS-001", "同企业多个租户、版本和订单互不串用", 0),
+            ("DELIVERY-001", "后端 Agent", "线下履约状态、附件、拒绝和审计闭环", "线下交付", "P0", "todo", "BE-004", "支付、履约、服务方提交、购买方审核状态完整", 0),
+            ("FE-016", "前端 Agent", "登记弹框按交付方式动态展示字段和上传控件", "产品登记", "P0", "todo", "PROD-001,API-001,SAAS-001", "文件/API/SaaS/线下字段按条件展示并校验", 0),
+            ("FE-017", "前端 Agent", "扫描报告、Logo、下载次数和额度展示", "产品与安全", "P0", "todo", "SEC-005,PROD-001,API-001", "审核人员可查看报告，订单用户可查看额度", 0),
+            ("OPS-013", "部署测试 Agent", "数据库迁移、ClamAV、定时更新和监控告警", "文件安全部署", "P0", "todo", "SEC-002,SEC-003", "K8S部署成功，健康检查、更新和告警可验证", 0),
+            ("QA-009", "部署测试 Agent", "文件安全、交付、额度、SaaS计费端到端验证", "专项测试", "P0", "todo", "SEC-005,API-002,SAAS-002,DELIVERY-001", "正常、异常、权限、退款和边界日期测试通过", 0),
         ]
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
@@ -3559,7 +3577,21 @@ def gateway_usage(product_id: str, user: User = Depends(current_user), db: Sessi
     return {"summary": {"total": total, "success": success, "error": total - success, "avg_latency_ms": round(sum(x.latency_ms for x in rows) / total, 1) if total else 0}, "items": [{"method": x.method, "path": x.path, "status_code": x.status_code, "latency_ms": x.latency_ms, "request_bytes": x.request_bytes, "response_bytes": x.response_bytes, "created_at": x.created_at} for x in rows]}
 
 
-SAAS_CYCLES = {"monthly": 30, "quarterly": 90, "annual": 365, "perpetual": None}
+SAAS_CYCLES = {"monthly": 1, "quarterly": 3, "annual": 12, "perpetual": None}
+
+
+def add_calendar_months(value: datetime, months: int) -> datetime:
+    """Advance a subscription by calendar months, clamping missing days to month end."""
+    month_index = value.year * 12 + value.month - 1 + months
+    year, month_index = divmod(month_index, 12)
+    month = month_index + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def subscription_expiry(start: datetime, cycle: str) -> datetime | None:
+    months = SAAS_CYCLES.get(cycle)
+    return None if months is None else add_calendar_months(start, months)
 SAAS_CYCLE_LABELS = {"monthly": "月付", "quarterly": "季付", "annual": "年付", "perpetual": "永久"}
 _saas_tokens: dict[str, tuple[str, datetime]] = {}
 
@@ -3736,7 +3768,7 @@ def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: 
         raise HTTPException(400, "SaaS 版本或第三方接口配置不可用")
     saas_cycle_price(version, body.billing_cycle)
     starts = now()
-    expires = None if body.billing_cycle == "perpetual" else starts + timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    expires = subscription_expiry(starts, body.billing_cycle)
     subscription = SaaSSubscription(enterprise_id=enterprise.id, product_id=product.id, version_id=version.id, billing_cycle=body.billing_cycle, status="provisioning", starts_at=starts, expires_at=expires, created_by=user.email or user.phone or user.id)
     db.add(subscription)
     db.flush()
@@ -3774,8 +3806,8 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
     subscription, product, version, config = subscription_context(subscription_id, user, db)
     amount = saas_cycle_price(version, body.billing_cycle)
     result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}")
-    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at += timedelta(days=SAAS_CYCLES[body.billing_cycle])
-    elif body.billing_cycle != "perpetual": subscription.expires_at = now() + timedelta(days=SAAS_CYCLES[body.billing_cycle])
+    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
+    elif body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(now(), body.billing_cycle)
     else: subscription.expires_at = None
     add_saas_order(db, subscription, product, version, amount, "renew", paid=True)
     db.commit()
@@ -3791,7 +3823,7 @@ def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User =
     current_price = saas_cycle_price(current_version, subscription.billing_cycle)
     target_price = saas_cycle_price(target, body.billing_cycle)
     remaining_days = max(0, (subscription.expires_at - now()).days) if subscription.expires_at else 0
-    total_days = SAAS_CYCLES.get(subscription.billing_cycle) or 365
+    total_days = max(1, ((subscription.expires_at - subscription.starts_at).total_seconds() / 86400) if subscription.expires_at and subscription.starts_at else 365)
     prorated_current = (current_price * Decimal(str(remaining_days)) / Decimal(str(total_days))).quantize(Decimal("0.01"))
     prorated_target = (target_price * Decimal(str(remaining_days)) / Decimal(str(total_days))).quantize(Decimal("0.01"))
     difference = (prorated_target - prorated_current).quantize(Decimal("0.01"))
