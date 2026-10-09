@@ -2567,13 +2567,16 @@ def assign_platform_role(body: PlatformRoleAssignmentBody, user: User = Depends(
 
 @app.get("/api/dashboard")
 def dashboard(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
-    products = db.scalar(select(func.count(Product.id)).where(Product.enterprise_id == enterprise.id)) or 0
-    orders = db.scalar(select(func.count(Order.id)).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))) or 0
-    active = db.scalar(select(func.count(Order.id)).where(Order.main_status.in_(["pending_review", "pending_fulfillment", "fulfilling", "pending_confirmation"]))) or 0
-    completed = db.scalar(select(func.count(Order.id)).where(Order.main_status == "completed")) or 0
-    revenue = db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(Order.provider_enterprise_id == enterprise.id)) or 0
-    return {"metrics": {"products": products, "orders": orders, "active_orders": active, "completed_orders": completed, "revenue": float(revenue)}, "status_breakdown": [{"label": "履约中", "value": active, "color": "orange"}, {"label": "已完成", "value": completed, "color": "green"}], "notice": "首版外部连接器接口暂未开发，当前工作台展示平台内部运营闭环。"}
+    platform_scope = user.platform_role in {"super_admin", "platform_operator", "security_compliance"}
+    enterprise = None if platform_scope else first_enterprise(db, user)
+    product_filter = True if platform_scope else Product.enterprise_id == enterprise.id
+    order_filter = True if platform_scope else or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id)
+    products = db.scalar(select(func.count(Product.id)).where(product_filter)) or 0
+    orders = db.scalar(select(func.count(Order.id)).where(order_filter)) or 0
+    active = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status.in_(["pending_review", "pending_fulfillment", "fulfilling", "pending_confirmation"]))) or 0
+    completed = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status == "completed")) or 0
+    revenue = db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(order_filter, Order.provider_enterprise_id == (None if platform_scope else enterprise.id))) if not platform_scope else db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(Order.payment_status == "paid"))
+    return {"metrics": {"products": products, "orders": orders, "active_orders": active, "completed_orders": completed, "revenue": float(revenue or 0)}, "status_breakdown": [{"label": "履约中", "value": active, "color": "orange"}, {"label": "已完成", "value": completed, "color": "green"}], "notice": "首版外部连接器接口暂未开发，当前工作台展示平台内部运营闭环。"}
 
 
 def product_out(p: Product) -> dict[str, Any]:
@@ -4096,8 +4099,11 @@ def order_out(o: Order) -> dict[str, Any]:
 
 @app.get("/api/orders")
 def orders(q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
-    stmt = select(Order).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))
+    if user.platform_role in {"super_admin", "platform_operator", "security_compliance"}:
+        stmt = select(Order)
+    else:
+        enterprise = first_enterprise(db, user)
+        stmt = select(Order).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))
     if q:
         stmt = stmt.where(or_(Order.order_no.ilike(f"%{q}%"), Order.product_name.ilike(f"%{q}%"), Order.buyer_name.ilike(f"%{q}%")))
     if status:
