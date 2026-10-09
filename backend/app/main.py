@@ -8,7 +8,9 @@ import os
 import re
 import secrets
 import smtplib
+import socket
 import ssl
+import struct
 import time
 from email.message import EmailMessage
 from io import BytesIO
@@ -37,6 +39,9 @@ MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "")
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "market")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "market123456")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "market-files")
+CLAMAV_ENABLED = os.getenv("CLAMAV_ENABLED", "true").lower() == "true"
+CLAMAV_HOST = os.getenv("CLAMAV_HOST", "market-clamav")
+CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
@@ -750,6 +755,9 @@ class FileObject(Base):
     version: Mapped[str] = mapped_column(String(30), default="v1.0")
     description: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(30), default="draft", index=True)
+    scan_status: Mapped[str] = mapped_column(String(30), default="not_scanned", index=True)
+    scan_report: Mapped[str] = mapped_column(Text, default="")
+    scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -1613,6 +1621,9 @@ def ensure_review_and_file_schema():
             "version": "VARCHAR(30)",
             "description": "TEXT",
             "status": "VARCHAR(30)",
+            "scan_status": "VARCHAR(30) DEFAULT 'not_scanned'",
+            "scan_report": "TEXT DEFAULT ''",
+            "scanned_at": "TIMESTAMP WITH TIME ZONE",
         },
         "settlements": {
             "refund_amount": "NUMERIC(14,2)",
@@ -2972,6 +2983,28 @@ def security_scan_out(scan: ProductSecurityScan | None) -> dict[str, Any] | None
     except json.JSONDecodeError:
         report = {"raw": scan.report_json}
     return {"id": scan.id, "product_id": scan.product_id, "engine": scan.engine, "status": scan.status, "findings_count": scan.findings_count, "high_risk_count": scan.high_risk_count, "scanned_at": scan.scanned_at, "reviewed_by": scan.reviewed_by, "reviewed_at": scan.reviewed_at, "review_comment": scan.review_comment, "report": report}
+
+
+def clamav_scan(content: bytes) -> tuple[str, str]:
+    """Scan an uploaded object through the in-cluster clamd INSTREAM protocol."""
+    if not CLAMAV_ENABLED:
+        return "disabled", "ClamAV scanning is disabled by configuration"
+    try:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=30) as connection:
+            connection.sendall(b"zINSTREAM\0")
+            for offset in range(0, len(content), 1024 * 1024):
+                chunk = content[offset:offset + 1024 * 1024]
+                connection.sendall(struct.pack("!I", len(chunk)))
+                connection.sendall(chunk)
+            connection.sendall(struct.pack("!I", 0))
+            response = connection.recv(4096).decode("utf-8", errors="replace").strip()
+        if "FOUND" in response:
+            return "infected", response
+        if response.endswith("OK"):
+            return "clean", response
+        return "error", response or "ClamAV returned an empty response"
+    except (OSError, TimeoutError) as exc:
+        return "unavailable", str(exc)[:240]
 
 
 def presidio_analyze(text_value: str) -> tuple[list[dict[str, Any]], str]:
@@ -5260,7 +5293,7 @@ def sla_results(user: User = Depends(current_user), db: Session = Depends(db_ses
 
 
 def file_out(item: FileObject) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "created_at": item.created_at}
+    return {"id": item.id, "product_id": item.product_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "scanned_at": item.scanned_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/files")
@@ -5297,6 +5330,12 @@ def upload_file(
             svg_text = content.decode("utf-8", errors="ignore").lower()
             if "<script" in svg_text or "javascript:" in svg_text or "external" in svg_text or re.search(r"\son[a-z]+\s*=", svg_text):
                 raise HTTPException(400, "SVG包含脚本、外部资源或事件属性，无法上传")
+            root = re.search(r"<svg\b([^>]*)>", svg_text)
+            attributes = root.group(1) if root else ""
+            has_exact_size = bool(re.search(r"\bwidth\s*=\s*['\"]380(?:px)?['\"]", attributes) and re.search(r"\bheight\s*=\s*['\"]280(?:px)?['\"]", attributes))
+            has_exact_viewbox = bool(re.search(r"\bviewbox\s*=\s*['\"]0\s+0\s+380\s+280['\"]", attributes))
+            if not (has_exact_size or has_exact_viewbox):
+                raise HTTPException(400, "SVG Logo必须声明380×280尺寸或对应viewBox")
         else:
             try:
                 with Image.open(BytesIO(content)) as image:
@@ -5306,6 +5345,12 @@ def upload_file(
                 raise
             except Exception as exc:
                 raise HTTPException(400, "Logo图片无法解析") from exc
+    scan_status, scan_report = ("not_scanned", "")
+    if file_role == "product_data":
+        scan_status, scan_report = clamav_scan(content)
+        if scan_status == "infected":
+            audit(db, user.email, "reject_infected_file", "file", upload.filename or "", scan_report, category="security", business_domain="product")
+            raise HTTPException(400, "文件未通过ClamAV病毒扫描")
     object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{upload.filename}"
     if MINIO_ENDPOINT:
         client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
@@ -5313,9 +5358,9 @@ def upload_file(
             client.make_bucket(MINIO_BUCKET)
         from io import BytesIO
         client.put_object(MINIO_BUCKET, object_name, BytesIO(content), length=len(content), content_type=upload.content_type or "application/octet-stream")
-    item = FileObject(owner_id=user.id, product_id=product_id, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version, description=description)
+    item = FileObject(owner_id=user.id, product_id=product_id, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version, description=description, scan_status=scan_status, scan_report=scan_report, scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
-    audit(db, user.email, "upload_file", "file", item.id, item.original_name)
+    audit(db, user.email, "upload_file", "file", item.id, f"{item.original_name}; scan={scan_status}", category="security" if file_role == "product_data" else "ops", business_domain="product")
     db.commit()
     db.refresh(item)
     return file_out(item)
