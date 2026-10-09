@@ -11,7 +11,9 @@ import smtplib
 import socket
 import ssl
 import struct
+import tarfile
 import time
+import zipfile
 from email.message import EmailMessage
 from io import BytesIO
 from urllib.parse import parse_qs, quote
@@ -746,6 +748,7 @@ class FileObject(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     owner_id: Mapped[str] = mapped_column(String(36), index=True)
     product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), index=True, nullable=True)
+    version_id: Mapped[str | None] = mapped_column(ForeignKey("product_release_versions.id"), index=True, nullable=True)
     object_name: Mapped[str] = mapped_column(String(500))
     original_name: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
@@ -1616,6 +1619,7 @@ def ensure_review_and_file_schema():
         },
         "file_objects": {
             "product_id": "VARCHAR(36)",
+            "version_id": "VARCHAR(36)",
             "checksum": "VARCHAR(64)",
             "file_role": "VARCHAR(50)",
             "version": "VARCHAR(30)",
@@ -3039,12 +3043,32 @@ def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
 def read_product_sample(file_item: FileObject) -> str:
     if not MINIO_ENDPOINT or file_item.size <= 0:
         return ""
-    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml"))):
+    if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz"))):
         return ""
     client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
     response = client.get_object(MINIO_BUCKET, file_item.object_name)
     try:
-        return response.read(2_000_000).decode("utf-8", errors="ignore")
+        sample = response.read(20_000_000)
+        name = file_item.original_name.lower()
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(BytesIO(sample)) as archive:
+                text_parts = []
+                for entry in archive.infolist()[:50]:
+                    if entry.is_dir() or not entry.filename.lower().endswith((".txt", ".csv", ".json", ".xml")):
+                        continue
+                    text_parts.append(archive.open(entry).read(2_000_000).decode("utf-8", errors="ignore"))
+                return "\n".join(text_parts)
+        if name.endswith((".tar", ".tgz", ".tar.gz")):
+            with tarfile.open(fileobj=BytesIO(sample), mode="r:*") as archive:
+                text_parts = []
+                for entry in archive.getmembers()[:50]:
+                    if not entry.isfile() or not entry.name.lower().endswith((".txt", ".csv", ".json", ".xml")):
+                        continue
+                    handle = archive.extractfile(entry)
+                    if handle:
+                        text_parts.append(handle.read(2_000_000).decode("utf-8", errors="ignore"))
+                return "\n".join(text_parts)
+        return sample.decode("utf-8", errors="ignore")
     finally:
         response.close()
         response.release_conn()
@@ -5293,7 +5317,42 @@ def sla_results(user: User = Depends(current_user), db: Session = Depends(db_ses
 
 
 def file_out(item: FileObject) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "scanned_at": item.scanned_at, "created_at": item.created_at}
+    return {"id": item.id, "product_id": item.product_id, "version_id": item.version_id, "object_name": item.object_name, "original_name": item.original_name, "content_type": item.content_type, "size": item.size, "checksum": item.checksum, "file_role": item.file_role, "version": item.version, "description": item.description, "status": item.status, "scan_status": item.scan_status, "scan_report": item.scan_report, "scanned_at": item.scanned_at, "created_at": item.created_at}
+
+
+def validate_product_archive(content: bytes, filename: str) -> None:
+    """Reject unsafe archive metadata before persisting a product data file."""
+    lower_name = filename.lower()
+    if lower_name.endswith((".zip",)):
+        try:
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                entries = archive.infolist()
+                if len(entries) > 100_000:
+                    raise HTTPException(400, "压缩包文件数量超过安全上限")
+                total_size = sum(item.file_size for item in entries)
+                if total_size > 50 * 1024 * 1024 * 1024:
+                    raise HTTPException(400, "压缩包解压后总大小超过安全上限")
+                for item in entries:
+                    name = item.filename.replace("\\", "/")
+                    if name.startswith("/") or "../" in name.split("/"):
+                        raise HTTPException(400, "压缩包包含路径穿越条目")
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(400, "ZIP压缩包结构无效") from exc
+    elif lower_name.endswith((".tar", ".tgz", ".tar.gz")):
+        try:
+            with tarfile.open(fileobj=BytesIO(content), mode="r:*") as archive:
+                entries = archive.getmembers()
+                if len(entries) > 100_000:
+                    raise HTTPException(400, "压缩包文件数量超过安全上限")
+                total_size = sum(item.size for item in entries if item.isfile())
+                if total_size > 50 * 1024 * 1024 * 1024:
+                    raise HTTPException(400, "压缩包解压后总大小超过安全上限")
+                for item in entries:
+                    name = item.name.replace("\\", "/")
+                    if name.startswith("/") or "../" in name.split("/") or item.issym() or item.islnk():
+                        raise HTTPException(400, "压缩包包含路径穿越或链接条目")
+        except tarfile.TarError as exc:
+            raise HTTPException(400, "TAR压缩包结构无效") from exc
 
 
 @app.get("/api/products/{product_id}/files")
@@ -5307,6 +5366,7 @@ def product_files(product_id: str, user: User = Depends(current_user), db: Sessi
 def upload_file(
     upload: UploadFile = File(...),
     product_id: str | None = Form(default=None),
+    version_id: str | None = Form(default=None),
     file_role: str = Form(default="product_data"),
     version: str = Form(default="v1.0"),
     description: str = Form(default=""),
@@ -5314,7 +5374,14 @@ def upload_file(
     db: Session = Depends(db_session),
 ):
     if product_id:
-        product_for_enterprise(product_id, user, db)
+        product = product_for_enterprise(product_id, user, db)
+        if file_role in {"product_data", "product_logo"} and product.status not in {"draft", "rejected", "security_unpublished"}:
+            raise HTTPException(409, "已发布或审核中的产品不可替换文件")
+    version_item = None
+    if version_id:
+        version_item = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product_id))
+        if not version_item:
+            raise HTTPException(400, "产品版本不存在或不属于该产品")
     content = upload.file.read()
     if file_role == "product_data":
         allowed = (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz")
@@ -5322,6 +5389,7 @@ def upload_file(
             raise HTTPException(400, "数据文件仅支持 zip、tar、tar.gz、tgz、bz2 或 xz 压缩格式")
         if len(content) >= 10 * 1024 * 1024 * 1024:
             raise HTTPException(413, "数据文件必须小于10GB")
+        validate_product_archive(content, upload.filename or "")
     if file_role == "product_logo":
         name = (upload.filename or "").lower()
         if not (name.endswith(".svg") or (upload.content_type or "").startswith("image/")):
@@ -5358,7 +5426,7 @@ def upload_file(
             client.make_bucket(MINIO_BUCKET)
         from io import BytesIO
         client.put_object(MINIO_BUCKET, object_name, BytesIO(content), length=len(content), content_type=upload.content_type or "application/octet-stream")
-    item = FileObject(owner_id=user.id, product_id=product_id, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version, description=description, scan_status=scan_status, scan_report=scan_report, scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
+    item = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=object_name, original_name=upload.filename or "file", content_type=upload.content_type or "application/octet-stream", size=len(content), checksum=hashlib.sha256(content).hexdigest(), file_role=file_role, version=version_item.version_code if version_item else version, description=description, scan_status=scan_status, scan_report=scan_report, scanned_at=now() if scan_status not in {"not_scanned", "unavailable", "disabled"} else None)
     db.add(item)
     audit(db, user.email, "upload_file", "file", item.id, f"{item.original_name}; scan={scan_status}", category="security" if file_role == "product_data" else "ops", business_domain="product")
     db.commit()

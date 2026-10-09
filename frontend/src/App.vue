@@ -56,6 +56,7 @@ const loading = ref(false);
 const toast = ref("");
 const dashboard = ref(null);
 const products = ref([]);
+const productFiles = ref([]);
 const productDirectories = ref([]);
 const orders = ref([]);
 const selectedOrder = ref(null);
@@ -1002,7 +1003,8 @@ async function createProduct() {
       form.append("upload", productForm.value.fileUpload);
       form.append("product_id", data.id);
       form.append("file_role", "product_data");
-      form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
+      form.append("version_id", data.versions?.[0]?.id || "");
+      form.append("version", data.versions?.[0]?.version_code || "v1.0");
       await api.post("/files/upload", form);
     }
     showProductForm.value = false;
@@ -1026,7 +1028,7 @@ function openNewProduct() {
   };
   showProductForm.value = true;
 }
-function openProductDetail(product) {
+async function openProductDetail(product) {
   selectedProductId.value = product.id;
   productDetailMode.value = true;
   productReadOnlyMode.value = product.status !== "draft";
@@ -1036,6 +1038,13 @@ function openProductDetail(product) {
     versions: product.versions?.length ? product.versions : [emptyProductVersion()],
   }));
   productForm.value.logoFile = null;
+  productFiles.value = [];
+  try {
+    const { data } = await api.get(`/products/${product.id}/files`);
+    productFiles.value = data.items || [];
+  } catch {
+    productFiles.value = [];
+  }
   showProductForm.value = true;
 }
 async function saveProductEdit() {
@@ -1059,6 +1068,7 @@ async function saveProductEdit() {
       form.append("upload", productForm.value.fileUpload);
       form.append("product_id", selectedProductId.value);
       form.append("file_role", "product_data");
+      form.append("version_id", productForm.value.versions[0]?.id || "");
       form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
       await api.post("/files/upload", form);
     }
@@ -3529,6 +3539,15 @@ onUnmounted(() => {
           <label>产品Logo（380×280）<input type="file" accept="image/*,.svg" @change="productForm.logoFile = $event.target.files[0]" /></label>
           <label>Logo说明<small class="muted">支持SVG及常见图片格式，提交后执行尺寸和安全校验。</small></label>
         </div>
+        <div v-if="productDetailMode && productFiles.length" class="product-file-status">
+          <div class="form-section-title">已上传文件与安全状态</div>
+          <div v-for="file in productFiles" :key="file.id" class="file-status-row">
+            <span>{{ file.original_name }}<small class="muted"> · {{ file.version || "产品级" }}</small></span>
+            <span :class="['status-pill', file.scan_status === 'clean' ? 'status-done' : file.scan_status === 'infected' ? 'status-blocked' : 'status-review']">
+              {{ file.file_role === 'product_logo' ? 'Logo已保存' : file.scan_status === 'clean' ? '病毒扫描通过' : file.scan_status === 'unavailable' ? '待安全扫描' : file.scan_status === 'infected' ? '扫描未通过' : '待扫描' }}
+            </span>
+          </div>
+        </div>
         <div class="version-editor">
           <div class="version-editor-head">
             <div>
@@ -3543,7 +3562,7 @@ onUnmounted(() => {
               v-for="(version, index) in productForm.versions"
             :key="index"
             class="version-row"
-            :class="{ 'api-version-row': productForm.product_type === 'api' }"
+            :class="{ 'api-version-row': ['api', 'model'].includes(productForm.product_type) }"
           >
             <label
               >版本号<input v-model="version.version_code" required /></label
@@ -3561,11 +3580,11 @@ onUnmounted(() => {
                 min="0"
                 step="0.01"
                 required /></label
-            ><label v-if="productForm.product_type === 'api'" title="该版本每分钟允许的最大调用次数"
+            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="该版本每分钟允许的最大调用次数"
               >每分钟限流<input v-model.number="version.rate_limit_per_minute" type="number" min="1" required /></label
-            ><label v-if="productForm.product_type === 'api'" title="该版本每日允许的最大调用次数"
+            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="该版本每日允许的最大调用次数"
               >每日配额<input v-model.number="version.daily_quota" type="number" min="1" required /></label
-            ><label v-if="productForm.product_type === 'api'" title="0 表示不单独限制月配额"
+            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="0 表示不单独限制月配额"
               >每月配额<input v-model.number="version.monthly_quota" type="number" min="0" /></label
             ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
               额度单位<select v-model="version.quota_unit"><option value="1000">千次</option><option value="10000">万次</option></select></label
