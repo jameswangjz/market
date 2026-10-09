@@ -2725,7 +2725,22 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
         result = product_out(product)
     else:
         result = product_out(product_for_enterprise(product_id, user, db))
-    review_items = db.scalars(select(AuditLog).where(AuditLog.target_type == "product", AuditLog.target_id == product_id, or_(AuditLog.action == "submit_product_review", AuditLog.action.ilike("%review%"))).order_by(AuditLog.created_at.asc())).all()
+    review_actions = (
+        "submit_product_review",
+        "enter_product_security_review",
+        "approve_product",
+        "reject_product",
+        "business_approve_product",
+        "business_reject_product",
+        "quality_approve_product",
+        "quality_reject_product",
+        "approve_product_security",
+        "reject_product_security",
+        "operation_approve_product",
+        "operation_reject_product",
+        "withdraw_product_review",
+    )
+    review_items = db.scalars(select(AuditLog).where(AuditLog.target_type == "product", AuditLog.target_id == product_id, AuditLog.action.in_(review_actions)).order_by(AuditLog.created_at.asc())).all()
     result["review_logs"] = [{"id": item.id, "actor": item.actor, "action": item.action, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in review_items]
     return result
 
