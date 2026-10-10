@@ -17,6 +17,7 @@ import {
   Bell,
   BriefcaseBusiness,
   CheckCircle2,
+  ClipboardList,
   ChevronDown,
   ChevronRight,
   CircleAlert,
@@ -361,7 +362,7 @@ function settlementProposalStatusLabel(value) { return settlementProposalStatusL
 const taskStatusLabels = {
   todo: "待开发",
   in_progress: "进行中",
-  review: "待评审",
+  review: "待验收",
   blocked: "已阻塞",
   done: "已完成",
 };
@@ -2585,6 +2586,12 @@ onUnmounted(() => {
                   icon: FileText,
                 },
                 {
+                  key: 'review',
+                  label: '待验收',
+                  value: taskCount('review'),
+                  icon: ClipboardList,
+                },
+                {
                   key: 'blocked',
                   label: '已阻塞',
                   value: taskCount('blocked'),
@@ -2676,7 +2683,7 @@ onUnmounted(() => {
                       >
                         <option value="todo">待开发</option>
                         <option value="in_progress">进行中</option>
-                        <option value="review">待评审</option>
+                        <option value="review">待验收</option>
                         <option value="blocked">已阻塞</option>
                         <option value="done">已完成</option>
                       </select>

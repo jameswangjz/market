@@ -1,13 +1,50 @@
 ﻿{
+    "taskCounts":  {
+                       "items":  [
+                                     {
+                                         "label":  "全部任务",
+                                         "value":  158
+                                     },
+                                     {
+                                         "label":  "已完成",
+                                         "value":  120
+                                     },
+                                     {
+                                         "label":  "进行中",
+                                         "value":  0
+                                     },
+                                     {
+                                         "label":  "待开发",
+                                         "value":  35
+                                     },
+                                     {
+                                         "label":  "待验收",
+                                         "value":  1
+                                     },
+                                     {
+                                         "label":  "已阻塞",
+                                         "value":  2
+                                     }
+                                 ],
+                       "total":  158,
+                       "statusSum":  158
+                   },
+    "publicProducts":  2,
+    "list":  {
+                 "width":  390,
+                 "bodyWidth":  390,
+                 "logos":  0
+             },
+    "limits":  [
+                   "no paid checkout",
+                   "no new business orders",
+                   "multi-enterprise selection covered by HTTP/unit tests"
+               ],
+    "status":  "passed",
     "detail":  {
                    "title":  "矿山装备制造质量数据集",
                    "bodyWidth":  1440,
                    "width":  1440
-               },
-    "mobile":  {
-                   "width":  390,
-                   "bodyWidth":  390,
-                   "logos":  0
                },
     "checks":  [
                    "anonymous listing",
@@ -17,18 +54,12 @@
                    "console refresh",
                    "desktop/mobile bounds",
                    "authenticated login return to product",
+                   "six task statuses count and sum correctly",
                    "authenticated console F5"
                ],
-    "limits":  [
-                   "no paid checkout",
-                   "no new business orders",
-                   "multi-enterprise selection covered by HTTP/unit tests"
-               ],
-    "publicProducts":  2,
-    "list":  {
-                 "width":  390,
-                 "bodyWidth":  390,
-                 "logos":  0
-             },
-    "status":  "passed"
+    "mobile":  {
+                   "width":  390,
+                   "bodyWidth":  390,
+                   "logos":  0
+               }
 }
