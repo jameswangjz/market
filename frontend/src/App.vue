@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
+import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
 import "./gateway-doc.css";
 import {
@@ -20,6 +21,8 @@ import {
   Copy,
   Clock3,
   Database,
+  Download,
+  ExternalLink,
   FileCheck2,
   FileText,
   LayoutDashboard,
@@ -141,6 +144,17 @@ const auditItems = ref([]);
 const auditCategories = ref([]);
 const auditSelectedCategory = ref("");
 const auditSelected = ref(null);
+const auditBusy = ref(false);
+const auditExporting = ref(false);
+const auditError = ref("");
+const auditTimeline = ref([]);
+const auditTimelineBusy = ref(false);
+const auditTimelineError = ref("");
+const auditTimelineRoot = ref("");
+const auditTimelinePage = ref(1);
+const auditTimelineTotal = ref(0);
+const auditTimelinePageSize = ref(100);
+const auditNavigating = ref(false);
 const auditFilters = ref({ q: "", actor: "", order_id: "", batch_no: "", rule_version: "", risk_level: "", start: "", end: "", page: 1, page_size: 50, total: 0, pages: 0 });
 const userItems = ref([]);
 const enterpriseItems = ref([]);
@@ -799,7 +813,10 @@ const auditCategoryLabels = {
   payment_refund: "支付与退款",
   delivery: "交付与售后",
   data_access: "数据访问/API",
-  settlement: "清算全链路",
+  settlement_all: "清算全链路",
+  settlement: "清算批次与确认",
+  settlement_adjustment: "清算调整",
+  settlement_report: "清算报表",
   settlement_rule: "清算规则与试算",
   measurement: "计量计费",
   settlement_payment: "分账与付款",
@@ -807,16 +824,164 @@ const auditCategoryLabels = {
   security: "配置与安全",
   ops: "运维与任务",
 };
-async function loadAuditLogs() {
+function auditCategoryCount(category) {
+  return auditCategories.value.find(item => item.category === category)?.count ?? 0;
+}
+const auditCategoryName = category => auditCategoryLabels[category] || category;
+let auditLoadVersion = 0;
+let auditDetailVersion = 0;
+let auditTimelineVersion = 0;
+function auditQuery() {
   const params = { ...auditFilters.value };
   delete params.total;
   delete params.pages;
+  for (const key of ["q", "actor", "order_id", "batch_no", "rule_version"]) params[key] = params[key].trim();
+  for (const key of ["start", "end"]) {
+    if (!params[key]) continue;
+    const timestamp = new Date(params[key]);
+    if (!Number.isFinite(timestamp.getTime())) throw new Error("时间格式无效");
+    params[key] = timestamp.toISOString();
+  }
+  if (params.start && params.end && params.start > params.end) throw new Error("结束时间不能早于开始时间");
   if (auditSelectedCategory.value) params.category = auditSelectedCategory.value;
-  const { data } = await api.get("/audit-logs", { params });
-  auditItems.value = data.items;
-  auditFilters.value = { ...auditFilters.value, total: data.total, pages: data.pages, page: data.page };
-  const categoryData = await api.get("/audit-logs/categories");
-  auditCategories.value = categoryData.data.items;
+  return params;
+}
+function auditFailure(error, fallback) {
+  return typeof error.response?.data?.detail === "string" ? error.response.data.detail : error.response ? fallback : error.message || fallback;
+}
+async function loadAuditLogs() {
+  const version = ++auditLoadVersion;
+  auditBusy.value = true;
+  auditError.value = "";
+  try {
+    const params = auditQuery();
+    const { data } = await api.get("/audit-logs", { params });
+    if (version !== auditLoadVersion) return;
+    auditItems.value = data.items || [];
+    const total = data.total || 0;
+    auditFilters.value = { ...auditFilters.value, total, pages: data.pages ?? Math.ceil(total / params.page_size), page: data.page || params.page };
+    const categoryData = await api.get("/audit-logs/categories");
+    if (version === auditLoadVersion) auditCategories.value = categoryData.data.items || [];
+  } catch (error) {
+    if (version === auditLoadVersion) auditError.value = auditFailure(error, "审计日志加载失败");
+  } finally { if (version === auditLoadVersion) auditBusy.value = false; }
+}
+function searchAuditLogs() {
+  auditFilters.value.page = 1;
+  loadAuditLogs();
+}
+async function exportAuditLogs() {
+  if (auditExporting.value) return;
+  auditExporting.value = true; auditError.value = "";
+  try {
+    const result = await api.get("/audit-logs/export", { params: auditQuery(), responseType: "blob" });
+    const url = URL.createObjectURL(result.data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    let message = auditFailure(error, "审计日志导出失败");
+    if (error.response?.data instanceof Blob) {
+      try {
+        const payload = JSON.parse(await error.response.data.text());
+        if (typeof payload.detail === "string") message = payload.detail;
+      } catch { /* Keep the fallback for non-JSON error bodies. */ }
+    }
+    auditError.value = message;
+  }
+  finally { auditExporting.value = false; }
+}
+function closeAuditEvent() {
+  ++auditDetailVersion;
+  ++auditTimelineVersion;
+  auditSelected.value = null; auditTimeline.value = []; auditTimelineBusy.value = false;
+  auditTimelineRoot.value = ""; auditTimelineTotal.value = 0; auditTimelinePage.value = 1;
+}
+async function openAuditEvent(item) {
+  ++auditDetailVersion;
+  auditSelected.value = item; auditTimeline.value = []; auditTimelineError.value = "";
+  auditTimelineRoot.value = item.id; auditTimelinePage.value = 1; auditTimelineTotal.value = 0;
+  await loadAuditTimeline(1, true);
+}
+async function loadAuditTimeline(page = 1, selectCurrent = false) {
+  if (!auditTimelineRoot.value || page < 1) return;
+  const detailVersion = auditDetailVersion;
+  const version = ++auditTimelineVersion;
+  const current = () => detailVersion === auditDetailVersion && version === auditTimelineVersion;
+  auditTimelineBusy.value = true;
+  auditTimelineError.value = "";
+  try {
+    const { data } = await api.get(`/audit-logs/${encodeURIComponent(auditTimelineRoot.value)}/timeline`, { params: { page, page_size: 100 } });
+    if (!current()) return;
+    if (selectCurrent && data.event) auditSelected.value = data.event;
+    const events = new Map((data.items || []).map(event => [event.id, event]));
+    auditTimeline.value = [...events.values()].sort((left, right) => new Date(left.created_at) - new Date(right.created_at));
+    auditTimelineTotal.value = data.total ?? events.size;
+    auditTimelinePage.value = data.page || page;
+    auditTimelinePageSize.value = data.page_size || 100;
+  } catch (error) {
+    if (current()) auditTimelineError.value = auditFailure(error, "关联事件加载失败");
+  } finally { if (current()) auditTimelineBusy.value = false; }
+}
+const auditFieldLabels = {
+  ...settlementLifecycleFieldLabels,
+  title: "标题", name: "名称", status: "状态", main_status: "订单状态", payment_status: "支付状态", delivery_status: "交付状态", after_sales_status: "售后状态",
+  amount: "金额", quantity: "数量", unit: "单位", comment: "备注", reason: "原因", role: "角色", email: "邮箱", phone: "手机号",
+  is_active: "启用", verified_status: "实名状态", enterprise_role: "企业角色", platform_role: "平台角色", tenant_id: "企业", order_id: "订单", order_no: "订单号",
+  batch_no: "批次号", rule_version: "规则版本", risk_level: "风险级别", result: "结果", before: "变更前", after: "变更后",
+  rate: "比例", platform_rate: "平台比例", provider_rate: "提供方比例", service_rate: "服务方比例", expert_rate: "专家比例", channel_rate: "渠道比例",
+  created_at: "创建时间", updated_at: "更新时间", email_enabled: "邮件通知", retention_days: "保留天数", attachment_max_mb: "附件上限（MB）",
+};
+function auditChangeRows(event) {
+  const flatten = (value, prefix = "", output = new Map()) => {
+    for (const [key, child] of Object.entries(value || {})) {
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (child && typeof child === "object" && !Array.isArray(child) && Object.keys(child).length) flatten(child, path, output);
+      else output.set(path, child);
+    }
+    return output;
+  };
+  const before = flatten(event?.before), after = flatten(event?.after);
+  return [...new Set([...before.keys(), ...after.keys()])].map(key => ({ key, name: key.split(".").map(part => Object.hasOwn(auditFieldLabels, part) ? auditFieldLabels[part] : part).join(" / "), before: before.get(key), after: after.get(key), changed: JSON.stringify(before.get(key)) !== JSON.stringify(after.get(key)) }));
+}
+function auditValue(value, key) {
+  if (value === undefined) return "未设置";
+  if (value === null || value === "") return "-";
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (Array.isArray(value)) return value.map(item => auditValue(item, key)).join("、") || "-";
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  const field = key.split(".").at(-1);
+  if (field.endsWith("_at") && Number.isFinite(new Date(value).getTime())) return fmtDate(value);
+  if (field.includes("status")) return statusLabels[value] || ({ verified: "已实名", pending: "待处理", rejected: "已拒绝", published: "已发布", disabled: "已禁用" }[value]) || value;
+  if (field === "risk_level") return ({ normal: "正常", warning: "预警", high: "高风险" }[value]) || value;
+  if (field === "result") return ({ success: "成功", failed: "失败", error: "错误" }[value]) || value;
+  return String(value);
+}
+const auditCanNavigate = view => visibleNav.value.some(item => item.key === view);
+async function navigateAuditBusiness(item, view) {
+  if (auditNavigating.value || !auditCanNavigate(view)) return;
+  auditNavigating.value = true;
+  try {
+    if (view === "orders") {
+      const id = item.order_id || (item.target_type === "order" ? item.target_id : "");
+      if (!id && !item.order_no) return;
+      await loadViewData("orders");
+      if (!auditCanNavigate(view)) return;
+      const order = orders.value.find(order => (id && (order.id === id || order.order_no === id)) || (item.order_no && order.order_no === item.order_no));
+      if (!order && (!id || id.startsWith("ORD"))) throw new Error("订单不存在或无权查看");
+      await openOrder(order || { id });
+    } else if (view === "settlements") {
+      if (!item.batch_no) return;
+      settlementFilters.value = { batch_id: item.batch_no, settlement_id: "", order_no: "", status: "" };
+      await loadViewData("settlements");
+      if (!auditCanNavigate(view)) return;
+      settlementTab.value = "settlements";
+    } else return;
+    activeView.value = view; closeAuditEvent();
+  } catch (error) { auditTimelineError.value = auditFailure(error, "业务详情加载失败"); }
+  finally { auditNavigating.value = false; }
 }
 function selectAuditCategory(category) {
   auditSelectedCategory.value = category;
@@ -2811,7 +2976,7 @@ onUnmounted(() => {
             <div class="panel"><div class="panel-heading"><div><span class="section-kicker">RULE VERSIONS</span><h3>规则版本</h3></div></div><div class="settlement-rule-list"><div v-for="rule in settlementRules" :key="rule.id" class="settlement-rule-item"><div><strong>{{ rule.name }} · {{ rule.version }}</strong><small>平台 {{ rule.platform_rate }}% · 提供方 {{ rule.provider_rate }}% · 数据服务方 {{ rule.service_rate }}% · 专家 {{ rule.expert_rate }}% · 渠道 {{ rule.channel_rate }}%</small></div><div class="table-actions"><span class="status-pill" :class="rule.status === 'active' ? 'status-done' : 'status-review'">{{ rule.status }}</span><button v-if="rule.status === 'draft'" class="text-btn" @click="decideSettlementRule(rule, 'approve')">审批</button><button v-if="['approved', 'disabled'].includes(rule.status)" class="text-btn" @click="decideSettlementRule(rule, 'activate')">启用</button><button class="text-btn" @click="simulateSettlementRule(rule)">试算</button></div></div></div><div v-if="!settlementRules.length" class="empty-state">暂无清算规则</div></div>
           </div>
           <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'pending_confirm'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
-          <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div></div>
+          <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div><LedgerComparison :batches="settlementBatches" :can-operate="['super_admin', 'platform_operator', 'finance_settlement'].includes(user?.platform_role)" /></div>
           <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REFUND AND REVERSAL · RESERVED</span><h3>退款与冲正（预留）</h3></div><span class="muted">退款流程尚未上线；现有清算调整请在清算单中处理</span></div><div class="empty-state">当前版本尚未实现退款、原路退回和负向清算单。已发生的清算金额调整，请通过清算单的“调整提案”完成并保留审计记录。</div><div v-if="settlementCorrections.length" class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td></tr></tbody></table></div></div>
           <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3><span class="muted">支持按清算周期在线核对和下载</span></div><div class="table-actions"><button class="secondary-btn" @click="exportSettlementReport('summary')"><FileText :size="15" />下载参与方总表</button><button class="secondary-btn" @click="exportSettlementReport('details')"><FileText :size="15" />下载订单明细</button><button class="secondary-btn" @click="exportSettlementReport('products')"><FileText :size="15" />下载产品汇总</button></div></div><div class="report-filter-bar"><label>周期开始<input v-model="settlementReportFilters.start" type="date" /></label><label>周期结束<input v-model="settlementReportFilters.end" type="date" /></label><button class="primary-btn" @click="loadSettlementReport"><RefreshCw :size="15" />查询周期</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>订单总额</span><strong>{{ fmtMoney(settlementReport.summary.gross_amount) }}</strong></div><div class="metric-card"><span>订单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>总成本</span><strong>{{ fmtMoney(settlementReport.summary.cost_amount) }}</strong></div><div class="metric-card"><span>总利润</span><strong>{{ fmtMoney(settlementReport.summary.profit_amount) }}</strong></div></div><div class="report-section-heading"><strong>自然月清算汇总</strong><span class="muted">按订单清算明细的创建月份统计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>自然月</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.monthly || []" :key="item.label"><td>{{ item.label }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.monthly || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无自然月汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>产品维度清算汇总</strong><span class="muted">按产品统计订单、成本、利润和参与方金额</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>产品</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.products || []" :key="item.product_id || item.product_name"><td>{{ item.product_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.products || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无产品汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>参与清算各方汇总</strong><span class="muted">按参与方分别合计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>参与方类型</th><th>参与方</th><th>订单数</th><th>清算小计金额</th></tr></thead><tbody><tr v-for="item in settlementReport.summary.participants || []" :key="`${item.participant_type}-${item.participant_name}`"><td>{{ participantLabel(item.participant_type) }}</td><td>{{ item.participant_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.amount) }}</td></tr><tr v-if="!(settlementReport.summary.participants || []).length"><td colspan="4"><div class="empty-state">当前周期暂无参与方清算数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>订单清算明细</strong><span class="muted">每个订单的金额、成本、利润和参与方分配</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>专家</th><th>渠道</th><th>参与方清算小计</th><th>参与方明细</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_no || item.order_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td><td>{{ fmtMoney(item.participant_total) }}</td><td><div class="report-participant-list"><span v-for="participant in item.participants" :key="`${item.id}-${participant.participant_type}-${participant.participant_name}`">{{ participant.participant_name }}：{{ fmtMoney(participant.amount) }}</span></div></td><td>{{ item.status }}</td></tr><tr v-if="!settlementReport.items.length"><td colspan="10"><div class="empty-state">当前周期暂无订单清算数据</div></td></tr></tbody></table></div></div>
           <div v-else-if="settlementTab === 'measurements'" class="panel"><div class="panel-heading"><div><span class="section-kicker">MEASUREMENT AND BILLING</span><h3>计量计费数据</h3></div><button class="primary-btn" @click="createMeasurement">登记计量</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>计量类型</th><th>数量</th><th>单位</th><th>来源</th><th>校验状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementMeasurements" :key="item.id"><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.measurement_type }}</td><td>{{ item.quantity }}</td><td>{{ item.unit }}</td><td>{{ item.source }}</td><td><span class="status-pill status-done">{{ item.validation_status }}</span></td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div><div v-if="!settlementMeasurements.length" class="empty-state">暂无计量数据</div></div>
@@ -2927,48 +3092,86 @@ onUnmounted(() => {
               @click="selectAuditCategory(category)"
             >
               {{ labelText }}
-              <small v-if="category">{{ auditCategories.find((x) => x.category === category)?.count || 0 }}</small>
+              <small v-if="category">{{ auditCategoryCount(category) }}</small>
             </button>
           </div>
           <div class="panel audit-panel">
-            <div class="audit-filter-grid">
-              <label>关键词<input v-model="auditFilters.q" placeholder="动作、对象或说明" @keyup.enter="loadAuditLogs" /></label>
-              <label>操作人<input v-model="auditFilters.actor" placeholder="用户名/邮箱" @keyup.enter="loadAuditLogs" /></label>
-              <label>订单号<input v-model="auditFilters.order_id" placeholder="订单 ID" @keyup.enter="loadAuditLogs" /></label>
-              <label>清算批次<input v-model="auditFilters.batch_no" placeholder="批次号" @keyup.enter="loadAuditLogs" /></label>
-              <label>规则版本<input v-model="auditFilters.rule_version" placeholder="如 v1" @keyup.enter="loadAuditLogs" /></label>
-              <label>风险级别<select v-model="auditFilters.risk_level"><option value="">全部</option><option value="normal">正常</option><option value="high">高风险</option></select></label>
-            </div>
-            <div class="audit-filter-actions">
-              <button class="primary-btn" @click="auditFilters.page = 1; loadAuditLogs()"><Search :size="15" />检索</button>
-              <button class="secondary-btn" @click="resetAuditFilters">清空条件</button>
-              <span class="muted">共 {{ auditFilters.total }} 条，当前第 {{ auditFilters.page }} / {{ auditFilters.pages || 1 }} 页</span>
-            </div>
-            <div class="panel-heading audit-list-heading">
-              <h3>{{ auditCategoryLabels[auditSelectedCategory] || "审计事件" }}</h3>
-              <span class="muted">点击行查看变更摘要和关联链</span>
-            </div>
-            <div class="table-wrap">
+            <form @submit.prevent="searchAuditLogs">
+              <div class="audit-filter-grid">
+                <label>关键词<input v-model="auditFilters.q" placeholder="动作、对象或说明" /></label>
+                <label>操作人<input v-model="auditFilters.actor" placeholder="用户名/邮箱" /></label>
+                <label>订单号<input v-model="auditFilters.order_id" placeholder="ORD…" /></label>
+                <label>清算批次<input v-model="auditFilters.batch_no" placeholder="批次号" /></label>
+                <label>规则版本<input v-model="auditFilters.rule_version" placeholder="如 v1" /></label>
+                <label>风险级别<select v-model="auditFilters.risk_level"><option value="">全部</option><option value="normal">正常</option><option value="warning">预警</option><option value="high">高风险</option></select></label>
+                <label>开始时间<input v-model="auditFilters.start" type="datetime-local" :max="auditFilters.end || undefined" /></label>
+                <label>结束时间<input v-model="auditFilters.end" type="datetime-local" :min="auditFilters.start || undefined" /></label>
+              </div>
+              <div class="audit-filter-actions">
+                <button class="primary-btn" :disabled="auditBusy"><Search :size="15" />检索</button>
+                <button type="button" class="secondary-btn" :disabled="auditBusy" @click="resetAuditFilters">清空条件</button>
+                <button type="button" class="secondary-btn" :disabled="auditExporting || auditBusy" @click="exportAuditLogs"><Download :size="15" />{{ auditExporting ? "导出中" : "导出 CSV" }}</button>
+                <span class="muted">共 {{ auditFilters.total }} 条，当前第 {{ auditFilters.page }} / {{ auditFilters.pages || 1 }} 页</span>
+              </div>
+            </form>
+            <p v-if="auditError" class="error-text" role="alert">{{ auditError }}</p>
+            <div class="panel-heading audit-list-heading"><h3>{{ auditCategoryLabels[auditSelectedCategory] || "审计事件" }}</h3></div>
+            <div class="table-wrap" :aria-busy="auditBusy">
               <table class="data-table audit-table">
                 <thead><tr><th>时间</th><th>分类</th><th>操作人</th><th>动作</th><th>业务关联</th><th>结果</th><th>说明</th></tr></thead>
                 <tbody>
-                  <tr v-for="item in auditItems" :key="item.id" @click="auditSelected = item">
+                  <tr v-for="item in auditItems" :key="item.id" tabindex="0" @click="openAuditEvent(item)" @keydown.enter.prevent="openAuditEvent(item)" @keydown.space.prevent="openAuditEvent(item)">
                     <td>{{ fmtDate(item.created_at) }}</td>
-                    <td><span class="quality-tag">{{ auditCategoryLabels[item.category] || item.category }}</span></td>
+                    <td><span class="quality-tag">{{ auditCategoryName(item.category) }}</span></td>
                     <td>{{ item.actor }}</td>
                     <td><span class="task-code">{{ item.action }}</span></td>
-                    <td><strong v-if="item.order_id">订单 {{ item.order_id.slice(0, 10) }}</strong><small v-if="item.batch_no">批次 {{ item.batch_no }}</small><small v-if="item.rule_version">规则 {{ item.rule_version }}</small></td>
-                    <td><span class="status-pill" :class="item.risk_level === 'high' ? 'status-blocked' : 'status-done'">{{ item.risk_level === 'high' ? '高风险' : item.result }}</span></td>
+                    <td><strong v-if="item.order_no">订单 {{ item.order_no }}</strong><small v-if="item.batch_no">批次 {{ item.batch_no }}</small><small v-if="item.rule_version">规则 {{ item.rule_version }}</small></td>
+                    <td><span class="status-pill" :class="item.risk_level === 'high' ? 'status-blocked' : item.risk_level === 'warning' ? 'status-review' : 'status-done'">{{ item.risk_level === 'high' ? '高风险' : item.risk_level === 'warning' ? '预警' : auditValue(item.result, 'result') }}</span></td>
                     <td>{{ item.detail || "-" }}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <div v-if="!auditItems.length" class="empty-state"><ShieldCheck :size="28" /><span>暂无符合条件的审计事件</span></div>
-            <div class="audit-pagination"><button class="secondary-btn" :disabled="auditFilters.page <= 1" @click="auditPage(-1)">上一页</button><button class="secondary-btn" :disabled="auditFilters.pages && auditFilters.page >= auditFilters.pages" @click="auditPage(1)">下一页</button></div>
+            <div v-if="!auditItems.length" class="empty-state"><ShieldCheck :size="28" /><span>{{ auditBusy ? "加载中" : "暂无符合条件的审计事件" }}</span></div>
+            <div class="audit-pagination"><button class="secondary-btn" :disabled="auditBusy || auditFilters.page <= 1" @click="auditPage(-1)">上一页</button><button class="secondary-btn" :disabled="auditBusy || auditFilters.page >= Math.max(1, auditFilters.pages)" @click="auditPage(1)">下一页</button></div>
           </div>
-          <div v-if="auditSelected" class="drawer-scrim" @click.self="auditSelected = null"><aside class="order-drawer audit-drawer"><div class="drawer-head"><div><div class="eyebrow">AUDIT EVENT</div><h2>{{ auditSelected.action }}</h2></div><button class="icon-btn" @click="auditSelected = null"><X :size="18" /></button></div><div class="drawer-summary"><strong>{{ auditCategoryLabels[auditSelected.category] || auditSelected.category }}</strong><span>{{ fmtDate(auditSelected.created_at) }} · {{ auditSelected.actor }}</span><span>{{ auditSelected.detail || "无补充说明" }}</span></div><div class="drawer-section"><div class="drawer-section-title">业务关联</div><div class="state-grid"><div><small>对象</small><strong>{{ auditSelected.target_type }} / {{ auditSelected.target_id }}</strong></div><div><small>订单</small><strong>{{ auditSelected.order_id || "-" }}</strong></div><div><small>清算批次</small><strong>{{ auditSelected.batch_no || "-" }}</strong></div><div><small>规则版本</small><strong>{{ auditSelected.rule_version || "-" }}</strong></div><div><small>请求号</small><strong>{{ auditSelected.request_id || "-" }}</strong></div><div><small>风险级别</small><strong>{{ auditSelected.risk_level }}</strong></div></div></div><div class="drawer-section"><div class="drawer-section-title">变更前后摘要</div><pre class="audit-json">{{ JSON.stringify(auditSelected.before || {}, null, 2) }}
-{{ JSON.stringify(auditSelected.after || {}, null, 2) }}</pre></div></aside></div>
+          <div v-if="auditSelected" class="drawer-scrim" @click.self="closeAuditEvent" @keydown.esc.stop="closeAuditEvent">
+            <aside class="order-drawer audit-drawer" role="dialog" aria-modal="true" aria-label="审计事件详情" tabindex="-1">
+              <div class="drawer-head"><div><div class="eyebrow">AUDIT EVENT</div><h2>{{ auditSelected.action }}</h2></div><button class="icon-btn" title="关闭" aria-label="关闭审计详情" @click="closeAuditEvent"><X :size="18" /></button></div>
+              <div class="drawer-summary"><strong>{{ auditCategoryName(auditSelected.category) }}</strong><span>{{ fmtDate(auditSelected.created_at) }} · {{ auditSelected.actor }}</span><span>{{ auditSelected.detail || "-" }}</span></div>
+              <div class="drawer-section">
+                <div class="drawer-section-title">业务关联</div>
+                <div class="state-grid">
+                  <div><small>对象</small><strong>{{ auditSelected.target_type }} / {{ auditSelected.target_id }}</strong></div>
+                  <div><small>订单号</small><strong>{{ auditSelected.order_no || "-" }}</strong></div>
+                  <div><small>清算批次</small><strong>{{ auditSelected.batch_no || "-" }}</strong></div>
+                  <div><small>规则版本</small><strong>{{ auditSelected.rule_version || "-" }}</strong></div>
+                  <div><small>请求号</small><strong>{{ auditSelected.request_id || "-" }}</strong></div>
+                  <div><small>风险级别</small><strong>{{ auditValue(auditSelected.risk_level, 'risk_level') }}</strong></div>
+                </div>
+                <div class="action-list">
+                  <button v-if="auditCanNavigate('orders') && (auditSelected.order_id || auditSelected.order_no || auditSelected.target_type === 'order')" class="secondary-btn" :disabled="auditNavigating" @click="navigateAuditBusiness(auditSelected, 'orders')"><ExternalLink :size="15" />查看订单</button>
+                  <button v-if="auditCanNavigate('settlements') && auditSelected.batch_no" class="secondary-btn" :disabled="auditNavigating" @click="navigateAuditBusiness(auditSelected, 'settlements')"><ExternalLink :size="15" />查看清算批次</button>
+                </div>
+              </div>
+              <div class="drawer-section">
+                <div class="drawer-section-title">变更前后值</div>
+                <div v-if="auditChangeRows(auditSelected).length" class="table-wrap"><table class="data-table audit-change-table"><thead><tr><th>字段</th><th>变更前</th><th>变更后</th></tr></thead><tbody><tr v-for="row in auditChangeRows(auditSelected)" :key="row.key" :class="{ 'audit-field-changed': row.changed }"><th scope="row">{{ row.name }}</th><td><pre>{{ auditValue(row.before, row.key) }}</pre></td><td><pre>{{ auditValue(row.after, row.key) }}</pre></td></tr></tbody></table></div>
+                <p v-else class="muted">无字段变更</p>
+              </div>
+              <div class="drawer-section">
+                <div class="drawer-head"><div class="drawer-section-title">关联事件时间线</div><button class="icon-btn" title="刷新时间线" aria-label="刷新时间线" :disabled="auditTimelineBusy" @click="loadAuditTimeline(auditTimelinePage)"><RefreshCw :size="16" /></button></div>
+                <p v-if="auditTimelineError" class="error-text" role="alert">{{ auditTimelineError }}</p>
+                <p v-if="auditTimelineBusy" class="muted" role="status">加载中</p>
+                <ol v-else class="audit-event-timeline">
+                  <li v-for="event in auditTimeline" :key="event.id" :class="{ active: event.id === auditSelected.id }">
+                    <button class="audit-event-button" :aria-current="event.id === auditSelected.id ? 'true' : undefined" @click="auditSelected = event"><time>{{ fmtDate(event.created_at) }}</time><strong>{{ event.action }}</strong><span>{{ event.actor }} · {{ auditValue(event.result, 'result') }}</span><span v-if="event.order_no || event.batch_no">{{ event.order_no }}{{ event.order_no && event.batch_no ? ' · ' : '' }}{{ event.batch_no }}</span><span v-if="event.detail">{{ event.detail }}</span></button>
+                  </li>
+                </ol>
+                <div v-if="auditTimelineTotal" class="audit-pagination"><button class="secondary-btn" :disabled="auditTimelineBusy || auditTimelinePage <= 1" @click="loadAuditTimeline(auditTimelinePage - 1)">上一页</button><span class="muted">{{ auditTimelinePage }} / {{ Math.max(1, Math.ceil(auditTimelineTotal / auditTimelinePageSize)) }} · {{ auditTimelineTotal }} 条</span><button class="secondary-btn" :disabled="auditTimelineBusy || auditTimelinePage * auditTimelinePageSize >= auditTimelineTotal" @click="loadAuditTimeline(auditTimelinePage + 1)">下一页</button></div>
+              </div>
+            </aside>
+          </div>
         </template>
         <template v-else-if="activeView === 'users'"
           ><div class="page-heading">
