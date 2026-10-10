@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
+import { useNotificationStream } from "./useNotificationStream.js";
 import "./gateway-doc.css";
 import {
   Activity,
@@ -147,6 +148,9 @@ const enterpriseDepartments = ref([]);
 const enterpriseInvitations = ref([]);
 const myEnterpriseInvitations = ref([]);
 const notificationSummary = ref({ unread: 0, unacknowledged_urgent: 0 });
+const notificationPreview = ref(false);
+const notificationFocus = ref("");
+useNotificationStream(loadNotificationSummary, { token });
 const enterpriseManageModal = ref(null);
 const enterpriseManageReadOnly = ref(false);
 const enterpriseManageTab = ref("details");
@@ -458,10 +462,25 @@ async function loadNotificationSummary() {
   try { const { data } = await api.get('/notifications/summary'); notificationSummary.value = data; }
   catch { /* Keep the last count during temporary network failures. */ }
 }
+async function navigateNotification(view) {
+  if (!visibleNav.value.some(item => item.key === view)) {
+    notify("当前账号无权查看相关业务页面");
+    return;
+  }
+  activeView.value = view;
+  try { await loadViewData(view); }
+  catch { notify("相关业务信息暂时无法加载"); }
+}
+function openNotification(id = "") {
+  notificationFocus.value = id;
+  notificationPreview.value = false;
+  activeView.value = "messages";
+}
 function logout() {
   token.value = "";
   user.value = null;
   enterprise.value = null;
+  notificationSummary.value = { unread: 0, unacknowledged_urgent: 0 };
   localStorage.removeItem("market_token");
   delete api.defaults.headers.common.Authorization;
 }
@@ -2031,9 +2050,16 @@ onUnmounted(() => {
               placeholder="搜索订单、产品或企业"
             />
           </div>
-          <button class="icon-btn notification-btn" title="消息中心" @click="activeView = 'messages'">
+          <div class="notification-preview-anchor">
+          <button class="icon-btn notification-btn" title="消息中心" :aria-expanded="notificationPreview" @click="notificationPreview = !notificationPreview">
             <Bell :size="18" /><span v-if="notificationSummary.unread" class="notification-count">{{ notificationSummary.unread > 99 ? '99+' : notificationSummary.unread }}</span>
           </button>
+          <section v-if="notificationPreview" class="notification-preview" @keydown.esc="notificationPreview = false">
+            <div class="notification-preview-head"><strong>消息</strong><button class="text-btn" @click="openNotification()">全部消息</button><button class="icon-btn" title="关闭" @click="notificationPreview = false"><X :size="14" /></button></div>
+            <button v-for="item in notificationSummary.recent || []" :key="item.id" class="notification-preview-item" @click="openNotification(item.id)"><strong>{{ item.title }}</strong><small>{{ item.content }}</small><span>{{ item.status === 'unread' ? '未读' : '已读' }}</span></button>
+            <p v-if="!notificationSummary.recent?.length" class="muted">暂无消息</p>
+          </section>
+          </div>
           <div class="user-chip" role="button" tabindex="0" @click="showProfileContact = true">
             <div class="avatar">{{ user.name?.slice(0, 1) }}</div>
             <div class="user-chip-copy">
@@ -2052,7 +2078,7 @@ onUnmounted(() => {
           <button class="active" type="button">通知与角色</button
           ><button type="button" disabled>安全与审计</button>
         </div>
-        <template v-if="activeView === 'messages'"><MessageCenter @changed="loadNotificationSummary" /></template>
+        <template v-if="activeView === 'messages'"><MessageCenter :initial-id="notificationFocus" @changed="loadNotificationSummary" @navigate="navigateNotification" /></template>
         <template v-else-if="activeView === 'overview'"
           ><div class="page-heading">
             <div>

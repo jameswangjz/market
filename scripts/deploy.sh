@@ -45,4 +45,10 @@ kubectl -n "$NAMESPACE" rollout status deployment/market-apisix --timeout=240s
 kubectl -n "$NAMESPACE" rollout status deployment/market-minio --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/market-api --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/market-web --timeout=180s
+if [[ -f k8s/message-center.yaml ]]; then
+  sed "s#market-api:REPLACE_WITH_DEPLOYED_TAG#market-api:${IMAGE_TAG}#g" k8s/message-center.yaml > "$RENDERED_MANIFEST"
+  kubectl apply -f "$RENDERED_MANIFEST"
+  kubectl -n "$NAMESPACE" rollout status deployment/market-mailpit --timeout=240s
+  kubectl -n "$NAMESPACE" rollout status deployment/message-center-worker --timeout=180s
+fi
 kubectl -n "$NAMESPACE" get pods,svc -o wide

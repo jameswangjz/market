@@ -1399,12 +1399,177 @@ def db_session():
 def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = "", *, category: str = "", business_domain: str = "", tenant_id: str = "", order_id: str = "", batch_no: str = "", rule_version: str = "", request_id: str = "", risk_level: str = "normal", before: Any | None = None, after: Any | None = None):
     inferred = category or ("settlement" if target_type in {"settlement", "settlement_batch", "settlement_rule", "reconciliation"} or "settlement" in action else "payment_refund" if target_type in {"payment", "refund"} or "payment" in action or "refund" in action else "order" if target_type in {"order", "order_state"} or "order" in action else "product" if target_type in {"product", "product_review"} or "product" in action else "auth" if target_type in {"user", "membership", "identity"} or "login" in action or "register" in action else "ops")
     db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail, category=inferred, business_domain=business_domain, tenant_id=tenant_id, order_id=order_id, batch_no=batch_no, rule_version=rule_version, request_id=request_id, risk_level=risk_level, before_json=json.dumps(before or {}, ensure_ascii=False, default=str), after_json=json.dumps(after or {}, ensure_ascii=False, default=str)))
+    notify_settlement_event(db, action, target_type, target_id, order_id, batch_no, after)
 
 
-def notify_platform_role(db: Session, role: str, title: str, content: str, target_type: str, target_id: str) -> None:
+def notify_business_event(db: Session, title: str, content: str, target_type: str, target_id: str, *, event_key: str, category: str, tenant_id: str = "", recipient_ids: list[str] | tuple[str, ...] = (), enterprise_ids: list[str] | tuple[str, ...] = (), platform_roles: list[str] | tuple[str, ...] = (), severity: str = "important") -> None:
+    recipients = set(recipient_ids)
+    if enterprise_ids:
+        recipients.update(db.scalars(select(User.id).join(Membership, Membership.user_id == User.id).where(
+            Membership.enterprise_id.in_(enterprise_ids), Membership.status == "active",
+            Membership.role.in_(["super_admin", "enterprise_admin"]),
+            or_(User.platform_role == "", User.platform_role.is_(None)),
+        )).all())
+    if platform_roles:
+        recipients.update(db.scalars(select(User.id).where(User.platform_role.in_(platform_roles))).all())
+    recipients = db.scalars(select(User.id).where(User.id.in_(recipients), User.is_active.is_(True), User.activation_status == "active")).all() if recipients else []
+    if not recipients:
+        return
+    if len(event_key) > 180:
+        event_key = "business:" + hashlib.sha256(event_key.encode()).hexdigest()
+    message_center["create"](db, recipients, title, content, target_type, target_id,
+                             severity=severity, event_key=event_key, category=category, tenant_id=tenant_id)
+
+
+def notify_order_event(db: Session, order: Order, action: str, version: str, *, target_type: str = "order", target_id: str = "") -> None:
+    titles = {
+        "confirm_payment": "订单支付完成", "approve_refund": "订单退款处理中", "complete_refund": "订单退款完成",
+        "start_delivery": "订单开始交付", "submit_delivery": "订单待验收", "accept_delivery": "订单验收通过",
+        "reject_delivery": "订单交付退回整改", "mark_exception": "订单交付异常", "retry_delivery": "订单交付重试",
+        "confirm_order": "订单已完成", "delivery_succeeded": "订单待验收", "delivery_failed": "订单自动交付异常",
+    }
+    if action not in titles:
+        return
+    roles = ("super_admin", "platform_operator", "delivery_monitor") if action in {"mark_exception", "delivery_failed"} else ()
+    owners = [order.buyer_user_id] if order.buyer_user_id else []
+    if order.subscription_id:
+        subscription = db.get(SaaSSubscription, order.subscription_id)
+        if subscription and subscription.created_by:
+            owner = db.scalar(select(User.id).where(or_(User.id == subscription.created_by, User.email == subscription.created_by, User.phone == subscription.created_by)))
+            if owner:
+                owners.append(owner)
+    notify_business_event(db, titles[action], f"订单 {order.order_no}：{titles[action]}，请查看业务详情。", target_type, target_id or order.id,
+                          event_key=f"business:{target_type}:{target_id or order.id}:{action}:{version}", category="order",
+                          tenant_id=order.buyer_enterprise_id, recipient_ids=owners,
+                          enterprise_ids=[order.buyer_enterprise_id, order.provider_enterprise_id], platform_roles=roles)
+
+
+def notify_settlement_event(db: Session, action: str, target_type: str, target_id: str, order_id: str, batch_no: str, after: Any) -> None:
+    titles = {
+        "generate_settlement": "清算单已生成", "create_refund_negative_settlement": "退款清算单已生成",
+        "generate_settlement_batch": "清算单已生成", "adjust_settlement": "清算单已调整",
+        "create_settlement_adjustment_proposal": "清算调整待审核", "decide_settlement_adjustment_proposal": "清算调整审核完成",
+        "lock_settlement": "清算单已锁定", "create_settlement_batch": "清算批次已生成",
+        "confirm_settlement_batch": "清算批次已确认", "rollback_settlement_batch": "清算批次已回滚",
+        "pay_settlement_batch": "清算批次付款完成",
+        "create_settlement_correction": "清算更正待审核", "approve_settlement_correction": "清算更正已批准",
+        "reject_settlement_correction": "清算更正已驳回",
+    }
+    if action not in titles:
+        return
+    db.flush()
+    orders = [db.get(Order, order_id)] if order_id else []
+    if target_type == "settlement_batch":
+        orders = db.scalars(select(Order).join(Settlement, Settlement.order_id == Order.id).join(SettlementLine, SettlementLine.settlement_id == Settlement.id).join(SettlementBatch, SettlementBatch.id == SettlementLine.batch_id).where(SettlementBatch.batch_no == batch_no).distinct()).all()
+    orders = [order for order in orders if order]
+    version = str((after or {}).get("proposal_status") or (after or {}).get("status") or action)
+    if action in {"adjust_settlement", "create_settlement_adjustment_proposal", "decide_settlement_adjustment_proposal"}:
+        version = str((after or {}).get("proposal_id") or target_id) + ":" + now().isoformat()
+    key = f"business:{target_type}:{target_id}:{action}:{version}"
+    # Keep batch notifications tenant-specific; never copy audit snapshots or amounts.
+    enterprises = {eid for order in orders for eid in (order.buyer_enterprise_id, order.provider_enterprise_id) if eid}
+    for eid in sorted(enterprises):
+        owners = [order.buyer_user_id for order in orders if order.buyer_enterprise_id == eid and order.buyer_user_id]
+        notify_business_event(db, titles[action], "相关清算业务状态已更新，请查看业务详情。", target_type, target_id,
+                              event_key=f"{key}:{eid}", category="settlement", tenant_id=eid, recipient_ids=owners, enterprise_ids=[eid])
+    notify_business_event(db, titles[action], "清算业务状态已更新，请查看业务详情。", target_type, target_id,
+                          event_key=f"{key}:platform", category="settlement", platform_roles=("super_admin", "platform_operator", "finance_settlement"))
+
+
+def notify_platform_role(db: Session, role: str, title: str, content: str, target_type: str, target_id: str, *, event_key: str | None = None) -> None:
     roles = [role, "super_admin"] + (["product_manager"] if role == "business_reviewer" else [])
-    recipients = db.scalars(select(User.id).where(User.platform_role.in_(roles), User.is_active.is_(True))).all()
-    message_center["create"](db, recipients, title, content, target_type, target_id)
+    tenant_id = ""
+    if target_type == "product":
+        product = db.get(Product, target_id)
+        if not product:
+            return
+        tenant_id = product.enterprise_id
+        if event_key is None:
+            db.flush()
+            event_key = f"review:product:{product.id}:{product.status}:{role}:{product.updated_at.isoformat()}"
+    event_key = event_key or f"review:{target_type}:{target_id}:{role}:{now().isoformat()}"
+    notify_business_event(db, title, content, target_type, target_id, event_key=event_key, category="review", tenant_id=tenant_id, platform_roles=roles)
+
+
+def notification_scheduled_events(db: Session) -> dict[str, int | bool]:
+    """Stage periodic notifications; the worker owns commit and rollback."""
+    current = now()
+    horizon = current + timedelta(days=7)
+    summary: dict[str, int | bool] = {"saas_candidates": 0, "quota_candidates": 0, "redis_unavailable": False}
+    subscriptions = db.scalars(select(SaaSSubscription).where(
+        SaaSSubscription.status == "active", SaaSSubscription.expires_at.is_not(None), SaaSSubscription.expires_at <= horizon,
+    )).all()
+    for subscription in subscriptions:
+        expires_at = subscription.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        expired = expires_at <= current
+        state = "expired" if expired else "expiring"
+        owner = db.scalar(select(User.id).where(or_(User.id == subscription.created_by, User.email == subscription.created_by, User.phone == subscription.created_by))) if subscription.created_by else None
+        notify_business_event(db, "SaaS 订阅已到期" if expired else "SaaS 订阅即将到期",
+                              "当前订阅周期已到期，请查看续费状态。" if expired else "当前订阅将在七天内到期，请查看订阅详情。",
+                              "saas_subscription", subscription.id, event_key=f"saas:{subscription.id}:{state}:{expires_at.isoformat()}",
+                              category="system", tenant_id=subscription.enterprise_id, recipient_ids=[owner] if owner else [], enterprise_ids=[subscription.enterprise_id])
+        summary["saas_candidates"] += 1
+    credentials = db.scalars(select(ApiCredential).where(ApiCredential.status.in_(["active", "exhausted"]))).all()
+    if not credentials:
+        return summary
+    try:
+        client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://market-redis:6379/0"), decode_responses=True,
+                                      socket_connect_timeout=1, socket_timeout=1)
+    except (redis.RedisError, ValueError):
+        summary["redis_unavailable"] = True
+        return summary
+    try:
+        for credential in credentials:
+            if not credential.apisix_consumer_name:
+                continue
+            if credential.expires_at:
+                expires_at = credential.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at <= current:
+                    continue
+            route = db.get(ApiGatewayRoute, credential.route_id)
+            if not route or route.status != "active":
+                continue
+            # Match k8s/market-gateway-quota.lua (UTC periods, Redis database 0).
+            prefix = f"market:apisix:quota:"
+            suffix = f"{route.route_key}:{credential.apisix_consumer_name}"
+            day, month = current.strftime("%Y-%m-%d"), current.strftime("%Y-%m")
+            try:
+                metadata = client.hgetall(f"market:apisix:credential:{credential.apisix_consumer_name}")
+                counts = client.mget([f"{prefix}day:{suffix}:{day}", f"{prefix}month:{suffix}:{month}", f"{prefix}total:{suffix}"])
+            except redis.RedisError:
+                summary["redis_unavailable"] = True
+                break
+            if metadata.get("status", "active") != "active":
+                continue
+            defaults = (credential.daily_quota if credential.daily_quota is not None else route.daily_quota,
+                        credential.monthly_quota if credential.monthly_quota is not None else route.monthly_quota,
+                        credential.total_quota)
+            owner = None
+            for kind, period, raw_count, default in zip(("day", "month", "total"), (day, month, "total"), counts, defaults):
+                try:
+                    limit = int(metadata.get({"day": "daily_quota", "month": "monthly_quota", "total": "total_quota"}[kind], default) or 0)
+                    used = int(raw_count or 0)
+                except (TypeError, ValueError):
+                    continue
+                # Lua rolls back rejected INCRs, so the durable exhausted count is == limit.
+                if limit <= 0 or used < limit:
+                    continue
+                if credential.created_by and owner is None:
+                    owner = db.scalar(select(User.id).where(or_(User.id == credential.created_by, User.email == credential.created_by, User.phone == credential.created_by)))
+                notify_business_event(db, "API 调用额度已耗尽", {"day": "当前日调用额度已耗尽。", "month": "当前月调用额度已耗尽。", "total": "当前总调用额度已耗尽。"}[kind],
+                                      "api_credential", credential.id, event_key=f"quota:{credential.id}:{kind}:{period}:{limit}", category="system",
+                                      tenant_id=credential.enterprise_id, recipient_ids=[owner] if owner else [], enterprise_ids=[credential.enterprise_id])
+                summary["quota_candidates"] += 1
+    finally:
+        try:
+            client.close()
+        except redis.RedisError:
+            pass
+    return summary
 
 
 def require_product_review_role(user: User, stage: str) -> None:
@@ -2305,6 +2470,10 @@ def submit_personal_verification(body: PersonalVerificationBody, user: User = De
     item = IdentityVerification(user_id=user.id, id_name=body.id_name, id_number=body.id_number, id_front_file_id=body.id_front_file_id, id_back_file_id=body.id_back_file_id, phone=body.phone, enterprise_id=body.enterprise_id, enterprise_role=body.enterprise_role, status="pending_review")
     user.verified_status = "pending_review"
     db.add(item)
+    db.flush()
+    notify_business_event(db, "个人实名认证待审核", "有新的个人实名认证申请待审核。", "identity_verification", item.id,
+                          event_key=f"identity:{item.id}:pending_review:{item.created_at.isoformat()}", category="review",
+                          platform_roles=("super_admin", "platform_operator"))
     audit(db, user.email or user.phone or user.id, "submit_personal_verification", "identity_verification", item.id)
     db.commit()
     db.refresh(item)
@@ -2337,6 +2506,9 @@ def update_personal_verification(verification_id: str, body: PersonalVerificatio
     item.reviewed_by = ""
     item.reviewed_at = None
     user.verified_status = "pending_review"
+    notify_business_event(db, "个人实名认证待审核", "个人实名认证申请已重新提交，待审核。", "identity_verification", item.id,
+                          event_key=f"identity:{item.id}:pending_review:{now().isoformat()}", category="review",
+                          platform_roles=("super_admin", "platform_operator"))
     audit(db, user.email or user.phone or user.id, "resubmit_personal_verification", "identity_verification", item.id)
     db.commit()
     db.refresh(item)
@@ -2369,6 +2541,8 @@ def review_personal_verification(verification_id: str, body: VerificationReviewB
     applicant = db.get(User, item.user_id)
     if applicant:
         applicant.verified_status = item.status
+    notify_business_event(db, "个人实名认证审核结果", "个人实名认证审核已通过。" if item.status == "verified" else "个人实名认证审核未通过，请查看申请详情。", "identity_verification", item.id,
+                          event_key=f"identity:{item.id}:{item.status}:{item.reviewed_at.isoformat()}", category="review", recipient_ids=[item.user_id])
     audit(db, user.email or user.phone or user.id, "review_personal_verification", "identity_verification", item.id, item.review_comment)
     db.commit()
     return personal_verification_out(item)
@@ -2403,7 +2577,11 @@ def submit_enterprise_verification(body: EnterpriseVerificationBody, user: User 
         db.add(enterprise)
         db.flush()
         db.add(Membership(user_id=user.id, enterprise_id=enterprise.id, role="super_admin", business_roles="provider,user,service_provider", status="active", joined_at=now()))
-    audit(db, user.email or user.phone or user.id, "submit_enterprise_verification", "enterprise", enterprise.id, enterprise.name)
+    db.flush()
+    notify_business_event(db, "企业实名认证待审核", "有新的企业实名认证申请待审核。", "enterprise", enterprise.id,
+                          event_key=f"enterprise:{enterprise.id}:pending_review:{now().isoformat()}", category="review", tenant_id=enterprise.id,
+                          platform_roles=("super_admin", "platform_operator"))
+    audit(db, user.email or user.phone or user.id, "submit_enterprise_verification", "enterprise", enterprise.id, enterprise.name, after={"applicant_user_id": user.id})
     db.commit()
     return {"id": enterprise.id, "name": enterprise.name, "credit_code": enterprise.credit_code, "enterprise_type": enterprise.enterprise_type, "legal_representative": enterprise.legal_representative, "registered_capital": enterprise.registered_capital, "establishment_date": enterprise.establishment_date, "business_address": enterprise.business_address, "business_scope": enterprise.business_scope, "verification_status": enterprise.verification_status}
 
@@ -2434,6 +2612,11 @@ def review_enterprise_verification(enterprise_id: str, body: VerificationReviewB
     enterprise.verification_status = "verified" if body.decision == "approve" else "rejected"
     enterprise.verified_by = user.email or user.phone or user.id
     enterprise.verified_at = now()
+    submission = db.scalar(select(AuditLog).where(AuditLog.action == "submit_enterprise_verification", AuditLog.target_id == enterprise.id).order_by(AuditLog.created_at.desc()))
+    applicant_id = json.loads(submission.after_json or "{}").get("applicant_user_id", "") if submission else ""
+    notify_business_event(db, "企业实名认证审核结果", "企业实名认证审核已通过。" if enterprise.verification_status == "verified" else "企业实名认证审核未通过，请查看申请详情。", "enterprise", enterprise.id,
+                          event_key=f"enterprise:{enterprise.id}:{enterprise.verification_status}:{enterprise.verified_at.isoformat()}", category="review", tenant_id=enterprise.id,
+                          recipient_ids=[applicant_id] if applicant_id else [], enterprise_ids=[enterprise.id])
     audit(db, user.email or user.phone or user.id, "review_enterprise_verification", "enterprise", enterprise.id, body.comment)
     db.commit()
     return {"id": enterprise.id, "verification_status": enterprise.verification_status, "verified_by": enterprise.verified_by, "verified_at": enterprise.verified_at}
@@ -3217,16 +3400,18 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
         product.status = "rejected"
     elif stage == "business":
         product.status = "quality_review"
-        notify_platform_role(db, "quality_reviewer", "产品待质量审核", f"产品“{product.name}”已通过业务审核，请进行质量审核。", "product", product.id)
     elif stage == "quality":
         product.status = "security_review"
         security_scan = run_product_security_scan(product, db, actor)
-        notify_platform_role(db, "security_compliance", "产品待安全审核", f"产品“{product.name}”已通过质量审核，请查看病毒和数据安全扫描报告。", "product", product.id)
     elif stage == "operation":
         product.status = "published"
     product.review_comment = body.comment.strip() or ("已通过，进入" + {"business": "质量审核", "quality": "安全审核", "operation": "发布"}[stage])
     product.reviewed_by = actor
     product.reviewed_at = now()
+    if body.decision == "approve" and stage == "business":
+        notify_platform_role(db, "quality_reviewer", "产品待质量审核", f"产品“{product.name}”已通过业务审核，请进行质量审核。", "product", product.id)
+    elif body.decision == "approve" and stage == "quality":
+        notify_platform_role(db, "security_compliance", "产品待安全审核", f"产品“{product.name}”已通过质量审核，请查看病毒和数据安全扫描报告。", "product", product.id)
     if body.decision == "approve" and stage == "operation" and product.product_type == "saas":
         config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if not config:
@@ -4409,6 +4594,8 @@ def add_saas_order(db: Session, subscription: SaaSSubscription, product: Product
     db.add(order)
     db.flush()
     db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid"))
+    if paid and business_type != "downgrade":
+        notify_order_event(db, order, "confirm_payment", "paid")
     return order
 
 
@@ -4509,6 +4696,14 @@ def subscription_context(subscription_id: str, user: User, db: Session) -> tuple
 @app.post("/api/saas-subscriptions/{subscription_id}/renew")
 def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, version, config = subscription_context(subscription_id, user, db)
+    expires_at = subscription.expires_at
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if subscription.status == "active" and expires_at and expires_at <= now():
+        owner = db.scalar(select(User.id).where(or_(User.id == subscription.created_by, User.email == subscription.created_by, User.phone == subscription.created_by))) if subscription.created_by else None
+        notify_business_event(db, "SaaS 订阅已到期", "当前订阅周期已到期，请查看续费状态。", "saas_subscription", subscription.id,
+                              event_key=f"saas:{subscription.id}:expired:{expires_at.isoformat()}", category="system", tenant_id=subscription.enterprise_id,
+                              recipient_ids=[owner] if owner else [], enterprise_ids=[subscription.enterprise_id])
     amount = saas_cycle_price(version, body.billing_cycle)
     result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}")
     if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
@@ -4543,6 +4738,7 @@ def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User =
     order.refunded_amount = refund
     order.payment_status = "refunded"
     subscription.status = "active"
+    notify_order_event(db, order, "complete_refund", "refunded")
     db.commit()
     return {"change_type": "downgrade", "refund_amount": float(refund), "order_id": order.id, "refunded": True, "provider_result": result, "subscription": saas_subscription_out(subscription, target)}
 
@@ -4847,6 +5043,14 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
                 task.status = "retrying" if task.delivery_mode == "automatic" else "preparing"
                 task.next_retry_at = now() if task.delivery_mode == "automatic" else None
                 task.last_error = ""
+    db.flush()
+    event_version = now().isoformat()
+    if body.action == "confirm_payment":
+        event_version = "paid"
+    elif body.action in {"approve_refund", "complete_refund"}:
+        latest_refund = db.scalar(select(Refund).where(Refund.order_id == order.id).order_by(Refund.created_at.desc()))
+        event_version = f"{latest_refund.id}:{latest_refund.status}" if latest_refund else event_version
+    notify_order_event(db, order, body.action, event_version)
     audit(db, user.email, body.action, "order", order.id, body.reason)
     db.commit()
     return order_out(order)
@@ -4883,6 +5087,8 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
             order.delivery_status = "exception"
             order.main_status = "fulfilling"
         audit(db, user.email, "delivery_failed", "delivery_task", task.id, task.last_error, category="delivery", business_domain="delivery", order_id=order.id, risk_level="warning" if task.status != "exception" else "high", after={"retry_count": task.retry_count, "status": task.status, "next_retry_at": task.next_retry_at})
+    event_version = f"{task.status}:{task.retry_count}" + (f":{now().isoformat()}" if body.success else "")
+    notify_order_event(db, order, "delivery_succeeded" if body.success else "delivery_failed", event_version, target_type="delivery_task", target_id=task.id)
     db.commit()
     return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count, "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at, "sla_due_at": task.sla_due_at}, "order": order_out(order)}
 
@@ -5580,6 +5786,7 @@ def create_settlement_correction(settlement_id: str, body: SettlementCorrectionB
         raise HTTPException(400, "退款金额不能超过清算净额")
     correction = SettlementCorrection(settlement_id=settlement.id, order_id=settlement.order_id, correction_type=body.correction_type, amount=body.amount, reason=body.reason, source_ref=body.source_ref, recovery_mode=body.recovery_mode, status="pending", created_by=user.email or user.name)
     db.add(correction)
+    db.flush()
     audit(db, user.email, "create_settlement_correction", "settlement_correction", correction.id, body.reason, category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, after={"type": body.correction_type, "amount": body.amount, "recovery_mode": body.recovery_mode}, risk_level="high" if body.correction_type in {"refund", "reversal"} else "normal")
     db.commit()
     db.refresh(correction)
@@ -6027,6 +6234,11 @@ def evaluate_sla(user: User = Depends(current_user), db: Session = Depends(db_se
                            delivery_count=delivery_count, delivery_on_time=on_time, delivery_compliance=delivery_compliance,
                            status=status, breach_reason="；".join(reasons or warning_reasons))
         db.add(result)
+        db.flush()
+        if status in {"warning", "breached"}:
+            notify_business_event(db, "SLA 服务异常" if status == "breached" else "SLA 服务预警", "服务等级考核发现异常，请查看考核结果。", "sla_result", result.id,
+                                  event_key=f"sla:{result.id}:{status}:{end.isoformat()}", category="system",
+                                  platform_roles=("super_admin", "platform_operator", "delivery_monitor"))
         created.append(result)
         audit(db, user.email, "evaluate_sla", "sla_result", result.id, f"SLA 考核：{profile.name} / {status}", category="sla", business_domain="sla", risk_level="high" if status == "breached" else "normal")
     db.commit()

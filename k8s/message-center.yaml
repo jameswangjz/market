@@ -1,0 +1,214 @@
+# Replace both image placeholders with the exact deployed API image tag.
+# Scripts are mounted because the existing backend image only copies app/.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: message-center-scripts
+  namespace: market
+data:
+  message_center_worker.py: |
+    import importlib
+    import logging
+    import os
+    import signal
+    import threading
+    import time
+    from pathlib import Path
+
+    interval = float(os.environ.get('MESSAGE_CENTER_WORKER_INTERVAL', '2'))
+    if not 0 < interval <= 60:
+        raise ValueError('MESSAGE_CENTER_WORKER_INTERVAL must be in (0, 60]')
+    batch_size = int(os.environ.get('MESSAGE_CENTER_WORKER_BATCH_SIZE', '50'))
+    cycle_seconds = float(os.environ.get('MESSAGE_CENTER_WORKER_CYCLE_SECONDS', '15'))
+    if not 1 <= batch_size <= 1000 or not 0 < cycle_seconds <= 60:
+        raise ValueError('Worker batch size/time budget is out of range')
+    os.environ['MESSAGE_CENTER_DISABLE_BACKGROUND'] = 'true'
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    center = importlib.import_module('app.main').message_center
+    process = center['process_once']
+    scheduled_scan = center.get('scheduled_scan')
+    next_scan = 0.0
+    stopped = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stopped.set())
+    heartbeat = Path('/tmp/message-center-worker-heartbeat')
+    while not stopped.is_set():
+        started = time.monotonic()
+        if callable(scheduled_scan) and started >= next_scan:
+            next_scan = started + 60
+            try:
+                scheduled_scan()
+            except Exception:
+                logging.exception('Scheduled notification scan failed; dispatch continues')
+        try:
+            processed = 0
+            for _ in range(batch_size):
+                if stopped.is_set() or time.monotonic() - started >= cycle_seconds:
+                    break
+                result = process()
+                heartbeat.touch()
+                if not result:
+                    break
+                processed += 1
+            if processed:
+                logging.info('Notification dispatch: %d jobs', processed)
+        except Exception:
+            logging.exception('Notification dispatch failed; retrying next cycle')
+        stopped.wait(max(0, interval - (time.monotonic() - started)))
+  message_center_cleanup.py: |
+    import importlib
+    import logging
+    import os
+
+    os.environ['MESSAGE_CENTER_DISABLE_BACKGROUND'] = 'true'
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    center = importlib.import_module('app.main').message_center
+    logging.info('Notification retention cleanup: %s', center['cleanup']())
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: message-center-worker
+  namespace: market
+spec:
+  replicas: 2
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app: message-center-worker}
+  template:
+    metadata:
+      labels: {app: message-center-worker}
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: worker
+          image: market-api:REPLACE_WITH_DEPLOYED_TAG
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: [python, /app/scripts/message_center_worker.py]
+          envFrom:
+            - configMapRef: {name: market-config}
+          env:
+            - {name: PYTHONPATH, value: /app}
+            - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+            - {name: MESSAGE_CENTER_WORKER_INTERVAL, value: '2'}
+            - {name: MESSAGE_CENTER_WORKER_BATCH_SIZE, value: '50'}
+            - {name: MESSAGE_CENTER_WORKER_CYCLE_SECONDS, value: '15'}
+            - {name: NOTIFICATION_SMTP_HOST, value: market-mailpit}
+            - {name: NOTIFICATION_SMTP_PORT, value: '1025'}
+            - {name: NOTIFICATION_SMTP_FROM, value: notifications@example.invalid}
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+            - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
+            - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          startupProbe:
+            exec:
+              command: [python, -c, "from pathlib import Path; assert Path('/tmp/message-center-worker-heartbeat').exists()"]
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert time.time()-Path('/tmp/message-center-worker-heartbeat').stat().st_mtime < 90"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert time.time()-Path('/tmp/message-center-worker-heartbeat').stat().st_mtime < 180"]
+            periodSeconds: 20
+            failureThreshold: 3
+          volumeMounts:
+            - {name: scripts, mountPath: /app/scripts, readOnly: true}
+      volumes:
+        - name: scripts
+          configMap: {name: message-center-scripts}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: message-center-cleanup
+  namespace: market
+spec:
+  schedule: '23 3 * * *'
+  timeZone: Etc/UTC
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cleanup
+              image: market-api:REPLACE_WITH_DEPLOYED_TAG
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command: [python, /app/scripts/message_center_cleanup.py]
+              envFrom:
+                - configMapRef: {name: market-config}
+              env:
+                - {name: PYTHONPATH, value: /app}
+                - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+                - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+                - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
+                - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: '1', memory: 512Mi}
+              volumeMounts:
+                - {name: scripts, mountPath: /app/scripts, readOnly: true}
+          volumes:
+            - name: scripts
+              configMap: {name: message-center-scripts}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-mailpit
+  namespace: market
+  labels: {app: market-mailpit}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: market-mailpit}
+  template:
+    metadata:
+      labels: {app: market-mailpit}
+    spec:
+      containers:
+        - name: mailpit
+          image: axllent/mailpit:v1.21.8
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: smtp, containerPort: 1025}
+            - {name: http, containerPort: 8025}
+          env:
+            - {name: MP_MAX_MESSAGES, value: '500'}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /livez, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: market-mailpit
+  namespace: market
+spec:
+  type: ClusterIP
+  selector: {app: market-mailpit}
+  ports:
+    - {name: smtp, port: 1025, targetPort: smtp}
+    - {name: http, port: 8025, targetPort: http}
