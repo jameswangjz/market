@@ -3,6 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
+import ActionDialog from "./ActionDialog.vue";
+import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
 import "./gateway-doc.css";
@@ -46,6 +48,11 @@ import {
 } from "lucide-vue-next";
 
 const api = axios.create({ baseURL: "/api" });
+const actionDialog = ref(null);
+const dialogs = createDialogController(actionDialog);
+const promptDialog = dialogs.prompt;
+const confirmDialog = dialogs.confirm;
+const productReviewSubmitting = ref(false);
 const token = ref(localStorage.getItem("market_token") || "");
 const user = ref(null);
 const enterprise = ref(null);
@@ -769,7 +776,7 @@ async function acceptEnterpriseInvitation(item) {
   try { await api.post(`/enterprise/invitations/${item.token}/accept`); notify(`已加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "接受邀请失败"); }
 }
 async function rejectEnterpriseInvitation(item) {
-  if (!window.confirm(`确认拒绝加入企业“${item.enterprise_name}”吗？`)) return;
+  if (!await confirmDialog(`确认拒绝加入企业“${item.enterprise_name}”吗？`)) return;
   try { await api.post(`/enterprise/invitations/${item.id}/reject`); notify(`已拒绝加入企业：${item.enterprise_name}`); await loadViewData("users"); } catch (error) { notify(error.response?.data?.detail || "拒绝邀请失败"); }
 }
 async function createDepartment() {
@@ -792,7 +799,7 @@ async function updateMemberStatus(item, action) {
   const labels = { disable: "禁用", enable: "解禁", delete: "删除" };
   const membership = item.membership_id ? item : managedEnterpriseMembership(item);
   if (!membership) return notify("未找到该用户在当前企业中的成员关系");
-  if (action === "delete" && !window.confirm(`确认将用户“${item.name || "该成员"}”标记为已删除吗？删除后不能登录，也不能获得应用访问权限。`)) return;
+  if (action === "delete" && !await confirmDialog(`确认将用户“${item.name || "该成员"}”标记为已删除吗？删除后不能登录，也不能获得应用访问权限。`)) return;
   try {
     await api.patch(`/enterprise/members/${membership.membership_id}/status`, { action });
     notify(`成员已${labels[action]}`);
@@ -810,7 +817,7 @@ function canManageMemberAccount(item) {
 async function transferEnterpriseSuperAdmin(item) {
   const membership = managedEnterpriseMembership(item);
   if (!membership) return notify("未找到该用户在当前企业中的成员关系");
-  if (!window.confirm(`确认将企业超级管理员转移给“${item.name}”吗？当前账号将降为企业普通用户。`)) return;
+  if (!await confirmDialog(`确认将企业超级管理员转移给“${item.name}”吗？当前账号将降为企业普通用户。`)) return;
   try {
     await api.post(`/enterprise/${enterprise.value.id}/transfer-super-admin`, { target_membership_id: membership.membership_id });
     notify("企业超级管理员已转移");
@@ -819,7 +826,7 @@ async function transferEnterpriseSuperAdmin(item) {
   } catch (error) { notify(error.response?.data?.detail || "企业超级管理员转移失败"); }
 }
 async function deleteDepartment(item) {
-  if (!window.confirm(`确认删除部门“${item.name}”吗？`)) return;
+  if (!await confirmDialog(`确认删除部门“${item.name}”吗？`)) return;
   try { await api.delete(`/enterprise/departments/${item.id}`); notify("部门已删除"); await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "部门删除失败"); }
 }
 async function loadEnterpriseManagement() {
@@ -1107,7 +1114,7 @@ async function publishGatewayConfig() {
   }
 }
 async function rollbackGatewayConfig() {
-  if (!gatewaySelected.value || !window.confirm("确认回滚到上一稳定网关配置吗？")) return;
+  if (!gatewaySelected.value || !await confirmDialog("确认回滚到上一稳定网关配置吗？")) return;
   try {
     await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/rollback`,
@@ -1206,7 +1213,7 @@ async function saasOrderAction(action) {
   if (!id) return;
   try {
     if (action === "renew") {
-      const cycle = window.prompt(
+      const cycle = await promptDialog(
         "续费周期：monthly、quarterly、annual、perpetual",
         "annual",
       );
@@ -1215,9 +1222,9 @@ async function saasOrderAction(action) {
         billing_cycle: cycle,
       });
     } else if (action === "change") {
-      const versionId = window.prompt("请输入目标 SaaS 版本 ID");
+      const versionId = await promptDialog("请输入目标 SaaS 版本 ID");
       if (!versionId) return;
-      const cycle = window.prompt(
+      const cycle = await promptDialog(
         "计费周期：monthly、quarterly、annual、perpetual",
         selectedOrder.value.order.billing_cycle || "annual",
       );
@@ -1239,9 +1246,9 @@ async function saasOrderAction(action) {
 async function saasSyncUser() {
   const id = selectedOrder.value?.order?.subscription_id;
   if (!id) return;
-  const userId = window.prompt("请输入企业成员用户 ID");
+  const userId = await promptDialog("请输入企业成员用户 ID");
   if (!userId) return;
-  const departmentId = window.prompt("请输入平台部门 ID（可留空）", "") || "";
+  const departmentId = await promptDialog("请输入平台部门 ID（可留空）", "") || "";
   try {
     await api.post(`/saas-subscriptions/${id}/users`, {
       user_id: userId,
@@ -1267,9 +1274,9 @@ async function saasRemoveUser(item) {
 async function saasSyncDepartment() {
   const id = selectedOrder.value?.order?.subscription_id;
   if (!id) return;
-  const name = window.prompt("请输入部门名称");
+  const name = await promptDialog("请输入部门名称");
   if (!name) return;
-  const parentId = window.prompt("请输入父部门 ID（可留空）", "") || "";
+  const parentId = await promptDialog("请输入父部门 ID（可留空）", "") || "";
   try {
     await api.post(`/saas-subscriptions/${id}/departments`, {
       name,
@@ -1311,7 +1318,7 @@ async function revokeOrderApiCredential(item) {
   const order = selectedOrder.value?.order;
   if (
     !order ||
-    !window.confirm(
+    !await confirmDialog(
       `确认停用凭据 ${item.key_prefix}？停用后将立即无法调用 API。`,
     )
   )
@@ -1328,7 +1335,7 @@ async function regenerateOrderApiCredential(item) {
   const order = selectedOrder.value?.order;
   if (
     !order ||
-    !window.confirm(`确认重新生成凭据 ${item.key_prefix}？旧凭据将立即失效。`)
+    !await confirmDialog(`确认重新生成凭据 ${item.key_prefix}？旧凭据将立即失效。`)
   )
     return;
   try {
@@ -1492,20 +1499,29 @@ function openSecurityReportFile(file, reportType) {
   };
 }
 async function reviewProductFromDetail(decision) {
-  const product = productForm.value;
-  if (product.status === "security_review") {
-    const comment = window.prompt(decision === "approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", decision === "approve" ? "安全审核通过" : "");
-    if (!comment) return;
-    await api.post(`/products/${product.id}/security-review`, { decision, comment });
-  } else {
-    const comment = window.prompt(decision === "approve" ? "请输入审核意见" : "请输入驳回原因", decision === "approve" ? "审核通过" : "");
-    if (!comment) return;
-    await api.post(`/products/${product.id}/review`, { decision, comment });
+  if (productReviewSubmitting.value) return;
+  const product = { ...productForm.value };
+  if (!canReviewProduct(product)) return;
+  productReviewSubmitting.value = true;
+  try {
+    const approved = decision === "approve";
+    const comment = await promptDialog(`产品：${product.name}`, approved ? "审核通过" : "", {
+      title: approved ? "审核通过" : "审核拒绝", label: approved ? "审核意见" : "拒绝原因",
+      multiline: true, required: true, requiredMessage: approved ? "请填写审核意见" : "拒绝时必须填写原因",
+      confirmText: approved ? "确认通过" : "确认拒绝", danger: !approved,
+    });
+    if (comment === null) return;
+    const endpoint = product.status === "security_review" ? "security-review" : "review";
+    await api.post(`/products/${product.id}/${endpoint}`, { decision, comment });
+    showProductForm.value = false;
+    productReviewMode.value = false;
+    notify(approved ? "审核已通过" : "产品已驳回");
+    await loadViewData("products");
+  } catch (error) {
+    notify(error.response?.data?.detail || "审核提交失败，请重试");
+  } finally {
+    productReviewSubmitting.value = false;
   }
-  showProductForm.value = false;
-  productReviewMode.value = false;
-  notify(decision === "approve" ? "审核已通过" : "产品已驳回");
-  await loadViewData("products");
 }
 async function saveProductEdit() {
   if (productSaving.value || !selectedProductId.value || productReadOnlyMode.value) return;
@@ -1575,11 +1591,11 @@ function canReviewProduct(product) {
 async function productAction(product, action) {
   try {
     if (action === "unpublish") {
-      const reason = window.prompt("请输入下架原因", "产品提供方主动下架");
+      const reason = await promptDialog("请输入下架原因", "产品提供方主动下架");
       if (!reason) return;
       await api.post(`/products/${product.id}/unpublish`, { reason });
     } else if (action === "withdraw") {
-      const reason = window.prompt("请输入撤回原因", "企业管理员撤回审核");
+      const reason = await promptDialog("请输入撤回原因", "企业管理员撤回审核");
       if (!reason) return;
       await api.post(`/products/${product.id}/withdraw`, { reason });
     } else if (action === "security_check") {
@@ -1592,19 +1608,19 @@ async function productAction(product, action) {
       securityReport.value = data.security_report;
       return;
     } else if (action === "security_approve" || action === "security_reject") {
-      let comment = window.prompt(action === "security_approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", action === "security_approve" ? "安全审核通过" : "");
+      let comment = await promptDialog(action === "security_approve" ? "请输入安全审核意见" : "请输入安全审核驳回原因", action === "security_approve" ? "安全审核通过" : "");
       if (!comment) return;
       await api.post(`/products/${product.id}/security-review`, { decision: action === "security_approve" ? "approve" : "reject", comment });
     } else if (action === "review") {
-      const comment = window.prompt("请输入审核意见", "审核通过");
+      const comment = await promptDialog("请输入审核意见", "审核通过");
       if (comment === null) return;
       await api.post(`/products/${product.id}/review`, {
         decision: "approve",
         comment,
       });
     } else if (action === "reject") {
-      const comment = window.prompt("请输入驳回原因", "");
-      if (!comment) return notify("驳回时必须填写原因");
+      const comment = await promptDialog("请输入驳回原因", "", { title: "审核拒绝", label: "拒绝原因", required: true, multiline: true, confirmText: "确认拒绝", danger: true });
+      if (!comment?.trim()) return notify("驳回时必须填写原因");
       await api.post(`/products/${product.id}/review`, {
         decision: "reject",
         comment,
@@ -1720,7 +1736,7 @@ async function adjustSettlement() {
   }
 }
 async function lockSettlement(item) {
-  if (!window.confirm("锁定后不能直接调整，确认锁定该清算单吗？")) return;
+  if (!await confirmDialog("锁定后不能直接调整，确认锁定该清算单吗？")) return;
   try {
     await api.post(`/settlements/${item.id}/lock`);
     notify("清算单已锁定");
@@ -1730,7 +1746,7 @@ async function lockSettlement(item) {
   }
 }
 async function decideSettlementProposal(proposal, decision) {
-  const comment = window.prompt(decision === "approve" ? "请输入提案确认意见" : "请输入提案拒绝原因", "")
+  const comment = await promptDialog(decision === "approve" ? "请输入提案确认意见" : "请输入提案拒绝原因", "")
   if (comment === null) return;
   try {
     await api.post(`/settlement-proposals/${proposal.id}/decision`, { decision, comment });
@@ -1770,7 +1786,7 @@ async function simulateSettlementRule(rule) {
   }
 }
 async function generateSettlementBatch() {
-  const month = window.prompt("请输入要清算的自然月（格式 YYYY-MM）", settlementBatchMonth.value);
+  const month = await promptDialog("请输入要清算的自然月（格式 YYYY-MM）", settlementBatchMonth.value);
   if (month === null) return;
   if (!/^[0-9]{4}-[0-9]{2}$/.test(month)) return notify("月份格式应为 YYYY-MM");
   settlementBatchMonth.value = month;
@@ -1785,7 +1801,7 @@ async function generateSettlementBatch() {
     await loadViewData("settlements");
   } catch (error) {
     if (error.response?.status === 409 && error.response?.data?.detail?.includes("未完成清算批次")) {
-      if (!window.confirm(`${month} 已存在未完成清算批次，是否作废原批次并重新生成？`)) return;
+      if (!await confirmDialog(`${month} 已存在未完成清算批次，是否作废原批次并重新生成？`)) return;
       try {
         await api.post("/settlement-batches", { cycle: "monthly", period_start: start, period_end: end, rule_id: ruleId, rebuild: true, idempotency_key: `monthly:${month}:rebuild:${Date.now()}` });
         notify(`${month} 原清算批次已作废并重新生成`);
@@ -1809,7 +1825,7 @@ async function batchAction(batch, action) {
   }
 }
 async function closeReconciliation(item) {
-  const resolution = window.prompt("请输入差异关闭依据", "已完成支付流水核对");
+  const resolution = await promptDialog("请输入差异关闭依据", "已完成支付流水核对");
   if (!resolution) return;
   try {
     await api.post(`/settlement-reconciliations/${item.id}/close`, { resolution });
@@ -1820,9 +1836,9 @@ async function closeReconciliation(item) {
   }
 }
 async function createCorrection(item) {
-  const amount = window.prompt("请输入冲正/追回金额", "0");
+  const amount = await promptDialog("请输入冲正/追回金额", "0");
   if (!amount || Number.isNaN(Number(amount)) || Number(amount) <= 0) return;
-  const reason = window.prompt("请输入调整原因", "退款后清算冲正");
+  const reason = await promptDialog("请输入调整原因", "退款后清算冲正");
   if (!reason) return;
   try {
     await api.post(`/settlements/${item.id}/corrections`, { correction_type: "reversal", amount: Number(amount), reason, recovery_mode: "future_offset" });
@@ -1859,10 +1875,10 @@ async function exportSettlementReport(kind = "details") {
   }
 }
 async function createMeasurement() {
-  const orderId = window.prompt("请输入订单 ID", orders.value[0]?.id || "");
+  const orderId = await promptDialog("请输入订单 ID", orders.value[0]?.id || "");
   if (!orderId) return;
-  const measurementType = window.prompt("计量类型，如 api_call、download、training_hours", "api_call");
-  const quantity = window.prompt("计量数量", "1");
+  const measurementType = await promptDialog("计量类型，如 api_call、download、training_hours", "api_call");
+  const quantity = await promptDialog("计量数量", "1");
   if (!measurementType || !quantity || Number(quantity) < 0) return;
   try {
     await api.post("/settlement-measurements", { order_id: orderId, measurement_type: measurementType, quantity: Number(quantity), unit: "count", source: "运营工作台" });
@@ -2045,7 +2061,7 @@ function personalForUser(userId) {
   );
 }
 async function reviewPersonal(item, decision) {
-  const comment = window.prompt(
+  const comment = await promptDialog(
     decision === "approve" ? "请输入审核意见" : "请输入拒绝原因",
     decision === "approve" ? "人工审核通过" : "",
   );
@@ -2062,7 +2078,7 @@ async function reviewPersonal(item, decision) {
   }
 }
 async function reviewEnterprise(item, decision) {
-  const comment = window.prompt(
+  const comment = await promptDialog(
     decision === "approve" ? "请输入审核意见" : "请输入拒绝原因",
     decision === "approve" ? "人工审核通过" : "",
   );
@@ -2128,12 +2144,14 @@ onMounted(() => {
   }, 10000);
 });
 onUnmounted(() => {
+  dialogs.dispose();
   window.clearInterval(progressTimer);
   window.removeEventListener("resize", updateUiScale);
 });
 </script>
 
 <template>
+  <ActionDialog :dialog="actionDialog" @submit="dialogs.submit" @cancel="dialogs.cancel" />
   <div v-if="!user" class="login-shell">
     <div class="login-art">
       <div class="eyebrow">MARKET OPERATIONS</div>
@@ -4282,8 +4300,8 @@ onUnmounted(() => {
         </div>
         </div>
         <div v-if="productReviewMode" class="review-action-bar">
-          <button type="button" class="primary-btn" @click="reviewProductFromDetail('approve')">通过审核</button>
-          <button type="button" class="secondary-btn danger-text" @click="reviewProductFromDetail('reject')">拒绝审核</button>
+          <button type="button" class="primary-btn" :disabled="productReviewSubmitting" @click="reviewProductFromDetail('approve')">通过审核</button>
+          <button type="button" class="secondary-btn danger-text" :disabled="productReviewSubmitting" @click="reviewProductFromDetail('reject')">拒绝审核</button>
         </div>
         <button v-if="!productReadOnlyMode && (!productDetailMode || productDetailTab === 'info')" class="primary-btn full-btn" type="submit" :disabled="productSaving" :aria-busy="productSaving">
           {{ productSaving ? "保存中…" : selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
