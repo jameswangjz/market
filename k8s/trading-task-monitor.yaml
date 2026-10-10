@@ -1,0 +1,41 @@
+# Mount trading_task_control.py and the validated plan using trading-task-plan ConfigMap.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: trading-task-monitor
+  namespace: market
+spec:
+  schedule: '*/5 * * * *'
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 240
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - name: monitor
+              image: market-api:REPLACE_WITH_DEPLOYED_TAG
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command: [python, /app/task-monitor/trading_task_control.py, monitor, --plan, /app/task-monitor/plan.json, --notify, --stale-minutes, '60']
+              envFrom:
+                - configMapRef: {name: market-config}
+              env:
+                - {name: PYTHONPATH, value: /app}
+                - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+                - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 500m, memory: 512Mi}
+              volumeMounts:
+                - {name: plan, mountPath: /app/task-monitor, readOnly: true}
+          volumes:
+            - name: plan
+              configMap: {name: trading-task-plan}
