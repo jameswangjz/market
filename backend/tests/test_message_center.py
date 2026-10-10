@@ -217,6 +217,40 @@ class InboxTests(unittest.TestCase):
         self.login('b')
         self.assertEqual(self.assert_ok(self.client.get('/api/notifications/sent'))['total'], 0)
 
+    def test_manual_send_idempotency_rejects_changes_without_mutating_original(self):
+        attachments = [self.assert_ok(self.client.post('/api/notifications/attachments',
+            files={'upload': (name, name.encode('ascii'), 'text/plain')}))['id']
+            for name in ('original.txt', 'replacement.txt')]
+        original_body = dict(event_key='manual-retry-contract', attachment_ids=[attachments[0]])
+        original = self.assert_ok(self.send(**original_body))
+        mid = original['id']
+        with Session(self.engine) as db:
+            receipt_ids = set(db.scalars(select(self.center['Receipt'].id)))
+            delivery_ids = set(db.scalars(select(self.center['Delivery'].id)))
+        repeated = self.assert_ok(self.send(**original_body))
+        self.assertEqual(repeated, original)
+        for change in ({'title': 'Changed title'}, {'content': 'Changed content'},
+                       {'recipient_ids': ['a']}, {'attachment_ids': [attachments[1]]},
+                       {'attachment_ids': []}):
+            with self.subTest(change=change):
+                response = self.send(**(original_body | change))
+                self.assertEqual(response.status_code, 409, response.text)
+                sent = self.assert_ok(self.client.get('/api/notifications/sent'))
+                self.assertEqual(sent['total'], 1)
+                self.assertEqual(sent['items'][0], original)
+                with Session(self.engine) as db:
+                    self.assertEqual(db.scalar(select(func.count()).select_from(self.center['Message'])), 1)
+                    self.assertEqual(set(db.scalars(select(self.center['Receipt'].id))), receipt_ids)
+                    self.assertEqual(set(db.scalars(select(self.center['Delivery'].id))), delivery_ids)
+        self.assertEqual(len(receipt_ids), 1)
+        self.assertEqual(len(delivery_ids), 2)
+        self.login('b')
+        inbox = self.assert_ok(self.client.get('/api/notifications'))
+        self.assertEqual(inbox['total'], 1)
+        self.assertEqual(inbox['items'][0]['message_id'], mid)
+        detail = self.assert_ok(self.client.get('/api/notifications/' + inbox['items'][0]['id']))
+        self.assertEqual([attachment['id'] for attachment in detail['attachments']], [attachments[0]])
+
     def test_enterprise_sender_cannot_send_across_tenants(self):
         response = self.send(recipient_ids=['b', 'c'])
         self.assertIn(response.status_code, (400, 403), response.text)
@@ -320,6 +354,52 @@ class InboxTests(unittest.TestCase):
         actual = self.assert_ok(self.client.get('/api/notifications/settings'))
         for key, value in expected.items():
             self.assertEqual(actual[key], value)
+
+    def test_settings_retry_defaults_and_safe_template_whitelist(self):
+        self.login('platform')
+        settings = self.assert_ok(self.client.get('/api/notifications/settings'))
+        for key, expected in dict(retry_count=3, retry_interval_seconds=10, poll_interval_seconds=30).items():
+            self.assertEqual(settings[key], expected)
+        safe = dict(email_subject_template='${title}',
+                    email_body_template='${title}\n${content}\n${platform_url}')
+        self.assert_ok(self.client.put('/api/notifications/settings', json=safe))
+        for body in ({'email_body_template': '${smtp_password}'}, {'email_body_template': '${unknown}'},
+                     {'email_subject_template': '${title}\nInjected: header'}, {'email_body_template': '${'}):
+            with self.subTest(body=body):
+                response = self.client.put('/api/notifications/settings', json=body)
+                self.assertEqual(response.status_code, 422, response.text)
+        current = self.assert_ok(self.client.get('/api/notifications/settings'))
+        for key, expected in safe.items():
+            self.assertEqual(current[key], expected)
+
+    def test_configured_retry_count_and_interval(self):
+        self.login('platform')
+        self.assert_ok(self.client.put('/api/notifications/settings', json={
+            'retry_count': 1, 'retry_interval_seconds': 2}))
+        self.smtp_settings()
+        self.create()
+        with patch('smtplib.SMTP', side_effect=OSError('isolated failure')) as smtp:
+            self.drain()
+            self.assertEqual(smtp.call_count, 1)
+            self.clock += timedelta(seconds=1)
+            self.drain()
+            self.assertEqual(smtp.call_count, 1)
+            self.clock += timedelta(seconds=1)
+            self.drain()
+            self.assertEqual(smtp.call_count, 2)
+            self.clock += timedelta(seconds=30)
+            self.drain()
+            self.assertEqual(smtp.call_count, 2)
+        with Session(self.engine) as db:
+            job = db.scalar(select(self.center['Delivery']).where(self.center['Delivery'].channel == 'email'))
+            self.assertEqual((job.status, job.attempts), ('failed', 2))
+
+    def test_attachment_count_limit_is_five(self):
+        aid = self.assert_ok(self.client.post('/api/notifications/attachments',
+            files={'upload': ('limit.txt', b'test', 'text/plain')}))['id']
+        self.assert_ok(self.send(attachment_ids=[aid] * 5))
+        response = self.send(attachment_ids=[aid] * 6)
+        self.assertEqual(response.status_code, 422, response.text)
 
     def test_attachment_download_authorization(self):
         uploaded = self.assert_ok(self.client.post('/api/notifications/attachments',
@@ -553,6 +633,48 @@ class InboxTests(unittest.TestCase):
             self.assertEqual(self.center['migrate'](db), 0)
             db.commit()
             self.assertEqual(db.scalar(select(func.count()).select_from(self.center['Message'])), 0)
+
+    def test_expired_unacknowledged_urgent_survives_cleanup_until_admin_resolves(self):
+        mid = self.create(severity='urgent')
+        rid = self.client.get('/api/notifications').json()['items'][0]['id']
+        self.clock += timedelta(days=181)
+        self.center['cleanup']()
+        self.center['cleanup']()
+        with Session(self.engine) as db:
+            self.assertIsNone(db.get(self.center['Message'], mid))
+            self.assertIsNone(db.get(self.center['Receipt'], rid))
+            rows = db.scalars(select(self.center['ExpiredUrgent'])).all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual((rows[0].receipt_id, rows[0].message_id, rows[0].user_id, rows[0].status),
+                             (rid, mid, 'a', 'pending'))
+            self.assertIsNotNone(rows[0].expired_at)
+        self.login('b')
+        denied = self.client.post(f'/api/notifications/expired-urgent/{rid}/resolve', json={'reason': 'test'})
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.login('platform')
+        health = self.assert_ok(self.client.get('/api/notifications/delivery-health'))
+        self.assertEqual(len(health['expired_urgent']), 1)
+        for body in ({}, {'reason': ''}, {'reason': '   '}):
+            with self.subTest(body=body):
+                response = self.client.post(f'/api/notifications/expired-urgent/{rid}/resolve', json=body)
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assert_ok(self.client.post(f'/api/notifications/expired-urgent/{rid}/resolve', json={'reason': 'handled offline'}))
+        health = self.assert_ok(self.client.get('/api/notifications/delivery-health'))
+        self.assertEqual(health['expired_urgent'], [])
+        with Session(self.engine) as db:
+            self.assertEqual(db.get(self.center['ExpiredUrgent'], rid).status, 'resolved')
+
+    def test_acknowledged_urgent_does_not_create_expired_pending_item(self):
+        mid = self.create(severity='urgent')
+        rid = self.client.get('/api/notifications').json()['items'][0]['id']
+        self.assert_ok(self.client.post(f'/api/notifications/{rid}/acknowledge'))
+        self.clock += timedelta(days=181)
+        self.center['cleanup']()
+        with Session(self.engine) as db:
+            self.assertIsNone(db.get(self.center['Message'], mid))
+            self.assertEqual(db.scalar(select(func.count()).select_from(self.center['ExpiredUrgent'])), 0)
+        self.login('platform')
+        self.assertEqual(self.assert_ok(self.client.get('/api/notifications/delivery-health'))['expired_urgent'], [])
 
 
 class WorkerTests(unittest.TestCase):

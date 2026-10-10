@@ -5,16 +5,17 @@ param(
     [string]$OutputDir = "$env:TEMP\market-message-e2e-results"
 )
 $ErrorActionPreference = 'Stop'
-$target = @(Invoke-RestMethod 'http://127.0.0.1:9222/json/list' | Where-Object { $_.type -eq 'page' })[0]
+$targets = Invoke-RestMethod 'http://127.0.0.1:9222/json/list'
+$target = $targets | Where-Object { $_.type -eq 'page' } | Select-Object -First 1
 $socket = New-Object System.Net.WebSockets.ClientWebSocket
-$socket.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+$null = $socket.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
 $script:commandId = 0
 function Cdp($method, $params) {
     $script:commandId++
     $id = $script:commandId
     $payload = @{id=$id;method=$method;params=$params} | ConvertTo-Json -Depth 30 -Compress
     $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
-    $socket.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
+    $null = $socket.SendAsync([ArraySegment[byte]]::new($bytes), [Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).GetAwaiter().GetResult()
     while ($true) {
         $memory = [IO.MemoryStream]::new()
         do {
@@ -67,8 +68,8 @@ try {
     WaitJs '!!document.querySelector("[aria-label=\"\u5199\u6d88\u606f\"]")'
     $title = 'MC-BROWSER-' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $t = $title | ConvertTo-Json -Compress
-    Js "(()=>{let m=document.querySelector('[aria-label=\"\u5199\u6d88\u606f\"]'),t=m.querySelector('input[maxlength=\"220\"]'),body=m.querySelector('textarea'),s=m.querySelector('select[multiple]');t.value=$t;t.dispatchEvent(new Event('input',{bubbles:true}));body.value='Browser lifecycle verification';body.dispatchEvent(new Event('input',{bubbles:true}));let option=Array.from(s.options).find(o=>o.textContent.includes($u));if(!option)throw Error('admin recipient not found');option.selected=true;s.dispatchEvent(new Event('change',{bubbles:true}));Array.from(m.querySelectorAll('button')).find(b=>b.textContent.trim()==='\u4fdd\u5b58\u8349\u7a3f').click();return true})()" | Out-Null
-    WaitJs "Array.from(document.querySelectorAll('.message-title button')).some(b=>b.textContent===$t) && !document.querySelector('[aria-label=\"\u5199\u6d88\u606f\"]')"
+    Js "(()=>{let m=document.querySelector('[aria-label=`"\u5199\u6d88\u606f`"]'),t=m.querySelector('input[maxlength=`"220`"]'),body=m.querySelector('textarea'),s=m.querySelector('select[multiple]');t.value=$t;t.dispatchEvent(new Event('input',{bubbles:true}));body.value='Browser lifecycle verification';body.dispatchEvent(new Event('input',{bubbles:true}));let option=Array.from(s.options).find(o=>o.textContent.includes($u));if(!option)throw Error('admin recipient not found');option.selected=true;s.dispatchEvent(new Event('change',{bubbles:true}));Array.from(m.querySelectorAll('button')).find(b=>b.textContent.trim()==='\u4fdd\u5b58\u8349\u7a3f').click();return true})()" | Out-Null
+    WaitJs "Array.from(document.querySelectorAll('.message-title button')).some(b=>b.textContent===$t) && !document.querySelector('[aria-label=`"\u5199\u6d88\u606f`"]')"
     Screenshot 'message-center-draft-desktop.png'
     Js "(()=>{let row=Array.from(document.querySelectorAll('tbody tr')).find(r=>r.textContent.includes($t));Array.from(row.querySelectorAll('button')).find(b=>b.textContent.trim()==='\u53d1\u9001').click();return true})()" | Out-Null
     WaitJs '!!document.querySelector("[aria-label=\"\u786e\u8ba4\u64cd\u4f5c\"]")'

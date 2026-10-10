@@ -4590,7 +4590,20 @@ def execute_saas_operation(db: Session, subscription: SaaSSubscription, operatio
 
 def add_saas_order(db: Session, subscription: SaaSSubscription, product: Product, version: SaaSProductVersion, amount: Decimal, business_type: str, related_order_id: str = "", paid: bool = False) -> Order:
     enterprise = db.get(Enterprise, subscription.enterprise_id)
-    order = Order(order_no=make_order_no(), buyer_enterprise_id=subscription.enterprise_id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.name, billing_cycle=subscription.billing_cycle, subscription_id=subscription.id, business_type=business_type, related_order_id=related_order_id, product_name=product.name, buyer_name=enterprise.name if enterprise else "", amount=amount, paid_amount=amount if paid else 0, main_status="completed" if paid else "created", payment_status="paid" if paid else "unpaid")
+    creator = (subscription.created_by or "").strip()
+    buyer = db.get(User, creator) if creator else None
+    if buyer is None and creator:
+        buyer = db.scalar(select(User).where(or_(User.email == creator, User.phone == creator)).order_by(User.id))
+    if buyer is None:
+        buyer = db.scalar(select(User).join(Membership, Membership.user_id == User.id).where(
+            Membership.enterprise_id == subscription.enterprise_id,
+            Membership.role == "super_admin", Membership.status == "active",
+            User.is_active.is_(True), User.activation_status == "active",
+            or_(User.platform_role.is_(None), User.platform_role == ""),
+        ).order_by(User.id))
+    if buyer is None:
+        raise HTTPException(422, "SaaS 订阅无法解析购买人，请配置本企业活跃超级管理员")
+    order = Order(order_no=make_order_no(), buyer_user_id=buyer.id, buyer_enterprise_id=subscription.enterprise_id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.name, billing_cycle=subscription.billing_cycle, subscription_id=subscription.id, business_type=business_type, related_order_id=related_order_id, product_name=product.name, buyer_name=enterprise.name if enterprise else "", amount=amount, paid_amount=amount if paid else 0, main_status="completed" if paid else "created", payment_status="paid" if paid else "unpaid")
     db.add(order)
     db.flush()
     db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid"))

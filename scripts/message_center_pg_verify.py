@@ -11,6 +11,7 @@ import os
 import secrets
 import signal
 import threading
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ def require(condition, message):
         raise AssertionError(message)
 
 
-def load_center(path, engine, schema):
+def load_center(path, engine, schema, *, services=None, return_context=False):
     spec = importlib.util.spec_from_file_location('isolated_message_center', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -69,16 +70,63 @@ def load_center(path, engine, schema):
         with Session(engine) as db:
             yield db
 
-    center = module.install(dict(Base=Base, app=FastAPI(), now=lambda: datetime.now(timezone.utc),
+    app = FastAPI()
+    actor = SimpleNamespace(id='a', email='test@example.invalid', phone=None, platform_role='')
+    namespace = dict(Base=Base, app=app, now=lambda: datetime.now(timezone.utc),
         db_session=session, SessionLocal=lambda: Session(engine), disable_background=True,
-        current_user=lambda: SimpleNamespace(id='a', email='test@example.invalid', phone=None, platform_role=''),
-        audit=lambda *args, **kwargs: None, User=User, PlatformNotification=Legacy, SystemSetting=Setting))
+        current_user=lambda: actor, audit=lambda *args, **kwargs: None,
+        User=User, PlatformNotification=Legacy, SystemSetting=Setting)
+    namespace.update(services or {})
+    center = module.install(namespace)
     require(all(table.schema == schema for table in Base.metadata.tables.values()), 'Unscoped metadata')
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         db.add_all([User(id='a'), User(id='b')])
         db.commit()
+    if return_context:
+        return SimpleNamespace(center=center, app=app, actor=actor, User=User, Setting=Setting, Base=Base)
     return center
+
+
+@contextmanager
+def disposable_schema(database_url, prefix='mc_integration_'):
+    require(prefix in ('mc_verify_', 'mc_integration_'), 'Unsupported test schema prefix')
+    url = make_url(database_url)
+    require(url.get_backend_name() == 'postgresql', 'This verification requires PostgreSQL')
+    url = url.set(drivername='postgresql+psycopg')
+    schema = prefix + secrets.token_hex(12)
+    admin = create_engine(url, connect_args={'connect_timeout': 10,
+        'options': '-c statement_timeout=20000 -c lock_timeout=10000'}, pool_size=1, max_overflow=0)
+    scoped, created = None, False
+    try:
+        with admin.begin() as db:
+            db.execute(CreateSchema(schema))
+        created = True
+        print(json.dumps({'schema': schema, 'created': True}), flush=True)
+        scoped = create_engine(url, pool_size=8, max_overflow=0, pool_timeout=10,
+            connect_args={'connect_timeout': 10, 'options':
+                f'-c search_path={schema} -c statement_timeout=20000 -c lock_timeout=10000'})
+        @event.listens_for(scoped, 'checkout')
+        def check_scope(connection, *_):
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT current_schema(), current_setting(\'search_path\')')
+                current_schema, search_path = cursor.fetchone()
+            connection.rollback()
+            require(current_schema == schema and search_path == schema, 'Connection escaped the test schema')
+        yield scoped, schema
+    finally:
+        try:
+            if scoped is not None:
+                scoped.dispose()
+            if created:
+                with admin.begin() as db:
+                    db.execute(DropSchema(schema, cascade=True))
+                with admin.connect() as db:
+                    require(db.scalar(text('SELECT count(*) FROM pg_namespace WHERE nspname=:schema'),
+                                      {'schema': schema}) == 0, 'Test schema was not removed')
+                print(json.dumps({'schema': schema, 'removed': True}), flush=True)
+        finally:
+            admin.dispose()
 
 
 def verify(engine, center):

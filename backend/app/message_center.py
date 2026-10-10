@@ -10,11 +10,12 @@ import ssl
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
+from string import Template
 from urllib.parse import quote
 
 from fastapi import Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, delete, func, select, text, update
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,7 +32,7 @@ class SendMessage(BaseModel):
     category: str = "announcement"
     tenant_id: str = ""
     recipient_ids: list[str] = Field(default_factory=list, max_length=500)
-    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=5)
     draft: bool = False
     event_key: str = Field(default="", max_length=140)
 
@@ -44,6 +45,21 @@ class SettingsBody(BaseModel):
     retention_days: int = Field(180, ge=1, le=3650)
     attachment_max_mb: int = Field(20, ge=1, le=100)
     email_enabled: bool = True
+    retry_count: int = Field(3, ge=0, le=10)
+    retry_interval_seconds: int = Field(10, ge=1, le=3600)
+    poll_interval_seconds: int = Field(30, ge=5, le=300)
+    email_subject_template: str = Field("${title}", min_length=1, max_length=300)
+    email_body_template: str = Field("${content}\n\n请登录平台消息中心查看详情：${platform_url}", min_length=1, max_length=10000)
+
+    @model_validator(mode="after")
+    def valid_templates(self):
+        for value in (self.email_subject_template, self.email_body_template):
+            template = Template(value)
+            if not template.is_valid() or set(template.get_identifiers()) - {"title", "content", "platform_url"}:
+                raise ValueError("邮件模板变量仅支持title、content、platform_url")
+        if "\n" in self.email_subject_template or "\r" in self.email_subject_template:
+            raise ValueError("邮件主题不能换行")
+        return self
 
 
 class ReadAllBody(BaseModel):
@@ -139,6 +155,16 @@ def install(ns):
         finished_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
         result: Mapped[str] = mapped_column(String(240), default="processing")
 
+    class ExpiredUrgent(Base):
+        __tablename__ = "notification_expired_urgent"
+        receipt_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+        message_id: Mapped[str] = mapped_column(String(36), index=True)
+        user_id: Mapped[str] = mapped_column(String(36), index=True)
+        expired_at: Mapped[object] = mapped_column(DateTime(timezone=True))
+        status: Mapped[str] = mapped_column(String(20), default="pending")
+        resolution: Mapped[str] = mapped_column(String(500), default="")
+        resolved_at: Mapped[object | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     def settings(db):
         result = SettingsBody().model_dump()
         if "SystemSetting" in ns:
@@ -218,15 +244,19 @@ def install(ns):
         unread = db.scalar(select(func.count()).select_from(base.where(unread_condition()).subquery()))
         urgent = db.scalar(select(func.count()).select_from(base.where(Message.severity == "urgent", Receipt.acknowledged_at.is_(None)).subquery()))
         recent = db.execute(base.order_by(Receipt.created_at.desc(), Receipt.id.desc()).limit(5)).all()
-        return {"unread": unread, "unacknowledged_urgent": urgent, "recent": [out(r, m) for r, m in recent], "server_time": now()}
+        return {"unread": unread, "unacknowledged_urgent": urgent, "recent": [out(r, m) for r, m in recent], "server_time": now(),
+                "poll_interval_seconds": settings(db)["poll_interval_seconds"]}
 
-    def out(receipt, message):
+    def out(receipt, message, db=None):
+        email_job = db.scalar(select(Delivery).where(Delivery.message_id == message.id, Delivery.user_id == receipt.user_id,
+                                                   Delivery.channel == "email")) if db else None
         return {"id": receipt.id, "message_id": message.id, "title": message.title, "content": message.body,
                 "category": message.category, "severity": message.severity, "target_type": message.target_type,
                 "target_id": message.target_id, "status": "read" if receipt.first_read_at or receipt.legacy_read == "read" else "unread",
                 "created_at": receipt.created_at, "sent_at": message.sent_at, "delivered_at": receipt.delivered_at,
                 "first_read_at": receipt.first_read_at, "last_read_at": receipt.last_read_at,
-                "acknowledged_at": receipt.acknowledged_at, "deleted_at": receipt.deleted_at, "archived_at": receipt.archived_at}
+                "acknowledged_at": receipt.acknowledged_at, "deleted_at": receipt.deleted_at, "archived_at": receipt.archived_at,
+                "email_status": email_job.status if email_job else "", "email_skip_reason": email_job.result if email_job and email_job.status == "skipped" else ""}
 
     def find(db, uid, rid):
         row = db.execute(base_query(uid).where((Receipt.id == rid) | (Receipt.legacy_id == rid)).with_for_update(of=Receipt)).first()
@@ -265,6 +295,8 @@ def install(ns):
         if wake:
             wake.status = "pending"
             wake.next_attempt_at = now()
+            wake.attempts = 0
+            wake.completed_at = None
             wake.lease_token = secrets.token_hex(16)
         else:
             queue(db, message, user.id, "realtime")
@@ -305,7 +337,7 @@ def install(ns):
             query = query.where(Message.title.ilike(pattern, escape="\\") | Message.body.ilike(pattern, escape="\\"))
         total = db.scalar(select(func.count()).select_from(query.subquery()))
         rows = db.execute(query.order_by(Receipt.created_at.desc(), Receipt.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-        return {"items": [out(r, m) for r, m in rows], "total": total, "page": page, "page_size": page_size, **summary(db, user.id)}
+        return {"items": [out(r, m, db) for r, m in rows], "total": total, "page": page, "page_size": page_size, **summary(db, user.id)}
 
     @app.get("/api/notifications/summary")
     def counts(user=Depends(current_user), db=Depends(db_session)):
@@ -377,9 +409,11 @@ def install(ns):
         elif not platform_admin(user):
             user_query = user_query.where(ns["User"].id == user.id)
         users = [{"id": u.id, "name": getattr(u, "name", u.id), "email": getattr(u, "email", ""),
+                  "platform_role": getattr(u, "platform_role", ""),
                   "enterprise_ids": list(db.scalars(select(ns["Membership"].enterprise_id).where(ns["Membership"].user_id == u.id, ns["Membership"].status == "active"))) if "Membership" in ns else []}
                  for u in db.scalars(user_query).all() if getattr(u, "is_active", True)]
-        return {"platform_admin": platform_admin(user), "enterprises": enterprises, "users": users, "settings": settings(db)}
+        return {"platform_admin": platform_admin(user), "enterprises": enterprises, "users": users, "settings": settings(db),
+                "channels": {"in_app": "enabled", "email": "enabled", "sms": "not_configured"}}
 
     @app.post("/api/notifications/send")
     def send(body: SendMessage, user=Depends(current_user), db=Depends(db_session)):
@@ -693,13 +727,16 @@ def install(ns):
         username = values.get("smtp_username", "")
         password = values.get("smtp_password", "")
         mail = EmailMessage()
-        mail["Subject"] = message.title
+        variables = {"title": message.title, "content": message.body, "platform_url": os.getenv("PUBLIC_BASE_URL", "http://192.168.10.10:30080")}
+        subject = Template(config["email_subject_template"]).substitute(variables).replace("\r", " ").replace("\n", " ")[:300]
+        body = Template(config["email_body_template"]).substitute(variables)
+        mail["Subject"] = subject
         mail["From"] = os.getenv("NOTIFICATION_SMTP_FROM", "notifications@market.local") if test_host else username
         mail["To"] = address
         mail["Message-ID"] = f"<market-{message.id}-{account.id}@market.local>"
-        mail.set_content(message.body + "\n\n请登录平台消息中心查看详情。")
-        mail.add_alternative("<html><body><h2>" + html.escape(message.title) + "</h2><p style='white-space:pre-wrap'>" +
-                             html.escape(message.body) + "</p><p>请登录平台消息中心查看详情。</p></body></html>", subtype="html")
+        mail.set_content(body)
+        mail.add_alternative("<html><body><h2>" + html.escape(subject) + "</h2><p style='white-space:pre-wrap'>" +
+                             html.escape(body) + "</p></body></html>", subtype="html")
         use_ssl = not test_host and values.get("smtp_ssl", "false") == "true"
         port = int(os.getenv("NOTIFICATION_SMTP_PORT", "1025")) if test_host else int(values.get("smtp_port", "587"))
         transport = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
@@ -742,17 +779,19 @@ def install(ns):
                 job = db.get(Delivery, jid)
                 message = db.get(Message, job.message_id)
                 account = db.get(ns["User"], uid)
-                if message.status != "sent" or not account or not getattr(account, "is_active", True):
+                if message.status != "sent" or message.expires_at.replace(tzinfo=timezone.utc) <= now() or not account or not getattr(account, "is_active", True) or getattr(account, "activation_status", "") == "deleted":
                     state, result = "cancelled", "recipient_or_message_inactive"
                 elif channel == "email":
                     state, result = send_email(db, account, message)
-                else:
+                elif channel == "realtime":
                     client = redis_client()
                     try:
                         client.publish("market:notifications:" + uid, json.dumps({"message_id": message.id}))
                     finally:
                         client.close()
                     state, result = "accepted", "redis_hint_published"
+                else:
+                    state, result = "skipped", "channel_not_configured"
         except Exception as exc:
             state = "error"
             # Never persist raw SMTP exceptions which may include credentials
@@ -767,8 +806,9 @@ def install(ns):
             if attempt:
                 attempt.finished_at, attempt.result = now(), state + ":" + result
             if state == "error":
-                job.status = "pending" if job.attempts < 4 else "failed"
-                job.next_attempt_at = now() + timedelta(seconds=10)
+                config = settings(db)
+                job.status = "pending" if job.attempts < 1 + config["retry_count"] else "failed"
+                job.next_attempt_at = now() + timedelta(seconds=config["retry_interval_seconds"])
             else:
                 job.status = state
                 job.completed_at = now()
@@ -782,8 +822,27 @@ def install(ns):
             raise HTTPException(403, "只有平台管理员可以查看发送任务")
         return {"counts": [{"channel": c, "status": s, "count": n} for c, s, n in db.execute(
                 select(Delivery.channel, Delivery.status, func.count()).group_by(Delivery.channel, Delivery.status))],
+                "expired_urgent": [{"id": row.receipt_id, "expired_at": row.expired_at,
+                                    "recipient": getattr(db.get(ns["User"], row.user_id), "name", "用户")}
+                                   for row in db.scalars(select(ExpiredUrgent).where(ExpiredUrgent.status == "pending").limit(100))],
                 "failures": [{"id": j.id, "channel": j.channel, "attempts": j.attempts, "result": j.result} for j in db.scalars(
                     select(Delivery).where(Delivery.status == "failed").limit(100))]}
+
+    @app.post("/api/notifications/expired-urgent/{rid}/resolve")
+    def resolve_expired(rid: str, body: RecallBody, user=Depends(current_user), db=Depends(db_session)):
+        if not platform_admin(user):
+            raise HTTPException(403, "只有平台管理员可以处理过期紧急提醒")
+        row = db.get(ExpiredUrgent, rid)
+        if not row:
+            raise HTTPException(404, "待办不存在")
+        if not body.reason.strip():
+            raise HTTPException(422, "处理说明必填")
+        before = row.status
+        row.status, row.resolution, row.resolved_at = "resolved", body.reason.strip(), now()
+        audit(db, user.email or user.id, "notification_expired_urgent_resolved", "notification_recipient", rid,
+              category="ops", before={"status": before}, after={"status": row.status, "resolution": row.resolution})
+        db.commit()
+        return {"status": row.status}
 
     @app.get("/metrics/notifications", include_in_schema=False)
     def metrics(db=Depends(db_session)):
@@ -795,6 +854,7 @@ def install(ns):
         lines.append(f"market_notification_oldest_pending_seconds {delay}")
         urgent = db.scalar(select(func.count()).select_from(Receipt).join(Message).where(Message.severity == "urgent",
                              Message.expires_at <= now(), Receipt.acknowledged_at.is_(None)))
+        urgent += db.scalar(select(func.count()).select_from(ExpiredUrgent).where(ExpiredUrgent.status == "pending"))
         lines.append(f"market_notification_expired_unacknowledged_urgent {urgent}")
         return PlainTextResponse("\n".join(lines) + "\n")
 
@@ -819,6 +879,10 @@ def install(ns):
         with ns["SessionLocal"]() as db:
             ids = list(db.scalars(select(Message.id).where(Message.expires_at <= now()).limit(500)))
             if ids:
+                for receipt, message in db.execute(select(Receipt, Message).join(Message).where(Message.id.in_(ids),
+                            Message.severity == "urgent", Message.status == "sent", Receipt.acknowledged_at.is_(None))):
+                    if not db.get(ExpiredUrgent, receipt.id):
+                        db.add(ExpiredUrgent(receipt_id=receipt.id, message_id=message.id, user_id=receipt.user_id, expired_at=message.expires_at))
                 db.execute(delete(DeliveryAttempt).where(DeliveryAttempt.delivery_id.in_(select(Delivery.id).where(Delivery.message_id.in_(ids)))))
                 db.execute(delete(Delivery).where(Delivery.message_id.in_(ids)))
                 db.execute(delete(Receipt).where(Receipt.message_id.in_(ids)))
@@ -868,21 +932,21 @@ def install(ns):
     @app.get("/api/notifications/{rid}")
     def detail(rid: str, user=Depends(current_user), db=Depends(db_session)):
         receipt, message = find(db, user.id, rid)
-        return {**out(receipt, message), "attachments": attachment_list(db, message.id)}
+        return {**out(receipt, message, db), "attachments": attachment_list(db, message.id)}
 
     @app.delete("/api/notifications/{rid}")
     def delete_message(rid: str, user=Depends(current_user), db=Depends(db_session)):
         receipt, message = find(db, user.id, rid)
         apply_action(db, user, receipt, message, "delete")
         db.commit()
-        return {**out(receipt, message), "attachments": attachment_list(db, message.id)}
+        return {**out(receipt, message, db), "attachments": attachment_list(db, message.id)}
 
     @app.post("/api/notifications/{rid}/{action}")
     def action(rid: str, action: str, user=Depends(current_user), db=Depends(db_session)):
         receipt, message = find(db, user.id, rid)
         apply_action(db, user, receipt, message, action)
         db.commit()
-        return {**out(receipt, message), "attachments": attachment_list(db, message.id)}
+        return {**out(receipt, message, db), "attachments": attachment_list(db, message.id)}
 
     @app.on_event("startup")
     def migrate_history():
@@ -896,4 +960,4 @@ def install(ns):
     return {"create": create, "migrate": migrate, "Message": Message, "Receipt": Receipt, "Delivery": Delivery,
             "Outbox": Delivery, "Attachment": Attachment, "Preference": Preference, "process_once": process_once,
             "cleanup": cleanup, "rollback_history": rollback_history, "send_email": send_email, "redis_client": redis_client,
-            "DeliveryAttempt": DeliveryAttempt, "scheduled_scan": scheduled_scan}
+            "DeliveryAttempt": DeliveryAttempt, "scheduled_scan": scheduled_scan, "ExpiredUrgent": ExpiredUrgent}

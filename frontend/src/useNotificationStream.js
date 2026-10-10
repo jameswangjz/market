@@ -30,10 +30,12 @@ export function createSSEParser(onEvent) {
   };
 }
 
-export function useNotificationStream(onRefresh, { token: tokenSource, pollMs = 30000, onAuthExpired = () => {} } = {}) {
+export function useNotificationStream(onRefresh, { token: tokenSource, pollMs: pollSource, onAuthExpired = () => {} } = {}) {
   const connected = ref(false);
-  let stopped = true, controller, retryTimer, pollTimer, refreshTimer, failures = 0, lastEventId, expiredToken, stopWatch;
+  const pollMs = ref(30000);
+  let stopped = true, controller, configController, retryTimer, pollTimer, refreshTimer, failures = 0, lastEventId, expiredToken, stopWatch, stopPollWatch;
   let generation = 0;
+  let intervalFromStream = false;
   const getToken = () => tokenSource === undefined ? localStorage.getItem('market_token') || '' : (typeof tokenSource === 'function' ? tokenSource() : unref(tokenSource)) || '';
   const active = version => !stopped && generation === version;
   const refresh = version => {
@@ -43,19 +45,40 @@ export function useNotificationStream(onRefresh, { token: tokenSource, pollMs = 
       if (active(version)) Promise.resolve().then(() => { if (active(version)) return onRefresh(); }).catch(() => {});
     }, 250);
   };
-  function poll(version) { if (!pollTimer && active(version)) pollTimer = setInterval(() => refresh(version), pollMs); }
+  function poll(version) { if (!pollTimer && active(version)) pollTimer = setInterval(() => refresh(version), pollMs.value); }
+  function setPollInterval(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return;
+    const milliseconds = Math.min(300000, Math.max(5000, number));
+    if (milliseconds === pollMs.value) return;
+    pollMs.value = milliseconds;
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; poll(generation); }
+  }
+  async function loadPollInterval(version) {
+    const requestController = new AbortController();
+    configController = requestController;
+    try {
+      const response = await fetch('/api/notifications/sender-context', { headers: { Authorization: `Bearer ${getToken()}` }, signal: requestController.signal, cache: 'no-store' });
+      if (!response.ok) return;
+      const result = await response.json();
+      if (active(version) && !expiredToken && !intervalFromStream && result.settings?.poll_interval_seconds) setPollInterval(Number(result.settings.poll_interval_seconds) * 1000);
+    } catch { /* Keep the default interval if settings are unavailable. */ }
+  }
   function stop() {
-    stopped = true; ++generation; controller?.abort(); connected.value = false;
+    stopped = true; ++generation; controller?.abort(); configController?.abort(); connected.value = false;
     clearTimeout(retryTimer); clearTimeout(refreshTimer); clearInterval(pollTimer);
     retryTimer = null; refreshTimer = null; pollTimer = null;
   }
   function restart() {
-    stop(); failures = 0; lastEventId = undefined; expiredToken = null;
+    stop(); failures = 0; lastEventId = undefined; expiredToken = null; intervalFromStream = false;
     if (!getToken()) return;
+    if (pollSource === undefined) pollMs.value = 30000;
     stopped = false; poll(generation); connect(generation);
+    if (pollSource === undefined) loadPollInterval(generation);
   }
   function expire(token) {
     expiredToken = token; connected.value = false;
+    configController?.abort();
     clearInterval(pollTimer); pollTimer = null;
     clearTimeout(refreshTimer); refreshTimer = null;
     onAuthExpired();
@@ -85,6 +108,13 @@ export function useNotificationStream(onRefresh, { token: tokenSource, pollMs = 
         }
         if (expiredToken) return;
         if (message.id !== undefined) lastEventId = message.id;
+        try {
+          const summary = JSON.parse(message.data);
+          if (Number.isFinite(Number(summary?.poll_interval_seconds)) && Number(summary.poll_interval_seconds) > 0) {
+            intervalFromStream = true;
+            setPollInterval(Number(summary.poll_interval_seconds) * 1000);
+          }
+        } catch { /* Some SSE payloads are not JSON summaries. */ }
         failures = 0;
         if (!['ping', 'heartbeat'].includes(message.event)) refresh(version);
       });
@@ -110,11 +140,12 @@ export function useNotificationStream(onRefresh, { token: tokenSource, pollMs = 
   const storageChanged = event => { if (tokenSource === undefined && (!event.key || event.key === 'market_token')) restart(); };
   onMounted(() => {
     window.addEventListener('storage', storageChanged);
+    if (pollSource !== undefined) stopPollWatch = watch(() => typeof pollSource === 'function' ? pollSource() : unref(pollSource), setPollInterval, { immediate: true, flush: 'sync' });
     if (tokenSource !== undefined) stopWatch = watch(getToken, restart, { immediate: true, flush: 'sync' });
     else restart();
   });
   onUnmounted(() => {
-    stop(); stopWatch?.(); window.removeEventListener('storage', storageChanged);
+    stop(); stopWatch?.(); stopPollWatch?.(); window.removeEventListener('storage', storageChanged);
   });
-  return { connected, restart, stop };
+  return { connected, restart, stop, setPollInterval };
 }

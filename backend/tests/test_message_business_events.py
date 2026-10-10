@@ -4,6 +4,7 @@ Run with: python -m unittest discover -s backend/tests -p test_message_business_
 The two mock suites use only the standard library and never import app.main.
 """
 import ast
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import json
@@ -275,11 +276,14 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             db.commit()
             self.tokens = {uid: m.issue_token(db.get(m.User, uid)) for uid, _ in accounts}
         self.client = TestClient(m.app, raise_server_exceptions=False)
-        self.network = patch.object(m.httpx, "request", side_effect=AssertionError("Third-party HTTP is forbidden"))
-        self.network.start()
+        self.network = ExitStack()
+        for name in ("request", "get", "post"):
+            self.network.enter_context(patch.object(m.httpx, name, side_effect=AssertionError("Third-party HTTP is forbidden")))
+        self.network.enter_context(patch.object(m.redis.Redis, "from_url", side_effect=AssertionError("Unmocked Redis is forbidden")))
+        self.network.enter_context(patch.object(m, "Minio", side_effect=AssertionError("Unmocked object storage is forbidden")))
 
     def tearDown(self):
-        self.network.stop()
+        self.network.close()
         self.client.close()
         self.m.engine.dispose()
 
@@ -405,6 +409,16 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             self.assertEqual(db.scalar(self.select(self.func.count()).select_from(self.m.IdentityVerification)), 0)
             self.assertEqual(db.get(self.m.User, "buyer").verified_status, "verified")
 
+    def test_review_result_failure_rolls_back_decision_and_user(self):
+        aid = self.request("POST", "/api/verification/personal", json=self.personal_body())["id"]
+        before = self.counts()
+        with self.fail_after_create("review"):
+            self.request("POST", f"/api/admin/verifications/personal/{aid}/review", actor="platform", expected=500, json={"decision": "approve"})
+        self.assertEqual(self.counts(), before)
+        with self.m.SessionLocal() as db:
+            self.assertEqual(db.get(self.m.IdentityVerification, aid).status, "pending_review")
+            self.assertEqual(db.get(self.m.User, "buyer").verified_status, "pending_review")
+
     def test_payment_create_failure_rolls_back_payment_task_and_outbox(self):
         oid = self.create_order()
         before = self.counts()
@@ -438,6 +452,179 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
         with self.m.SessionLocal() as db:
             for model in (self.m.Settlement, self.m.SettlementBatch, self.m.SettlementLine):
                 self.assertEqual(db.scalar(self.select(self.func.count()).select_from(model)), 0)
+
+    def test_settlement_payment_failure_rolls_back_locked_lines_and_outbox(self):
+        oid = self.create_order()
+        self.pay(oid)
+        bid = self.request("POST", "/api/settlement-batches", actor="finance", json={"order_ids": [oid], "idempotency_key": "pay-rollback"})["id"]
+        with self.m.SessionLocal() as db:
+            sid = db.scalar(self.select(self.m.Settlement.id).where(self.m.Settlement.order_id == oid))
+        self.request("POST", f"/api/settlements/{sid}/lock", actor="finance")
+        self.request("POST", f"/api/settlement-batches/{bid}/confirm", actor="finance", json={})
+        before = self.counts()
+        with self.fail_after_create("settlement"):
+            self.request("POST", f"/api/settlement-batches/{bid}/pay", actor="finance", expected=500, json={})
+        self.assertEqual(self.counts(), before)
+        with self.m.SessionLocal() as db:
+            self.assertEqual(db.get(self.m.SettlementBatch, bid).status, "confirmed")
+            self.assertEqual(db.get(self.m.Settlement, sid).status, "locked")
+            self.assertEqual(set(db.scalars(self.select(self.m.SettlementLine.status).where(self.m.SettlementLine.batch_id == bid))), {"locked"})
+
+    def test_forbidden_reviewer_delivery_and_settlement_emit_nothing(self):
+        aid = self.request("POST", "/api/verification/personal", json=self.personal_body())["id"]
+        oid = self.create_order()
+        self.pay(oid)
+        task = self.task_id(oid)
+        before = self.counts()
+        self.request("POST", f"/api/admin/verifications/personal/{aid}/review", actor="outsider", expected=403, json={"decision": "approve"})
+        self.request("POST", f"/api/delivery-tasks/{task}/process", actor="outsider", expected=403, json={"success": True})
+        self.request("POST", "/api/settlement-batches", actor="outsider", expected=403, json={"order_ids": [oid]})
+        self.assertEqual(self.counts(), before)
+
+    def seed_scheduled_events(self):
+        m = self.m
+        clock = m.now()
+        with m.SessionLocal() as db:
+            db.add(m.Product(id="scheduled_product", enterprise_id="provider_tenant", name="SaaS", product_type="saas", delivery_method="tenant_access", provider_name="Provider", provider_type="enterprise"))
+            db.flush()
+            db.add(m.SaaSProductVersion(id="saas_version", product_id="scheduled_product", version_code="v1", name="SaaS version", annual_price=100, status="active"))
+            db.add(m.ApiGatewayRoute(id="route", product_id="scheduled_product", route_key="test-route", upstream_url="https://example.invalid", status="active"))
+            db.flush()
+            db.add(m.ApiCredential(id="credential", route_id="route", enterprise_id="buyer_tenant", apisix_consumer_name="test-consumer", key_hash="test-credential", created_by="buyer@example.invalid", daily_quota=9, monthly_quota=9, total_quota=9))
+            for sid, days, status in (("expired", -1, "active"), ("expiring", 7, "active"), ("later", 8, "active"), ("closed", -1, "closed")):
+                db.add(m.SaaSSubscription(id=sid, enterprise_id="buyer_tenant", product_id="scheduled_product", version_id="saas_version", status=status, created_by="buyer@example.invalid", expires_at=clock + timedelta(days=days)))
+            db.commit()
+        client = Mock()
+        client.hgetall.return_value = {"status": "active", "daily_quota": "2", "monthly_quota": "0", "total_quota": "4"}
+        client.mget.return_value = ["2", "999", "4"]
+        return clock, client
+
+    def test_scheduled_scan_real_create_commit_rollback_and_deduplication(self):
+        m = self.m
+        clock, client = self.seed_scheduled_events()
+        with patch.object(m, "now", return_value=clock), patch.object(m.redis.Redis, "from_url", return_value=client):
+            with m.SessionLocal() as db:
+                summary = m.notification_scheduled_events(db)
+                self.assertEqual(summary, {"saas_candidates": 2, "quota_candidates": 2, "redis_unavailable": False})
+                db.flush()
+                self.assertEqual(db.scalar(self.select(self.func.count()).select_from(self.Message)), 4)
+                db.rollback()
+            self.assertEqual(self.counts(), (0, 0, 0))
+            self.assertEqual(m.message_center["scheduled_scan"]()["status"], "scanned")
+            committed = self.counts()
+            self.assertEqual(committed[:2], (4, 8))
+            self.assertGreaterEqual(committed[2], 8)
+            m.message_center["scheduled_scan"]()
+            self.assertEqual(self.counts(), committed)
+        self.assertEqual(self.recipients(category="system"), {"buyer", "buyer_admin"})
+        with m.SessionLocal() as db:
+            self.assertEqual(db.get(m.ApiCredential, "credential").status, "active")
+            self.assertEqual(set(db.scalars(self.select(m.SaaSSubscription.status))), {"active", "closed"})
+
+    def test_scheduled_scan_redis_failure_still_commits_saas(self):
+        m = self.m
+        clock, client = self.seed_scheduled_events()
+        client.hgetall.side_effect = m.redis.ConnectionError("offline")
+        with patch.object(m, "now", return_value=clock), patch.object(m.redis.Redis, "from_url", return_value=client):
+            self.assertEqual(m.message_center["scheduled_scan"]()["status"], "scanned")
+        self.assertEqual(self.counts()[0], 2)
+        self.assertEqual(self.recipients(category="system"), {"buyer", "buyer_admin"})
+
+    def test_saas_renew_http_real_operation_commits_and_owner_receipts(self):
+        m = self.m
+        self.seed_scheduled_events()
+        with m.SessionLocal() as db:
+            db.add(m.SaaSIntegrationConfig(product_id="scheduled_product", status="active"))
+            db.commit()
+        with patch.object(m, "saas_call", return_value={"status": "renewed"}) as supplier:
+            renewed = self.request("POST", "/api/saas-subscriptions/expired/renew", actor="buyer_admin", json={"billing_cycle": "annual"})
+        supplier.assert_called_once()
+        self.assertEqual(renewed["subscription"]["status"], "active")
+        self.assertEqual(self.recipients(title="SaaS 订阅已到期"), {"buyer", "buyer_admin"})
+        self.assertEqual(self.recipients(title="订单支付完成"), {"buyer", "buyer_admin", "provider"})
+        with m.SessionLocal() as db:
+            self.assertEqual(db.scalar(self.select(m.SaaSOperation.status)), "succeeded")
+            self.assertEqual(db.scalar(self.select(m.Payment.status)), "paid")
+            self.assertEqual(db.scalar(self.select(m.Order.buyer_user_id)), "buyer")
+
+    def test_saas_order_resolves_creator_id_email_and_phone(self):
+        m = self.m
+        self.seed_scheduled_events()
+        with m.SessionLocal() as db:
+            subscription = db.get(m.SaaSSubscription, "expired")
+            product = db.get(m.Product, "scheduled_product")
+            version = db.get(m.SaaSProductVersion, "saas_version")
+            for creator in ("buyer", "buyer@example.invalid", "13800000000"):
+                with self.subTest(creator=creator):
+                    subscription.created_by = creator
+                    order = m.add_saas_order(db, subscription, product, version, 100, "renew")
+                    self.assertEqual(order.buyer_user_id, "buyer")
+            db.commit()
+            self.assertEqual(db.scalar(self.select(self.func.count()).select_from(m.Order)), 3)
+
+    def test_saas_order_missing_historical_creator_falls_back_to_enterprise_super_admin(self):
+        m = self.m
+        self.seed_scheduled_events()
+        with m.SessionLocal() as db:
+            subscription = db.get(m.SaaSSubscription, "expired")
+            for creator in ("", "deleted@example.invalid"):
+                with self.subTest(creator=creator):
+                    subscription.created_by = creator
+                    order = m.add_saas_order(db, subscription, db.get(m.Product, "scheduled_product"), db.get(m.SaaSProductVersion, "saas_version"), 100, "renew", paid=True)
+                    self.assertEqual(order.buyer_user_id, "buyer")
+            db.commit()
+        self.assertEqual(self.recipients(title="订单支付完成"), {"buyer", "buyer_admin", "provider"})
+
+    def test_saas_order_no_eligible_buyer_returns_422_before_flush(self):
+        m = self.m
+        self.seed_scheduled_events()
+        with m.SessionLocal() as db:
+            subscription = db.get(m.SaaSSubscription, "expired")
+            subscription.created_by = "deleted@example.invalid"
+            db.get(m.User, "buyer").is_active = False
+            db.flush()
+            with patch.object(db, "flush", side_effect=AssertionError("must not flush without buyer")):
+                with self.assertRaises(m.HTTPException) as raised:
+                    m.add_saas_order(db, subscription, db.get(m.Product, "scheduled_product"), db.get(m.SaaSProductVersion, "saas_version"), 100, "renew", paid=True)
+            self.assertEqual(raised.exception.status_code, 422)
+            self.assertFalse(any(isinstance(item, (m.Order, m.Payment, self.Message)) for item in db.new))
+            db.rollback()
+        self.assertEqual(self.counts(), (0, 0, 0))
+
+    def test_saas_order_fallback_rejects_inactive_membership_activation_and_platform_role(self):
+        m = self.m
+        self.seed_scheduled_events()
+        with m.SessionLocal() as db:
+            subscription = db.get(m.SaaSSubscription, "expired")
+            subscription.created_by = ""
+            buyer = db.get(m.User, "buyer")
+            membership = db.scalar(self.select(m.Membership).where(m.Membership.user_id == "buyer", m.Membership.enterprise_id == "buyer_tenant"))
+            product = db.get(m.Product, "scheduled_product")
+            version = db.get(m.SaaSProductVersion, "saas_version")
+            for obj, field, rejected in ((membership, "status", "disabled"), (membership, "role", "enterprise_admin"), (buyer, "activation_status", "pending_activation"), (buyer, "platform_role", "platform_operator")):
+                with self.subTest(field=field, value=rejected):
+                    original = getattr(obj, field)
+                    setattr(obj, field, rejected)
+                    db.flush()
+                    with self.assertRaises(m.HTTPException) as raised:
+                        m.add_saas_order(db, subscription, product, version, 100, "renew")
+                    self.assertEqual(raised.exception.status_code, 422)
+                    setattr(obj, field, original)
+                    db.flush()
+            db.rollback()
+        self.assertEqual(self.counts(), (0, 0, 0))
+
+    def test_sla_evaluation_http_breach_has_only_platform_recipients(self):
+        m = self.m
+        self.seed_scheduled_events()
+        with m.SessionLocal() as db:
+            db.add(m.SLAProfile(id="profile", name="Test SLA", status="active"))
+            db.add(m.ApiUsage(route_id="route", credential_id="credential", enterprise_id="buyer_tenant", method="POST", status_code=500))
+            db.commit()
+        results = self.request("POST", "/api/sla/evaluate", actor="ops")["items"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["status"], "breached")
+        self.assertEqual(self.recipients(target_id=results[0]["id"], category="system"), {"platform", "ops"})
 
 
 if __name__ == "__main__":

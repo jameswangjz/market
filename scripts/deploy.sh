@@ -50,5 +50,7 @@ if [[ -f k8s/message-center.yaml ]]; then
   kubectl apply -f "$RENDERED_MANIFEST"
   kubectl -n "$NAMESPACE" rollout status deployment/market-mailpit --timeout=240s
   kubectl -n "$NAMESPACE" rollout status deployment/message-center-worker --timeout=180s
+  kubectl -n "$NAMESPACE" rollout restart deployment/market-prometheus
+  kubectl -n "$NAMESPACE" rollout status deployment/market-prometheus --timeout=180s
 fi
 kubectl -n "$NAMESPACE" get pods,svc -o wide

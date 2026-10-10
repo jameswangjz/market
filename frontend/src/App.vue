@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
+import MessageSettings from "./MessageSettings.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
 import "./gateway-doc.css";
 import {
@@ -150,6 +151,7 @@ const myEnterpriseInvitations = ref([]);
 const notificationSummary = ref({ unread: 0, unacknowledged_urgent: 0 });
 const notificationPreview = ref(false);
 const notificationFocus = ref("");
+const systemSettingsTab = ref("notifications");
 useNotificationStream(loadNotificationSummary, { token });
 const enterpriseManageModal = ref(null);
 const enterpriseManageReadOnly = ref(false);
@@ -2075,8 +2077,9 @@ onUnmounted(() => {
           <span></span>正在同步运营数据...
         </div>
         <div v-if="activeView === 'settings'" class="tabs settings-tabs">
-          <button class="active" type="button">通知与角色</button
-          ><button type="button" disabled>安全与审计</button>
+          <button :class="{ active: systemSettingsTab === 'notifications' }" type="button" @click="systemSettingsTab = 'notifications'">通知与角色</button>
+          <button :class="{ active: systemSettingsTab === 'message-center' }" type="button" @click="systemSettingsTab = 'message-center'">消息中心</button>
+          <button type="button" disabled>安全与审计</button>
         </div>
         <template v-if="activeView === 'messages'"><MessageCenter :initial-id="notificationFocus" @changed="loadNotificationSummary" @navigate="navigateNotification" /></template>
         <template v-else-if="activeView === 'overview'"
@@ -3151,6 +3154,7 @@ onUnmounted(() => {
             </div>
           </div></template
         >
+        <template v-else-if="activeView === 'settings' && systemSettingsTab === 'message-center'"><MessageSettings /></template>
         <template v-else-if="activeView === 'settings'"
           ><div class="page-heading">
             <div>
