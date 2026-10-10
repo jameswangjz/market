@@ -269,10 +269,15 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             db.add_all([m.Enterprise(id=eid, name=eid, credit_code=eid) for eid in ("buyer_tenant", "provider_tenant", "other_tenant")])
             db.flush()
             db.add_all([m.Membership(user_id=uid, enterprise_id=eid, role=role) for uid, eid, role in [("buyer", "buyer_tenant", "super_admin"), ("buyer_admin", "buyer_tenant", "enterprise_admin"), ("provider", "provider_tenant", "super_admin"), ("outsider", "other_tenant", "super_admin"), ("inactive", "buyer_tenant", "enterprise_admin"), ("platform", "buyer_tenant", "super_admin")]])
-            product = m.Product(id="product", enterprise_id="provider_tenant", name="Test product", product_type="dataset", provider_name="Provider", provider_type="enterprise", status="published", delivery_method="file", catalog_name="Test", description="Test", usage_scenarios="Test", pricing_strategy="Test", authorization_conditions="Test", data_source_statement="Test", compliance_statement="Test")
+            product = m.Product(id="product", enterprise_id="provider_tenant", name="Test product", product_type="dataset", provider_name="Provider", provider_type="enterprise", status="published", delivery_method="file", logo_file_id="product_logo", catalog_name="Test", description="Test", usage_scenarios="Test", pricing_strategy="Test", authorization_conditions="Test", data_source_statement="Test", compliance_statement="Test")
             db.add(product)
             db.flush()
             db.add(m.ProductReleaseVersion(id="version", product_id="product", version_code="v1", description="v1", price=100, cost=10, status="active"))
+            db.flush()
+            db.add_all([
+                m.FileObject(id="product_logo", owner_id="provider", product_id="product", object_name="logo", original_name="logo.png", content_type="image/png", file_role="product_logo", scan_status="clean"),
+                m.FileObject(id="product_data", owner_id="provider", product_id="product", version_id="version", object_name="dataset", original_name="dataset.zip", file_role="product_data", scan_status="clean"),
+            ])
             db.add_all([m.FileObject(id=fid, owner_id="buyer", object_name=fid, original_name=fid) for fid in ("front", "back", "license")])
             db.commit()
             self.tokens = {uid: m.issue_token(db.get(m.User, uid)) for uid, _ in accounts}
@@ -314,7 +319,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
         return patch.dict(self.m.message_center, {"create": injected})
 
     def create_order(self):
-        return self.request("POST", "/api/orders", json={"product_id": "product", "product_version_id": "version"})["id"]
+        return self.request("POST", "/api/orders", json={"product_id": "product", "product_version_id": "version", "buyer_enterprise_id": "buyer_tenant"})["id"]
 
     def pay(self, order_id):
         return self.request("POST", f"/api/orders/{order_id}/transition", json={"action": "confirm_payment"})
@@ -472,9 +477,9 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             self.assertEqual(set(db.scalars(self.select(self.m.SettlementLine.status).where(self.m.SettlementLine.batch_id == bid))), {"locked"})
 
     def test_forbidden_reviewer_delivery_and_settlement_emit_nothing(self):
-        aid = self.request("POST", "/api/verification/personal", json=self.personal_body())["id"]
         oid = self.create_order()
         self.pay(oid)
+        aid = self.request("POST", "/api/verification/personal", json=self.personal_body())["id"]
         task = self.task_id(oid)
         before = self.counts()
         self.request("POST", f"/api/admin/verifications/personal/{aid}/review", actor="outsider", expected=403, json={"decision": "approve"})

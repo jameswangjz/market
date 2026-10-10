@@ -113,7 +113,7 @@ class SettlementMeteringTests(unittest.TestCase):
         for action in ("start_payment", "confirm_payment", "cancel_order", "accept_delivery", "reject_delivery", "confirm_order", "submit_after_sales", "submit_review"):
             with self.subTest(action=action):
                 self.request("POST", f"/api/orders/{oid}/transition", actor="buyer", expected=403, json={"action": action})
-        self.request("POST", "/api/orders", expected=403, json={"product_id": "product", "product_version_id": "version"})
+        self.request("POST", "/api/orders", expected=403, json={"product_id": "product", "product_version_id": "version", "buyer_enterprise_id": "buyer_tenant"})
         with m.SessionLocal() as db:
             self.assertEqual(db.get(m.Order, oid).payment_status, "unpaid")
             self.assertEqual(db.scalar(self.select(self.func.count()).select_from(m.Order)), 1)
