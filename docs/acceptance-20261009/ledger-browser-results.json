@@ -1,0 +1,15 @@
+﻿{
+    "status":  "passed",
+    "batch_id":  "71cb72c33dba4b49ae39fbf712226085",
+    "source":  "independent fictional ledger entry; no actual payment or order mutation",
+    "geometry":  {
+                     "width":  390,
+                     "bodyWidth":  390
+                 },
+    "report":  {
+                   "id":  "decbe4501b1fd06836e55e12f26a1e36",
+                   "status":  "resolved",
+                   "real":  false,
+                   "rows":  3
+               }
+}

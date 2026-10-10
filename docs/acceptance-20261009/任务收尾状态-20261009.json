@@ -1,0 +1,131 @@
+{
+  "total": 116,
+  "counts": {
+    "todo": 0,
+    "in_progress": 0,
+    "review": 0,
+    "blocked": 2,
+    "done": 114
+  },
+  "completion_rate": 98.3,
+  "updated_at": "2026-10-09T05:24:16.292297+00:00",
+  "items": [
+    {
+      "id": "bb20269be8d63df790904cdf7168e797",
+      "code": "BE-024",
+      "owner": "后端 Agent",
+      "title": "四账对账、差异单和差异关闭",
+      "area": "清算",
+      "priority": "P0",
+      "status": "blocked",
+      "dependencies": "BE-023",
+      "acceptance": "已完成：独立JSON账单导入、幂等、四类账簿逐订单比较、漏单/多单/重复/退款负向差异、处理依据和报告下载及前端。未完成：真实支付/银行/分账渠道适配与验收；缺账单/API、商户账户、回执、授权及手续费/到账时差映射。暂用独立模拟或人工导入验证，real_channel_verified=false，不触发真实付款。",
+      "progress": 70,
+      "updated_at": "2026-10-09T05:24:16.232956+00:00"
+    },
+    {
+      "id": "f698a57c7b47d3ec07e68db4030404a2",
+      "code": "QA-006",
+      "owner": "部署测试 Agent",
+      "title": "清算端到端、四账、幂等、退款和权限测试",
+      "area": "测试",
+      "priority": "P0",
+      "status": "blocked",
+      "dependencies": "BE-020..BE-027,FE-009..FE-012",
+      "acceptance": "已完成：内部清算、幂等并发、调整提案保护、退款负向、权限回归及四类独立模拟账单测试。未完成：真实支付、银行、实际分账回执的资金端到端联调；待BE-024外部数据源与测试账户到位。模拟通过不等同真实支付验收。",
+      "progress": 90,
+      "updated_at": "2026-10-09T05:24:16.261732+00:00"
+    },
+    {
+      "id": "6a2a2be9e8607d8d3af51af471eb22c2",
+      "code": "BE-022",
+      "owner": "后端 Agent",
+      "title": "计量数据采集、校验和计费明细",
+      "area": "清算",
+      "priority": "P0",
+      "status": "done",
+      "dependencies": "BE-021",
+      "acceptance": "人工计量幂等与权限、支付/退款/交付/下载事件及共享API累计快照通过；计量不替代支付月份清算、不重复按订单累计共享用量。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:15.991516+00:00"
+    },
+    {
+      "id": "03ee6884c6be1f663dc5bfa2cb28838b",
+      "code": "BE-028",
+      "owner": "后端 Agent",
+      "title": "结构化审计事件和关联链",
+      "area": "审计",
+      "priority": "P0",
+      "status": "done",
+      "dependencies": "BE-020,BE-026",
+      "acceptance": "清算事件关联订单/批次/规则及请求号，结构化前后值与按订单隔离时间线验证通过。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:16.034021+00:00"
+    },
+    {
+      "id": "4cdb813dd8bba463626e058bd9ae1a94",
+      "code": "BE-029",
+      "owner": "后端 Agent",
+      "title": "审计分类、组合检索、详情、分页和导出 API",
+      "area": "审计",
+      "priority": "P0",
+      "status": "done",
+      "dependencies": "BE-028",
+      "acceptance": "分类、时间、组合查询、分页、CSV导出、公式防护、导出上限及越权拒绝验证通过。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:16.073817+00:00"
+    },
+    {
+      "id": "86f497e560a8086fe9184047aa9b8a67",
+      "code": "FE-013",
+      "owner": "前端 Agent",
+      "title": "审计分类按钮、检索、详情时间线和导出",
+      "area": "前端",
+      "priority": "P0",
+      "status": "done",
+      "dependencies": "BE-028,BE-029",
+      "acceptance": "审计分类、时间筛选、CSV导出、前后值、时间线分页和业务跳转已实现；真实浏览器桌面及移动端验证通过。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:16.111866+00:00"
+    },
+    {
+      "id": "ed196568e3450db652b690e45888bb3a",
+      "code": "QA-007",
+      "owner": "部署测试 Agent",
+      "title": "审计分类、检索、导出、安全和性能测试",
+      "area": "测试",
+      "priority": "P0",
+      "status": "done",
+      "dependencies": "BE-028,BE-029,FE-013",
+      "acceptance": "隔离库审计自动测试通过；真实PG两万条记录查询基线及真实浏览器检索/详情/导出通过，不代表生产容量承诺。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:16.145001+00:00"
+    },
+    {
+      "id": "48607d374f39debc72bb699f05484cff",
+      "code": "QA-010",
+      "owner": "部署测试 Agent",
+      "title": "产品四阶段审核、通知、报告和权限端到端验证",
+      "area": "专项测试",
+      "priority": "P0",
+      "status": "done",
+      "dependencies": "REVIEW-001,REVIEW-002,REVIEW-003,SEC-006,SEC-007,FE-018",
+      "acceptance": "四阶段审核、角色及企业隔离、通知和事务回滚通过；旧直接publish入口已封堵。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:16.173585+00:00"
+    },
+    {
+      "id": "ba9711e896523344eaff7be2e5df7094",
+      "code": "ARC-006",
+      "owner": "主 Agent",
+      "title": "清算与审计专项集成门禁和验收报告",
+      "area": "架构",
+      "priority": "P1",
+      "status": "done",
+      "dependencies": "BE-020..QA-007",
+      "acceptance": "当前可实施计量、清算保护、审计、账单导入设计及验证证据归档；真实资金联调限制分别保留于BE-024、QA-006。",
+      "progress": 100,
+      "updated_at": "2026-10-09T05:24:16.203539+00:00"
+    }
+  ]
+}
