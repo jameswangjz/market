@@ -1104,7 +1104,7 @@ class ProductVersionBody(BaseModel):
     price: float = Field(default=0, ge=0)
     cost: float = Field(default=0, ge=0)
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
-    daily_quota: int = Field(default=10000, ge=1, le=100000000)
+    daily_quota: int = Field(default=10000, ge=0, le=100000000)
     monthly_quota: int = Field(default=0, ge=0, le=3000000000)
     quota_unit: str = ""
     quota_amount: int = Field(default=0, ge=0, le=3000000000)
@@ -1220,6 +1220,7 @@ class ProductFileMetadata(BaseModel):
 class OrderBody(BaseModel):
     product_id: str
     product_version_id: str = ""
+    buyer_enterprise_id: str = Field(min_length=1, max_length=36)
 
 
 class TransitionBody(BaseModel):
@@ -3131,7 +3132,9 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
     stmt = select(Product)
     if user.verified_status != "verified":
         stmt = stmt.where(Product.status == "published")
-    elif user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
+    elif user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+        if user.platform_role:
+            raise HTTPException(403, "当前平台角色无权访问产品管理")
         enterprise = first_enterprise(db, user)
         stmt = stmt.where(Product.enterprise_id == enterprise.id)
     if q:
@@ -3140,7 +3143,15 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
         stmt = stmt.where(Product.status == status)
     if product_type:
         stmt = stmt.where(Product.product_type == product_type)
-    return {"items": [product_out(x) for x in db.scalars(stmt.order_by(Product.updated_at.desc())).all()]}
+    rows = db.scalars(stmt.order_by(Product.updated_at.desc())).all()
+    if user.verified_status != "verified":
+        public_items = []
+        for product in rows:
+            dto = storefront["public_product"](db, product)
+            if dto:
+                public_items.append({**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency})
+        return {"items": public_items}
+    return {"items": [product_out(x) for x in rows]}
 
 
 @app.get("/api/products/{product_id}")
@@ -3149,7 +3160,10 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
         product = db.scalar(select(Product).where(Product.id == product_id, Product.status == "published"))
         if not product:
             raise HTTPException(404, "产品不存在或未发布")
-        result = product_out(product)
+        dto = storefront["public_product"](db, product)
+        if not dto:
+            raise HTTPException(404, "产品不存在或未就绪")
+        return {**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency, "review_logs": []}
     else:
         result = product_out(product_for_enterprise(product_id, user, db))
     review_actions = (
@@ -3221,6 +3235,8 @@ def validate_product_settlement_rule(values: dict[str, Any], db: Session) -> Non
 @app.post("/api/products")
 def create_product(body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     enterprise = first_enterprise(db, user)
+    trading_policy["require_buyer"](db, user, enterprise.id)
+    trading_policy["delivery_category"](body.delivery_method)
     values = body.model_dump()
     versions = values.pop("versions", [])
     custom_rule = values.pop("settlement_rule", {}) or {}
@@ -3245,20 +3261,24 @@ def create_product(body: ProductBody, user: User = Depends(current_user), db: Se
 @app.put("/api/products/{product_id}")
 def update_product(product_id: str, body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
+    if not user.platform_role:
+        trading_policy["require_buyer"](db, user, product.enterprise_id)
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
+    if db.scalar(select(Order.id).where(Order.product_id == product.id, Order.paid_amount > 0).limit(1)):
+        if any(getattr(product, key) != getattr(body, key) for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")):
+            raise HTTPException(409, "已售产品的交付类型和接入地址不可覆盖")
     values = body.model_dump()
+    trading_policy["delivery_category"](body.delivery_method)
     versions = values.pop("versions", [])
     custom_rule = values.pop("settlement_rule", {}) or {}
     validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
     values["settlement_rule_json"] = json.dumps(custom_rule, ensure_ascii=False)
-    values["provider_name"] = values["provider_name"] or first_enterprise(db, user).name
+    values["provider_name"] = values["provider_name"] or db.get(Enterprise, product.enterprise_id).name
     if versions:
         values["version"] = versions[0]["version_code"]
         values["price"] = versions[0]["price"]
-        product.versions.clear()
-        for item in versions:
-            product.versions.append(ProductReleaseVersion(**item))
+        trading_policy["update_versions"](db, product, versions)
     for name, value in values.items():
         setattr(product, name, value)
     product.review_comment = ""
@@ -3277,6 +3297,8 @@ def list_product_versions(product_id: str, user: User = Depends(current_user), d
 @app.post("/api/products/{product_id}/versions")
 def add_product_version(product_id: str, body: ProductVersionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
+    if not user.platform_role:
+        trading_policy["require_buyer"](db, user, product.enterprise_id)
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以增加版本")
     if db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == body.version_code)):
@@ -3291,6 +3313,8 @@ def add_product_version(product_id: str, body: ProductVersionBody, user: User = 
 @app.put("/api/products/{product_id}/versions/{version_id}")
 def update_product_version(product_id: str, version_id: str, body: ProductVersionUpdateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
+    if not user.platform_role:
+        trading_policy["require_buyer"](db, user, product.enterprise_id)
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以编辑版本")
     version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product.id))
@@ -3299,6 +3323,7 @@ def update_product_version(product_id: str, version_id: str, body: ProductVersio
     duplicate = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.version_code == body.version_code, ProductReleaseVersion.id != version.id))
     if duplicate:
         raise HTTPException(409, "该版本号已存在")
+    trading_policy["protect_sold_version"](db, version, body.model_dump())
     for key, value in body.model_dump().items():
         setattr(version, key, value)
     if product.versions and version.id == product.versions[0].id:
@@ -3312,6 +3337,8 @@ def update_product_version(product_id: str, version_id: str, body: ProductVersio
 @app.post("/api/products/{product_id}/submit")
 def submit_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
+    if not user.platform_role:
+        trading_policy["require_buyer"](db, user, product.enterprise_id)
     required = {
         "所属目录": product.catalog_name and product.catalog_name != "未分类",
         "提供方": product.provider_name,
@@ -3327,6 +3354,7 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
         raise HTTPException(400, f"产品元数据不完整，请补充：{'、'.join(missing)}")
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "当前产品状态不允许提交审核")
+    trading_policy["validate_submission"](db, product)
     product.status = "pending_review"
     product.review_comment = ""
     notify_platform_role(db, "business_reviewer", "产品待业务审核", f"产品“{product.name}”已提交审核，请进行业务审核。", "product", product.id)
@@ -4939,10 +4967,7 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
 
 @app.post("/api/orders")
 def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    buyer = first_enterprise(db, user)
-    if user.platform_role or user.activation_status != "active":
-        raise HTTPException(403, "企业订单须由活跃企业管理员创建")
-    require_enterprise_admin(db, user, buyer.id)
+    buyer = trading_policy["require_buyer"](db, user, body.buyer_enterprise_id)
     product = db.get(Product, body.product_id)
     if not product or product.status != "published":
         raise HTTPException(400, "产品不存在或尚未发布")
@@ -6488,6 +6513,8 @@ def upload_file(
 ):
     if product_id:
         product = product_for_enterprise(product_id, user, db)
+        if file_role in {"product_data", "product_logo"} and not user.platform_role:
+            trading_policy["require_buyer"](db, user, product.enterprise_id)
         if file_role in {"product_data", "product_logo"} and product.status not in {"draft", "rejected", "security_unpublished"}:
             raise HTTPException(409, "已发布或审核中的产品不可替换文件")
     version_item = None
@@ -6495,6 +6522,10 @@ def upload_file(
         version_item = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.id == version_id, ProductReleaseVersion.product_id == product_id))
         if not version_item:
             raise HTTPException(400, "产品版本不存在或不属于该产品")
+    if file_role == "product_data" and product_id:
+        if not version_item:
+            raise HTTPException(400, "产品交付文件必须绑定具体版本")
+        trading_policy["protect_sold_file"](db, version_item)
     filename = upload.filename or "file"
     lower_name = filename.lower()
     upload.file.seek(0, 2)
@@ -6698,3 +6729,11 @@ audit_support = install_audit_support(globals())
 from .reconciliation_support import install as install_reconciliation_support
 
 ledger_support = install_reconciliation_support(globals())
+
+from .trading_policy import install as install_trading_policy
+
+trading_policy = install_trading_policy(globals())
+
+from .storefront import install as install_storefront
+
+storefront = install_storefront(globals())
