@@ -1,13 +1,13 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from "vue";
-import axios from "axios";
 import { ArrowLeft, ArrowRight, Building2, Database, PackageCheck, RefreshCw, Search, ShoppingCart } from "lucide-vue-next";
 import { consoleLoginUrl, navigate } from "./routes.js";
+import { buyerEligibility, createCheckoutClient, createCheckoutSession, createPublicStorefrontClient, isMonthlyDelivery } from "./checkoutClient.js";
 import "./storefront.css";
 
 const props = defineProps({ productId: { type: String, default: "" }, search: { type: String, default: "" } });
 // This client never inherits the console's bearer token or private product API.
-const api = axios.create({ baseURL: "/api/storefront", timeout: 15000 });
+const api = createPublicStorefrontClient();
 const items = ref([]);
 const product = ref(null);
 const busy = ref(false);
@@ -19,6 +19,16 @@ const pageSize = ref(12);
 const query = ref("");
 const type = ref("");
 const selectedVersion = ref("");
+const selectedEnterprise = ref("");
+const subscriptionMonths = ref(1);
+const checkout = ref({ user: null, enterprises: [], identityBusy: false, quote: null, quoteBusy: false, submitting: false, error: "" });
+const purchase = createCheckoutSession(createCheckoutClient(), state => { checkout.value = state; });
+const monthly = computed(() => isMonthlyDelivery(product.value));
+const buyerEnterprise = computed(() => checkout.value.enterprises.find(item => item.id === selectedEnterprise.value));
+const eligibilityReason = computed(() => buyerEligibility(checkout.value.user, buyerEnterprise.value));
+const canSubscribe = computed(() => Boolean(version.value && !eligibilityReason.value && checkout.value.quote && !checkout.value.quoteBusy && !checkout.value.submitting && !checkout.value.identityBusy));
+const roleLabels = { super_admin: "超级管理员", enterprise_admin: "管理员", member: "普通成员" };
+const verificationLabels = { verified: "已实名认证", unverified: "未实名认证", pending: "认证审核中", rejected: "认证未通过" };
 const types = { dataset: "数据集", model: "模型", api: "API 服务", application: "数据应用", saas: "SaaS 应用", report: "数据报告", training: "培训", consulting: "咨询", custom: "定制开发" };
 const deliveryLabels = { file: "文件交付", api: "API 交付", model_api: "模型 API 交付", tenant_access: "租户访问授权", saas: "SaaS 应用", online: "线上交付", offline: "线下交付", manual: "人工交付", training: "培训服务", consulting: "咨询服务", custom: "定制开发" };
 const pages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
@@ -45,6 +55,15 @@ function logoUrl(value) {
 }
 function hideBrokenLogo(event) { event.target.hidden = true; }
 function productUrl(id) { return `/products/${encodeURIComponent(id)}`; }
+function quoteSelection() {
+  return { product: product.value, versionId: selectedVersion.value, enterpriseId: selectedEnterprise.value, months: subscriptionMonths.value };
+}
+function refreshQuote() { return purchase.setSelection(quoteSelection()); }
+async function subscribe() {
+  if (!canSubscribe.value) return;
+  const order = await purchase.submit();
+  if (order) navigate("/console?view=orders");
+}
 function applyFilters(nextPage = 1) {
   const params = new URLSearchParams();
   if (query.value.trim()) params.set("q", query.value.trim());
@@ -60,6 +79,9 @@ async function load() {
   error.value = "";
   notFound.value = false;
   product.value = null;
+  selectedVersion.value = "";
+  selectedEnterprise.value = "";
+  subscriptionMonths.value = 1;
   items.value = [];
   const params = new URLSearchParams(props.search);
   query.value = params.get("q") || "";
@@ -73,6 +95,7 @@ async function load() {
       if (!data?.name || !Array.isArray(data.versions)) throw new Error("invalid-contract");
       product.value = data;
       selectedVersion.value = data.versions[0]?.id || "";
+      purchase.loadIdentity();
     } else {
       const { data } = await api.get("/products", { params: { q: query.value, type: type.value, page: page.value, page_size: 12 }, signal: request.signal });
       if (request.signal.aborted) return;
@@ -91,7 +114,8 @@ async function load() {
   }
 }
 watch(() => [props.productId, props.search], load, { immediate: true });
-onUnmounted(() => controller?.abort());
+watch([product, selectedVersion, selectedEnterprise, subscriptionMonths], refreshQuote, { flush: "sync" });
+onUnmounted(() => { controller?.abort(); purchase.dispose(); });
 </script>
 
 <template>
@@ -122,10 +146,27 @@ onUnmounted(() => controller?.abort());
           <div class="store-description"><section><h2>商品介绍</h2><p>{{ product.description || '暂无介绍' }}</p></section><section><h2>交付方式</h2><p>{{ deliveryLabels[product.delivery_method] || product.delivery_method || '待公布' }}</p></section></div>
           <section class="store-version-tool">
             <h2>商品版本</h2>
-            <label v-if="product.versions.length">版本<select v-model="selectedVersion"><option v-for="item in product.versions" :key="item.id" :value="item.id">{{ item.version_code }}</option></select></label>
+            <label v-if="product.versions.length">版本<select v-model="selectedVersion" :disabled="checkout.submitting"><option v-for="item in product.versions" :key="item.id" :value="item.id">{{ item.version_code }}</option></select></label>
             <template v-if="version"><p class="store-version-description">{{ version.description || '暂无版本介绍' }}</p><div class="store-price">{{ price(version.price) }}<small v-if="product.price_unit"> / {{ priceUnit(product.price_unit) }}</small></div></template>
             <p v-else class="muted">暂无可售版本</p>
-            <a :href="loginUrl" class="primary-btn full-btn" @click.prevent="navigate(loginUrl)"><ShoppingCart :size="16" />前往工作台</a>
+            <div v-if="checkout.identityBusy" class="store-checkout-status" role="status"><RefreshCw :size="16" class="store-spinning" />正在加载购买资格</div>
+            <template v-else-if="checkout.user">
+              <label class="store-checkout-field">购买企业<select v-model="selectedEnterprise" :disabled="checkout.submitting"><option value="">请选择购买企业</option><option v-for="enterprise in checkout.enterprises" :key="enterprise.id" :value="enterprise.id">{{ enterprise.name }} · {{ roleLabels[enterprise.role] || enterprise.role }} · {{ enterprise.eligible ? '可订阅' : '不可订阅' }}</option></select></label>
+              <p v-if="buyerEnterprise" class="store-buyer-status">{{ roleLabels[buyerEnterprise.role] || buyerEnterprise.role }} · {{ verificationLabels[buyerEnterprise.verification_status] || buyerEnterprise.verification_status }}</p>
+              <p v-if="!checkout.enterprises.length" class="store-checkout-status">暂无可选购买企业</p>
+              <p v-if="eligibilityReason" class="store-checkout-status">{{ eligibilityReason }}</p>
+              <label v-if="monthly && version" class="store-checkout-field">订阅月数<input v-model.number="subscriptionMonths" type="number" min="1" max="36" step="1" :disabled="checkout.submitting" /></label>
+              <p v-else-if="version" class="store-checkout-status">一次性购买</p>
+              <div class="store-quote" aria-live="polite" :aria-busy="checkout.quoteBusy">
+                <p v-if="checkout.quoteBusy" class="store-checkout-status"><RefreshCw :size="16" class="store-spinning" />正在获取报价</p>
+                <template v-else-if="checkout.quote"><p class="store-quote-line"><span>{{ checkout.quote.billing_unit === 'month' ? '月单价' : '单价' }}</span><strong>{{ price(checkout.quote.unit_price) }}</strong></p><p v-if="checkout.quote.billing_unit === 'month'" class="store-quote-line"><span>订阅期限</span><strong>{{ checkout.quote.subscription_months }} 个月</strong></p><p class="store-quote-line"><span>订单金额（CNY）</span><strong class="store-quote-amount">{{ price(checkout.quote.amount) }}</strong></p></template>
+              </div>
+              <button class="primary-btn full-btn" :disabled="!canSubscribe" @click="subscribe"><ShoppingCart :size="16" />{{ checkout.submitting ? '正在创建订单' : '订阅' }}</button>
+              <button v-if="checkout.error && !checkout.submitting && selectedEnterprise && !eligibilityReason" class="secondary-btn full-btn store-checkout-retry" :disabled="checkout.quoteBusy" @click="refreshQuote"><RefreshCw :size="16" />重新报价</button>
+            </template>
+            <a v-else :href="loginUrl" class="primary-btn full-btn" @click.prevent="navigate(loginUrl)"><ShoppingCart :size="16" />登录后订阅</a>
+            <p v-if="checkout.error" class="store-checkout-error" role="alert">{{ checkout.error }}</p>
+            <button v-if="!checkout.identityBusy && !checkout.submitting && (checkout.error || checkout.user && (!checkout.enterprises.length || eligibilityReason))" class="text-btn store-checkout-retry" @click="purchase.loadIdentity"><RefreshCw :size="14" />刷新购买资格</button>
           </section>
         </div>
       </template>

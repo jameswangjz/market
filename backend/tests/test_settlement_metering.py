@@ -211,15 +211,15 @@ class SettlementMeteringTests(unittest.TestCase):
             self.assertTrue(all(db.get(self.m.FileDownloadLog, item["source_id"]).success for item in downloads))
 
     def test_denied_missing_and_limited_downloads_never_count_as_success(self):
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Product, "product").download_limit = 1
+            db.commit()
         oid = self.create_order()
         storage = self.product_file(oid)
         self.download(oid, storage, actor="outsider", expected=403)
         storage.get_object.side_effect = RuntimeError("missing object")
         self.download(oid, storage, expected=404)
         storage.get_object.side_effect = None
-        with self.m.SessionLocal() as db:
-            db.get(self.m.Product, "product").download_limit = 1
-            db.commit()
         self.download(oid, storage)
         self.download(oid, storage, expected=429)
         self.assertEqual(len([item for item in self.measurements(oid) if item["measurement_type"] == "download"]), 1)
