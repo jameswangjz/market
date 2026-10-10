@@ -1,0 +1,23 @@
+﻿{
+    "status":  "passed",
+    "reviewRequests":  0,
+    "bounds":  {
+                   "left":  16,
+                   "top":  210.953125,
+                   "right":  374,
+                   "bottom":  633.046875,
+                   "width":  390,
+                   "height":  844
+               },
+    "checks":  [
+                   "styled approval/rejection",
+                   "initial focus",
+                   "empty rejection validation",
+                   "cancel without request",
+                   "Escape cancellation",
+                   "390px mobile bounds"
+               ],
+    "limits":  [
+                   "read-only test; no actual product approval or rejection"
+               ]
+}

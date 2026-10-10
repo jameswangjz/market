@@ -23,7 +23,7 @@ try {
     WaitJs '!!document.querySelector(".login-shell") || !!document.querySelector(".sidebar")'
     $u = $Username | ConvertTo-Json -Compress
     $p = $Password | ConvertTo-Json -Compress
-    Js "(async()=>{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$u,password:$p})});if(!r.ok)throw Error('Login '+r.status);const d=await r.json();localStorage.setItem('market_token',d.access_token);location.href='/console?view=products';return true})()" | Out-Null
+    Js "(async()=>{const r=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$u,password:$p})});if(!r.ok)throw Error('Login '+r.status);const d=await r.json();localStorage.setItem('market_token',d.token);location.href='/console?view=products';return true})()" | Out-Null
     WaitJs '!!document.querySelector(".sidebar") && [...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="\u5ba1\u6838")'
     Js '(()=>{window.prompt=window.confirm=()=>{throw Error("Native dialog used")};window.reviewRequests=0;const open=XMLHttpRequest.prototype.open,send=XMLHttpRequest.prototype.send;XMLHttpRequest.prototype.open=function(method,url,...args){this.testUrl=url;return open.call(this,method,url,...args)};XMLHttpRequest.prototype.send=function(...args){if(/\/products\/[^/]+\/(review|security-review)$/.test(this.testUrl)){window.reviewRequests++;throw Error("Review request blocked by read-only browser test")};return send.apply(this,args)};[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="\u5ba1\u6838").click();return true})()' | Out-Null
     WaitJs '!!document.querySelector(".review-action-bar")'
