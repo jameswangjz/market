@@ -51,6 +51,7 @@ try {
     WaitJs '!!document.querySelector("input[autocomplete=username]")'
     Screenshot 'console-login-desktop.png'
     $checks = @('anonymous listing','anonymous detail','listing refresh','detail refresh','console refresh','desktop/mobile bounds')
+    $taskCounts = $null
     if ($Password) {
         Cdp 'Page.navigate' @{url="$BaseUrl/console?returnTo=%2Fproducts%2F$productId"} | Out-Null
         WaitJs '!!document.querySelector("input[autocomplete=username]")'
@@ -61,13 +62,17 @@ try {
         $checks += 'authenticated login return to product'
         Cdp 'Page.navigate' @{url="$BaseUrl/console?view=development"} | Out-Null
         WaitJs '!!document.querySelector(".sidebar") && !document.querySelector(".loading-line")'
+        WaitJs 'document.querySelectorAll(".dev-summary .dev-stat").length === 6 && Number(document.querySelector(".dev-summary .dev-stat strong").textContent) > 0'
+        $taskCounts = Js '(()=>{let n=Array.from(document.querySelectorAll(".dev-summary .dev-stat")).map(x=>({label:x.querySelector("span").textContent.trim(),value:Number(x.querySelector("strong").textContent)}));return {items:n,total:n[0].value,statusSum:n.slice(1).reduce((s,x)=>s+x.value,0)}})()'
+        if ($taskCounts.total -ne $taskCounts.statusSum) { throw 'Task status counts do not sum to total' }
+        $checks += 'six task statuses count and sum correctly'
         Screenshot 'console-development-desktop.png'
         Cdp 'Page.reload' @{} | Out-Null
         WaitJs '!!document.querySelector(".sidebar") && !document.querySelector(".loading-line")'
         if (Js 'document.body.innerText.includes("\u6570\u636e\u5237\u65b0\u5931\u8d25")') { throw 'Authenticated console refresh failed' }
         $checks += 'authenticated console F5'
     }
-    @{status='passed';checks=$checks;detail=$detail;mobile=$mobile;list=$list;publicProducts=$public.total;limits=@('no paid checkout','no new business orders','multi-enterprise selection covered by HTTP/unit tests')} | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 (Join-Path $OutputDir 'browser-results.json')
+    @{status='passed';checks=$checks;taskCounts=$taskCounts;detail=$detail;mobile=$mobile;list=$list;publicProducts=$public.total;limits=@('no paid checkout','no new business orders','multi-enterprise selection covered by HTTP/unit tests')} | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 (Join-Path $OutputDir 'browser-results.json')
     Write-Output 'Storefront browser checks passed'
 } finally {
     if ($socket) { $socket.Dispose() }
