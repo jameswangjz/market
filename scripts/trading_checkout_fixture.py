@@ -14,15 +14,37 @@ from app import main as m
 
 def cleanup(state):
     with m.SessionLocal() as db:
+        prefix = state["product_id"].removesuffix("-p")
+        assert prefix.startswith("qa-web-") and all(id.startswith(prefix + "-") for id in state["user_ids"]), "Only isolated browser fixtures may be removed"
         orders = db.scalars(select(m.Order).where(m.Order.product_id == state["product_id"])).all()
-        assert all(not o.paid_amount for o in orders), "Paid fixture orders require manual cleanup"
+        assert state.get("offline_fulfillment_fixture") or all(not o.paid_amount for o in orders), "Paid fixture orders require manual cleanup"
         ids = [o.id for o in orders]
-        files = db.scalars(select(m.FileObject).where(m.FileObject.product_id == state["product_id"])).all()
+        assert all(o.buyer_user_id in state["user_ids"] for o in orders)
+        assert not db.scalar(select(m.Refund.id).where(m.Refund.order_id.in_(ids)))
+        assert not db.scalar(select(m.Settlement.id).where(m.Settlement.order_id.in_(ids)))
+        task_ids = db.scalars(select(m.DeliveryTask.id).where(m.DeliveryTask.order_id.in_(ids))).all()
+        attachment_files = select(m.DeliveryAttachment.file_id).where(m.DeliveryAttachment.task_id.in_(task_ids))
+        files = db.scalars(select(m.FileObject).where(or_(m.FileObject.product_id == state["product_id"], m.FileObject.id.in_(attachment_files)))).all()
         file_ids = [f.id for f in files]
-        targets = ids + file_ids + state["version_ids"] + [state["product_id"]]
+        targets = ids + file_ids + task_ids + state["version_ids"] + [state["product_id"]]
+        messages = m.message_center["Message"]
+        receipt = m.message_center["Receipt"]
+        delivery = m.message_center["Delivery"]
+        message_ids = db.scalars(select(messages.id).where(messages.target_id.in_(targets))).all()
+        delivery_ids = select(delivery.id).where(delivery.message_id.in_(message_ids))
+        db.execute(delete(m.message_center["DeliveryAttempt"]).where(m.message_center["DeliveryAttempt"].delivery_id.in_(delivery_ids)))
+        db.execute(delete(m.message_center["ExpiredUrgent"]).where(m.message_center["ExpiredUrgent"].message_id.in_(message_ids)))
+        links = m.Base.metadata.tables["notification_message_attachments"]
+        db.execute(delete(links).where(links.c.message_id.in_(message_ids)))
+        db.execute(delete(receipt).where(receipt.message_id.in_(message_ids)))
+        db.execute(delete(delivery).where(delivery.message_id.in_(message_ids)))
+        db.execute(delete(messages).where(messages.id.in_(message_ids)))
+        db.execute(delete(m.message_center["Preference"]).where(m.message_center["Preference"].user_id.in_(state["user_ids"])))
         db.execute(delete(m.AuditLog).where(or_(m.AuditLog.target_id.in_(targets), m.AuditLog.actor.in_(state["emails"]))))
         for model in (m.OrderStateLog, m.Payment, m.SettlementMeasurement):
             db.execute(delete(model).where(model.order_id.in_(ids)))
+        db.execute(delete(m.DeliveryAttachment).where(m.DeliveryAttachment.task_id.in_(task_ids)))
+        db.execute(delete(m.DeliveryTask).where(m.DeliveryTask.id.in_(task_ids)))
         db.execute(delete(m.Order).where(m.Order.id.in_(ids)))
         db.execute(delete(m.FileDownloadLog).where(m.FileDownloadLog.file_id.in_(file_ids)))
         db.execute(delete(m.ProductSecurityScan).where(m.ProductSecurityScan.product_id == state["product_id"]))
@@ -37,10 +59,13 @@ def cleanup(state):
     for owner in state["user_ids"]:
         for obj in storage.list_objects(m.MINIO_BUCKET, prefix=owner + "/", recursive=True):
             storage.remove_object(m.MINIO_BUCKET, obj.object_name)
+    for order_id in ids:
+        for obj in storage.list_objects(m.MINIO_BUCKET, prefix="delivery/" + order_id + "/", recursive=True):
+            storage.remove_object(m.MINIO_BUCKET, obj.object_name)
     return {"status": "cleaned", "orders": len(ids), "files": len(file_ids)}
 
 
-def prepare(path):
+def prepare(path, offline=False):
     marker = secrets.token_hex(8)
     prefix = "qa-web-" + marker
     state = {"product_id": prefix + "-p", "version_ids": [prefix + "-v1", prefix + "-v2"],
@@ -60,7 +85,7 @@ def prepare(path):
             db.add_all([m.Membership(user_id=buyer.id, enterprise_id=e.id, role="super_admin") for e in enterprises[:2]])
             db.add(m.Membership(user_id=provider.id, enterprise_id=enterprises[2].id, role="super_admin"))
             product = m.Product(id=state["product_id"], enterprise_id=enterprises[2].id, name="商城浏览器隔离验收商品",
-                product_type="dataset", delivery_method="file", status="draft", provider_name=enterprises[2].name,
+                product_type="consulting" if offline else "dataset", delivery_method="consulting" if offline else "file", status="draft", provider_name=enterprises[2].name,
                 description="隔离验收商品，验证完成后自动删除", settlement_rule_mode="custom",
                 settlement_rule_json=json.dumps(dict(platform_rate=20, provider_rate=80, service_rate=0, expert_rate=0, channel_rate=0)))
             db.add(product); db.flush()
@@ -91,20 +116,67 @@ def prepare(path):
             m.trading_policy["validate_submission"](db, product)
             product.status = "published"; db.commit()
         state["token"] = buyer_token
+        state["provider_token"] = provider_token
+        if offline:
+            client = TestClient(m.app)
+            try:
+                response = client.post("/api/orders", headers={"Authorization": "Bearer " + buyer_token},
+                    json={"product_id": state["product_id"], "product_version_id": state["version_ids"][0],
+                          "buyer_enterprise_id": state["enterprise_ids"][0]})
+                assert response.status_code == 200, response.text
+                state["order_id"] = response.json()["id"]
+                assert response.json()["main_status"] == "pending_provider_review"
+            finally:
+                client.close()
         path.write_text(json.dumps(state), encoding="utf-8"); path.chmod(0o600)
         return {"status": "prepared", "product_id": state["product_id"], "token_file": str(path)}
     except Exception:
         cleanup(state); path.unlink(missing_ok=True); raise
 
 
+def fulfillment_stage(path, stage):
+    state = json.loads(path.read_text(encoding="utf-8"))
+    assert state["product_id"].startswith("qa-web-") and state.get("order_id")
+    client = TestClient(m.app)
+    try:
+        order_id = state["order_id"]
+        if state.get("offline_fulfillment_fixture"):
+            assert stage == "pending_acceptance" and not state.get("acceptance_order_id")
+            response = client.post("/api/orders", headers={"Authorization": "Bearer " + state["token"]},
+                json={"product_id": state["product_id"], "product_version_id": state["version_ids"][0],
+                      "buyer_enterprise_id": state["enterprise_ids"][0]})
+            assert response.status_code == 200, response.text
+            order_id = state["acceptance_order_id"] = response.json()["id"]
+        state["buyer_token"] = state["token"]
+        def post(suffix, token, body):
+            result = client.post(f'/api/orders/{order_id}/{suffix}',
+                headers={"Authorization": "Bearer " + token}, json=body)
+            assert result.status_code == 200, result.text
+            return result.json()
+        post("provider-review", state["provider_token"], {"decision": "approve"})
+        state["offline_fulfillment_fixture"] = True
+        path.write_text(json.dumps(state), encoding="utf-8"); path.chmod(0o600)
+        post("transition", state["token"], {"action": "confirm_payment"})
+        if stage == "pending_acceptance":
+            for action in ("start_delivery", "submit_delivery"):
+                post("transition", state["provider_token"], {"action": action})
+        return {"status": "prepared", "stage": stage}
+    finally:
+        client.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("prepare", "cleanup"))
+    parser.add_argument("action", choices=("prepare", "cleanup", "fulfillment"))
     parser.add_argument("--state", default="/tmp/trd-phase2-fixture.json")
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--stage", choices=("awaiting_start", "pending_acceptance"), default="awaiting_start")
     args = parser.parse_args(); path = Path(args.state)
     if args.action == "prepare":
         assert not path.exists(), "Clean up the previous fixture first"
-        result = prepare(path)
+        result = prepare(path, args.offline)
+    elif args.action == "fulfillment":
+        result = fulfillment_stage(path, args.stage)
     else:
         result = cleanup(json.loads(path.read_text(encoding="utf-8")))
         path.unlink()

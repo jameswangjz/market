@@ -36,7 +36,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, create_engine, func, or_, select, text, update
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, create_engine, func, inspect, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -436,8 +436,9 @@ class SaaSOperation(Base):
 
 class ApiGatewayRoute(Base):
     __tablename__ = "api_gateway_routes"
+    __table_args__ = (UniqueConstraint("product_id", "version", name="uq_gateway_product_version"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
-    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), unique=True, index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
     route_key: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     upstream_url: Mapped[str] = mapped_column(String(500))
     version: Mapped[str] = mapped_column(String(40), default="v1")
@@ -450,6 +451,7 @@ class ApiGatewayRoute(Base):
     health_path: Mapped[str] = mapped_column(String(240), default="/health")
     health_method: Mapped[str] = mapped_column(String(10), default="GET")
     health_message: Mapped[str] = mapped_column(Text, default="")
+    validated_ip: Mapped[str] = mapped_column(String(64), default="")
     upstream_auth_mode: Mapped[str] = mapped_column(String(30), default="oauth2")
     upstream_scope: Mapped[str] = mapped_column(String(500), default="resource.invoke")
     upstream_client_id: Mapped[str] = mapped_column(String(180), default="")
@@ -1195,7 +1197,7 @@ class GatewayConfigBody(BaseModel):
     version: str = Field(default="v1", max_length=40)
     auth_mode: str = "api_key"
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
-    daily_quota: int = Field(default=10000, ge=1, le=100000000)
+    daily_quota: int = Field(default=10000, ge=0, le=100000000)
     monthly_quota: int = Field(default=0, ge=0, le=3000000000)
     timeout_ms: int = Field(default=30000, ge=100, le=120000)
     strip_prefix: bool = True
@@ -2150,6 +2152,7 @@ def startup():
     Base.metadata.create_all(engine)
     ensure_product_metadata_schema()
     ensure_review_and_file_schema()
+    ensure_gateway_version_schema()
     repair_settlement_state_consistency()
     with SessionLocal() as db:
         for product in db.scalars(select(Product)).all():
@@ -2158,10 +2161,10 @@ def startup():
         db.commit()
         for product in db.scalars(select(Product).where(Product.product_type.in_(["api", "model", "saas"]), Product.status == "published")).all():
             client = ensure_oauth_client(db, product)
-            route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
-            if route and not route.upstream_client_id:
-                route.upstream_client_id = client.client_id
-                route.upstream_client_secret = client.client_secret
+            for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id)).all():
+                if not route.upstream_client_id:
+                    route.upstream_client_id = client.client_id
+                    route.upstream_client_secret = client.client_secret
         db.commit()
         if not db.scalar(select(DevelopmentTask.id).limit(1)):
             seed_tasks = [
@@ -3514,7 +3517,7 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
         product.status = "security_review"
         security_scan = run_product_security_scan(product, db, actor)
     elif stage == "operation":
-        product.status = "published"
+        version_gateway["on_review_complete"](db, product, user)
     product.review_comment = body.comment.strip() or ("已通过，进入" + {"business": "质量审核", "quality": "安全审核", "operation": "发布"}[stage])
     product.reviewed_by = actor
     product.reviewed_at = now()
@@ -3532,17 +3535,30 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             db.add(config)
     if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model", "saas"}:
         client = ensure_oauth_client(db, product)
-        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
-        if route:
+        for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id)).all():
             route.upstream_client_id = client.client_id
             route.upstream_client_secret = client.client_secret
         audit(db, user.email or user.phone or user.id, "ensure_platform_oauth_client", "oauth_client", client.id, product.product_type)
-    if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model"}:
-        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
-        if route:
-            gateway_auto_publish(route, product, db, user.email or user.phone or user.id)
-        else:
-            audit(db, user.email or user.phone or user.id, "gateway_route_pending_config", "product", product.id, "产品已审核，但尚未保存网关配置")
+    if body.decision == "approve" and stage == "operation" and product.delivery_method in {"api", "model_api"}:
+        for version in product.versions:
+            if version.status != "active":
+                continue
+            config = db.scalar(select(version_gateway["Config"]).where(version_gateway["Config"].version_id == version.id))
+            if not config:
+                legacy = product_gateway_route(db, product.id, version.version_code)
+                body_config = GatewayConfigBody(**({key: getattr(legacy, key) for key in ("upstream_url", "route_key", "version", "auth_mode", "upstream_auth_mode", "upstream_scope", "timeout_ms", "strip_prefix", "health_method", "health_path", "rate_limit_per_minute", "daily_quota", "monthly_quota")} if legacy else {
+                    "upstream_url": product.upstream_url, "route_key": f"{product.id[:12]}-{version.id[:12]}",
+                    "version": version.version_code, "rate_limit_per_minute": version.rate_limit_per_minute,
+                    "daily_quota": version.daily_quota, "monthly_quota": version.monthly_quota}))
+                config = version_gateway["save_config"](db, product, version.id, body_config, user)
+            route = db.get(ApiGatewayRoute, config.route_id)
+            client = ensure_oauth_client(db, product)
+            route.upstream_client_id, route.upstream_client_secret = client.client_id, client.client_secret
+            try:
+                version_gateway["verify_version"](db, product, version.id, user)
+            except HTTPException as exc:
+                audit(db, actor, "version_integration_pending", "product", product.id,
+                      f"version={version.id}; status={exc.status_code}", result="failed")
     audit(db, actor, f"{stage}_{'approve' if body.decision == 'approve' else 'reject'}_product", "product", product.id, product.review_comment, before={"status": before_status}, after={"status": product.status})
     db.commit()
     return product_out(product) | ({"security_report": security_scan_out(security_scan)} if security_scan else {})
@@ -3920,8 +3936,7 @@ def run_product_security_scan(product: Product, db: Session, actor: str) -> Prod
 
 def remove_product_delivery(product: Product, db: Session, actor: str) -> None:
     """Disable all delivery entry points before a product becomes unavailable."""
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
-    if route:
+    for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id)).all():
         if apisix_enabled():
             try:
                 apisix_admin_request("DELETE", f"/routes/{route.route_key}")
@@ -4032,6 +4047,37 @@ def publish_product(product_id: str, user: User = Depends(current_user), db: Ses
     raise HTTPException(409, "产品须依次通过业务、质量、安全和运营审核，不能直接发布")
 
 
+def ensure_gateway_version_schema():
+    """Preserve legacy route IDs while relaxing only product-level uniqueness."""
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as connection:
+        connection.execute(text("SELECT pg_advisory_xact_lock(73481203)"))
+        connection.execute(text("ALTER TABLE api_gateway_routes ADD COLUMN IF NOT EXISTS validated_ip VARCHAR(64) DEFAULT ''"))
+        schema = inspect(connection)
+        quote_name = connection.dialect.identifier_preparer.quote
+        for constraint in schema.get_unique_constraints("api_gateway_routes"):
+            if constraint["column_names"] == ["product_id"]:
+                connection.execute(text("ALTER TABLE api_gateway_routes DROP CONSTRAINT " + quote_name(constraint["name"])))
+        for index in schema.get_indexes("api_gateway_routes"):
+            if index["unique"] and index["column_names"] == ["product_id"] and not index.get("duplicates_constraint"):
+                connection.execute(text("DROP INDEX " + quote_name(index["name"])))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_api_gateway_routes_product_id ON api_gateway_routes (product_id)"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_gateway_product_version ON api_gateway_routes (product_id, version)"))
+
+
+def product_gateway_route(db: Session, product_id: str, version: str = "", active: bool = False):
+    stmt = select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product_id)
+    if version:
+        stmt = stmt.where(ApiGatewayRoute.version == version)
+    if active:
+        stmt = stmt.where(ApiGatewayRoute.status == "active")
+    rows = db.scalars(stmt.order_by(ApiGatewayRoute.created_at, ApiGatewayRoute.id)).all()
+    if len(rows) > 1:
+        raise HTTPException(409, "产品存在多版本网关配置，请指定版本")
+    return rows[0] if rows else None
+
+
 def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
     return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "upstream_auth_mode": route.upstream_auth_mode, "upstream_scope": route.upstream_scope, "upstream_oauth_configured": bool(route.upstream_client_id and route.upstream_client_secret), "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "apisix_enabled": os.getenv("APISIX_ENABLED", "false").lower() == "true", "created_at": route.created_at, "updated_at": route.updated_at}
 
@@ -4098,14 +4144,19 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     monthly_quota = version.monthly_quota if version else route.monthly_quota
     use_native_upstream = apisix_native_upstream()
     target_upstream = route.upstream_url.rstrip("/") if use_native_upstream else compat_upstream
+    parsed_upstream = urlparse(target_upstream)
+    node_host = route.validated_ip if use_native_upstream and route.validated_ip else parsed_upstream.hostname
+    node_host = f"[{node_host}]" if node_host and ":" in node_host else node_host
+    node = f"{node_host}:{parsed_upstream.port or (443 if parsed_upstream.scheme == 'https' else 80)}"
+    prefix = parsed_upstream.path.rstrip("/")
     plugins = {
-        "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
+        "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", (prefix if route.validated_ip else "") + r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
         "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "consumer_name" if apisix_native_auth() else "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2},
         "market-gateway-quota": {"route_key": route.route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "lookup_consumer": True},
     }
     if apisix_native_auth():
         plugins["key-auth"] = {"header": "X-API-Key", "query": "api_key"}
-    if apisix_native_upstream():
+    if apisix_native_upstream() and (route.upstream_auth_mode == "oauth2" or not route.validated_ip):
         plugins["market-gateway-oauth"] = {
             "product_id": route.product_id,
             "token_url": platform_oauth_token_url(),
@@ -4117,7 +4168,10 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
         "name": f"market-{route.route_key}",
         "uri": f"/gateway/{route.route_key}/*",
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
-        "upstream": {"type": "roundrobin", "nodes": {target_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if target_upstream.startswith("https://") else "http"},
+        "upstream": {"type": "roundrobin", "nodes": {node: 1}, "scheme": parsed_upstream.scheme,
+                     "pass_host": "rewrite", "upstream_host": parsed_upstream.hostname,
+                     "timeout": {"connect": route.timeout_ms / 1000, "send": route.timeout_ms / 1000, "read": route.timeout_ms / 1000}}
+                    if route.validated_ip else {"type": "roundrobin", "nodes": {target_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if target_upstream.startswith("https://") else "http"},
         "plugins": plugins,
         "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"},
     }
@@ -4255,10 +4309,13 @@ def gateway_auto_publish(route: ApiGatewayRoute, product: Product, db: Session, 
         health_path = "/" + health_path
     health_url = route.upstream_url.rstrip("/") + health_path
     try:
-        with httpx.Client(follow_redirects=False, timeout=max(route.timeout_ms / 1000, 1.0)) as client:
-            response = client.request(route.health_method or "GET", health_url)
+        response = validated_http_request(route.health_method or "GET", health_url,
+                                          timeout=min(max(route.timeout_ms / 1000, 0.1), 10.0), follow_redirects=False)
         if response.status_code < 200 or response.status_code >= 300:
             raise RuntimeError(f"健康检查返回 HTTP {response.status_code}")
+        addresses = response.extensions.get("validated_upstream_addresses", [])
+        if addresses:
+            route.validated_ip = addresses[0]
         route.status = "active"
         route.health_message = f"健康检查通过（HTTP {response.status_code}）"
         if not publish_apisix_route(route, product, db, actor):
@@ -4296,7 +4353,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
     product = gateway_product(order.product_id, db)
     if product.status not in {"published", "draft"}:
         raise HTTPException(409, "API 产品已被安全策略下架")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id, ApiGatewayRoute.status == "active"))
+    route = product_gateway_route(db, product.id, order.product_version_code, active=True)
     if not route:
         raise HTTPException(409, "API 网关路由尚未启用")
     return order, product, route, order.buyer_enterprise_id
@@ -4307,13 +4364,13 @@ def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str,
 
 
 @app.get("/api/products/{product_id}/gateway-config")
-def get_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def get_gateway_config(product_id: str, version: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
     if user.platform_role not in {"super_admin", "platform_operator"}:
         membership = current_membership(db, user, product.enterprise_id)
         if membership.role not in {"super_admin", "enterprise_admin"}:
             raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以查看网关配置")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route = product_gateway_route(db, product.id, version)
     return {"item": gateway_route_out(route, product) if route else None}
 
 
@@ -4334,22 +4391,22 @@ def gateway_revisions(product_id: str, user: User = Depends(current_user), db: S
 
 
 @app.post("/api/products/{product_id}/gateway-config/validate")
-def validate_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def validate_gateway_config(product_id: str, version: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
     gateway_operator_allowed(product, user, db, "校验")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route = product_gateway_route(db, product.id, version)
     if not route:
         raise HTTPException(404, "请先保存 API 网关配置")
     parsed = urlparse(route.upstream_url)
-    checks = {"upstream_url": parsed.scheme in {"http", "https"} and bool(parsed.netloc), "route_key": bool(route.route_key), "version": bool(route.version), "health_path": bool(route.health_path), "policy": route.rate_limit_per_minute > 0 and route.daily_quota > 0}
+    checks = {"upstream_url": parsed.scheme in {"http", "https"} and bool(parsed.netloc), "route_key": bool(route.route_key), "version": bool(route.version), "health_path": bool(route.health_path), "policy": route.rate_limit_per_minute > 0 and route.daily_quota >= 0}
     return {"valid": all(checks.values()), "checks": checks, "route": gateway_route_out(route, product)}
 
 
 @app.post("/api/products/{product_id}/gateway-config/rollback")
-def rollback_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def rollback_gateway_config(product_id: str, version: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
     gateway_operator_allowed(product, user, db, "回滚")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route = product_gateway_route(db, product.id, version)
     revisions = db.scalars(select(GatewayConfigRevision).where(GatewayConfigRevision.route_id == route.id, GatewayConfigRevision.status == "active").order_by(GatewayConfigRevision.revision.desc())).all() if route else []
     if not route or len(revisions) < 2:
         raise HTTPException(409, "没有可回滚的稳定网关版本")
@@ -4372,47 +4429,37 @@ def rollback_gateway_config(product_id: str, user: User = Depends(current_user),
 @app.put("/api/products/{product_id}/gateway-config")
 def save_gateway_config(product_id: str, body: GatewayConfigBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        membership = current_membership(db, user, product.enterprise_id)
-        if membership.role not in {"super_admin", "enterprise_admin"}:
-            raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以配置 API 网关")
-    parsed = urlparse(body.upstream_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise HTTPException(400, "后端服务地址必须是完整的 HTTP 或 HTTPS 地址")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
-    route_key = body.route_key.strip() or f"{product.id[:12]}-{body.version.replace('.', '-') }"
-    existing_key = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.route_key == route_key, ApiGatewayRoute.product_id != product.id))
-    if existing_key:
-        raise HTTPException(409, "API 路由标识已被占用")
-    values = body.model_dump()
-    values.pop("route_key")
-    if route:
-        for key, value in values.items():
-            setattr(route, key, value)
-        route.route_key = route_key
-        route.status = "draft"
-        route.health_message = "网关配置已更新，等待产品审核或重新发布"
-    else:
-        route = ApiGatewayRoute(product_id=product.id, route_key=route_key, created_by=user.email or user.phone or user.id, **values)
-        db.add(route)
-    audit(db, user.email or user.phone or user.id, "save_gateway_config", "api_gateway_route", product.id, route_key)
+    release = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id,
+                                                           ProductReleaseVersion.version_code == body.version))
+    if not release:
+        raise HTTPException(404, "请先登记对应产品版本")
+    if not body.route_key.strip():
+        body = body.model_copy(update={"route_key": f"{product.id[:12]}-{release.id[:12]}"})
+    config = version_gateway["save_config"](db, product, release.id, body, user)
+    route = db.get(ApiGatewayRoute, config.route_id)
     db.commit()
-    db.refresh(route)
     return gateway_route_out(route, product)
 
 
 @app.post("/api/products/{product_id}/gateway-config/publish")
-def publish_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def publish_gateway_config(product_id: str, version: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
     if user.platform_role not in {"super_admin", "platform_operator"}:
         membership = current_membership(db, user, product.enterprise_id)
         if membership.role not in {"super_admin", "enterprise_admin"}:
             raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以发布 API 网关路由")
-    if product.status != "published":
+    if product.status not in {"published", "pending_integration"}:
         raise HTTPException(409, "产品必须先发布后才能启用 API 网关路由")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route = product_gateway_route(db, product.id, version)
     if not route:
         raise HTTPException(404, "请先保存 API 网关配置")
+    config = db.scalar(select(version_gateway["Config"]).where(version_gateway["Config"].route_id == route.id))
+    if config:
+        verified = version_gateway["verify_version"](db, product, config.version_id, user)
+        db.commit()
+        if verified.status != "verified":
+            raise HTTPException(409, "版本接入验证或APISIX发布失败，请查看接入状态")
+        return gateway_route_out(route, product)
     if not gateway_auto_publish(route, product, db, user.email or user.phone or user.id):
         db.commit()
         raise HTTPException(409, f"网关后端健康检查失败：{route.health_message}")
@@ -4421,26 +4468,14 @@ def publish_gateway_config(product_id: str, user: User = Depends(current_user), 
 
 
 @app.post("/api/products/{product_id}/gateway-config/health-check")
-def check_gateway_config(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = gateway_product(product_id, db)
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        membership = current_membership(db, user, product.enterprise_id)
-        if membership.role not in {"super_admin", "enterprise_admin"}:
-            raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以检查 API 网关")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
-    if not route:
-        raise HTTPException(404, "请先保存 API 网关配置")
-    passed = gateway_auto_publish(route, product, db, user.email or user.phone or user.id)
-    db.commit()
-    if not passed:
-        raise HTTPException(409, f"网关后端健康检查失败：{route.health_message}")
-    return gateway_route_out(route, product)
+def check_gateway_config(product_id: str, version: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+    return publish_gateway_config(product_id, version, user, db)
 
 
 @app.post("/api/products/{product_id}/gateway-credentials")
 def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id, ApiGatewayRoute.status == "active"))
+    route = product_gateway_route(db, product.id, active=True)
     if not route:
         raise HTTPException(409, "API 网关路由尚未启用")
     target_enterprise_id = body.enterprise_id or first_enterprise(db, user).id
@@ -4545,7 +4580,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
 @app.get("/api/products/{product_id}/gateway-credentials")
 def list_gateway_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route = product_gateway_route(db, product.id)
     if not route:
         return {"items": []}
     target = first_enterprise(db, user).id
@@ -4556,12 +4591,12 @@ def list_gateway_credentials(product_id: str, user: User = Depends(current_user)
 
 
 @app.get("/api/products/{product_id}/gateway-usage")
-def gateway_usage(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def gateway_usage(product_id: str, version: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
     membership = current_membership(db, user, product.enterprise_id)
     if membership.role not in {"super_admin", "enterprise_admin"} and user.platform_role not in {"super_admin", "platform_operator"}:
         raise HTTPException(403, "只有产品提供企业管理员或平台管理员可以查看调用统计")
-    route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id))
+    route = product_gateway_route(db, product.id, version)
     if not route:
         return {"summary": {"total": 0, "success": 0, "error": 0, "avg_latency_ms": 0}, "items": []}
     rows = db.scalars(select(ApiUsage).where(ApiUsage.route_id == route.id).order_by(ApiUsage.created_at.desc()).limit(1000)).all()
@@ -4767,11 +4802,19 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
     return saas_integration_out(config)
 
 
+def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> None:
+    """Legacy purchase/renew simulate payment inline, so cannot admit administrators."""
+    trading_policy["require_buyer"](db, user, enterprise_id)
+    member = current_membership(db, user, enterprise_id)
+    if member.role != "super_admin":
+        raise HTTPException(403, "该旧订阅接口包含模拟付款，仅企业超级管理员可执行")
+
+
 @app.post("/api/products/{product_id}/saas-subscriptions")
 def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = saas_product(product_id, db)
     enterprise = first_enterprise(db, user)
-    require_enterprise_admin(db, user, enterprise.id)
+    require_legacy_saas_payer(db, user, enterprise.id)
     version = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
     if not version or not config:
@@ -4814,6 +4857,7 @@ def subscription_context(subscription_id: str, user: User, db: Session) -> tuple
 @app.post("/api/saas-subscriptions/{subscription_id}/renew")
 def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, version, config = subscription_context(subscription_id, user, db)
+    require_legacy_saas_payer(db, user, subscription.enterprise_id)
     expires_at = subscription.expires_at
     if expires_at and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
@@ -4966,7 +5010,7 @@ def remove_saas_department(subscription_id: str, department_id: str, user: User 
 
 
 def order_out(o: Order) -> dict[str, Any]:
-    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "provider_enterprise_id": o.provider_enterprise_id, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
 
 
 @app.get("/api/orders")
@@ -5001,10 +5045,11 @@ def create_order(body: OrderBody, user: User = Depends(current_user), db: Sessio
     product, version = quote["product"], quote["version"]
     order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=(getattr(version, "name", "") or version.description or version.version_code)[:120], product_name=product.name, buyer_name=buyer.name, amount=quote["amount"], billing_cycle="monthly" if quote["public"]["billing_unit"] == "month" else "", main_status="created")
     order_economics["apply_snapshot"](order, quote)
+    order_workflow["initialize_order"](db, order, user)
     db.add(order)
     db.flush()
     db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=order.amount, status="unpaid"))
-    db.add(OrderStateLog(order_id=order.id, domain="main", from_status="", to_status="created", action="提交订单", operator=user.name, reason="用户提交"))
+    db.add(OrderStateLog(order_id=order.id, domain="main", from_status="", to_status=order.main_status, action="提交订单", operator=user.name, reason="用户提交"))
     audit(db, user.email, "create_order", "order", order.id, order.order_no)
     db.commit()
     return order_out(order)
@@ -5012,14 +5057,21 @@ def create_order(body: OrderBody, user: User = Depends(current_user), db: Sessio
 
 @app.post("/api/orders/{order_id}/transition")
 def transition_order(order_id: str, body: TransitionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    order = db.get(Order, order_id)
+    order = db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
     if not order:
         raise HTTPException(404, "订单不存在")
+    if order_fulfillment["handle_transition"](db, user, order, body):
+        db.commit()
+        return order_out(order)
     item = TRANSITIONS.get(body.action)
     if not item:
         raise HTTPException(400, "不支持的订单动作")
     domain, expected, target, label = item
-    settlement_metering["require_transition"](db, user, order, body.action)
+    authorized = order_workflow["authorize_transition"](db, user, order, body.action)
+    if not authorized:
+        settlement_metering["require_transition"](db, user, order, body.action)
+    if order_workflow["payment_repeat"](db, order, body.action):
+        return order_out(order)
     if domain == "main":
         current = order.main_status
     elif domain == "payment":
@@ -5033,12 +5085,11 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if body.action == "approve" and current == "pending_review":
         target = "pending_fulfillment"
     if body.action == "cancel_order":
-        if order.main_status not in {"created", "pending_review", "pending_fulfillment"} or order.payment_status not in {"unpaid", "paying"}:
+        if order.main_status not in {"created", "pending_review", "pending_provider_review", "pending_payment", "pending_fulfillment"} or order.payment_status not in {"unpaid", "paying"}:
             raise HTTPException(409, "当前订单状态不允许取消")
         old_main = order.main_status
         order.main_status = "cancelled"
-        route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id))
-        if route:
+        for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id)).all():
             refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
         log_state(db, order, "main", old_main, "cancelled", body.action, user, body.reason)
         audit(db, user.email or user.phone or user.id, body.action, "order", order.id, body.reason)
@@ -5067,12 +5118,13 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         order.payment_status = "paid"
         order.paid_amount = order.amount
         log_state(db, order, "payment", current, target, body.action, user, body.reason)
-        if order.main_status in ["created", "pending_review"]:
+        if order.main_status in ["created", "pending_review", "pending_payment"]:
             old_main = order.main_status
             order.main_status = "pending_fulfillment"
             log_state(db, order, "main", old_main, order.main_status, "支付完成/生成任务", user, body.reason)
         if not db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc())):
             create_delivery_task(db, order, user.email or user.name)
+        order_fulfillment["after_payment"](db, order, user)
     elif body.action == "approve_refund":
         if order.payment_status != "paid":
             raise HTTPException(409, "只有已支付订单可以发起退款")
@@ -5104,8 +5156,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         refund_target = "refunded" if fully_refunded else "paid"
         order.payment_status = refund_target
         if refund_target == "refunded" or order.refunded_amount > 0:
-            route = db.scalar(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id))
-            if route:
+            for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id)).all():
                 refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
         if order.after_sales_status == "processing":
             old_after_sales = order.after_sales_status
@@ -5176,9 +5227,11 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
     task = db.get(DeliveryTask, task_id)
     if not task:
         raise HTTPException(404, "交付任务不存在")
-    order = db.get(Order, task.order_id)
+    order = db.scalar(select(Order).where(Order.id == task.order_id).with_for_update().execution_options(populate_existing=True))
     if not order:
         raise HTTPException(404, "关联订单不存在")
+    order_fulfillment["require_task_result"](db, user, order, task)
+    task = db.scalar(select(DeliveryTask).where(DeliveryTask.id == task.id).with_for_update().execution_options(populate_existing=True))
     if task.status not in {"in_delivery", "retrying", "preparing"}:
         raise HTTPException(409, "当前交付任务不允许处理")
     if body.success:
@@ -5226,6 +5279,9 @@ def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[Deliver
 @app.post("/api/delivery-tasks/{task_id}/attachments")
 def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), description: str = Form(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
     task, order = delivery_task_access(task_id, user, db)
+    order = db.scalar(select(Order).where(Order.id == order.id).with_for_update().execution_options(populate_existing=True))
+    task = db.scalar(select(DeliveryTask).where(DeliveryTask.id == task.id).with_for_update().execution_options(populate_existing=True))
+    order_fulfillment["require_attachment_upload"](db, user, order, task)
     if task.status in {"completed", "cancelled"}:
         raise HTTPException(409, "履约任务已完成，不能继续上传附件")
     upload.file.seek(0, 2)
@@ -5234,6 +5290,8 @@ def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), des
     if size > 100 * 1024 * 1024:
         raise HTTPException(413, "履约附件不能超过100MB")
     scan_status, scan_report = clamav_scan_stream(upload.file, size)
+    if order.snapshot_version == 1 and order.delivery_method_snapshot in {"training", "consulting", "custom"} and scan_status != "clean":
+        raise HTTPException(400 if scan_status == "infected" else 503, "履约附件必须通过病毒扫描后才可保存")
     if scan_status == "infected":
         audit(db, user.email or user.phone or user.id, "reject_infected_delivery_attachment", "delivery_task", task.id, scan_report, category="security", business_domain="delivery", order_id=order.id, risk_level="high")
         db.commit()
@@ -5274,7 +5332,15 @@ def list_delivery_attachments(task_id: str, user: User = Depends(current_user), 
 
 @app.get("/api/delivery-tasks")
 def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    items = db.scalars(select(DeliveryTask).order_by(DeliveryTask.created_at.desc())).all()
+    stmt = select(DeliveryTask)
+    if user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
+        enterprises = select(Membership.enterprise_id).where(
+            Membership.user_id == user.id, Membership.status == "active",
+            Membership.role.in_(["super_admin", "enterprise_admin"]))
+        orders = select(Order.id).where(or_(Order.buyer_enterprise_id.in_(enterprises),
+                                            Order.provider_enterprise_id.in_(enterprises)))
+        stmt = stmt.where(DeliveryTask.order_id.in_(orders)) if not user.platform_role else stmt.where(False)
+    items = db.scalars(stmt.order_by(DeliveryTask.created_at.desc())).all()
     return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0, "created_at": x.created_at} for x in items]}
 
 
@@ -6676,12 +6742,13 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         raise HTTPException(404, "文件不存在")
     reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
-    if item.file_role == "delivery_attachment" and not owner and not reviewer:
+    if item.file_role == "delivery_attachment":
         attachment = db.scalar(select(DeliveryAttachment).where(DeliveryAttachment.file_id == item.id))
         task = db.get(DeliveryTask, attachment.task_id) if attachment else None
-        order = db.get(Order, task.order_id) if task else None
-        member = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]) if order else False, Membership.status == "active")) if order else None
-        owner = bool(member)
+        if not task:
+            raise HTTPException(404, "履约附件关联任务不存在")
+        delivery_task_access(task.id, user, db)
+        owner = True
     if item.file_role != "product_data" and not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
     download_log = None
@@ -6724,7 +6791,12 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         settlement_metering["record_download"](db, order, download_log, item, len(content))
         audit(db, user.email or user.phone or user.id, "download_file", "file", item.id, item.original_name, category="delivery", business_domain="product", order_id=download_log.order_id)
         db.commit()
-    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"inline; filename=download; filename*=UTF-8''{quote(item.original_name)}"})
+    if item.file_role == "delivery_attachment":
+        audit(db, user.email or user.phone or user.id, "download_delivery_attachment", "file", item.id,
+              item.original_name, category="delivery", business_domain="delivery", order_id=task.order_id)
+        db.commit()
+    disposition = "attachment" if item.file_role == "delivery_attachment" else "inline"
+    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"{disposition}; filename=download; filename*=UTF-8''{quote(item.original_name)}", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/api/orders/{order_id}/product-files")
@@ -6763,6 +6835,11 @@ from .trading_policy import install as install_trading_policy
 
 trading_policy = install_trading_policy(globals())
 
+from .safe_upstream import validate_upstream_url, validated_http_request
+from .version_gateway import install as install_version_gateway
+
+version_gateway = install_version_gateway(globals())
+
 from .storefront import install as install_storefront
 
 storefront = install_storefront(globals())
@@ -6770,3 +6847,10 @@ storefront = install_storefront(globals())
 from .order_economics import install as install_order_economics
 
 order_economics = install_order_economics(globals())
+
+from .order_workflow import install as install_order_workflow
+
+order_workflow = install_order_workflow(globals())
+from .order_fulfillment import install as install_order_fulfillment
+
+order_fulfillment = install_order_fulfillment(globals())

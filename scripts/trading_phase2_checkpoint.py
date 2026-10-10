@@ -10,6 +10,8 @@ from app import main as m
 
 
 def main():
+    if hasattr(m, "version_gateway"):
+        raise RuntimeError("Historical phase-2 checkpoint cannot reset newer runtime task states")
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
     args = parser.parse_args()

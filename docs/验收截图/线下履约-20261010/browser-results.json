@@ -1,0 +1,164 @@
+﻿{
+    "status":  "passed",
+    "mode":  "read-only",
+    "checks":  [
+                   "awaiting_start fixture opened through exact order row; real detail and attachment endpoints read",
+                   "provider 1440 px attachment section, styled dialog, bounds and Escape cancellation; no mutations",
+                   "provider 390 px attachment section, styled dialog, bounds and Escape cancellation; no mutations",
+                   "pending_acceptance fixture opened through exact order row; real detail and attachment endpoints read",
+                   "buyer 1440 px attachment section, styled dialog, bounds and Escape cancellation; no mutations",
+                   "buyer 390 px attachment section, styled dialog, bounds and Escape cancellation; no mutations",
+                   "Blank and whitespace rejection reasons stay in dialog with validation errors and zero requests"
+               ],
+    "screenshots":  [
+                        "provider-attachments-1440.png",
+                        "provider-dialog-1440.png",
+                        "provider-attachments-390.png",
+                        "provider-dialog-390.png",
+                        "buyer-attachments-1440.png",
+                        "buyer-dialog-1440.png",
+                        "buyer-attachments-390.png",
+                        "buyer-dialog-390.png"
+                    ],
+    "samples":  [
+                    {
+                        "drawer":  {
+                                       "width":  1440,
+                                       "height":  1000,
+                                       "left":  930,
+                                       "top":  0,
+                                       "right":  1440,
+                                       "bottom":  1000,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  false
+                                   },
+                        "reads":  {
+                                      "detail":  1,
+                                      "attachments":  1
+                                  },
+                        "viewport":  1440,
+                        "dialog":  {
+                                       "width":  1440,
+                                       "height":  1000,
+                                       "left":  480,
+                                       "top":  380.953125,
+                                       "right":  960,
+                                       "bottom":  619.046875,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  false
+                                   },
+                        "party":  "provider"
+                    },
+                    {
+                        "drawer":  {
+                                       "width":  390,
+                                       "height":  844,
+                                       "left":  0,
+                                       "top":  0,
+                                       "right":  390,
+                                       "bottom":  844,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  true
+                                   },
+                        "reads":  {
+                                      "detail":  1,
+                                      "attachments":  1
+                                  },
+                        "viewport":  390,
+                        "dialog":  {
+                                       "width":  390,
+                                       "height":  844,
+                                       "left":  16,
+                                       "top":  308.953125,
+                                       "right":  374,
+                                       "bottom":  535.046875,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  false
+                                   },
+                        "party":  "provider"
+                    },
+                    {
+                        "drawer":  {
+                                       "width":  1440,
+                                       "height":  1000,
+                                       "left":  930,
+                                       "top":  0,
+                                       "right":  1440,
+                                       "bottom":  1000,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  false
+                                   },
+                        "reads":  {
+                                      "detail":  1,
+                                      "attachments":  1
+                                  },
+                        "viewport":  1440,
+                        "dialog":  {
+                                       "width":  1440,
+                                       "height":  1000,
+                                       "left":  480,
+                                       "top":  282.953125,
+                                       "right":  960,
+                                       "bottom":  717.046875,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  false
+                                   },
+                        "party":  "buyer"
+                    },
+                    {
+                        "drawer":  {
+                                       "width":  390,
+                                       "height":  844,
+                                       "left":  0,
+                                       "top":  0,
+                                       "right":  390,
+                                       "bottom":  844,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  true
+                                   },
+                        "reads":  {
+                                      "detail":  1,
+                                      "attachments":  1
+                                  },
+                        "viewport":  390,
+                        "dialog":  {
+                                       "width":  390,
+                                       "height":  844,
+                                       "left":  16,
+                                       "top":  210.953125,
+                                       "right":  374,
+                                       "bottom":  633.046875,
+                                       "visible":  true,
+                                       "overflow":  false,
+                                       "controlsOutsideX":  false,
+                                       "controlsOutsideY":  false
+                                   },
+                        "party":  "buyer"
+                    }
+                ],
+    "limits":  [
+                   "Only supplied isolated fixture orders and tokens are used",
+                   "All non-read HTTP requests are blocked by page instrumentation and CDP",
+                   "Evidence covers real fixture API reads, UI dialogs, local rejection validation and viewport fit",
+                   "Lifecycle transitions, attachment uploads/downloads and clean scan enforcement are not executed",
+                   "Main worker owns fixture preparation and cleanup"
+               ],
+    "stage":  "All",
+    "cdpBlockedMutations":  0,
+    "networkMutations":  0,
+    "nativeDialogs":  0
+}

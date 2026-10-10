@@ -11,6 +11,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
+import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import {
   Activity,
   ArrowUpRight,
@@ -56,6 +57,14 @@ const productReviewSubmitting = ref(false);
 const token = ref(localStorage.getItem("market_token") || "");
 const user = ref(null);
 const enterprise = ref(null);
+const providerReview = ref(null);
+const providerReviewForm = ref({ amount: "", cost: "", reason: "" });
+const providerReviewLoading = ref(false);
+const providerReviewSubmitting = ref(false);
+const orderActionSubmitting = ref(false);
+const orderDeliveryAttachments = ref({ orderId: "", tasks: [], items: [], loading: false, error: "" });
+const deliveryAttachmentUploading = ref(false);
+const deliveryAttachmentDescription = ref("");
 const selectedBuyerEnterpriseId = ref("");
 const buyerEnterprises = ref([]);
 const buyerEnterprisesLoading = ref(false);
@@ -340,6 +349,10 @@ const visibleProductFiles = computed(() => {
 const statusLabels = {
   created: "创建",
   pending_review: "待审核",
+  pending_provider_review: "待提供方审核",
+  pending_payment: "待支付",
+  pending_integration: "待接入验证",
+  rejected: "已拒绝",
   pending_fulfillment: "待履约",
   fulfilling: "履约中",
   pending_confirmation: "待确认",
@@ -352,6 +365,8 @@ const statusLabels = {
   refunding: "退款中",
   refunded: "已退款",
   not_started: "未开始",
+  awaiting_start: "待开始履约",
+  rectifying: "整改中",
   preparing: "准备中",
   in_delivery: "交付中",
   retrying: "等待重试",
@@ -487,7 +502,7 @@ async function loadSession() {
   api.defaults.headers.common.Authorization = `Bearer ${token.value}`;
   try {
     const { data } = await api.get("/auth/me");
-    user.value = { ...data.user, enterprise_role: data.role };
+    user.value = { ...data.user, enterprise_role: data.role, membership_status: data.membership?.status || data.membership_status || "active" };
     enterprise.value = data.enterprise;
     await loadBuyerEnterprises();
     await loadNotificationSummary();
@@ -553,6 +568,8 @@ function openNotification(id = "") {
   activeView.value = "messages";
 }
 function logout() {
+  providerReview.value = null;
+  providerReviewForm.value = { amount: "", cost: "", reason: "" };
   selectedBuyerEnterpriseId.value = "";
   buyerEnterprises.value = [];
   token.value = "";
@@ -1063,9 +1080,9 @@ async function selectGateway(item) {
   gatewaySelected.value = item;
   try {
     const [config, revisions, usage] = await Promise.all([
-      api.get(`/products/${item.product_id}/gateway-config`),
+      api.get(`/products/${item.product_id}/gateway-config`, { params: { version: item.version } }),
       api.get(`/products/${item.product_id}/gateway-revisions`),
-      api.get(`/products/${item.product_id}/gateway-usage`),
+      api.get(`/products/${item.product_id}/gateway-usage`, { params: { version: item.version } }),
     ]);
     gatewayForm.value = {
       ...gatewayForm.value,
@@ -1095,6 +1112,7 @@ async function validateGatewayConfig() {
   try {
     const { data } = await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/validate`,
+      null, { params: { version: gatewaySelected.value.version } },
     );
     notify(data.valid ? "网关配置校验通过" : "网关配置校验未通过");
   } catch (error) {
@@ -1106,6 +1124,7 @@ async function publishGatewayConfig() {
   try {
     await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/publish`,
+      null, { params: { version: gatewaySelected.value.version } },
     );
     notify("网关路由已发布");
     await loadViewData("gateway");
@@ -1118,6 +1137,7 @@ async function rollbackGatewayConfig() {
   try {
     await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/rollback`,
+      null, { params: { version: gatewaySelected.value.version } },
     );
     notify("网关配置已回滚");
     await loadViewData("gateway");
@@ -1140,6 +1160,7 @@ function selectView(view) {
 async function openOrder(order) {
   const { data } = await api.get(`/orders/${order.id}`);
   selectedOrder.value = data;
+  deliveryAttachmentDescription.value = "";
   saasOrderState.value = { users: [], departments: [], operations: [] };
   apiOrderState.value = {
     available: false,
@@ -1150,6 +1171,8 @@ async function openOrder(order) {
   apiCredentialReveal.value = null;
   orderProductFiles.value = { download_limit: 0, items: [] };
   const requests = [];
+  if (isOfflineFulfillmentOrder(data.order)) requests.push(loadOrderDeliveryAttachments(data.order));
+  else orderDeliveryAttachments.value = { orderId: "", tasks: [], items: [], loading: false, error: "" };
   if (data.order.payment_status === "paid") {
     requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { orderProductFiles.value = files; }).catch(() => {}));
   }
@@ -1194,18 +1217,141 @@ async function downloadOrderProductFile(file) {
     notify(error.response?.data?.detail || "文件下载失败");
   }
 }
-async function transition(action) {
-  if (!selectedOrder.value) return;
+async function loadOrderDeliveryAttachments(order) {
+  const state = { orderId: order.id, tasks: [], items: [], loading: true, error: "" };
+  orderDeliveryAttachments.value = state;
+  const requestState = orderDeliveryAttachments.value;
   try {
-    await api.post(`/orders/${selectedOrder.value.order.id}/transition`, {
-      action,
-      reason: "工作台操作",
-    });
+    const detailTask = selectedOrder.value?.order.id === order.id ? selectedOrder.value.delivery : null;
+    let tasks;
+    if (detailTask?.id) tasks = [detailTask];
+    else {
+      const { data } = await api.get("/delivery-tasks");
+      tasks = data.items.filter(task => task.order_id === order.id);
+    }
+    const results = await Promise.all(tasks.map(async task => {
+      const { data } = await api.get(`/delivery-tasks/${task.id}/attachments`);
+      return data.items;
+    }));
+    if (orderDeliveryAttachments.value !== requestState || selectedOrder.value?.order.id !== order.id) return;
+    orderDeliveryAttachments.value = { ...state, tasks, items: results.flat(), loading: false };
+  } catch (error) {
+    if (orderDeliveryAttachments.value !== requestState || selectedOrder.value?.order.id !== order.id) return;
+    orderDeliveryAttachments.value = { ...state, loading: false, error: error.response?.data?.detail || "交付附件加载失败" };
+  }
+}
+async function uploadOrderDeliveryAttachment(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  const order = selectedOrder.value?.order;
+  if (!file || deliveryAttachmentUploading.value || orderActionSubmitting.value || !canUploadDeliveryAttachment(order, user.value, enterprise.value)) return;
+  const state = orderDeliveryAttachments.value;
+  const task = state.orderId === order.id && !state.loading && !state.error && state.tasks.find(item => !["completed", "cancelled"].includes(item.status));
+  if (!task) return notify("暂无可上传附件的履约任务，请刷新订单");
+  if (file.size > 100 * 1024 * 1024) return notify("履约附件不能超过100MB");
+  deliveryAttachmentUploading.value = true;
+  try {
+    const body = new FormData();
+    body.append("upload", file);
+    body.append("description", deliveryAttachmentDescription.value.trim());
+    await api.post(`/delivery-tasks/${task.id}/attachments`, body);
+    notify("交付附件已上传");
+    if (selectedOrder.value?.order.id === order.id) {
+      deliveryAttachmentDescription.value = "";
+      await loadOrderDeliveryAttachments(order);
+    }
+  } catch (error) {
+    notify(error.response?.data?.detail || "交付附件上传失败");
+  } finally {
+    deliveryAttachmentUploading.value = false;
+  }
+}
+async function transition(action) {
+  if (!selectedOrder.value || orderActionSubmitting.value || deliveryAttachmentUploading.value) return;
+  if (action === "provider_review") return openProviderReview();
+  if (!nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
+  const order = selectedOrder.value.order;
+  orderActionSubmitting.value = true;
+  try {
+    let body = { action, reason: "工作台操作" };
+    if (isOfflineFulfillmentOrder(order) && ["start_delivery", "submit_delivery", "accept_delivery", "reject_delivery"].includes(action)) {
+      const title = nextActions(order).find(item => item[0] === action)?.[1];
+      if (action === "reject_delivery") {
+        const reason = await promptDialog(`订单 ${order.order_no}`, "", { title, label: "拒绝验收原因", required: true, multiline: true, confirmText: title, danger: true });
+        if (reason === null) return;
+        body = deliveryTransitionPayload(action, reason);
+      } else {
+        if (!await confirmDialog(`订单 ${order.order_no}`, { title, confirmText: title })) return;
+        body = deliveryTransitionPayload(action);
+      }
+      if (selectedOrder.value?.order.id !== order.id || !nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
+    }
+    if (["start_payment", "confirm_payment"].includes(action)) {
+      const title = nextActions(order).find(item => item[0] === action)?.[1];
+      if (!await confirmDialog(`订单 ${order.order_no}，金额 ${fmtMoney(order.amount)}`, { title, confirmText: title })) return;
+      if (selectedOrder.value?.order.id !== order.id || !nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
+    }
+    await api.post(`/orders/${order.id}/transition`, body);
     notify("订单状态已更新");
-    await openOrder(selectedOrder.value.order);
+    await openOrder(order);
     await refreshData();
   } catch (error) {
-    notify(error.response?.data?.detail || "状态操作失败");
+    notify(error.response?.data?.detail || error.message || "状态操作失败");
+    if (error.response?.status === 409 && selectedOrder.value?.order.id === order.id) {
+      await openOrder(order);
+      await refreshData();
+    }
+  } finally {
+    orderActionSubmitting.value = false;
+  }
+}
+function closeProviderReview() {
+  if (providerReviewSubmitting.value) return;
+  providerReview.value = null;
+  providerReviewForm.value = { amount: "", cost: "", reason: "" };
+}
+async function openProviderReview() {
+  const order = selectedOrder.value?.order;
+  if (providerReviewLoading.value || !canReviewProviderOrder(order, user.value, enterprise.value)) return;
+  providerReviewLoading.value = true;
+  try {
+    const { data } = await api.get(`/orders/${order.id}/provider-quote`);
+    if (selectedOrder.value?.order.id !== order.id || !canReviewProviderOrder(order, user.value, enterprise.value)) return;
+    const quote = { ...data, order_no: order.order_no };
+    if (quote.order_id !== order.id || !quote.expected_updated_at || [quote.amount, quote.cost].some(value => value == null || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0)) throw new Error("报价信息不完整");
+    providerReviewForm.value = { amount: data.amount, cost: data.cost, reason: "" };
+    providerReview.value = { order, quote };
+  } catch (error) {
+    notify(error.response?.data?.detail || error.message || "报价加载失败");
+  } finally {
+    providerReviewLoading.value = false;
+  }
+}
+async function submitProviderReview(decision) {
+  const review = providerReview.value;
+  if (!review || providerReviewSubmitting.value) return;
+  if (!canReviewProviderOrder(review.order, user.value, enterprise.value)) return closeProviderReview();
+  providerReviewSubmitting.value = true;
+  try {
+    const body = providerReviewPayload(review.quote, providerReviewForm.value, decision);
+    await api.post(`/orders/${review.order.id}/provider-review`, body);
+    providerReview.value = null;
+    providerReviewForm.value = { amount: "", cost: "", reason: "" };
+    notify(decision === "approve" ? "订单已审核通过，待买方支付" : "订单已拒绝");
+    await openOrder(review.order);
+    await refreshData();
+  } catch (error) {
+    if (error.response?.status === 409) {
+      providerReview.value = null;
+      providerReviewForm.value = { amount: "", cost: "", reason: "" };
+      notify("订单已变更，请重新打开审核并核对报价");
+      await openOrder(review.order);
+      await refreshData();
+    } else {
+      notify(error.response?.data?.detail || error.message || "提供方审核失败");
+    }
+  } finally {
+    providerReviewSubmitting.value = false;
   }
 }
 async function saasOrderAction(action) {
@@ -2098,15 +2244,13 @@ function taskCount(key) {
   return development.value.items.filter((task) => task.status === key).length;
 }
 function nextActions(order) {
-  const actions = [];
+  const actions = orderWorkflowActions(order, user.value, enterprise.value);
+  if (isOfflineFulfillmentOrder(order)) return actions;
+  if (["pending_provider_review", "pending_payment", "rejected", "cancelled", "closed"].includes(order.main_status)) return actions;
   if (order.main_status === "created")
     actions.push(["submit_review", "提交审核"]);
   if (order.main_status === "pending_review")
     actions.push(["approve", "审核通过"]);
-  if (order.payment_status === "unpaid")
-    actions.push(["start_payment", "发起模拟支付"]);
-  if (order.payment_status === "paying")
-    actions.push(["confirm_payment", "模拟确认支付"]);
   if (
     order.payment_status === "paid" &&
     order.after_sales_status === "processing"
@@ -3821,6 +3965,7 @@ onUnmounted(() => {
               v-for="action in nextActions(selectedOrder.order)"
               :key="action[0]"
               class="secondary-btn"
+              :disabled="orderActionSubmitting || providerReviewLoading || providerReviewSubmitting || deliveryAttachmentUploading"
               @click="transition(action[0])"
             >
               {{ action[1] }} <ArrowUpRight :size="14" /></button
@@ -3828,6 +3973,25 @@ onUnmounted(() => {
               >当前没有可执行动作</span
             >
           </div>
+        </div>
+        <div v-if="isOfflineFulfillmentOrder(selectedOrder.order)" class="drawer-section">
+          <div class="drawer-section-title">交付附件
+            <button class="icon-btn" title="刷新交付附件" aria-label="刷新交付附件" :disabled="orderDeliveryAttachments.loading || deliveryAttachmentUploading" @click="loadOrderDeliveryAttachments(selectedOrder.order)"><RefreshCw :size="15" /></button>
+          </div>
+          <p v-if="orderDeliveryAttachments.loading" class="muted" role="status">加载中</p>
+          <p v-else-if="orderDeliveryAttachments.error" class="error-text" role="alert">{{ orderDeliveryAttachments.error }}</p>
+          <template v-else>
+            <div v-for="file in orderDeliveryAttachments.items" :key="file.id" class="file-status-row">
+              <div style="min-width: 0; overflow-wrap: anywhere"><strong>{{ file.name }}</strong><p v-if="file.description">{{ file.description }}</p><small class="muted">{{ file.uploaded_by }} · {{ fmtDate(file.created_at) }}</small></div>
+              <button class="icon-btn" title="下载交付附件" aria-label="下载交付附件" @click="downloadOrderProductFile({ id: file.file_id, original_name: file.name })"><Download :size="16" /></button>
+            </div>
+            <p v-if="!orderDeliveryAttachments.items.length" class="muted">暂无交付附件</p>
+            <fieldset v-if="canUploadDeliveryAttachment(selectedOrder.order, user, enterprise)" :disabled="deliveryAttachmentUploading || orderActionSubmitting || !orderDeliveryAttachments.tasks.some(task => !['completed', 'cancelled'].includes(task.status))" style="border: 0; padding: 0; margin: 0; min-width: 0">
+              <label>附件说明<textarea v-model="deliveryAttachmentDescription" rows="2" maxlength="2000" /></label>
+              <label>交付附件<input type="file" aria-label="上传交付附件" @change="uploadOrderDeliveryAttachment" /></label>
+              <p v-if="deliveryAttachmentUploading" class="muted" role="status">上传中</p>
+            </fieldset>
+          </template>
         </div>
         <div v-if="orderProductFiles.items.length" class="drawer-section">
           <div class="drawer-section-title">数据文件交付</div>
@@ -3852,6 +4016,7 @@ onUnmounted(() => {
                   >{{ item.operator }} · {{ fmtDate(item.created_at) }}</small
                 >
                 <p>{{ item.from_status || "初始" }} → {{ item.to_status }}</p>
+                <p v-if="item.reason">{{ item.reason }}</p>
               </div>
             </div>
           </div>
@@ -4320,6 +4485,28 @@ onUnmounted(() => {
         </section>
       </form>
     </div>
+    <div v-if="providerReview && canReviewProviderOrder(providerReview.order, user, enterprise)" class="modal-scrim" @click.self="closeProviderReview">
+      <section class="modal-card provider-review-modal" role="dialog" aria-modal="true" aria-labelledby="provider-review-title" @keydown.esc="closeProviderReview">
+        <div class="drawer-head">
+          <div><h2 id="provider-review-title">提供方订单审核</h2><p>{{ providerReview.quote.order_no }}</p></div>
+          <button class="icon-btn" title="关闭审核" aria-label="关闭审核" :disabled="providerReviewSubmitting" @click="closeProviderReview"><X :size="18" /></button>
+        </div>
+        <form @submit.prevent="submitProviderReview('approve')">
+          <fieldset :disabled="providerReviewSubmitting" style="border: 0; padding: 0; margin: 0; min-width: 0">
+            <div class="form-grid">
+              <label>订单金额<input v-model="providerReviewForm.amount" type="number" min="0" step="0.01" required /><small class="muted">原金额 {{ fmtMoney(providerReview.quote.amount) }}</small></label>
+              <label>订单成本<input v-model="providerReviewForm.cost" type="number" min="0" step="0.01" required /><small class="muted">原成本 {{ fmtMoney(providerReview.quote.cost) }}</small></label>
+              <label class="wide">审核原因（调价或拒绝必填）<textarea v-model="providerReviewForm.reason" rows="3" maxlength="2000" /></label>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="secondary-btn" @click="closeProviderReview">取消</button>
+              <button type="button" class="secondary-btn danger-text" @click="submitProviderReview('reject')"><X :size="15" />拒绝</button>
+              <button type="submit" class="primary-btn"><CheckCircle2 :size="15" />{{ providerReviewSubmitting ? '提交中' : '审核通过' }}</button>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+    </div>
     <div v-if="fileReportViewer" class="modal-scrim" @click="fileReportViewer = null">
       <section class="modal-card security-report-modal" @click.stop>
         <div class="drawer-head"><div><span class="eyebrow">FILE SCAN REPORT</span><h2>{{ fileReportViewer.reportType === 'clamav' ? '病毒扫描报告' : 'Presidio扫描报告' }}</h2></div><button type="button" class="icon-btn" @click="fileReportViewer = null"><X :size="19" /></button></div>
@@ -4606,3 +4793,10 @@ onUnmounted(() => {
     <div v-if="toast" class="toast"><CheckCircle2 :size="17" />{{ toast }}</div>
   </div>
 </template>
+
+<style scoped>
+.provider-review-modal { max-height: calc(100dvh - 32px); }
+.provider-review-modal .wide { grid-column: 1 / -1; }
+.provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
+.provider-review-modal .modal-actions { flex-wrap: wrap; }
+</style>

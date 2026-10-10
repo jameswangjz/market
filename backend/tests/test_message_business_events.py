@@ -544,7 +544,9 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             db.add(m.SaaSIntegrationConfig(product_id="scheduled_product", status="active"))
             db.commit()
         with patch.object(m, "saas_call", return_value={"status": "renewed"}) as supplier:
-            renewed = self.request("POST", "/api/saas-subscriptions/expired/renew", actor="buyer_admin", json={"billing_cycle": "annual"})
+            self.request("POST", "/api/saas-subscriptions/expired/renew", actor="buyer_admin", expected=403, json={"billing_cycle": "annual"})
+            supplier.assert_not_called()
+            renewed = self.request("POST", "/api/saas-subscriptions/expired/renew", actor="buyer", json={"billing_cycle": "annual"})
         supplier.assert_called_once()
         self.assertEqual(renewed["subscription"]["status"], "active")
         self.assertEqual(self.recipients(title="SaaS 订阅已到期"), {"buyer", "buyer_admin"})

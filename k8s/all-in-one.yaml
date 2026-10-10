@@ -33,6 +33,8 @@ data:
   APISIX_COMPAT_UPSTREAM: http://market-gateway:8100
   APISIX_NATIVE_AUTH: 'true'
   APISIX_NATIVE_UPSTREAM: 'true'
+  UPSTREAM_ALLOWED_HOSTS: 'market-mock-api,market-mock-saas'
+  UPSTREAM_ALLOWED_CIDRS: ''
   PRESIDIO_ANALYZER_URL: http://market-presidio-analyzer:3000/analyze
   CLAMAV_HOST: market-clamav
   CLAMAV_PORT: '3310'
