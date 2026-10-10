@@ -1455,12 +1455,7 @@ def require_enterprise_admin(db: Session, user: User, enterprise_id: str | None 
 
 
 def enterprise_management_scope(db: Session, user: User, enterprise_id: str | None = None) -> Enterprise:
-    """Resolve the enterprise being managed by a platform or enterprise administrator."""
-    if enterprise_id and user.platform_role in {"super_admin", "platform_operator"}:
-        enterprise = db.get(Enterprise, enterprise_id)
-        if not enterprise:
-            raise HTTPException(404, "企业不存在")
-        return enterprise
+    """Resolve an enterprise managed by its super-admin or enterprise admin."""
     membership = require_enterprise_admin(db, user, enterprise_id)
     enterprise = db.get(Enterprise, membership.enterprise_id)
     if not enterprise:
@@ -2751,7 +2746,7 @@ def create_enterprise_department(body: EnterpriseDepartmentBody, enterprise_id: 
 @app.patch("/api/enterprise/departments/{department_id}")
 def update_enterprise_department(department_id: str, body: EnterpriseDepartmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     item = db.get(EnterpriseDepartment, department_id)
-    if item and user.platform_role not in {"super_admin", "platform_operator"}:
+    if item:
         enterprise_management_scope(db, user, item.enterprise_id)
     if item and item.status != "active":
         item = None
@@ -2770,7 +2765,7 @@ def update_enterprise_department(department_id: str, body: EnterpriseDepartmentB
 @app.delete("/api/enterprise/departments/{department_id}")
 def delete_enterprise_department(department_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     item = db.get(EnterpriseDepartment, department_id)
-    if item and user.platform_role not in {"super_admin", "platform_operator"}:
+    if item:
         enterprise_management_scope(db, user, item.enterprise_id)
     if item and item.status != "active":
         item = None
