@@ -273,6 +273,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             db.add(product)
             db.flush()
             db.add(m.ProductReleaseVersion(id="version", product_id="product", version_code="v1", description="v1", price=100, cost=10, status="active"))
+            db.add(m.SettlementRule(id="trading_rule", rule_no="RULE-TRADING", name="Trading fixture", version="v1", status="active", platform_rate=8, provider_rate=67, service_rate=20, expert_rate=5, channel_rate=0))
             db.flush()
             db.add_all([
                 m.FileObject(id="product_logo", owner_id="provider", product_id="product", object_name="logo", original_name="logo.png", content_type="image/png", file_role="product_logo", scan_status="clean"),

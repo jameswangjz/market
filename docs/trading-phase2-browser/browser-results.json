@@ -1,0 +1,50 @@
+﻿{
+    "status":  "passed",
+    "productId":  "qa-web-7a8a6836660f0a61-p",
+    "createOrder":  true,
+    "orderId":  "a6b3257a592a63a137a51f71b36188b9",
+    "checks":  [
+                   "anonymous detail without enterprise or quote; actual product logo loaded",
+                   "anonymous subscribe opens console login with detail return target",
+                   "token detail starts without a default enterprise; explicit eligible selection produces server quote",
+                   "one-time delivery has no months input and quotes one order",
+                   "390px mobile document and checkout controls stay in bounds; actual logo loaded",
+                   "one real UI order includes quote_id; response ID captured; navigates to console orders"
+               ],
+    "limits":  [
+                   "No payment requests",
+                   "Fixture creation and cleanup are owned by the main agent",
+                   "Monthly browser checks run only for a supplied monthly product; file/offline fixtures do not cover monthly UI"
+               ],
+    "mobile":  {
+                   "width":  390,
+                   "bodyWidth":  390,
+                   "panelLeft":  16,
+                   "panelRight":  374,
+                   "controlsOutsidePanel":  false,
+                   "logoLoaded":  true
+               },
+    "logo":  {
+                 "loaded":  true,
+                 "width":  190,
+                 "height":  140
+             },
+    "monthly":  false,
+    "quote":  {
+                  "product_id":  "qa-web-7a8a6836660f0a61-p",
+                  "product_version_id":  "qa-web-7a8a6836660f0a61-v1",
+                  "buyer_enterprise_id":  "qa-web-7a8a6836660f0a61-e1",
+                  "subscription_months":  1,
+                  "unit_price":  12,
+                  "amount":  12,
+                  "currency":  "CNY",
+                  "billing_unit":  "order",
+                  "hasQuoteId":  true
+              },
+    "order":  {
+                  "id":  "a6b3257a592a63a137a51f71b36188b9",
+                  "order_no":  "ORD-2610091525178B20",
+                  "status":  200,
+                  "hasQuoteId":  true
+              }
+}

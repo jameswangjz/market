@@ -548,6 +548,14 @@ class Order(Base):
     subscription_id: Mapped[str] = mapped_column(String(36), default="")
     business_type: Mapped[str] = mapped_column(String(30), default="")
     related_order_id: Mapped[str] = mapped_column(String(36), default="")
+    snapshot_version: Mapped[int] = mapped_column(Integer, default=0)
+    subscription_months: Mapped[int] = mapped_column(Integer, default=1)
+    unit_price_snapshot: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    unit_cost_snapshot: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    total_cost_snapshot: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    delivery_method_snapshot: Mapped[str] = mapped_column(String(40), default="")
+    economic_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    delivery_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -1221,6 +1229,8 @@ class OrderBody(BaseModel):
     product_id: str
     product_version_id: str = ""
     buyer_enterprise_id: str = Field(min_length=1, max_length=36)
+    subscription_months: int = Field(default=1, ge=1, le=36, strict=True)
+    quote_id: str = Field(default="", max_length=64)
 
 
 class TransitionBody(BaseModel):
@@ -1762,6 +1772,11 @@ def make_order_no() -> str:
 
 def order_cost(db: Session, order: Order) -> Decimal:
     """Resolve the cost of the purchased product version for this order."""
+    if order.snapshot_version == 1:
+        if order.total_cost_snapshot is None:
+            raise HTTPException(409, "订单成本快照不完整，不能清算")
+        snapshot = order_economics["economic_snapshot"](order)
+        return Decimal(str(snapshot["total_cost"])).quantize(Decimal("0.01"))
     product = db.get(Product, order.product_id)
     if product and product.product_type == "saas":
         version = db.get(SaaSProductVersion, order.product_version_id)
@@ -1779,6 +1794,10 @@ def order_cost(db: Session, order: Order) -> Decimal:
 
 
 def settlement_values_for_order(db: Session, order: Order, fallback: SettlementRule) -> tuple[dict[str, Decimal], str]:
+    if order.snapshot_version == 1:
+        snapshot = order_economics["economic_snapshot"](order)
+        rule = snapshot["settlement_rule"]
+        return ({key: Decimal(str(rule["rates"][key])) for key in order_economics["rate_keys"]}, rule["version"])
     product = db.get(Product, order.product_id)
     if product and product.settlement_rule_mode == "custom":
         custom = json.loads(product.settlement_rule_json or "{}")
@@ -1857,7 +1876,7 @@ ONLINE_DELIVERY_METHODS = {"file", "object_storage", "api", "model_api", "tenant
 
 def delivery_task_config(db: Session, order: Order) -> tuple[str, str, str]:
     product = db.get(Product, order.product_id)
-    method = product.delivery_method if product else "file"
+    method = order_economics["delivery_snapshot"](order)["method"] if order.snapshot_version == 1 else product.delivery_method if product else "file"
     mode = "automatic" if method in ONLINE_DELIVERY_METHODS else "manual"
     return method, mode, "支付成功后进入自动交付" if mode == "automatic" else "等待交付人员处理"
 
@@ -2023,6 +2042,14 @@ def ensure_review_and_file_schema():
             "subscription_id": "VARCHAR(36)",
             "business_type": "VARCHAR(30)",
             "related_order_id": "VARCHAR(36)",
+            "snapshot_version": "INTEGER DEFAULT 0",
+            "subscription_months": "INTEGER DEFAULT 1",
+            "unit_price_snapshot": "NUMERIC(14,2)",
+            "unit_cost_snapshot": "NUMERIC(14,2)",
+            "total_cost_snapshot": "NUMERIC(14,2)",
+            "delivery_method_snapshot": "VARCHAR(40) DEFAULT ''",
+            "economic_snapshot_json": "TEXT DEFAULT '{}'",
+            "delivery_snapshot_json": "TEXT DEFAULT '{}'",
         },
         "delivery_tasks": {
             "delivery_mode": "VARCHAR(20) DEFAULT 'manual'",
@@ -4939,7 +4966,7 @@ def remove_saas_department(subscription_id: str, department_id: str, user: User 
 
 
 def order_out(o: Order) -> dict[str, Any]:
-    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "buyer_name": o.buyer_name, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
 
 
 @app.get("/api/orders")
@@ -4968,16 +4995,15 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
 @app.post("/api/orders")
 def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     buyer = trading_policy["require_buyer"](db, user, body.buyer_enterprise_id)
-    product = db.get(Product, body.product_id)
-    if not product or product.status != "published":
-        raise HTTPException(400, "产品不存在或尚未发布")
-    version = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.status == "active", ProductReleaseVersion.id == body.product_version_id)) if body.product_version_id else db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id, ProductReleaseVersion.status == "active").order_by(ProductReleaseVersion.created_at))
-    if not version:
-        raise HTTPException(400, "产品版本不存在或未启用")
-    order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.description, product_name=product.name, buyer_name=user.name if user.verified_status == "verified" else buyer.name, amount=version.price, main_status="created")
+    quote = order_economics["quote"](db, user, body, lock=True)
+    if body.quote_id and not hmac.compare_digest(body.quote_id, quote["public"]["quote_id"]):
+        raise HTTPException(409, "商品报价或配置已变更，请重新确认报价")
+    product, version = quote["product"], quote["version"]
+    order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=(getattr(version, "name", "") or version.description or version.version_code)[:120], product_name=product.name, buyer_name=buyer.name, amount=quote["amount"], billing_cycle="monthly" if quote["public"]["billing_unit"] == "month" else "", main_status="created")
+    order_economics["apply_snapshot"](order, quote)
     db.add(order)
     db.flush()
-    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=version.price, status="unpaid"))
+    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=order.amount, status="unpaid"))
     db.add(OrderStateLog(order_id=order.id, domain="main", from_status="", to_status="created", action="提交订单", operator=user.name, reason="用户提交"))
     audit(db, user.email, "create_order", "order", order.id, order.order_no)
     db.commit()
@@ -5325,6 +5351,9 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     cost_amount = order_cost(db, order)
     profit_amount = (net_amount - cost_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     distributable = max(profit_amount, Decimal("0.00"))
+    if order.snapshot_version == 1:
+        rates, _ = settlement_values_for_order(db, order, None)
+        body = SettlementRuleBody(**{key: float(value) for key, value in rates.items() if key != "provider_rate"})
     platform_fee = (distributable * Decimal(str(body.platform_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     service_share = (distributable * Decimal(str(body.service_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     expert_fee = (distributable * Decimal(str(body.expert_rate)) / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -6668,7 +6697,7 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
                 raise HTTPException(403, "当前用户没有该订单文件的下载权限")
             settlement_metering["require_order_access"](db, user, order)
             product = db.get(Product, item.product_id)
-            download_limit = int(product.download_limit or 0) if product else 0
+            download_limit = order_economics["delivery_snapshot"](order)["download_limit"] if order.snapshot_version == 1 else int(product.download_limit or 0) if product else 0
             used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
             download_log = FileDownloadLog(file_id=item.id, order_id=order.id, user_id=user.id, success=False)
             if download_limit > 0 and used >= download_limit:
@@ -6710,7 +6739,7 @@ def order_product_files(order_id: str, user: User = Depends(current_user), db: S
     settlement_metering["require_order_access"](db, user, order)
     items = db.scalars(select(FileObject).where(FileObject.product_id == order.product_id, FileObject.version_id == order.product_version_id, FileObject.file_role == "product_data", FileObject.status != "deleted")).all()
     product = db.get(Product, order.product_id)
-    limit = int(product.download_limit or 0) if product else 0
+    limit = order_economics["delivery_snapshot"](order)["download_limit"] if order.snapshot_version == 1 else int(product.download_limit or 0) if product else 0
     return {"download_limit": limit, "items": [{**file_out(item), "downloaded": db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0, "download_url": f"/api/files/{item.id}/download?order_id={order.id}"} for item in items]}
 
 
@@ -6737,3 +6766,7 @@ trading_policy = install_trading_policy(globals())
 from .storefront import install as install_storefront
 
 storefront = install_storefront(globals())
+
+from .order_economics import install as install_order_economics
+
+order_economics = install_order_economics(globals())
