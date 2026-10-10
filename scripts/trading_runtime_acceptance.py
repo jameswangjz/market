@@ -85,7 +85,9 @@ def run():
             payload = m.apisix_admin_request("GET", "/routes/" + key)["value"]
             assert payload["labels"]["market_version"] == version.version_code
             assert payload["plugins"]["limit-count"]["count"] == version.rate_limit_per_minute
-            credential = m.ApiCredential(route_id=route.id, enterprise_id=eb.id,
+            # Keep legacy native-route smoke usage separate from the managed
+            # buyer combination; historical counter migration is not this test.
+            credential = m.ApiCredential(route_id=route.id, enterprise_id=ep.id,
                 key_hash=secrets.token_hex(32), key_prefix="test", daily_quota=version.daily_quota,
                 monthly_quota=version.monthly_quota, status="active")
             db.add(credential); db.flush()
@@ -186,8 +188,13 @@ def run():
         db.close(); outer.rollback(); connection.close()
         for key in route_keys:
             m.apisix_admin_request("DELETE", "/routes/" + key)
-        for consumer in consumers:
-            m.apisix_admin_request("DELETE", "/consumers/" + consumer)
+        for consumer in dict.fromkeys(consumers):
+            try:
+                m.apisix_admin_request("DELETE", "/consumers/" + consumer)
+            except RuntimeError as exc:
+                cause = exc.__cause__
+                if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 404:
+                    raise
             redis = m.apisix_policy_redis()
             keys = list(redis.scan_iter(match="*" + consumer + "*"))
             if keys: redis.delete(*keys)

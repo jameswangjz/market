@@ -110,11 +110,13 @@ class Gateway:
         except redis.RedisError:
             return None
 
-    def request(self, consumer="consumer", route="route", lookup=True, matched_route=None, **limits):
-        context = dict(consumer_name=consumer)
+    def request(self, consumer="consumer", route="route", lookup=True, matched_route=None,
+                actual_route_id=None, **limits):
+        context = dict(consumer_name=consumer, matched_route={"value": {
+            "id": actual_route_id or matched_route or route, "plugins": {}}})
         if matched_route is not None:
-            context["matched_route"] = {"value": {"plugins": {
-                "market-gateway-quota": {"route_key": matched_route, "lookup_consumer": True}}}}
+            context["matched_route"]["value"]["plugins"] = {
+                "market-gateway-quota": {"route_key": matched_route, "lookup_consumer": True}}
         result = self.plugin.access(self.table(dict(route_key=route, lookup_consumer=lookup, **limits)),
                                     self.table(context))
         return result[0] if isinstance(result, tuple) else 200
@@ -320,6 +322,12 @@ class SubscriptionQuotaTests(unittest.TestCase):
         self.assertEqual(self.gateway().request(), 403)
         self.assertEqual(self.client.get("market:apisix:quota:total:route:consumer"), "1")
         self.assertEqual(self.gateway().request(consumer="no-metadata", lookup=False), 200)
+
+    def test_consumer_merge_cannot_replace_original_route_identity(self):
+        self.publish()
+        self.assertEqual(self.gateway().request(lookup=False, matched_route="route",
+                                               actual_route_id="another-version"), 403)
+        self.assertEqual(self.client.get(keys("combo", self.now, "anchor")[2]), None)
 
 
 if __name__ == "__main__":

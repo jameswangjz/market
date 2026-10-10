@@ -114,6 +114,9 @@ local function subscription_access(red, conf, ctx, values)
     local matched = ctx.matched_route and ctx.matched_route.value
     local route_policy = matched and matched.plugins and matched.plugins["market-gateway-quota"]
     if not active or active.route_key ~= conf.route_key
+        -- APISIX merges consumer plugins into matched.plugins in place. Its
+        -- original route ID remains stable; platform route IDs equal route_key.
+        or not matched or tostring(matched.id or "") ~= active.route_key
         or (route_policy and active.route_key ~= route_policy.route_key) then
         return finish(403, "订阅尚未生效、已到期或与 API 路由不匹配")
     end

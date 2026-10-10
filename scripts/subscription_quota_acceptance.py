@@ -116,7 +116,7 @@ def run(args):
             status, _ = admin("GET", "/routes/" + route)
             expect("isolated route absent", 404, status)
             payload = dict(uri="/__subscription_quota/" + route + "/*",
-                           plugins={"key-auth": {}, "market-gateway-quota": {
+                           plugins={"key-auth": {"header": "X-API-Key"}, "market-gateway-quota": {
                                "route_key": route, "lookup_consumer": True},
                                "proxy-rewrite": {"regex_uri": [
                                    "^/__subscription_quota/" + route + "/(.*)", "/$1"]}},
@@ -135,7 +135,7 @@ def run(args):
                     "market-gateway-quota": {"route_key": route, "lookup_consumer": False}}})
             if status not in {200, 201}:
                 raise RuntimeError(f"Fixture consumer creation failed: {status} {body[:200]!r}")
-            publish(index)
+            publish(index, status="revoked")
         # APISIX watches etcd asynchronously. A route with no key is read-only.
         for _ in range(100):
             if request(raw=False) == 401:
@@ -144,6 +144,25 @@ def run(args):
         else:
             raise RuntimeError("APISIX fixture route did not become ready")
         expect("raw key required", 401, request(raw=False))
+        # Wait for both routes and consumers across data-plane replicas without
+        # consuming an allowance. Revoked metadata must yield 403, not 401/404.
+        for index in range(len(consumers)):
+            consecutive = 0
+            for _ in range(150):
+                status = request(index)
+                if status == 403:
+                    consecutive += 1
+                    if consecutive == 12:
+                        break
+                elif status in {401, 404}:
+                    consecutive = 0
+                else:
+                    raise AssertionError(f"Unexpected revoked readiness status: {status}")
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("APISIX consumer did not become ready")
+        for index in range(len(consumers)):
+            publish(index)
         expect("first managed request", 200, request())
         expect("regenerated/version consumer shares usage", 200, request(1))
         expect("third shared request", 200, request())
@@ -216,7 +235,7 @@ def run(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--admin-url", default="http://market-apisix:9180/apisix/admin")
+    parser.add_argument("--admin-url", default=os.environ.get("APISIX_ADMIN_URL", "http://market-apisix-admin:9180/apisix/admin"))
     parser.add_argument("--gateway-url", default="http://market-apisix:9080")
     parser.add_argument("--redis-url", default="redis://market-redis:6379/0")
     parser.add_argument("--mock-url", default="http://market-mock-api:8300")
