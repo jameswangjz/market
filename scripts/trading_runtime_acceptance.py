@@ -18,7 +18,7 @@ def run():
     outer = connection.begin()
     db = Session(bind=connection, join_transaction_mode="create_savepoint")
     previous = m.app.dependency_overrides.get(m.db_session)
-    route_keys, consumers = [], []
+    route_keys, consumers, subscription_scopes = [], [], []
     storage = m.Minio(m.MINIO_ENDPOINT, access_key=m.MINIO_ACCESS_KEY,
                       secret_key=m.MINIO_SECRET_KEY, secure=False)
     client = None
@@ -105,6 +105,47 @@ def run():
         assert online["main_status"] == "pending_payment" and online["amount"] == 30
         request("POST", "/orders/" + online["id"] + "/transition", admin, status=403, body={"action": "confirm_payment"})
         request("POST", "/orders/" + online["id"] + "/transition", finance, body={"action": "confirm_payment"})
+        request("GET", "/orders/" + online["id"] + "/api-credentials", buyer, status=409)
+        online_task = db.scalar(select(m.DeliveryTask).where(m.DeliveryTask.order_id == online["id"]))
+        request("POST", "/delivery-tasks/" + online_task.id + "/process", platform, body={"success": True})
+        initial_terms = request("GET", "/orders/" + online["id"] + "/subscription", buyer)["item"]
+        assert initial_terms["available"] and len(initial_terms["terms"]) == 1
+        subscription_scopes.append(initial_terms["id"])
+        renewal_body = {"subscription_months": 2, "idempotency_key": prefix + "-renew"}
+        renewal = request("POST", "/orders/" + online["id"] + "/renewal", admin, body=renewal_body)
+        repeated = request("POST", "/orders/" + online["id"] + "/renewal", admin, body=renewal_body)
+        assert renewal["id"] == repeated["id"] and renewal["payment_status"] == "unpaid" and renewal["amount"] == 20
+        assert request("GET", "/orders/" + online["id"] + "/subscription", buyer)["item"]["expires_at"] == initial_terms["expires_at"]
+        request("POST", "/orders/" + renewal["id"] + "/transition", finance, body={"action": "confirm_payment"})
+        renewal_task = db.scalar(select(m.DeliveryTask).where(m.DeliveryTask.order_id == renewal["id"]))
+        request("POST", "/delivery-tasks/" + renewal_task.id + "/process", platform, body={"success": True})
+        renewed_terms = request("GET", "/orders/" + online["id"] + "/subscription", buyer)["item"]
+        assert len(renewed_terms["terms"]) == 2 and renewed_terms["expires_at"] > initial_terms["expires_at"]
+        assert renewed_terms["current_period"] == initial_terms["current_period"]
+        assert renewed_terms["limits"]["monthly_quota"] == initial_terms["limits"]["monthly_quota"] == 100
+        request("POST", "/orders/" + online["id"] + "/api-credentials", buyer, status=400, body={"monthly_quota": 999999})
+        created_key = request("POST", "/orders/" + online["id"] + "/api-credentials", buyer, body={"name": "Isolated managed key"})
+        managed_credential = db.get(m.ApiCredential, created_key["id"])
+        consumers.append(managed_credential.apisix_consumer_name)
+        metadata = m.apisix_policy_redis().hgetall("market:apisix:credential:" + managed_credential.apisix_consumer_name)
+        assert metadata["mode"] == "subscription" and len(json.loads(metadata["subscription_periods"])) == 5
+        managed_url = "http://market-apisix:9080/gateway/" + route_keys[0] + "/health"
+        for _ in range(2):
+            result = httpx.get(managed_url, headers={"X-API-Key": created_key["api_key"]}, timeout=10)
+            assert result.status_code == 200, result.text
+        rotated = request("POST", f'/orders/{online["id"]}/api-credentials/{created_key["id"]}/regenerate', buyer)
+        rotated_consumer = db.get(m.ApiCredential, rotated["id"]).apisix_consumer_name
+        consumers.append(rotated_consumer)
+        policy_redis = m.apisix_policy_redis()
+        period_key = f'{initial_terms["id"]}:{initial_terms["generation"]}:{initial_terms["current_period"]["index"]}'.replace(":", "%3A")
+        month_key = f'market:apisix:quota:subscription:month:{initial_terms["id"]}:{period_key}'
+        assert int(policy_redis.get(month_key) or 0) == 2
+        # Restrict this isolated test policy to its already-used amount. This
+        # makes denial deterministic even if a wall-clock minute just changed.
+        rotated_periods = json.loads(policy_redis.hget("market:apisix:credential:" + rotated_consumer, "subscription_periods"))
+        rotated_periods[0]["monthly_quota"] = 2
+        policy_redis.hset("market:apisix:credential:" + rotated_consumer, "subscription_periods", json.dumps(rotated_periods))
+        assert httpx.get(managed_url, headers={"X-API-Key": rotated["api_key"]}, timeout=10).status_code == 429
         _, _, chosen, _ = m.api_order_context(online["id"], buyer, db)
         assert chosen.version == "v1"
         task_count = db.scalar(select(m.func.count()).select_from(m.DeliveryTask).where(m.DeliveryTask.order_id == online["id"]))
@@ -134,6 +175,8 @@ def run():
             "two independently verified native APISIX routes", "version-specific policies and authenticated upstream forwarding",
             "401 without key and 429 rate limit", "pre-review integration denied and ambiguous legacy request denied",
             "monthly order version routing", "buyer admin payment denied; finance confirm and idempotency",
+            "verified delivery anchors terms; unpaid renewal does not extend; delivered renewal queues future periods",
+            "renewal idempotency, non-additive quota and native APISIX key rotation preserving monthly usage",
             "offline provider quote adjustment, stale review rejection, buyer cost redaction"],
             "limits": "No real payment channel; test upstream auth mode none, no new OAuth/OIDC assertion", "fixture": "outer transaction rollback and external object cleanup"}
     finally:
@@ -147,6 +190,10 @@ def run():
             m.apisix_admin_request("DELETE", "/consumers/" + consumer)
             redis = m.apisix_policy_redis()
             keys = list(redis.scan_iter(match="*" + consumer + "*"))
+            if keys: redis.delete(*keys)
+        for scope in subscription_scopes:
+            redis = m.apisix_policy_redis()
+            keys = list(redis.scan_iter(match="market:apisix:quota:subscription:*:" + scope + ":*"))
             if keys: redis.delete(*keys)
         for obj in storage.list_objects(m.MINIO_BUCKET, prefix=prefix + "-provider/", recursive=True):
             storage.remove_object(m.MINIO_BUCKET, obj.object_name)

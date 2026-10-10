@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
@@ -11,6 +11,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
+import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import {
   Activity,
@@ -110,6 +111,44 @@ const productReviewMode = ref(false);
 const productDirectories = ref([]);
 const orders = ref([]);
 const selectedOrder = ref(null);
+let orderDetailRequest = 0;
+const subscriptionState = ref({ orderId: "", item: null, loading: false, error: "", modal: null });
+const renewalProcessing = ref(false);
+const subscriptionSession = createSubscriptionSession({
+  api,
+  getContext: () => ({ order: selectedOrder.value?.order, user: user.value, enterprise: enterprise.value, token: token.value }),
+  onChange: state => { subscriptionState.value = state; },
+});
+const renewalAllowed = computed(() => !subscriptionState.value.loading &&
+  subscriptionState.value.orderId === selectedOrder.value?.order.id &&
+  canRenewSubscription(selectedOrder.value?.order, subscriptionState.value.item, user.value, enterprise.value));
+const renewalModal = computed(() => renewalAllowed.value ? subscriptionState.value.modal : null);
+watch([() => user.value?.id, () => enterprise.value?.id, token], () => {
+  orderDetailRequest++;
+  subscriptionSession.reset();
+});
+async function submitRenewal() {
+  if (orderActionSubmitting.value || renewalProcessing.value) return;
+  const source = selectedOrder.value?.order.id;
+  const context = [user.value?.id, enterprise.value?.id, token.value].join(":");
+  renewalProcessing.value = true;
+  try {
+    const created = await subscriptionSession.submit();
+    if (!created) return;
+    notify("续费订单已创建，待支付");
+    await refreshData();
+    if (selectedOrder.value?.order.id !== source || context !== [user.value?.id, enterprise.value?.id, token.value].join(":")) return;
+    try { await openOrder(created); }
+    catch { notify("续费订单已创建，请从订单列表打开"); }
+  } finally {
+    renewalProcessing.value = false;
+  }
+}
+function closeOrder() {
+  orderDetailRequest++;
+  selectedOrder.value = null;
+  subscriptionSession.reset();
+}
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
 const apiOrderState = ref({
@@ -1158,7 +1197,13 @@ function selectView(view) {
   loadViewData(view).catch(() => notify("相关业务信息暂时无法加载"));
 }
 async function openOrder(order) {
+  const request = ++orderDetailRequest;
+  const context = [user.value?.id, enterprise.value?.id, token.value].join(":");
+  subscriptionSession.reset();
+  selectedOrder.value = null;
   const { data } = await api.get(`/orders/${order.id}`);
+  const current = () => request === orderDetailRequest && context === [user.value?.id, enterprise.value?.id, token.value].join(":");
+  if (!current()) return;
   selectedOrder.value = data;
   deliveryAttachmentDescription.value = "";
   saasOrderState.value = { users: [], departments: [], operations: [] };
@@ -1170,11 +1215,11 @@ async function openOrder(order) {
   };
   apiCredentialReveal.value = null;
   orderProductFiles.value = { download_limit: 0, items: [] };
-  const requests = [];
+  const requests = [subscriptionSession.load(data.order)];
   if (isOfflineFulfillmentOrder(data.order)) requests.push(loadOrderDeliveryAttachments(data.order));
   else orderDeliveryAttachments.value = { orderId: "", tasks: [], items: [], loading: false, error: "" };
   if (data.order.payment_status === "paid") {
-    requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { orderProductFiles.value = files; }).catch(() => {}));
+    requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { if (current()) orderProductFiles.value = files; }).catch(() => {}));
   }
   if (data.order.subscription_id) {
     const id = data.order.subscription_id;
@@ -1184,6 +1229,7 @@ async function openOrder(order) {
         api.get(`/saas-subscriptions/${id}/departments`),
         api.get(`/saas-subscriptions/${id}/operations`),
       ]).then(([users, departments, operations]) => {
+        if (!current()) return;
         saasOrderState.value = {
           users: users.data.items,
           departments: departments.data.items,
@@ -1196,6 +1242,7 @@ async function openOrder(order) {
     api
       .get(`/orders/${order.id}/api-credentials`)
       .then(({ data: credentials }) => {
+        if (!current()) return;
         apiOrderState.value = { ...credentials, available: true };
       })
       .catch(() => {}),
@@ -1356,32 +1403,9 @@ async function submitProviderReview(decision) {
 }
 async function saasOrderAction(action) {
   const id = selectedOrder.value?.order?.subscription_id;
-  if (!id) return;
+  if (!id || !["close", "restore"].includes(action)) return;
   try {
-    if (action === "renew") {
-      const cycle = await promptDialog(
-        "续费周期：monthly、quarterly、annual、perpetual",
-        "annual",
-      );
-      if (!cycle) return;
-      await api.post(`/saas-subscriptions/${id}/renew`, {
-        billing_cycle: cycle,
-      });
-    } else if (action === "change") {
-      const versionId = await promptDialog("请输入目标 SaaS 版本 ID");
-      if (!versionId) return;
-      const cycle = await promptDialog(
-        "计费周期：monthly、quarterly、annual、perpetual",
-        selectedOrder.value.order.billing_cycle || "annual",
-      );
-      if (!cycle) return;
-      await api.post(`/saas-subscriptions/${id}/change-version`, {
-        version_id: versionId,
-        billing_cycle: cycle,
-      });
-    } else {
-      await api.post(`/saas-subscriptions/${id}/${action}`);
-    }
+    await api.post(`/saas-subscriptions/${id}/${action}`);
     notify("SaaS 订阅操作已提交");
     await openOrder(selectedOrder.value.order);
     await refreshData();
@@ -1706,6 +1730,16 @@ async function saveProductEdit() {
     notify(error.response?.data?.detail || "产品信息保存失败");
   } finally {
     productSaving.value = false;
+  }
+}
+function updateVersionMonthlyQuota(version, event) {
+  const input = event.target;
+  try {
+    const calls = monthlyQuotaCalls(input.value);
+    input.setCustomValidity("");
+    version.monthly_quota = calls;
+  } catch (error) {
+    input.setCustomValidity(error.message);
   }
 }
 function addProductVersion() {
@@ -2288,6 +2322,8 @@ onMounted(() => {
   }, 10000);
 });
 onUnmounted(() => {
+  subscriptionSession.dispose();
+  orderDetailRequest++;
   dialogs.dispose();
   window.clearInterval(progressTimer);
   window.removeEventListener("resize", updateUiScale);
@@ -3921,7 +3957,7 @@ onUnmounted(() => {
     <div
       v-if="selectedOrder"
       class="drawer-scrim"
-      @click="selectedOrder = null"
+      @click="closeOrder"
     >
       <aside class="order-drawer" @click.stop>
         <div class="drawer-head">
@@ -3929,7 +3965,7 @@ onUnmounted(() => {
             <span class="eyebrow">订单详情</span>
             <h2>{{ selectedOrder.order.order_no }}</h2>
           </div>
-          <button class="icon-btn" @click="selectedOrder = null">
+          <button class="icon-btn" title="关闭订单详情" aria-label="关闭订单详情" @click="closeOrder">
             <X :size="19" />
           </button>
         </div>
@@ -3938,6 +3974,35 @@ onUnmounted(() => {
           ><span>{{ selectedOrder.order.buyer_name }}</span
           ><b>{{ fmtMoney(selectedOrder.order.amount) }}</b>
         </div>
+        <section class="drawer-section subscription-terms-panel" aria-label="订阅期限">
+          <div class="drawer-section-title subscription-heading">
+            <span>订阅期限</span>
+            <button v-if="renewalAllowed" class="secondary-btn" :disabled="renewalProcessing || orderActionSubmitting" @click="subscriptionSession.open()"><RefreshCw :size="15" />续费</button>
+            <button class="icon-btn" title="刷新订阅信息" aria-label="刷新订阅信息" :disabled="subscriptionState.loading || Boolean(subscriptionState.modal)" @click="subscriptionSession.load(selectedOrder.order)"><RefreshCw :size="15" /></button>
+          </div>
+          <p v-if="subscriptionState.loading" class="muted" role="status">订阅信息加载中</p>
+          <p v-else-if="subscriptionState.error" class="danger-text" role="alert">{{ subscriptionState.error }}</p>
+          <template v-else-if="subscriptionState.item?.id">
+            <dl class="subscription-summary">
+              <div><dt>当前版本</dt><dd>{{ subscriptionState.item.version_code || '-' }}</dd></div>
+              <div><dt>到期时间</dt><dd>{{ fmtDate(subscriptionState.item.expires_at) }}</dd></div>
+              <div><dt>订阅状态</dt><dd>{{ subscriptionDisplayStatus(subscriptionState.item) === 'expired' ? '已到期' : label(subscriptionDisplayStatus(subscriptionState.item)) }}</dd></div>
+              <div><dt>当前周期</dt><dd v-if="subscriptionState.item.current_period">{{ fmtDate(subscriptionState.item.current_period.starts_at) }} 至 {{ fmtDate(subscriptionState.item.current_period.ends_at) }} · {{ subscriptionState.item.current_period.index ?? '-' }}</dd><dd v-else>-</dd></div>
+              <div><dt>每分钟限流</dt><dd>{{ subscriptionState.item.limits?.rate_limit_per_minute ?? '-' }}</dd></div>
+              <div><dt>每日额度</dt><dd>{{ subscriptionState.item.limits?.daily_quota === 0 ? '不限' : subscriptionState.item.limits?.daily_quota ?? '-' }}</dd></div>
+              <div><dt>每月额度</dt><dd>{{ subscriptionState.item.limits?.monthly_quota === 0 ? '不限' : subscriptionState.item.limits?.monthly_quota ?? '-' }}</dd></div>
+            </dl>
+            <div class="subscription-table-wrap">
+              <table class="subscription-table">
+                <caption>订阅期限及未来续费段</caption>
+                <thead><tr><th>订单号</th><th>版本</th><th>开始时间</th><th>结束时间</th><th>月数</th><th>状态</th></tr></thead>
+                <tbody><tr v-for="(term, index) in subscriptionState.item.terms" :key="`${term.order_id}-${index}`"><td>{{ term.order_no || '-' }}</td><td>{{ term.version_code || '-' }}</td><td>{{ fmtDate(term.starts_at) }}</td><td>{{ fmtDate(term.ends_at) }}</td><td>{{ term.months ?? '-' }}</td><td>{{ termDisplayStatus(term) === 'scheduled' ? '待生效' : termDisplayStatus(term) === 'expired' ? '已结束' : label(termDisplayStatus(term)) }}</td></tr></tbody>
+              </table>
+            </div>
+            <p v-if="!subscriptionState.item.terms.length" class="muted">暂无订阅期限</p>
+          </template>
+          <p v-else class="muted">此订单暂无订阅权益</p>
+        </section>
         <div class="state-grid">
           <div>
             <small>主状态</small
@@ -4030,11 +4095,7 @@ onUnmounted(() => {
             订阅 ID：{{ selectedOrder.order.subscription_id }}
           </p>
           <div class="action-list">
-            <button class="secondary-btn" @click="saasOrderAction('renew')">
-              续费</button
-            ><button class="secondary-btn" @click="saasOrderAction('change')">
-              变更版本</button
-            ><button class="secondary-btn" @click="saasOrderAction('close')">
+            <button class="secondary-btn" @click="saasOrderAction('close')">
               关闭租户</button
             ><button class="secondary-btn" @click="saasOrderAction('restore')">
               恢复租户
@@ -4289,34 +4350,32 @@ onUnmounted(() => {
               v-for="(version, index) in productForm.versions"
             :key="index"
             class="version-row"
-            :class="{ 'api-version-row': ['api', 'model'].includes(productForm.product_type) }"
+            :class="{ 'api-version-row': ['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method), 'monthly-api-version-row': ['api', 'model_api'].includes(productForm.delivery_method) }"
           >
             <label
               >版本号<input v-model="version.version_code" required /></label
             ><label
-              >版本价格<input
+              >{{ ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method) ? '版本价格（元/月）' : '版本价格' }}<input
                 v-model.number="version.price"
                 type="number"
                 min="0"
                 step="0.01"
                 required /></label
             ><label
-              >版本成本<input
+              >{{ ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method) ? '版本成本（元/月）' : '版本成本' }}<input
                 v-model.number="version.cost"
                 type="number"
                 min="0"
                 step="0.01"
                 required /></label
-            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="该版本每分钟允许的最大调用次数"
+            ><label v-if="['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method)" title="该版本每分钟允许的最大调用次数"
               >每分钟限流<input v-model.number="version.rate_limit_per_minute" type="number" min="1" required /></label
-            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="该版本每日允许的最大调用次数"
-              >每日配额<input v-model.number="version.daily_quota" type="number" min="1" required /></label
-            ><label v-if="['api', 'model'].includes(productForm.product_type)" title="0 表示不单独限制月配额"
+            ><label v-if="['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method)" title="该版本每日允许的最大调用次数"
+              >每日配额<input v-model.number="version.daily_quota" type="number" :min="['api', 'model_api'].includes(productForm.delivery_method) ? 0 : 1" step="1" required /></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="1 表示 1000 次，0 表示不限">
+              每订阅月配额（千次）<input :value="monthlyQuotaThousands(version.monthly_quota ?? 0)" type="number" min="0" step="0.001" required @input="updateVersionMonthlyQuota(version, $event)" /><small class="muted">0 表示不限</small></label
+            ><label v-else-if="['api', 'model'].includes(productForm.product_type)" title="0 表示不单独限制月配额"
               >每月配额<input v-model.number="version.monthly_quota" type="number" min="0" /></label
-            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
-              额度单位<select v-model="version.quota_unit"><option value="1000">千次</option><option value="10000">万次</option></select></label
-            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)">
-              购买额度<input v-model.number="version.quota_amount" type="number" min="0" step="1" /></label
             ><label class="version-description"
               >版本简要介绍<textarea
                 v-model="version.description"
@@ -4484,6 +4543,23 @@ onUnmounted(() => {
           <div v-else class="muted">暂无审核日志</div>
         </section>
       </form>
+    </div>
+    <div v-if="renewalModal" class="modal-scrim" @click.self="subscriptionSession.close()">
+      <section class="modal-card renewal-modal" role="dialog" aria-modal="true" aria-labelledby="renewal-title" @keydown.esc="subscriptionSession.close()">
+        <div class="drawer-head">
+          <div><h2 id="renewal-title">续费订阅</h2><p>{{ selectedOrder.order.product_name }} · {{ subscriptionState.item.version_code }}</p></div>
+          <button class="icon-btn" title="关闭续费" aria-label="关闭续费" :disabled="renewalModal.submitting" @click="subscriptionSession.close()"><X :size="18" /></button>
+        </div>
+        <form @submit.prevent="submitRenewal">
+          <label class="renewal-months">订阅月数<input :value="renewalModal.months" type="number" min="1" max="36" step="1" required autofocus :disabled="renewalModal.attempted" @input="subscriptionSession.setMonths($event.target.value)" /></label>
+          <p class="muted">当前版本 {{ subscriptionState.item.version_code }}，创建待支付订单。</p>
+          <p v-if="renewalModal.error" class="danger-text" role="alert">{{ renewalModal.error }}</p>
+          <div class="modal-actions">
+            <button type="button" class="secondary-btn" :disabled="renewalModal.submitting" @click="subscriptionSession.close()">取消</button>
+            <button type="submit" class="primary-btn" :disabled="renewalProcessing || renewalModal.submitting || orderActionSubmitting"><ShoppingCart :size="15" />{{ renewalModal.submitting ? '创建中' : renewalModal.attempted ? '重试创建订单' : '创建续费订单' }}</button>
+          </div>
+        </form>
+      </section>
     </div>
     <div v-if="providerReview && canReviewProviderOrder(providerReview.order, user, enterprise)" class="modal-scrim" @click.self="closeProviderReview">
       <section class="modal-card provider-review-modal" role="dialog" aria-modal="true" aria-labelledby="provider-review-title" @keydown.esc="closeProviderReview">
@@ -4795,6 +4871,31 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.subscription-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.subscription-heading > span { margin-right: auto; }
+.subscription-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+.subscription-summary dt { color: #86909c; font-size: 12px; }
+.subscription-summary dd { margin: 4px 0 0; font-size: 13px; overflow-wrap: anywhere; }
+.subscription-table-wrap { max-width: 100%; overflow-x: auto; }
+.subscription-table { width: 100%; min-width: 620px; font-size: 12px; }
+.subscription-table caption { text-align: left; font-weight: 600; padding: 8px 0; }
+.subscription-table th, .subscription-table td { white-space: normal; overflow-wrap: anywhere; max-width: 180px; }
+.renewal-modal { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border-radius: 8px; }
+.renewal-modal h2 { font-size: 20px; }
+.renewal-modal .drawer-head p { overflow-wrap: anywhere; }
+.renewal-modal .drawer-head > div { min-width: 0; }
+.renewal-modal .drawer-head .icon-btn { flex-shrink: 0; }
+.renewal-months { display: grid; gap: 8px; }
+.renewal-months input { width: 100%; min-width: 0; }
+.renewal-modal .modal-actions { flex-wrap: wrap; }
+.version-row.monthly-api-version-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.version-row.monthly-api-version-row .version-description { grid-column: 1 / 3; }
+.version-row.monthly-api-version-row .icon-btn { justify-self: end; }
+@media (max-width: 760px) {
+  .version-row.monthly-api-version-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .version-row.monthly-api-version-row .version-description { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) { .subscription-summary { grid-template-columns: minmax(0, 1fr); } }
 .provider-review-modal { max-height: calc(100dvh - 32px); }
 .provider-review-modal .wide { grid-column: 1 / -1; }
 .provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
