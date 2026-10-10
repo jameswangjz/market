@@ -146,6 +146,7 @@ const enterpriseDepartments = ref([]);
 const enterpriseInvitations = ref([]);
 const myEnterpriseInvitations = ref([]);
 const enterpriseManageModal = ref(null);
+const enterpriseManageReadOnly = ref(false);
 const enterpriseManageTab = ref("details");
 const inviteTarget = ref("");
 const inviteDepartmentIds = ref([]);
@@ -738,16 +739,20 @@ async function loadEnterpriseManagement() {
 }
 async function openEnterpriseManagement(item, tab = "details") {
   enterpriseManageModal.value = item;
-  enterpriseManageTab.value = tab;
+  enterpriseManageReadOnly.value = !canManageEnterprise(item);
+  enterpriseManageTab.value = enterpriseManageReadOnly.value ? "details" : tab;
   inviteTarget.value = "";
   inviteDepartmentIds.value = [];
   activeDepartmentPicker.value = "";
   inviteChannel.value = "sms";
   newDepartment.value = { name: "", code: "", parent_id: "" };
-  try { await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "企业管理数据加载失败"); }
+  if (!enterpriseManageReadOnly.value) {
+    try { await loadEnterpriseManagement(); } catch (error) { notify(error.response?.data?.detail || "企业管理数据加载失败"); }
+  }
 }
 function closeEnterpriseManagement() {
   enterpriseManageModal.value = null;
+  enterpriseManageReadOnly.value = false;
   activeDepartmentPicker.value = "";
 }
 function openEnterpriseResubmit(item) {
@@ -1631,7 +1636,10 @@ function canReviewIdentity() {
   return ["super_admin", "platform_operator"].includes(user.value?.platform_role);
 }
 function canManageEnterprise(item) {
-  return canReviewIdentity() || (item?.id === enterprise.value?.id && ["super_admin", "enterprise_admin"].includes(user.value?.enterprise_role));
+  return item?.id === enterprise.value?.id && ["super_admin", "enterprise_admin"].includes(user.value?.enterprise_role);
+}
+function canViewEnterpriseDetails(item) {
+  return Boolean(user.value?.platform_role) || Boolean(item?.id && item.id === enterprise.value?.id);
 }
 async function openVerificationFile(fileId) {
   try {
@@ -3096,7 +3104,7 @@ onUnmounted(() => {
                           @click="openEnterpriseResubmit(item)"
                         >
                           重新提交
-                        </button><button v-if="canReviewIdentity() && item.verification_status === 'pending_review'" class="text-btn" @click="openEnterpriseReview(item)">实名审核</button><template v-if="item.verification_status === 'verified' && canManageEnterprise(item)"><button class="text-btn" @click="openEnterpriseManagement(item, 'details')">企业详情</button><button class="text-btn" @click="openEnterpriseManagement(item, 'invite')">邀请用户</button><button class="text-btn" @click="openEnterpriseManagement(item, 'departments')">部门管理</button><button class="text-btn" @click="openEnterpriseManagement(item, 'members')">成员管理</button></template>
+                        </button><button v-if="canReviewIdentity() && item.verification_status === 'pending_review'" class="text-btn" @click="openEnterpriseReview(item)">实名审核</button><button v-if="item.verification_status === 'verified' && canViewEnterpriseDetails(item)" class="text-btn" @click="openEnterpriseManagement(item, 'details')">企业详情</button><template v-if="item.verification_status === 'verified' && canManageEnterprise(item)"><button class="text-btn" @click="openEnterpriseManagement(item, 'invite')">邀请用户</button><button class="text-btn" @click="openEnterpriseManagement(item, 'departments')">部门管理</button><button class="text-btn" @click="openEnterpriseManagement(item, 'members')">成员管理</button></template>
                       </div>
                     </td>
                   </tr>
@@ -4082,14 +4090,14 @@ onUnmounted(() => {
     >
       <section class="modal-card enterprise-manage-modal" @click.stop>
         <div class="drawer-head">
-          <div><span class="eyebrow">ENTERPRISE MANAGEMENT</span><h2>{{ enterpriseManageModal.name }}</h2><p class="muted">已认证企业 · 企业成员、部门和邀请管理</p></div>
+          <div><span class="eyebrow">{{ enterpriseManageReadOnly ? 'ENTERPRISE DETAILS' : 'ENTERPRISE MANAGEMENT' }}</span><h2>{{ enterpriseManageModal.name }}</h2><p class="muted">已认证企业 · {{ enterpriseManageReadOnly ? '企业详情查看' : '企业成员、部门和邀请管理' }}</p></div>
           <button type="button" class="icon-btn" @click="closeEnterpriseManagement"><X :size="19" /></button>
         </div>
         <div class="tabs modal-tabs">
           <button :class="{ active: enterpriseManageTab === 'details' }" @click="enterpriseManageTab = 'details'">企业详情</button>
-          <button :class="{ active: enterpriseManageTab === 'invite' }" @click="enterpriseManageTab = 'invite'">邀请用户</button>
-          <button :class="{ active: enterpriseManageTab === 'departments' }" @click="enterpriseManageTab = 'departments'">部门管理</button>
-          <button :class="{ active: enterpriseManageTab === 'members' }" @click="enterpriseManageTab = 'members'">成员管理</button>
+          <button v-if="!enterpriseManageReadOnly" :class="{ active: enterpriseManageTab === 'invite' }" @click="enterpriseManageTab = 'invite'">邀请用户</button>
+          <button v-if="!enterpriseManageReadOnly" :class="{ active: enterpriseManageTab === 'departments' }" @click="enterpriseManageTab = 'departments'">部门管理</button>
+          <button v-if="!enterpriseManageReadOnly" :class="{ active: enterpriseManageTab === 'members' }" @click="enterpriseManageTab = 'members'">成员管理</button>
         </div>
         <div v-if="enterpriseManageTab === 'details'" class="enterprise-detail-grid">
           <div><small>企业名称</small><strong>{{ enterpriseManageModal.name }}</strong></div><div><small>统一社会信用代码</small><strong>{{ enterpriseManageModal.credit_code }}</strong></div><div><small>企业类型</small><strong>{{ enterpriseManageModal.enterprise_type || '-' }}</strong></div><div><small>法定代表人</small><strong>{{ enterpriseManageModal.legal_representative || '-' }}</strong></div><div><small>注册资本/出资额</small><strong>{{ enterpriseManageModal.registered_capital || '-' }}</strong></div><div><small>成立日期</small><strong>{{ enterpriseManageModal.establishment_date || '-' }}</strong></div><div><small>经营场所</small><strong>{{ enterpriseManageModal.business_address || '-' }}</strong></div><div><small>认证状态</small><strong>已认证</strong></div><div><small>认证时间</small><strong>{{ fmtDate(enterpriseManageModal.verified_at) }}</strong></div><div class="enterprise-detail-wide"><small>经营范围</small><strong>{{ enterpriseManageModal.business_scope || '-' }}</strong></div>
