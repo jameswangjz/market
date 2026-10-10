@@ -1,0 +1,34 @@
+﻿{
+    "detail":  {
+                   "title":  "矿山装备制造质量数据集",
+                   "bodyWidth":  1440,
+                   "width":  1440
+               },
+    "mobile":  {
+                   "width":  390,
+                   "bodyWidth":  390,
+                   "logos":  0
+               },
+    "checks":  [
+                   "anonymous listing",
+                   "anonymous detail",
+                   "listing refresh",
+                   "detail refresh",
+                   "console refresh",
+                   "desktop/mobile bounds",
+                   "authenticated login return to product",
+                   "authenticated console F5"
+               ],
+    "limits":  [
+                   "no paid checkout",
+                   "no new business orders",
+                   "multi-enterprise selection covered by HTTP/unit tests"
+               ],
+    "publicProducts":  2,
+    "list":  {
+                 "width":  390,
+                 "bodyWidth":  390,
+                 "logos":  0
+             },
+    "status":  "passed"
+}
