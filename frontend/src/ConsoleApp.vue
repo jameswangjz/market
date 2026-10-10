@@ -245,6 +245,7 @@ const verificationFiles = ref({ front: null, back: null, license: null });
 const developmentFilter = ref("all");
 const search = ref("");
 const showProductForm = ref(false);
+const productSaving = ref(false);
 const productDetailMode = ref(false);
 const productDetailTab = ref("info");
 const productReadOnlyMode = ref(false);
@@ -1348,6 +1349,8 @@ async function copyApiCredential() {
   }
 }
 async function createProduct() {
+  if (productSaving.value) return;
+  productSaving.value = true;
   try {
     const { data } = await api.post("/products", {
       ...productForm.value,
@@ -1356,6 +1359,11 @@ async function createProduct() {
         productDirectories.value[0]?.value ||
         "未分类",
     });
+    // Retain the committed draft before uploading so retries update it.
+    selectedProductId.value = data.id;
+    productDetailMode.value = true;
+    productForm.value.id = data.id;
+    productForm.value.versions = data.versions;
     if (productForm.value.logoFile) {
       const form = new FormData();
       form.append("upload", productForm.value.logoFile);
@@ -1363,6 +1371,8 @@ async function createProduct() {
       form.append("file_role", "product_logo");
       const uploaded = await api.post("/files/upload", form);
       await api.put(`/products/${data.id}`, { ...productForm.value, logo_file_id: uploaded.data.id, logoFile: undefined });
+      productForm.value.logo_file_id = uploaded.data.id;
+      productForm.value.logoFile = null;
     }
     if (productForm.value.fileUpload) {
       const form = new FormData();
@@ -1372,6 +1382,7 @@ async function createProduct() {
       form.append("version_id", data.versions?.[0]?.id || "");
       form.append("version", data.versions?.[0]?.version_code || "v1.0");
       await api.post("/files/upload", form);
+      productForm.value.fileUpload = null;
     }
     showProductForm.value = false;
     productForm.value = {
@@ -1381,10 +1392,13 @@ async function createProduct() {
     notify("产品草稿已创建");
     await loadViewData("products");
   } catch (error) {
-    notify(error.response?.data?.detail || "创建失败");
+    notify(error.response?.data?.detail || (selectedProductId.value ? "草稿已保存，附件保存失败，请重试保存同一产品" : "创建失败"));
+  } finally {
+    productSaving.value = false;
   }
 }
 function openNewProduct() {
+  if (productSaving.value) return;
   productDetailMode.value = false;
   productDetailTab.value = "info";
   productReadOnlyMode.value = false;
@@ -1397,6 +1411,7 @@ function openNewProduct() {
   showProductForm.value = true;
 }
 async function openProductDetail(product, review = false) {
+  if (productSaving.value) return;
   selectedProductId.value = product.id;
   productDetailMode.value = true;
   productDetailTab.value = "info";
@@ -1493,7 +1508,8 @@ async function reviewProductFromDetail(decision) {
   await loadViewData("products");
 }
 async function saveProductEdit() {
-  if (!selectedProductId.value || productReadOnlyMode.value) return;
+  if (productSaving.value || !selectedProductId.value || productReadOnlyMode.value) return;
+  productSaving.value = true;
   try {
     const payload = {
       ...productForm.value,
@@ -1507,6 +1523,8 @@ async function saveProductEdit() {
       form.append("file_role", "product_logo");
       const uploaded = await api.post("/files/upload", form);
       payload.logo_file_id = uploaded.data.id;
+      productForm.value.logo_file_id = uploaded.data.id;
+      productForm.value.logoFile = null;
     }
     if (productForm.value.fileUpload) {
       const form = new FormData();
@@ -1516,6 +1534,7 @@ async function saveProductEdit() {
       form.append("version_id", productForm.value.versions[0]?.id || "");
       form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
       await api.post("/files/upload", form);
+      productForm.value.fileUpload = null;
     }
     await api.put(`/products/${selectedProductId.value}`, payload);
     showProductForm.value = false;
@@ -1523,6 +1542,8 @@ async function saveProductEdit() {
     await loadViewData("products");
   } catch (error) {
     notify(error.response?.data?.detail || "产品信息保存失败");
+  } finally {
+    productSaving.value = false;
   }
 }
 function addProductVersion() {
@@ -3957,7 +3978,7 @@ onUnmounted(() => {
     <div
       v-if="showProductForm"
       class="modal-scrim"
-      @click="showProductForm = false"
+      @click="!productSaving && (showProductForm = false)"
     >
       <form
         class="modal-card product-modal"
@@ -3975,6 +3996,7 @@ onUnmounted(() => {
           <button
             type="button"
             class="icon-btn"
+            :disabled="productSaving"
             @click="showProductForm = false"
           >
             <X :size="19" />
@@ -3985,7 +4007,7 @@ onUnmounted(() => {
           <button type="button" :class="{ active: productDetailTab === 'audit' }" @click="productDetailTab = 'audit'">审核日志（{{ productForm.review_logs?.length || 0 }}）</button>
         </div>
         <div v-if="!productDetailMode || productDetailTab === 'info'">
-        <fieldset :disabled="productReadOnlyMode" class="product-fieldset">
+        <fieldset :disabled="productReadOnlyMode || productSaving" class="product-fieldset">
         <div class="form-section-title">基础元数据</div>
         <label
           >产品或服务名称<input
@@ -4263,8 +4285,8 @@ onUnmounted(() => {
           <button type="button" class="primary-btn" @click="reviewProductFromDetail('approve')">通过审核</button>
           <button type="button" class="secondary-btn danger-text" @click="reviewProductFromDetail('reject')">拒绝审核</button>
         </div>
-        <button v-if="!productReadOnlyMode && (!productDetailMode || productDetailTab === 'info')" class="primary-btn full-btn" type="submit">
-          {{ selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
+        <button v-if="!productReadOnlyMode && (!productDetailMode || productDetailTab === 'info')" class="primary-btn full-btn" type="submit" :disabled="productSaving" :aria-busy="productSaving">
+          {{ productSaving ? "保存中…" : selectedProductId ? "保存产品信息" : "保存产品登记草稿" }} <ArrowUpRight :size="16" />
         </button>
         <section v-if="productDetailMode && productDetailTab === 'audit'" class="product-review-log-section">
           <div class="form-section-title">审核日志</div>
