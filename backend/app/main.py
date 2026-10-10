@@ -1402,8 +1402,9 @@ def audit(db: Session, actor: str, action: str, target_type: str, target_id: str
 
 
 def notify_platform_role(db: Session, role: str, title: str, content: str, target_type: str, target_id: str) -> None:
-    for recipient in db.scalars(select(User).where(User.platform_role.in_([role, "super_admin"]), User.is_active.is_(True))).all():
-        db.add(PlatformNotification(recipient_user_id=recipient.id, recipient_role=role, title=title, content=content, target_type=target_type, target_id=target_id))
+    roles = [role, "super_admin"] + (["product_manager"] if role == "business_reviewer" else [])
+    recipients = db.scalars(select(User.id).where(User.platform_role.in_(roles), User.is_active.is_(True))).all()
+    message_center["create"](db, recipients, title, content, target_type, target_id)
 
 
 def require_product_review_role(user: User, stage: str) -> None:
@@ -2821,22 +2822,6 @@ def update_notification_settings(body: NotificationSettingsBody, user: User = De
     audit(db, user.email or user.phone or user.id, "update_notification_settings", "system_setting")
     db.commit()
     return notification_settings(user, db)
-
-
-@app.get("/api/notifications")
-def platform_notifications(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    items = db.scalars(select(PlatformNotification).where(PlatformNotification.recipient_user_id == user.id).order_by(PlatformNotification.created_at.desc()).limit(100)).all()
-    return {"unread": sum(1 for item in items if item.status == "unread"), "items": [{"id": x.id, "title": x.title, "content": x.content, "target_type": x.target_type, "target_id": x.target_id, "status": x.status, "created_at": x.created_at} for x in items]}
-
-
-@app.post("/api/notifications/{notification_id}/read")
-def read_platform_notification(notification_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    item = db.scalar(select(PlatformNotification).where(PlatformNotification.id == notification_id, PlatformNotification.recipient_user_id == user.id))
-    if not item:
-        raise HTTPException(404, "通知不存在")
-    item.status = "read"
-    db.commit()
-    return {"id": item.id, "status": item.status}
 
 
 @app.get("/api/admin/platform-roles")
@@ -6428,3 +6413,8 @@ def order_product_files(order_id: str, user: User = Depends(current_user), db: S
     product = db.get(Product, order.product_id)
     limit = int(product.download_limit or 0) if product else 0
     return {"download_limit": limit, "items": [{**file_out(item), "downloaded": db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0, "download_url": f"/api/files/{item.id}/download?order_id={order.id}"} for item in items]}
+
+
+from .message_center import install as install_message_center
+
+message_center = install_message_center(globals())

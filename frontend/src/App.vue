@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import axios from "axios";
+import MessageCenter from "./MessageCenter.vue";
 import "./gateway-doc.css";
 import {
   Activity,
@@ -145,6 +146,7 @@ const enterpriseMembers = ref([]);
 const enterpriseDepartments = ref([]);
 const enterpriseInvitations = ref([]);
 const myEnterpriseInvitations = ref([]);
+const notificationSummary = ref({ unread: 0, unacknowledged_urgent: 0 });
 const enterpriseManageModal = ref(null);
 const enterpriseManageReadOnly = ref(false);
 const enterpriseManageTab = ref("details");
@@ -258,10 +260,11 @@ const nav = [
   { key: "gateway", label: "API 网关", icon: Network },
   { key: "sla", label: "SLA 保障", icon: Activity },
   { key: "users", label: "用户与企业", icon: Users },
+  { key: "messages", label: "消息中心", icon: Bell },
   { key: "development", label: "开发进度", icon: Activity },
 ];
 
-const visibleNav = computed(() => user.value?.verified_status === "verified" ? nav : nav.filter((item) => ["products", "users"].includes(item.key)));
+const visibleNav = computed(() => user.value?.verified_status === "verified" ? nav : nav.filter((item) => ["products", "users", "messages"].includes(item.key)));
 const filteredProducts = computed(() =>
   products.value.filter((p) => !search.value || p.name.includes(search.value)),
 );
@@ -438,6 +441,7 @@ async function loadSession() {
     const { data } = await api.get("/auth/me");
     user.value = { ...data.user, enterprise_role: data.role };
     enterprise.value = data.enterprise;
+    await loadNotificationSummary();
     if (user.value.verified_status !== "verified") {
       activeView.value = "products";
       showPersonalVerification.value = true;
@@ -448,6 +452,11 @@ async function loadSession() {
   } catch {
     logout();
   }
+}
+async function loadNotificationSummary() {
+  if (!token.value) return;
+  try { const { data } = await api.get('/notifications/summary'); notificationSummary.value = data; }
+  catch { /* Keep the last count during temporary network failures. */ }
 }
 function logout() {
   token.value = "";
@@ -1849,6 +1858,7 @@ onMounted(() => {
   if (token.value) loadSession();
   progressTimer = window.setInterval(() => {
     if (token.value) loadViewData("development");
+    if (token.value) loadNotificationSummary();
   }, 10000);
 });
 onUnmounted(() => {
@@ -2021,8 +2031,8 @@ onUnmounted(() => {
               placeholder="搜索订单、产品或企业"
             />
           </div>
-          <button class="icon-btn notification-btn">
-            <Bell :size="18" /><i></i>
+          <button class="icon-btn notification-btn" title="消息中心" @click="activeView = 'messages'">
+            <Bell :size="18" /><span v-if="notificationSummary.unread" class="notification-count">{{ notificationSummary.unread > 99 ? '99+' : notificationSummary.unread }}</span>
           </button>
           <div class="user-chip" role="button" tabindex="0" @click="showProfileContact = true">
             <div class="avatar">{{ user.name?.slice(0, 1) }}</div>
@@ -2034,6 +2044,7 @@ onUnmounted(() => {
         </div>
       </header>
       <section class="content">
+        <div v-if="notificationSummary.unacknowledged_urgent" class="urgent-message-banner"><Bell :size="16" /><span>{{ notificationSummary.unacknowledged_urgent }} 条紧急消息待确认</span><button class="text-btn" @click="activeView = 'messages'">查看</button></div>
         <div v-if="loading" class="loading-line">
           <span></span>正在同步运营数据...
         </div>
@@ -2041,7 +2052,8 @@ onUnmounted(() => {
           <button class="active" type="button">通知与角色</button
           ><button type="button" disabled>安全与审计</button>
         </div>
-        <template v-if="activeView === 'overview'"
+        <template v-if="activeView === 'messages'"><MessageCenter @changed="loadNotificationSummary" /></template>
+        <template v-else-if="activeView === 'overview'"
           ><div class="page-heading">
             <div>
               <div class="eyebrow">
