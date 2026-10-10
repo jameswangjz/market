@@ -22,6 +22,10 @@ data:
         metrics_path: /metrics
         static_configs:
           - targets: ["market-api:8000"]
+      - job_name: market-notifications
+        metrics_path: /metrics/notifications
+        static_configs:
+          - targets: ["market-api:8000"]
   gateway-alerts.yml: |
     groups:
       - name: market-gateway
@@ -47,6 +51,27 @@ data:
             annotations:
               summary: 运营平台控制面不可用
               description: market-api 健康检查连续 2 分钟不可采集。
+          - alert: MarketNotificationDeliveryFailed
+            expr: sum(market_notification_jobs{status="failed"}) > 0
+            for: 1m
+            labels: {severity: warning}
+            annotations:
+              summary: 消息发送存在失败任务
+              description: 请在消息中心检查失败任务并恢复发送。
+          - alert: MarketNotificationBacklog
+            expr: market_notification_oldest_pending_seconds > 300
+            for: 2m
+            labels: {severity: warning}
+            annotations:
+              summary: 消息发送任务积压
+              description: 最早待发送任务已等待超过五分钟，请检查Worker与SMTP/Redis。
+          - alert: MarketNotificationMetricsUnavailable
+            expr: up{job="market-notifications"} == 0
+            for: 2m
+            labels: {severity: critical}
+            annotations:
+              summary: 消息中心监控不可采集
+              description: 消息中心指标端点不可用。
 ---
 apiVersion: v1
 kind: ConfigMap
