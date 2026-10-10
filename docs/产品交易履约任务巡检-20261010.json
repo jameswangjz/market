@@ -1,0 +1,19 @@
+{
+  "checked_at": "2026-10-09T11:34:20.172816+00:00",
+  "total": 42,
+  "counts": {
+    "todo": 40,
+    "in_progress": 0,
+    "review": 0,
+    "blocked": 0,
+    "done": 2
+  },
+  "ready": [
+    "TRD-BE-001",
+    "TRD-BE-002",
+    "TRD-BE-004",
+    "TRD-FE-001"
+  ],
+  "alerts": [],
+  "interpretation": "Stale progress is a review signal, not proof that a process is stuck. No task state is changed automatically."
+}

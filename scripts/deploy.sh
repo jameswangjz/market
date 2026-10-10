@@ -54,3 +54,13 @@ if [[ -f k8s/message-center.yaml ]]; then
   kubectl -n "$NAMESPACE" rollout status deployment/market-prometheus --timeout=180s
 fi
 kubectl -n "$NAMESPACE" get pods,svc -o wide
+
+if [[ -f docs/产品交易履约开发任务-20261010.json && -f k8s/trading-task-monitor.yaml ]]; then
+  kubectl -n "$NAMESPACE" create configmap trading-task-plan \
+    --from-file=trading_task_control.py=scripts/trading_task_control.py \
+    --from-file=plan.json=docs/产品交易履约开发任务-20261010.json \
+    --dry-run=client -o yaml | kubectl apply -f -
+  sed "s#market-api:REPLACE_WITH_DEPLOYED_TAG#market-api:${IMAGE_TAG}#g" \
+    k8s/trading-task-monitor.yaml > "$RENDERED_MANIFEST"
+  kubectl apply -f "$RENDERED_MANIFEST"
+fi
