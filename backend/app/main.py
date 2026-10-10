@@ -4150,13 +4150,13 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     node = f"{node_host}:{parsed_upstream.port or (443 if parsed_upstream.scheme == 'https' else 80)}"
     prefix = parsed_upstream.path.rstrip("/")
     plugins = {
-        "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", prefix + r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
+        "proxy-rewrite": {"regex_uri": [f"^/gateway/{route.route_key}(.*)", (prefix if route.validated_ip else "") + r"$1"] if use_native_upstream else [f"^/gateway/{route.route_key}(.*)", r"/gateway/" + route.route_key + r"$1"]},
         "limit-count": {"count": rate_limit, "time_window": 60, "rejected_code": 429, "rejected_msg": '{"code":"RATE_LIMIT_EXCEEDED","message":"超过 API 每分钟调用频率限制"}', "key": "consumer_name" if apisix_native_auth() else "http_x_api_key", "key_type": "var", "policy": "redis", "redis_host": "market-redis", "redis_port": 6379, "redis_database": 2},
         "market-gateway-quota": {"route_key": route.route_key, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "lookup_consumer": True},
     }
     if apisix_native_auth():
         plugins["key-auth"] = {"header": "X-API-Key", "query": "api_key"}
-    if apisix_native_upstream() and route.upstream_auth_mode == "oauth2":
+    if apisix_native_upstream() and (route.upstream_auth_mode == "oauth2" or not route.validated_ip):
         plugins["market-gateway-oauth"] = {
             "product_id": route.product_id,
             "token_url": platform_oauth_token_url(),
@@ -4170,7 +4170,8 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
         "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
         "upstream": {"type": "roundrobin", "nodes": {node: 1}, "scheme": parsed_upstream.scheme,
                      "pass_host": "rewrite", "upstream_host": parsed_upstream.hostname,
-                     "timeout": {"connect": route.timeout_ms / 1000, "send": route.timeout_ms / 1000, "read": route.timeout_ms / 1000}},
+                     "timeout": {"connect": route.timeout_ms / 1000, "send": route.timeout_ms / 1000, "read": route.timeout_ms / 1000}}
+                    if route.validated_ip else {"type": "roundrobin", "nodes": {target_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if target_upstream.startswith("https://") else "http"},
         "plugins": plugins,
         "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"},
     }

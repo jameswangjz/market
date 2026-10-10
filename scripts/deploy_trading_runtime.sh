@@ -13,7 +13,10 @@ if [[ "${REUSE_RUNTIME:-false}" == "true" ]]; then
   API_BASE=$(kubectl -n market get deployment market-api -o jsonpath='{.spec.template.spec.containers[0].image}')
   WEB_BASE=$(kubectl -n market get deployment market-web -o jsonpath='{.spec.template.spec.containers[0].image}')
   nerdctl --namespace k8s.io build --build-arg "BASE_IMAGE=$API_BASE" -t "market-api:${TAG}" -f backend/Dockerfile.runtime backend
-  (cd frontend && npm run build)
+  if [[ "${PREBUILT_WEB:-false}" != "true" ]]; then
+    (cd frontend && npm run build)
+  fi
+  test -s frontend/dist/index.html
   nerdctl --namespace k8s.io build --build-arg "BASE_IMAGE=$WEB_BASE" -t "market-web:${TAG}" -f frontend/Dockerfile.runtime frontend
 else
   nerdctl --namespace k8s.io build -t "market-api:${TAG}" -f backend/Dockerfile backend

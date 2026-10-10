@@ -145,6 +145,17 @@ class VersionGatewayTests(unittest.TestCase):
         self.http.assert_not_called()
         self.assertFalse(self.ready())
 
+    def test_legacy_payload_stays_stable_and_verified_payload_pins_destination(self):
+        with patch.object(self.m, "apisix_native_upstream", return_value=True):
+            legacy = self.m.apisix_route_payload(self.route, self.product, self.db)
+            self.assertEqual(legacy["upstream"], {"type": "roundrobin", "nodes": {"provider.invalid": 1}, "scheme": "https"})
+            self.assertIn("market-gateway-oauth", legacy["plugins"])
+            self.route.validated_ip = "93.184.216.34"
+            current = self.m.apisix_route_payload(self.route, self.product, self.db)
+            self.assertEqual(current["upstream"]["nodes"], {"93.184.216.34:443": 1})
+            self.assertEqual(current["upstream"]["upstream_host"], "provider.invalid")
+            self.assertNotIn("market-gateway-oauth", current["plugins"])
+
     def test_publish_failure_persisted_but_not_ready(self):
         self.save()
         self.admin.side_effect = RuntimeError("unavailable")

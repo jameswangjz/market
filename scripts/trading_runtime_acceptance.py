@@ -41,7 +41,7 @@ def run():
         rule = json.dumps(dict(platform_rate=20, provider_rate=80, service_rate=0, expert_rate=0, channel_rate=0))
         product = m.Product(id=prefix + "-p", enterprise_id=ep.id, name="Isolated gateway acceptance",
                             product_type="api", delivery_method="api", upstream_url="http://market-mock-api:8300",
-                            status="operation_review", settlement_rule_mode="custom", settlement_rule_json=rule)
+                            status="draft", settlement_rule_mode="custom", settlement_rule_json=rule)
         db.add(product); db.flush()
         versions = [m.ProductReleaseVersion(id=prefix + "-v" + str(i), product_id=product.id,
                                             version_code="v" + str(i), price=10*i, cost=3*i,
@@ -70,6 +70,8 @@ def run():
                               rate_limit_per_minute=version.rate_limit_per_minute,
                               daily_quota=version.daily_quota, monthly_quota=version.monthly_quota))
             request("POST", f"/products/{product.id}/versions/{version.id}/integration/verify", provider, status=409)
+        product.status = "operation_review"
+        db.commit()
         reviewed = request("POST", f"/products/{product.id}/review", body={"decision": "approve", "comment": "Isolated runtime final approval"})
         assert reviewed["status"] == "published", reviewed
         public = request("GET", f"/storefront/products/{product.id}")

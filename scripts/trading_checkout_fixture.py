@@ -20,6 +20,19 @@ def cleanup(state):
         files = db.scalars(select(m.FileObject).where(m.FileObject.product_id == state["product_id"])).all()
         file_ids = [f.id for f in files]
         targets = ids + file_ids + state["version_ids"] + [state["product_id"]]
+        messages = m.message_center["Message"]
+        receipt = m.message_center["Receipt"]
+        delivery = m.message_center["Delivery"]
+        message_ids = db.scalars(select(messages.id).where(messages.target_id.in_(targets))).all()
+        delivery_ids = select(delivery.id).where(delivery.message_id.in_(message_ids))
+        db.execute(delete(m.message_center["DeliveryAttempt"]).where(m.message_center["DeliveryAttempt"].delivery_id.in_(delivery_ids)))
+        db.execute(delete(m.message_center["ExpiredUrgent"]).where(m.message_center["ExpiredUrgent"].message_id.in_(message_ids)))
+        links = m.Base.metadata.tables["notification_message_attachments"]
+        db.execute(delete(links).where(links.c.message_id.in_(message_ids)))
+        db.execute(delete(receipt).where(receipt.message_id.in_(message_ids)))
+        db.execute(delete(delivery).where(delivery.message_id.in_(message_ids)))
+        db.execute(delete(messages).where(messages.id.in_(message_ids)))
+        db.execute(delete(m.message_center["Preference"]).where(m.message_center["Preference"].user_id.in_(state["user_ids"])))
         db.execute(delete(m.AuditLog).where(or_(m.AuditLog.target_id.in_(targets), m.AuditLog.actor.in_(state["emails"]))))
         for model in (m.OrderStateLog, m.Payment, m.SettlementMeasurement):
             db.execute(delete(model).where(model.order_id.in_(ids)))
