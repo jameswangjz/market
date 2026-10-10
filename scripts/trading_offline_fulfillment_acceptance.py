@@ -227,7 +227,7 @@ def run():
             for action in ("accept_delivery", "reject_delivery"):
                 denied(action, actor, reason="Revise")
         for reason in ("", "   ", "\t\n", None):
-            denied("reject_delivery", "buyeradmin", 400, reason)
+            denied("reject_delivery", "buyeradmin", 422 if reason is None else 400, reason)
         request("POST", path + "/transition", "buyeradmin",
                 body={"action": "reject_delivery", "reason": "  Revise consulting scope  "})
         state("rectifying")

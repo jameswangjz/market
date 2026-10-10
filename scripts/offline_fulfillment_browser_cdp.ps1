@@ -154,15 +154,21 @@ try {
         '--headless=new', "--remote-debugging-port=$port", "--user-data-dir=`"$profile`"", '--no-first-run', 'about:blank') -PassThru
     $target = $null
     for ($i=0; $i -lt 60; $i++) {
-        try { $target = Invoke-RestMethod "http://127.0.0.1:$port/json/list" | Where-Object { $_.type -eq 'page' } | Select-Object -First 1; if ($target) { break } }
+        try {
+            $pages = Invoke-RestMethod "http://127.0.0.1:$port/json/list"
+            $target = $pages | Where-Object { $_.type -eq 'page' } | Select-Object -First 1
+            if ($target) { break }
+        }
         catch { }
         Start-Sleep -Milliseconds 500
     }
     if (-not $target) { throw 'Chrome startup timed out' }
+    $currentCheck = 'CDP connection'
     $socket = [Net.WebSockets.ClientWebSocket]::new()
     $timeout = [Threading.CancellationTokenSource]::new(30000)
     try { $null = $socket.ConnectAsync([Uri]$target.webSocketDebuggerUrl, $timeout.Token).GetAwaiter().GetResult() }
     finally { $timeout.Dispose() }
+    $currentCheck = 'CDP page setup'
     Cdp 'Page.enable' @{} | Out-Null
     Cdp 'Network.enable' @{} | Out-Null
     Cdp 'Fetch.enable' @{patterns=@(@{urlPattern='*';requestStage='Request'})} | Out-Null
