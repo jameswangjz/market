@@ -3132,7 +3132,9 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
     stmt = select(Product)
     if user.verified_status != "verified":
         stmt = stmt.where(Product.status == "published")
-    elif user.platform_role not in {"super_admin", "platform_operator", "security_compliance"}:
+    elif user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+        if user.platform_role:
+            raise HTTPException(403, "当前平台角色无权访问产品管理")
         enterprise = first_enterprise(db, user)
         stmt = stmt.where(Product.enterprise_id == enterprise.id)
     if q:
@@ -3141,7 +3143,15 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
         stmt = stmt.where(Product.status == status)
     if product_type:
         stmt = stmt.where(Product.product_type == product_type)
-    return {"items": [product_out(x) for x in db.scalars(stmt.order_by(Product.updated_at.desc())).all()]}
+    rows = db.scalars(stmt.order_by(Product.updated_at.desc())).all()
+    if user.verified_status != "verified":
+        public_items = []
+        for product in rows:
+            dto = storefront["public_product"](db, product)
+            if dto:
+                public_items.append({**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency})
+        return {"items": public_items}
+    return {"items": [product_out(x) for x in rows]}
 
 
 @app.get("/api/products/{product_id}")
@@ -3150,7 +3160,10 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
         product = db.scalar(select(Product).where(Product.id == product_id, Product.status == "published"))
         if not product:
             raise HTTPException(404, "产品不存在或未发布")
-        result = product_out(product)
+        dto = storefront["public_product"](db, product)
+        if not dto:
+            raise HTTPException(404, "产品不存在或未就绪")
+        return {**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency, "review_logs": []}
     else:
         result = product_out(product_for_enterprise(product_id, user, db))
     review_actions = (

@@ -487,8 +487,9 @@ async function loadSession() {
       showPersonalVerification.value = true;
       await loadViewData("products");
     } else {
-      const requested = new URLSearchParams(window.location.search).get("view") || "overview";
-      activeView.value = canAccessConsoleView(user.value, enterprise.value, requested) ? requested : "products";
+      const preferred = user.value.platform_role === 'finance_settlement' ? 'settlements' : user.value.platform_role === 'delivery_monitor' ? 'delivery' : 'overview';
+      const requested = new URLSearchParams(window.location.search).get("view") || preferred;
+      activeView.value = canAccessConsoleView(user.value, enterprise.value, requested) ? requested : visibleNav.value[0]?.key || 'users';
       await refreshData();
     }
   } catch {

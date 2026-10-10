@@ -43,6 +43,9 @@ test("sensitive menus follow platform roles", () => {
   assert.equal(canAccessConsoleView(user("finance_settlement"), null, "gateway"), false);
   assert.equal(canAccessConsoleView(user("delivery_monitor"), null, "delivery"), true);
   assert.equal(canAccessConsoleView(user("business_reviewer"), null, "audit"), false);
+  assert.equal(canAccessConsoleView(user("business_reviewer"), null, "orders"), false);
+  assert.equal(canAccessConsoleView(user("quality_reviewer"), null, "products"), true);
+  assert.equal(canAccessConsoleView(user("finance_settlement"), null, "products"), false);
   assert.equal(canAccessConsoleView(user("super_admin"), null, "settings"), true);
   assert.equal(canAccessConsoleView({ ...user(""), enterprise_role: "enterprise_admin" }, { id: "e-1" }, "delivery"), true);
   assert.equal(canAccessConsoleView({ ...user(""), enterprise_role: "super_admin" }, { id: "e-1" }, "delivery"), true);

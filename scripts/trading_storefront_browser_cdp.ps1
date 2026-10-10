@@ -1,5 +1,7 @@
 param(
     [string]$BaseUrl = 'http://192.168.10.10:30080',
+    [string]$Username = 'admin@market.local',
+    [string]$Password = '',
     [string]$OutputDir = "$env:TEMP\market-trading-phase1-browser"
 )
 $ErrorActionPreference = 'Stop'
@@ -19,14 +21,14 @@ try {
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=1000;deviceScaleFactor=1;mobile=$false} | Out-Null
     Cdp 'Page.navigate' @{url=$BaseUrl} | Out-Null
     WaitJs '!!document.querySelector(".store-shell") && !document.querySelector(".store-shell [role=status]")'
-    $public = Js 'await (async()=>{const r=await fetch("/api/storefront/products");if(!r.ok)throw Error("public API "+r.status);return await r.json()})()'
+    $public = Js '(async()=>{const r=await fetch("/api/storefront/products");if(!r.ok)throw Error("public API "+r.status);return await r.json()})()'
     if (-not $public.total) { throw 'No public products available for browser verification' }
     WaitJs 'document.querySelectorAll(".store-card").length > 0 && !document.querySelector(".store-shell [role=alert]")'
     Screenshot 'storefront-desktop.png'
     Js 'localStorage.removeItem("market_token");location.reload();true' | Out-Null
     WaitJs 'document.querySelectorAll(".store-card").length > 0'
-    $pid = [string]$public.items[0].id
-    Cdp 'Page.navigate' @{url="$BaseUrl/products/$pid"} | Out-Null
+    $productId = [string]$public.items[0].id
+    Cdp 'Page.navigate' @{url="$BaseUrl/products/$productId"} | Out-Null
     WaitJs '!!document.querySelector(".store-product-heading") && !!document.querySelector(".store-version-tool")'
     Screenshot 'storefront-product-desktop.png'
     Cdp 'Page.reload' @{} | Out-Null
@@ -48,7 +50,24 @@ try {
     Cdp 'Page.reload' @{} | Out-Null
     WaitJs '!!document.querySelector("input[autocomplete=username]")'
     Screenshot 'console-login-desktop.png'
-    @{status='passed';checks=@('anonymous listing','anonymous detail','listing refresh','detail refresh','console refresh','desktop/mobile bounds');detail=$detail;mobile=$mobile;list=$list;publicProducts=$public.total;limits=@('no paid checkout','no new business orders','login return target covered by unit test')} | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 (Join-Path $OutputDir 'browser-results.json')
+    $checks = @('anonymous listing','anonymous detail','listing refresh','detail refresh','console refresh','desktop/mobile bounds')
+    if ($Password) {
+        Cdp 'Page.navigate' @{url="$BaseUrl/console?returnTo=%2Fproducts%2F$productId"} | Out-Null
+        WaitJs '!!document.querySelector("input[autocomplete=username]")'
+        $u = $Username | ConvertTo-Json -Compress
+        $p = $Password | ConvertTo-Json -Compress
+        Js "(()=>{let u=document.querySelector('input[autocomplete=username]'),p=document.querySelector('input[autocomplete=current-password]');u.value=$u;u.dispatchEvent(new Event('input',{bubbles:true}));p.value=$p;p.dispatchEvent(new Event('input',{bubbles:true}));u.closest('form').requestSubmit();return true})()" | Out-Null
+        WaitJs '!!document.querySelector(".store-product-heading")'
+        $checks += 'authenticated login return to product'
+        Cdp 'Page.navigate' @{url="$BaseUrl/console?view=development"} | Out-Null
+        WaitJs '!!document.querySelector(".sidebar") && !document.querySelector(".loading-line")'
+        Screenshot 'console-development-desktop.png'
+        Cdp 'Page.reload' @{} | Out-Null
+        WaitJs '!!document.querySelector(".sidebar") && !document.querySelector(".loading-line")'
+        if (Js 'document.body.innerText.includes("\u6570\u636e\u5237\u65b0\u5931\u8d25")') { throw 'Authenticated console refresh failed' }
+        $checks += 'authenticated console F5'
+    }
+    @{status='passed';checks=$checks;detail=$detail;mobile=$mobile;list=$list;publicProducts=$public.total;limits=@('no paid checkout','no new business orders','multi-enterprise selection covered by HTTP/unit tests')} | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 (Join-Path $OutputDir 'browser-results.json')
     Write-Output 'Storefront browser checks passed'
 } finally {
     if ($socket) { $socket.Dispose() }

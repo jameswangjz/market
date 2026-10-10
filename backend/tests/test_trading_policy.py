@@ -73,6 +73,22 @@ class TradingPolicyTests(unittest.TestCase):
             db.commit()
         self.create(expected=401)
 
+    def test_review_roles_without_enterprises_can_read_product_queue(self):
+        for actor in ("platform", "ops", "reviewer", "quality"):
+            self.assertEqual(len(self.request("GET", "/api/products", actor=actor)["items"]), 1)
+        self.request("GET", "/api/products", actor="finance", expected=403)
+
+    def test_unverified_console_catalog_does_not_leak_private_fields(self):
+        with self.m.SessionLocal() as db:
+            db.get(self.m.User, "buyer").verified_status = "pending"
+            db.get(self.m.Product, "product").upstream_url = "https://private.invalid"
+            db.commit()
+        for path in ("/api/products", "/api/products/product"):
+            response = self.request("GET", path)
+            text = str(response)
+            for private in ("cost", "upstream_url", "settlement_rule", "https://private.invalid"):
+                self.assertNotIn(private, text)
+
 
 if __name__ == "__main__":
     unittest.main()
