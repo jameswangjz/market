@@ -11,7 +11,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
-import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload } from "./orderWorkflow.js";
+import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import {
   Activity,
   ArrowUpRight,
@@ -62,6 +62,9 @@ const providerReviewForm = ref({ amount: "", cost: "", reason: "" });
 const providerReviewLoading = ref(false);
 const providerReviewSubmitting = ref(false);
 const orderActionSubmitting = ref(false);
+const orderDeliveryAttachments = ref({ orderId: "", tasks: [], items: [], loading: false, error: "" });
+const deliveryAttachmentUploading = ref(false);
+const deliveryAttachmentDescription = ref("");
 const selectedBuyerEnterpriseId = ref("");
 const buyerEnterprises = ref([]);
 const buyerEnterprisesLoading = ref(false);
@@ -362,6 +365,8 @@ const statusLabels = {
   refunding: "退款中",
   refunded: "已退款",
   not_started: "未开始",
+  awaiting_start: "待开始履约",
+  rectifying: "整改中",
   preparing: "准备中",
   in_delivery: "交付中",
   retrying: "等待重试",
@@ -1155,6 +1160,7 @@ function selectView(view) {
 async function openOrder(order) {
   const { data } = await api.get(`/orders/${order.id}`);
   selectedOrder.value = data;
+  deliveryAttachmentDescription.value = "";
   saasOrderState.value = { users: [], departments: [], operations: [] };
   apiOrderState.value = {
     available: false,
@@ -1165,6 +1171,8 @@ async function openOrder(order) {
   apiCredentialReveal.value = null;
   orderProductFiles.value = { download_limit: 0, items: [] };
   const requests = [];
+  if (isOfflineFulfillmentOrder(data.order)) requests.push(loadOrderDeliveryAttachments(data.order));
+  else orderDeliveryAttachments.value = { orderId: "", tasks: [], items: [], loading: false, error: "" };
   if (data.order.payment_status === "paid") {
     requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { orderProductFiles.value = files; }).catch(() => {}));
   }
@@ -1209,27 +1217,90 @@ async function downloadOrderProductFile(file) {
     notify(error.response?.data?.detail || "文件下载失败");
   }
 }
+async function loadOrderDeliveryAttachments(order) {
+  const state = { orderId: order.id, tasks: [], items: [], loading: true, error: "" };
+  orderDeliveryAttachments.value = state;
+  const requestState = orderDeliveryAttachments.value;
+  try {
+    const detailTask = selectedOrder.value?.order.id === order.id ? selectedOrder.value.delivery : null;
+    let tasks;
+    if (detailTask?.id) tasks = [detailTask];
+    else {
+      const { data } = await api.get("/delivery-tasks");
+      tasks = data.items.filter(task => task.order_id === order.id);
+    }
+    const results = await Promise.all(tasks.map(async task => {
+      const { data } = await api.get(`/delivery-tasks/${task.id}/attachments`);
+      return data.items;
+    }));
+    if (orderDeliveryAttachments.value !== requestState || selectedOrder.value?.order.id !== order.id) return;
+    orderDeliveryAttachments.value = { ...state, tasks, items: results.flat(), loading: false };
+  } catch (error) {
+    if (orderDeliveryAttachments.value !== requestState || selectedOrder.value?.order.id !== order.id) return;
+    orderDeliveryAttachments.value = { ...state, loading: false, error: error.response?.data?.detail || "交付附件加载失败" };
+  }
+}
+async function uploadOrderDeliveryAttachment(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  const order = selectedOrder.value?.order;
+  if (!file || deliveryAttachmentUploading.value || orderActionSubmitting.value || !canUploadDeliveryAttachment(order, user.value, enterprise.value)) return;
+  const state = orderDeliveryAttachments.value;
+  const task = state.orderId === order.id && !state.loading && !state.error && state.tasks.find(item => !["completed", "cancelled"].includes(item.status));
+  if (!task) return notify("暂无可上传附件的履约任务，请刷新订单");
+  if (file.size > 100 * 1024 * 1024) return notify("履约附件不能超过100MB");
+  deliveryAttachmentUploading.value = true;
+  try {
+    const body = new FormData();
+    body.append("upload", file);
+    body.append("description", deliveryAttachmentDescription.value.trim());
+    await api.post(`/delivery-tasks/${task.id}/attachments`, body);
+    notify("交付附件已上传");
+    if (selectedOrder.value?.order.id === order.id) {
+      deliveryAttachmentDescription.value = "";
+      await loadOrderDeliveryAttachments(order);
+    }
+  } catch (error) {
+    notify(error.response?.data?.detail || "交付附件上传失败");
+  } finally {
+    deliveryAttachmentUploading.value = false;
+  }
+}
 async function transition(action) {
-  if (!selectedOrder.value || orderActionSubmitting.value) return;
+  if (!selectedOrder.value || orderActionSubmitting.value || deliveryAttachmentUploading.value) return;
   if (action === "provider_review") return openProviderReview();
   if (!nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
   const order = selectedOrder.value.order;
   orderActionSubmitting.value = true;
   try {
+    let body = { action, reason: "工作台操作" };
+    if (isOfflineFulfillmentOrder(order) && ["start_delivery", "submit_delivery", "accept_delivery", "reject_delivery"].includes(action)) {
+      const title = nextActions(order).find(item => item[0] === action)?.[1];
+      if (action === "reject_delivery") {
+        const reason = await promptDialog(`订单 ${order.order_no}`, "", { title, label: "拒绝验收原因", required: true, multiline: true, confirmText: title, danger: true });
+        if (reason === null) return;
+        body = deliveryTransitionPayload(action, reason);
+      } else {
+        if (!await confirmDialog(`订单 ${order.order_no}`, { title, confirmText: title })) return;
+        body = deliveryTransitionPayload(action);
+      }
+      if (selectedOrder.value?.order.id !== order.id || !nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
+    }
     if (["start_payment", "confirm_payment"].includes(action)) {
       const title = nextActions(order).find(item => item[0] === action)?.[1];
       if (!await confirmDialog(`订单 ${order.order_no}，金额 ${fmtMoney(order.amount)}`, { title, confirmText: title })) return;
       if (selectedOrder.value?.order.id !== order.id || !nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
     }
-    await api.post(`/orders/${order.id}/transition`, {
-      action,
-      reason: "工作台操作",
-    });
+    await api.post(`/orders/${order.id}/transition`, body);
     notify("订单状态已更新");
     await openOrder(order);
     await refreshData();
   } catch (error) {
-    notify(error.response?.data?.detail || "状态操作失败");
+    notify(error.response?.data?.detail || error.message || "状态操作失败");
+    if (error.response?.status === 409 && selectedOrder.value?.order.id === order.id) {
+      await openOrder(order);
+      await refreshData();
+    }
   } finally {
     orderActionSubmitting.value = false;
   }
@@ -2174,6 +2245,7 @@ function taskCount(key) {
 }
 function nextActions(order) {
   const actions = orderWorkflowActions(order, user.value, enterprise.value);
+  if (isOfflineFulfillmentOrder(order)) return actions;
   if (["pending_provider_review", "pending_payment", "rejected", "cancelled", "closed"].includes(order.main_status)) return actions;
   if (order.main_status === "created")
     actions.push(["submit_review", "提交审核"]);
@@ -3893,7 +3965,7 @@ onUnmounted(() => {
               v-for="action in nextActions(selectedOrder.order)"
               :key="action[0]"
               class="secondary-btn"
-              :disabled="orderActionSubmitting || providerReviewLoading || providerReviewSubmitting"
+              :disabled="orderActionSubmitting || providerReviewLoading || providerReviewSubmitting || deliveryAttachmentUploading"
               @click="transition(action[0])"
             >
               {{ action[1] }} <ArrowUpRight :size="14" /></button
@@ -3901,6 +3973,25 @@ onUnmounted(() => {
               >当前没有可执行动作</span
             >
           </div>
+        </div>
+        <div v-if="isOfflineFulfillmentOrder(selectedOrder.order)" class="drawer-section">
+          <div class="drawer-section-title">交付附件
+            <button class="icon-btn" title="刷新交付附件" aria-label="刷新交付附件" :disabled="orderDeliveryAttachments.loading || deliveryAttachmentUploading" @click="loadOrderDeliveryAttachments(selectedOrder.order)"><RefreshCw :size="15" /></button>
+          </div>
+          <p v-if="orderDeliveryAttachments.loading" class="muted" role="status">加载中</p>
+          <p v-else-if="orderDeliveryAttachments.error" class="error-text" role="alert">{{ orderDeliveryAttachments.error }}</p>
+          <template v-else>
+            <div v-for="file in orderDeliveryAttachments.items" :key="file.id" class="file-status-row">
+              <div style="min-width: 0; overflow-wrap: anywhere"><strong>{{ file.name }}</strong><p v-if="file.description">{{ file.description }}</p><small class="muted">{{ file.uploaded_by }} · {{ fmtDate(file.created_at) }}</small></div>
+              <button class="icon-btn" title="下载交付附件" aria-label="下载交付附件" @click="downloadOrderProductFile({ id: file.file_id, original_name: file.name })"><Download :size="16" /></button>
+            </div>
+            <p v-if="!orderDeliveryAttachments.items.length" class="muted">暂无交付附件</p>
+            <fieldset v-if="canUploadDeliveryAttachment(selectedOrder.order, user, enterprise)" :disabled="deliveryAttachmentUploading || orderActionSubmitting || !orderDeliveryAttachments.tasks.some(task => !['completed', 'cancelled'].includes(task.status))" style="border: 0; padding: 0; margin: 0; min-width: 0">
+              <label>附件说明<textarea v-model="deliveryAttachmentDescription" rows="2" maxlength="2000" /></label>
+              <label>交付附件<input type="file" aria-label="上传交付附件" @change="uploadOrderDeliveryAttachment" /></label>
+              <p v-if="deliveryAttachmentUploading" class="muted" role="status">上传中</p>
+            </fieldset>
+          </template>
         </div>
         <div v-if="orderProductFiles.items.length" class="drawer-section">
           <div class="drawer-section-title">数据文件交付</div>
@@ -3925,6 +4016,7 @@ onUnmounted(() => {
                   >{{ item.operator }} · {{ fmtDate(item.created_at) }}</small
                 >
                 <p>{{ item.from_status || "初始" }} → {{ item.to_status }}</p>
+                <p v-if="item.reason">{{ item.reason }}</p>
               </div>
             </div>
           </div>

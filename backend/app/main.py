@@ -5060,6 +5060,9 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     order = db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
     if not order:
         raise HTTPException(404, "订单不存在")
+    if order_fulfillment["handle_transition"](db, user, order, body):
+        db.commit()
+        return order_out(order)
     item = TRANSITIONS.get(body.action)
     if not item:
         raise HTTPException(400, "不支持的订单动作")
@@ -5121,6 +5124,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
             log_state(db, order, "main", old_main, order.main_status, "支付完成/生成任务", user, body.reason)
         if not db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc())):
             create_delivery_task(db, order, user.email or user.name)
+        order_fulfillment["after_payment"](db, order, user)
     elif body.action == "approve_refund":
         if order.payment_status != "paid":
             raise HTTPException(409, "只有已支付订单可以发起退款")
@@ -5223,9 +5227,11 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
     task = db.get(DeliveryTask, task_id)
     if not task:
         raise HTTPException(404, "交付任务不存在")
-    order = db.get(Order, task.order_id)
+    order = db.scalar(select(Order).where(Order.id == task.order_id).with_for_update().execution_options(populate_existing=True))
     if not order:
         raise HTTPException(404, "关联订单不存在")
+    order_fulfillment["require_task_result"](db, user, order, task)
+    task = db.scalar(select(DeliveryTask).where(DeliveryTask.id == task.id).with_for_update().execution_options(populate_existing=True))
     if task.status not in {"in_delivery", "retrying", "preparing"}:
         raise HTTPException(409, "当前交付任务不允许处理")
     if body.success:
@@ -5273,6 +5279,9 @@ def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[Deliver
 @app.post("/api/delivery-tasks/{task_id}/attachments")
 def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), description: str = Form(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
     task, order = delivery_task_access(task_id, user, db)
+    order = db.scalar(select(Order).where(Order.id == order.id).with_for_update().execution_options(populate_existing=True))
+    task = db.scalar(select(DeliveryTask).where(DeliveryTask.id == task.id).with_for_update().execution_options(populate_existing=True))
+    order_fulfillment["require_attachment_upload"](db, user, order, task)
     if task.status in {"completed", "cancelled"}:
         raise HTTPException(409, "履约任务已完成，不能继续上传附件")
     upload.file.seek(0, 2)
@@ -5281,6 +5290,8 @@ def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), des
     if size > 100 * 1024 * 1024:
         raise HTTPException(413, "履约附件不能超过100MB")
     scan_status, scan_report = clamav_scan_stream(upload.file, size)
+    if order.snapshot_version == 1 and order.delivery_method_snapshot in {"training", "consulting", "custom"} and scan_status != "clean":
+        raise HTTPException(400 if scan_status == "infected" else 503, "履约附件必须通过病毒扫描后才可保存")
     if scan_status == "infected":
         audit(db, user.email or user.phone or user.id, "reject_infected_delivery_attachment", "delivery_task", task.id, scan_report, category="security", business_domain="delivery", order_id=order.id, risk_level="high")
         db.commit()
@@ -5321,7 +5332,15 @@ def list_delivery_attachments(task_id: str, user: User = Depends(current_user), 
 
 @app.get("/api/delivery-tasks")
 def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    items = db.scalars(select(DeliveryTask).order_by(DeliveryTask.created_at.desc())).all()
+    stmt = select(DeliveryTask)
+    if user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
+        enterprises = select(Membership.enterprise_id).where(
+            Membership.user_id == user.id, Membership.status == "active",
+            Membership.role.in_(["super_admin", "enterprise_admin"]))
+        orders = select(Order.id).where(or_(Order.buyer_enterprise_id.in_(enterprises),
+                                            Order.provider_enterprise_id.in_(enterprises)))
+        stmt = stmt.where(DeliveryTask.order_id.in_(orders)) if not user.platform_role else stmt.where(False)
+    items = db.scalars(stmt.order_by(DeliveryTask.created_at.desc())).all()
     return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0, "created_at": x.created_at} for x in items]}
 
 
@@ -6723,12 +6742,13 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         raise HTTPException(404, "文件不存在")
     reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
-    if item.file_role == "delivery_attachment" and not owner and not reviewer:
+    if item.file_role == "delivery_attachment":
         attachment = db.scalar(select(DeliveryAttachment).where(DeliveryAttachment.file_id == item.id))
         task = db.get(DeliveryTask, attachment.task_id) if attachment else None
-        order = db.get(Order, task.order_id) if task else None
-        member = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]) if order else False, Membership.status == "active")) if order else None
-        owner = bool(member)
+        if not task:
+            raise HTTPException(404, "履约附件关联任务不存在")
+        delivery_task_access(task.id, user, db)
+        owner = True
     if item.file_role != "product_data" and not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
     download_log = None
@@ -6771,7 +6791,12 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         settlement_metering["record_download"](db, order, download_log, item, len(content))
         audit(db, user.email or user.phone or user.id, "download_file", "file", item.id, item.original_name, category="delivery", business_domain="product", order_id=download_log.order_id)
         db.commit()
-    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"inline; filename=download; filename*=UTF-8''{quote(item.original_name)}"})
+    if item.file_role == "delivery_attachment":
+        audit(db, user.email or user.phone or user.id, "download_delivery_attachment", "file", item.id,
+              item.original_name, category="delivery", business_domain="delivery", order_id=task.order_id)
+        db.commit()
+    disposition = "attachment" if item.file_role == "delivery_attachment" else "inline"
+    return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"{disposition}; filename=download; filename*=UTF-8''{quote(item.original_name)}", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/api/orders/{order_id}/product-files")
@@ -6826,3 +6851,6 @@ order_economics = install_order_economics(globals())
 from .order_workflow import install as install_order_workflow
 
 order_workflow = install_order_workflow(globals())
+from .order_fulfillment import install as install_order_fulfillment
+
+order_fulfillment = install_order_fulfillment(globals())

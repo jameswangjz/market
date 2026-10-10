@@ -98,7 +98,7 @@ def install(ns):
             ns["trading_policy"]["require_buyer"](db, user, order.buyer_enterprise_id)
         if order.main_status in {"rejected", "cancelled", "closed"}:
             raise HTTPException(409, "当前订单状态不允许支付")
-        if offline(order) and order.main_status not in {"pending_payment", "pending_fulfillment", "fulfilling", "pending_confirmation", "completed"}:
+        if offline(order) and order.main_status not in {"pending_payment", "pending_fulfillment", "fulfilling", "pending_confirmation", "awaiting_start", "in_delivery", "pending_acceptance", "rectifying", "completed"}:
             raise HTTPException(409, "线下订单须经提供方审核通过后才能支付")
         if offline(order) and order.payment_status != "paid" and order.main_status != "pending_payment":
             raise HTTPException(409, "线下订单须经提供方审核通过后才能支付")
