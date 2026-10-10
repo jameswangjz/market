@@ -117,19 +117,24 @@ class SettlementMeteringTests(unittest.TestCase):
         with m.SessionLocal() as db:
             self.assertEqual(db.get(m.Order, oid).payment_status, "unpaid")
             self.assertEqual(db.scalar(self.select(self.func.count()).select_from(m.Order)), 1)
-        self.request("POST", f"/api/orders/{oid}/transition", actor="buyer_admin", json={"action": "confirm_payment"})
+        self.request("POST", f"/api/orders/{oid}/transition", actor="buyer_admin", expected=403, json={"action": "confirm_payment"})
+        self.assertEqual(self.measurements(oid), [])
+        self.request("POST", f"/api/orders/{oid}/transition", actor="finance", json={"action": "confirm_payment"})
         self.assertEqual(len(self.measurements(oid)), 1)
 
-    def test_inactive_enterprise_admin_and_platform_membership_cannot_pay_for_buyer(self):
+    def test_inactive_buyer_is_denied_but_finance_and_platform_can_confirm(self):
         oid = self.create_order()
         m = self.m
         with m.SessionLocal() as db:
             membership = db.scalar(self.select(m.Membership).where(m.Membership.user_id == "buyer", m.Membership.enterprise_id == "buyer_tenant"))
             membership.status = "disabled"
             db.commit()
-        for actor in ("buyer", "platform", "ops", "finance"):
+        for actor in ("buyer", "ops"):
             self.request("POST", f"/api/orders/{oid}/transition", actor=actor, expected=403, json={"action": "confirm_payment"})
         self.assertEqual(self.measurements(oid), [])
+        for actor in ("platform", "finance"):
+            self.request("POST", f"/api/orders/{oid}/transition", actor=actor, json={"action": "confirm_payment"})
+        self.assertEqual(len(self.measurements(oid)), 1)
 
     def test_personal_buyer_permission_requires_no_enterprise_subject_and_verification(self):
         # Current Order FK requires an enterprise; this is a permission-helper test, not a personal-order HTTP claim.

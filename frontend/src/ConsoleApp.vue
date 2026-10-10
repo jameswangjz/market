@@ -11,6 +11,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
+import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload } from "./orderWorkflow.js";
 import {
   Activity,
   ArrowUpRight,
@@ -56,6 +57,11 @@ const productReviewSubmitting = ref(false);
 const token = ref(localStorage.getItem("market_token") || "");
 const user = ref(null);
 const enterprise = ref(null);
+const providerReview = ref(null);
+const providerReviewForm = ref({ amount: "", cost: "", reason: "" });
+const providerReviewLoading = ref(false);
+const providerReviewSubmitting = ref(false);
+const orderActionSubmitting = ref(false);
 const selectedBuyerEnterpriseId = ref("");
 const buyerEnterprises = ref([]);
 const buyerEnterprisesLoading = ref(false);
@@ -340,6 +346,10 @@ const visibleProductFiles = computed(() => {
 const statusLabels = {
   created: "创建",
   pending_review: "待审核",
+  pending_provider_review: "待提供方审核",
+  pending_payment: "待支付",
+  pending_integration: "待接入验证",
+  rejected: "已拒绝",
   pending_fulfillment: "待履约",
   fulfilling: "履约中",
   pending_confirmation: "待确认",
@@ -487,7 +497,7 @@ async function loadSession() {
   api.defaults.headers.common.Authorization = `Bearer ${token.value}`;
   try {
     const { data } = await api.get("/auth/me");
-    user.value = { ...data.user, enterprise_role: data.role };
+    user.value = { ...data.user, enterprise_role: data.role, membership_status: data.membership?.status || data.membership_status || "active" };
     enterprise.value = data.enterprise;
     await loadBuyerEnterprises();
     await loadNotificationSummary();
@@ -553,6 +563,8 @@ function openNotification(id = "") {
   activeView.value = "messages";
 }
 function logout() {
+  providerReview.value = null;
+  providerReviewForm.value = { amount: "", cost: "", reason: "" };
   selectedBuyerEnterpriseId.value = "";
   buyerEnterprises.value = [];
   token.value = "";
@@ -1063,9 +1075,9 @@ async function selectGateway(item) {
   gatewaySelected.value = item;
   try {
     const [config, revisions, usage] = await Promise.all([
-      api.get(`/products/${item.product_id}/gateway-config`),
+      api.get(`/products/${item.product_id}/gateway-config`, { params: { version: item.version } }),
       api.get(`/products/${item.product_id}/gateway-revisions`),
-      api.get(`/products/${item.product_id}/gateway-usage`),
+      api.get(`/products/${item.product_id}/gateway-usage`, { params: { version: item.version } }),
     ]);
     gatewayForm.value = {
       ...gatewayForm.value,
@@ -1095,6 +1107,7 @@ async function validateGatewayConfig() {
   try {
     const { data } = await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/validate`,
+      null, { params: { version: gatewaySelected.value.version } },
     );
     notify(data.valid ? "网关配置校验通过" : "网关配置校验未通过");
   } catch (error) {
@@ -1106,6 +1119,7 @@ async function publishGatewayConfig() {
   try {
     await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/publish`,
+      null, { params: { version: gatewaySelected.value.version } },
     );
     notify("网关路由已发布");
     await loadViewData("gateway");
@@ -1118,6 +1132,7 @@ async function rollbackGatewayConfig() {
   try {
     await api.post(
       `/products/${gatewaySelected.value.product_id}/gateway-config/rollback`,
+      null, { params: { version: gatewaySelected.value.version } },
     );
     notify("网关配置已回滚");
     await loadViewData("gateway");
@@ -1195,17 +1210,77 @@ async function downloadOrderProductFile(file) {
   }
 }
 async function transition(action) {
-  if (!selectedOrder.value) return;
+  if (!selectedOrder.value || orderActionSubmitting.value) return;
+  if (action === "provider_review") return openProviderReview();
+  if (!nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
+  const order = selectedOrder.value.order;
+  orderActionSubmitting.value = true;
   try {
-    await api.post(`/orders/${selectedOrder.value.order.id}/transition`, {
+    if (["start_payment", "confirm_payment"].includes(action)) {
+      const title = nextActions(order).find(item => item[0] === action)?.[1];
+      if (!await confirmDialog(`订单 ${order.order_no}，金额 ${fmtMoney(order.amount)}`, { title, confirmText: title })) return;
+      if (selectedOrder.value?.order.id !== order.id || !nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
+    }
+    await api.post(`/orders/${order.id}/transition`, {
       action,
       reason: "工作台操作",
     });
     notify("订单状态已更新");
-    await openOrder(selectedOrder.value.order);
+    await openOrder(order);
     await refreshData();
   } catch (error) {
     notify(error.response?.data?.detail || "状态操作失败");
+  } finally {
+    orderActionSubmitting.value = false;
+  }
+}
+function closeProviderReview() {
+  if (providerReviewSubmitting.value) return;
+  providerReview.value = null;
+  providerReviewForm.value = { amount: "", cost: "", reason: "" };
+}
+async function openProviderReview() {
+  const order = selectedOrder.value?.order;
+  if (providerReviewLoading.value || !canReviewProviderOrder(order, user.value, enterprise.value)) return;
+  providerReviewLoading.value = true;
+  try {
+    const { data } = await api.get(`/orders/${order.id}/provider-quote`);
+    if (selectedOrder.value?.order.id !== order.id || !canReviewProviderOrder(order, user.value, enterprise.value)) return;
+    const quote = { ...data, order_no: order.order_no };
+    if (quote.order_id !== order.id || !quote.expected_updated_at || [quote.amount, quote.cost].some(value => value == null || value === "" || !Number.isFinite(Number(value)) || Number(value) < 0)) throw new Error("报价信息不完整");
+    providerReviewForm.value = { amount: data.amount, cost: data.cost, reason: "" };
+    providerReview.value = { order, quote };
+  } catch (error) {
+    notify(error.response?.data?.detail || error.message || "报价加载失败");
+  } finally {
+    providerReviewLoading.value = false;
+  }
+}
+async function submitProviderReview(decision) {
+  const review = providerReview.value;
+  if (!review || providerReviewSubmitting.value) return;
+  if (!canReviewProviderOrder(review.order, user.value, enterprise.value)) return closeProviderReview();
+  providerReviewSubmitting.value = true;
+  try {
+    const body = providerReviewPayload(review.quote, providerReviewForm.value, decision);
+    await api.post(`/orders/${review.order.id}/provider-review`, body);
+    providerReview.value = null;
+    providerReviewForm.value = { amount: "", cost: "", reason: "" };
+    notify(decision === "approve" ? "订单已审核通过，待买方支付" : "订单已拒绝");
+    await openOrder(review.order);
+    await refreshData();
+  } catch (error) {
+    if (error.response?.status === 409) {
+      providerReview.value = null;
+      providerReviewForm.value = { amount: "", cost: "", reason: "" };
+      notify("订单已变更，请重新打开审核并核对报价");
+      await openOrder(review.order);
+      await refreshData();
+    } else {
+      notify(error.response?.data?.detail || error.message || "提供方审核失败");
+    }
+  } finally {
+    providerReviewSubmitting.value = false;
   }
 }
 async function saasOrderAction(action) {
@@ -2098,15 +2173,12 @@ function taskCount(key) {
   return development.value.items.filter((task) => task.status === key).length;
 }
 function nextActions(order) {
-  const actions = [];
+  const actions = orderWorkflowActions(order, user.value, enterprise.value);
+  if (["pending_provider_review", "pending_payment", "rejected", "cancelled", "closed"].includes(order.main_status)) return actions;
   if (order.main_status === "created")
     actions.push(["submit_review", "提交审核"]);
   if (order.main_status === "pending_review")
     actions.push(["approve", "审核通过"]);
-  if (order.payment_status === "unpaid")
-    actions.push(["start_payment", "发起模拟支付"]);
-  if (order.payment_status === "paying")
-    actions.push(["confirm_payment", "模拟确认支付"]);
   if (
     order.payment_status === "paid" &&
     order.after_sales_status === "processing"
@@ -3821,6 +3893,7 @@ onUnmounted(() => {
               v-for="action in nextActions(selectedOrder.order)"
               :key="action[0]"
               class="secondary-btn"
+              :disabled="orderActionSubmitting || providerReviewLoading || providerReviewSubmitting"
               @click="transition(action[0])"
             >
               {{ action[1] }} <ArrowUpRight :size="14" /></button
@@ -4320,6 +4393,28 @@ onUnmounted(() => {
         </section>
       </form>
     </div>
+    <div v-if="providerReview && canReviewProviderOrder(providerReview.order, user, enterprise)" class="modal-scrim" @click.self="closeProviderReview">
+      <section class="modal-card provider-review-modal" role="dialog" aria-modal="true" aria-labelledby="provider-review-title" @keydown.esc="closeProviderReview">
+        <div class="drawer-head">
+          <div><h2 id="provider-review-title">提供方订单审核</h2><p>{{ providerReview.quote.order_no }}</p></div>
+          <button class="icon-btn" title="关闭审核" aria-label="关闭审核" :disabled="providerReviewSubmitting" @click="closeProviderReview"><X :size="18" /></button>
+        </div>
+        <form @submit.prevent="submitProviderReview('approve')">
+          <fieldset :disabled="providerReviewSubmitting" style="border: 0; padding: 0; margin: 0; min-width: 0">
+            <div class="form-grid">
+              <label>订单金额<input v-model="providerReviewForm.amount" type="number" min="0" step="0.01" required /><small class="muted">原金额 {{ fmtMoney(providerReview.quote.amount) }}</small></label>
+              <label>订单成本<input v-model="providerReviewForm.cost" type="number" min="0" step="0.01" required /><small class="muted">原成本 {{ fmtMoney(providerReview.quote.cost) }}</small></label>
+              <label class="wide">审核原因（调价或拒绝必填）<textarea v-model="providerReviewForm.reason" rows="3" maxlength="2000" /></label>
+            </div>
+            <div class="modal-actions">
+              <button type="button" class="secondary-btn" @click="closeProviderReview">取消</button>
+              <button type="button" class="secondary-btn danger-text" @click="submitProviderReview('reject')"><X :size="15" />拒绝</button>
+              <button type="submit" class="primary-btn"><CheckCircle2 :size="15" />{{ providerReviewSubmitting ? '提交中' : '审核通过' }}</button>
+            </div>
+          </fieldset>
+        </form>
+      </section>
+    </div>
     <div v-if="fileReportViewer" class="modal-scrim" @click="fileReportViewer = null">
       <section class="modal-card security-report-modal" @click.stop>
         <div class="drawer-head"><div><span class="eyebrow">FILE SCAN REPORT</span><h2>{{ fileReportViewer.reportType === 'clamav' ? '病毒扫描报告' : 'Presidio扫描报告' }}</h2></div><button type="button" class="icon-btn" @click="fileReportViewer = null"><X :size="19" /></button></div>
@@ -4606,3 +4701,10 @@ onUnmounted(() => {
     <div v-if="toast" class="toast"><CheckCircle2 :size="17" />{{ toast }}</div>
   </div>
 </template>
+
+<style scoped>
+.provider-review-modal { max-height: calc(100dvh - 32px); }
+.provider-review-modal .wide { grid-column: 1 / -1; }
+.provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
+.provider-review-modal .modal-actions { flex-wrap: wrap; }
+</style>

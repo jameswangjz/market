@@ -91,6 +91,10 @@ def install(ns):
                     if v.version_code and v.version_code.strip()
                     and _valid_price(v.monthly_price, v.cost)]
         requires_gateway = product.delivery_method in {"api", "model_api"}
+        if requires_gateway:
+            Config = ns["version_gateway"]["Config"]
+            if db.scalar(select(Config.id).where(Config.product_id == product.id).limit(1)):
+                return ns["version_gateway"]["public_versions"](db, product)
         route = gateway_ready(db, product) if requires_gateway else None
         if requires_gateway and (not route or product.delivery_method not in {"api", "model_api"}):
             return []

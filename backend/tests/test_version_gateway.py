@@ -18,7 +18,7 @@ class VersionGatewayTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.m = load_isolated_main()
-        cls.ns = dict(vars(cls.m))
+        cls.ns = vars(cls.m)
         cls.install = staticmethod(importlib.import_module(cls.m.__package__ + ".version_gateway").install)
         cls.hooks = cls.install(cls.ns)
         cls.Config = cls.hooks["Config"]
@@ -98,7 +98,7 @@ class VersionGatewayTests(unittest.TestCase):
         self.product.status, self.product.delivery_method = "operation_review", "file"
         self.assertEqual(self.hooks["on_review_complete"](self.db, self.product, self.user), "published")
         self.product.delivery_method = "tenant_access"
-        self.assertTrue(self.hooks["requires_integration"](self.product))
+        self.assertFalse(self.hooks["requires_integration"](self.product))
         self.assertFalse(self.ready())
         self.assert_http(409, lambda: self.save())
 
@@ -106,11 +106,11 @@ class VersionGatewayTests(unittest.TestCase):
         config = self.save()
         self.assertEqual(self.verify().status, "verified")
         self.http.assert_called_once_with("GET", "https://provider.invalid/health",
-                                          timeout=30.0, follow_redirects=False)
+                                          timeout=10.0, follow_redirects=False)
         self.admin.assert_called_once()
         self.assertTrue(self.ready())
         self.hooks["require_ready"](self.db, self.product)
-        self.assertEqual(self.hooks["public_versions"](self.db, self.product), [])
+        self.assertEqual(self.product.status, "published")
         self.product.status = "published"
         public = self.hooks["public_versions"](self.db, self.product)
         self.assertEqual(public, [dict(id="v", version_code="v1", description="", price=10.0)])
@@ -170,7 +170,7 @@ class VersionGatewayTests(unittest.TestCase):
         self.db.flush()
         self.assertFalse(self.ready())
 
-    def test_existing_active_route_never_republished_or_repointed(self):
+    def test_second_version_has_independent_route_without_repointing_first(self):
         self.save()
         self.verify()
         self.admin.reset_mock()
@@ -179,19 +179,22 @@ class VersionGatewayTests(unittest.TestCase):
         self.db.add(self.m.ProductReleaseVersion(id="v2", product_id="p", version_code="v2", price=20, cost=1))
         self.db.flush()
         self.hooks["save_config"](self.db, self.product, "v2", self.body | {"version": "v2", "route_key": "p-v2"}, self.user)
-        self.assert_http(409, lambda: self.hooks["verify_version"](self.db, self.product, "v2", self.user))
-        self.assert_http(409, lambda: self.hooks["require_ready"](self.db, self.product))
+        second = self.hooks["verify_version"](self.db, self.product, "v2", self.user)
+        self.assertEqual(second.status, "verified")
+        self.assertNotEqual(second.route_id, self.route.id)
+        self.hooks["require_ready"](self.db, self.product)
         self.assertEqual((self.route.route_key, self.route.version, self.route.status), ("p-v1", "v1", "active"))
         self.assertTrue(self.ready())
 
-    def test_config_change_invalidates_and_mismatch_never_touches_route(self):
+    def test_unsold_config_change_invalidates_and_can_be_reverified(self):
         self.save()
         self.verify()
         config = self.save(timeout_ms=5000)
         self.assertIsNone(config.verified_at)
         self.assertFalse(self.ready())
-        self.assert_http(409, self.verify)
-        self.assertEqual(self.route.timeout_ms, 30000)
+        self.assertEqual(self.route.timeout_ms, 5000)
+        self.assertEqual(self.verify().status, "verified")
+        self.assertTrue(self.ready())
 
     def test_sold_configuration_immutable(self):
         self.save()

@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import HTTPException
+from fastapi import Depends, HTTPException
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, select
 from sqlalchemy.orm import mapped_column
 
@@ -60,7 +60,7 @@ def install(ns):
               "health_path", "rate_limit_per_minute", "daily_quota", "monthly_quota")
 
     def requires_integration(product):
-        return product.delivery_method in {"api", "model_api", "tenant_access"}
+        return product.delivery_method in {"api", "model_api"}
 
     def actor(user):
         return user.email or user.phone or user.id
@@ -108,6 +108,10 @@ def install(ns):
             raise HTTPException(409, "Only release API integration is implemented")
         version = get_version(db, product, version_id)
         body = ns["GatewayConfigBody"].model_validate(body.model_dump() if hasattr(body, "model_dump") else body)
+        try:
+            ns["validate_upstream_url"](body.upstream_url.rstrip("/") + body.health_path)
+        except ValueError as exc:
+            raise HTTPException(400, "后端地址或健康检查路径格式不安全") from exc
         if body.version != version.version_code or body.auth_mode != "api_key":
             raise HTTPException(400, "Version and API key authentication must match")
         url = urlsplit(body.upstream_url)
@@ -134,8 +138,26 @@ def install(ns):
             for key, value in values.items():
                 setattr(config, key, value)
             config.version_code = version.version_code
+        route = db.scalar(select(Route).where(Route.product_id == product.id,
+                                             Route.version == version.version_code).with_for_update())
+        collision = db.scalar(select(Route).where(Route.route_key == body.route_key))
+        if collision and (not route or collision.id != route.id):
+            raise HTTPException(409, "API路由标识已被其它版本占用")
+        if not route:
+            route = Route(product_id=product.id, version=version.version_code,
+                          created_by=actor(user), **values)
+            db.add(route)
+        else:
+            for key, value in values.items():
+                setattr(route, key, value)
+        route.status = "draft"
+        route.validated_ip = ""
+        route.health_message = "版本配置已保存，等待审核及接入验证"
+        for key in ("rate_limit_per_minute", "daily_quota", "monthly_quota"):
+            setattr(version, key, values[key])
         invalidate(config)
         db.flush()
+        config.route_id = route.id
         ns["audit"](db, actor(user), "save_version_gateway_config", "product", product.id, version.id)
         return config
 
@@ -180,13 +202,13 @@ def install(ns):
         config = config_for(db, version_id, lock=True)
         if not config or version.status != "active":
             raise HTTPException(409, "Active version configuration required")
-        route = db.scalar(select(Route).where(Route.product_id == product.id).with_for_update())
-        # Never repoint the single product route, including any sold route.
+        route = db.scalar(select(Route).where(Route.product_id == product.id,
+                                             Route.version == version.version_code).with_for_update())
         if not matches(config, route, version):
-            raise HTTPException(409, "Existing product route must match; multiple routes need migration")
+            raise HTTPException(409, "Version route does not match its integration configuration")
         Order = ns["Order"]
         if route.status != "active" and db.scalar(select(Order.id).where(
-                Order.product_id == product.id, Order.paid_amount > 0).limit(1)):
+                Order.product_version_id == version.id, Order.paid_amount > 0).limit(1)):
             raise HTTPException(409, "Sold product route cannot be republished by this adapter")
         request = ns.get("validated_http_request")
         if not callable(request):
@@ -200,11 +222,14 @@ def install(ns):
         try:
             response = request(config.health_method,
                 config.upstream_url.rstrip("/") + config.health_path,
-                timeout=config.timeout_ms / 1000, follow_redirects=False)
+                timeout=min(config.timeout_ms / 1000, 10.0), follow_redirects=False)
             config.health_status_code = response.status_code
             if not 200 <= response.status_code < 300:
                 raise RuntimeError("health_failed")
             config.healthy = True
+            pinned = getattr(response, "extensions", {})
+            if isinstance(pinned, dict) and pinned.get("validated_upstream_addresses"):
+                route.validated_ip = pinned["validated_upstream_addresses"][0]
             if route.status != "active":
                 if not ns["publish_apisix_route"](route, product, db, actor(user)):
                     raise RuntimeError("publish_failed")
@@ -218,8 +243,12 @@ def install(ns):
             config.revision_id, config.publish_record_id = revision.id, record.id
             config.evidence_hash = fingerprint(config, route, version, payload)
             config.status, config.verified_at, config.verified_by = "verified", clock(), actor(user)
+            if product.status == "pending_integration":
+                product.status = "published"
         except (httpx.HTTPError, RuntimeError, ValueError):
             config.status, config.error_code = "failed", "integration_failed"
+            if route.status != "active":
+                route.status = "publish_failed"
         ns["audit"](db, actor(user), "verify_version_gateway", "product", product.id,
                     version.id, result="success" if config.status == "verified" else "failed")
         db.flush()
@@ -227,7 +256,7 @@ def install(ns):
 
     def version_ready(db, product, version):
         if not requires_integration(product):
-            return version.status == "active"
+            return product.delivery_method != "tenant_access" and version.status == "active"
         if product.delivery_method not in {"api", "model_api"} or version.status != "active":
             return False
         config = config_for(db, version.id)
@@ -277,4 +306,38 @@ def install(ns):
                  version_ready=version_ready, public_versions=public_versions,
                  require_ready=require_ready, Config=VersionGatewayConfig)
     ns["version_gateway"] = hooks
+
+    def config_out(config):
+        return {"version_id": config.version_id, "route_id": config.route_id,
+                "status": config.status, "healthy": config.healthy,
+                "verified_at": config.verified_at, "error_code": config.error_code,
+                "health_status_code": config.health_status_code}
+
+    @ns["app"].get("/api/products/{product_id}/versions/{version_id}/integration")
+    def get_integration(product_id: str, version_id: str,
+                        user=Depends(ns["current_user"]), db=Depends(ns["db_session"])):
+        product = ns["gateway_product"](product_id, db)
+        ns["gateway_operator_allowed"](product, user, db)
+        get_version(db, product, version_id)
+        config = config_for(db, version_id)
+        route = db.get(Route, config.route_id) if config and config.route_id else None
+        return {"item": config_out(config) if config else None,
+                "route": ns["gateway_route_out"](route, product) if route else None}
+
+    @ns["app"].put("/api/products/{product_id}/versions/{version_id}/integration")
+    def save_integration(product_id: str, version_id: str, body: ns["GatewayConfigBody"],
+                         user=Depends(ns["current_user"]), db=Depends(ns["db_session"])):
+        product = ns["gateway_product"](product_id, db)
+        config = save_config(db, product, version_id, body, user)
+        db.commit()
+        return config_out(config)
+
+    @ns["app"].post("/api/products/{product_id}/versions/{version_id}/integration/verify")
+    def verify_integration(product_id: str, version_id: str,
+                           user=Depends(ns["current_user"]), db=Depends(ns["db_session"])):
+        product = ns["gateway_product"](product_id, db)
+        config = verify_version(db, product, version_id, user)
+        db.commit()
+        return config_out(config) | {"product_status": product.status}
+
     return hooks
