@@ -51,6 +51,8 @@ New-Item -ItemType Directory -Force $OutputDir | Out-Null
 try {
     Cdp 'Page.enable' @{} | Out-Null
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=1000;deviceScaleFactor=1;mobile=$false} | Out-Null
+    Start-Sleep -Milliseconds 500
+    Js 'window.scrollTo(0,0);true' | Out-Null
     Cdp 'Page.navigate' @{url=$BaseUrl} | Out-Null
     WaitJs 'document.readyState === "complete"'
     Js 'localStorage.removeItem("market_token");location.reload();true' | Out-Null
@@ -91,7 +93,19 @@ try {
     $geometry = Js '({width:innerWidth,bodyWidth:document.documentElement.scrollWidth,errors:Array.from(document.querySelectorAll(".message-center [role=alert]")).map(n=>n.textContent)})'
     if ($geometry.errors.Count) { throw ($geometry.errors -join ';') }
     if ($geometry.bodyWidth -gt $geometry.width+1) { throw 'Mobile document overflows horizontally' }
-    @{status='passed';title=$title;geometry=$geometry;checks=@('login','bell preview','draft save','draft publish','inbox detail/read','settings','desktop/mobile screenshots')} | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 (Join-Path $OutputDir 'browser-results.json')
+    Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=1000;deviceScaleFactor=1;mobile=$false} | Out-Null
+    Js 'Array.from(document.querySelectorAll(".sidebar span")).find(n=>n.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e").closest("button").click();true' | Out-Null
+    WaitJs 'Array.from(document.querySelectorAll("button")).some(b=>b.textContent.trim()==="\u901a\u77e5\u4e0e\u89d2\u8272")'
+    Js 'Array.from(document.querySelectorAll(".settings-tabs button")).find(b=>b.textContent.trim()==="\u6d88\u606f\u4e2d\u5fc3").click();true' | Out-Null
+    WaitJs '!!document.querySelector(".message-settings-form")'
+    WaitJs 'document.querySelector(".message-settings-form input[type=number]").value === "180"'
+    Js 'window.scrollTo(0,0);true' | Out-Null
+    Start-Sleep -Milliseconds 500
+    $settingsGeometry = Js '({scrollX,mainLeft:document.querySelector(".main-shell").getBoundingClientRect().left,sidebarRight:document.querySelector(".sidebar").getBoundingClientRect().right,headingLeft:document.querySelector(".page-heading").getBoundingClientRect().left})'
+    Write-Output ($settingsGeometry | ConvertTo-Json -Compress)
+    if ($settingsGeometry.headingLeft -lt $settingsGeometry.sidebarRight) { throw 'Settings heading overlaps sidebar' }
+    Screenshot 'message-center-system-settings-desktop.png'
+    @{status='passed';title=$title;geometry=$geometry;checks=@('login','bell preview','draft save','draft publish','inbox detail/read','settings','desktop/mobile screenshots','system settings tab')} | ConvertTo-Json -Depth 10 | Set-Content -Encoding UTF8 (Join-Path $OutputDir 'browser-results.json')
     Write-Output 'Browser lifecycle checks passed'
 } finally {
     $socket.Dispose()

@@ -33,7 +33,7 @@ onMounted(load);
       <div class="form-grid"><label>新消息保留天数<input v-model.number="values.retention_days" type="number" min="1" max="3650" required /></label><label>附件上限（MB）<input v-model.number="values.attachment_max_mb" type="number" min="1" max="100" required /></label></div>
       <h2>发送与提醒</h2>
       <div class="form-grid"><label>失败重试次数<input v-model.number="values.retry_count" type="number" min="0" max="10" required /></label><label>重试间隔（秒）<input v-model.number="values.retry_interval_seconds" type="number" min="1" max="3600" required /></label><label>断线轮询间隔（秒）<input v-model.number="values.poll_interval_seconds" type="number" min="5" max="300" required /></label></div>
-      <label class="checkbox-label"><input v-model="values.email_enabled" type="checkbox" />启用邮件通知</label>
+      <label class="checkbox-line"><input v-model="values.email_enabled" type="checkbox" />启用邮件通知</label>
       <h2>邮件模板</h2>
       <label>邮件主题<input v-model="values.email_subject_template" maxlength="300" required /></label><label>邮件正文<textarea v-model="values.email_body_template" rows="7" maxlength="10000" required /></label>
       <button class="primary-btn"><Save :size="15" />保存配置</button>
