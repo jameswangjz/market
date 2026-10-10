@@ -1,0 +1,18 @@
+﻿{
+    "csv":  {
+                "valid":  true,
+                "bytes":  165374
+            },
+    "status":  "passed",
+    "checks":  [
+                   "login",
+                   "time filters",
+                   "CSV export",
+                   "detail timeline",
+                   "desktop/mobile layout"
+               ],
+    "geometry":  {
+                     "width":  390,
+                     "bodyWidth":  390
+                 }
+}

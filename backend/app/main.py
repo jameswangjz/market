@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import calendar
+from contextvars import ContextVar
 import os
 import re
 import secrets
@@ -698,6 +699,7 @@ class SettlementBatch(Base):
     total_profit: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     exception_count: Mapped[int] = mapped_column(Integer, default=0)
     idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    request_digest: Mapped[str] = mapped_column(String(64), default="")
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(180), default="")
@@ -726,6 +728,12 @@ class SettlementMeasurement(Base):
     quantity: Mapped[float] = mapped_column(Numeric(18, 6), default=0)
     unit: Mapped[str] = mapped_column(String(30), default="count")
     source: Mapped[str] = mapped_column(String(120), default="platform")
+    event_key: Mapped[str] = mapped_column(String(180), default="", index=True)
+    source_id: Mapped[str] = mapped_column(String(180), default="")
+    actor_id: Mapped[str] = mapped_column(String(36), default="")
+    sample_kind: Mapped[str] = mapped_column(String(20), default="event")
+    scope: Mapped[str] = mapped_column(String(30), default="order")
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
     period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     validation_status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
@@ -1234,6 +1242,9 @@ class DevelopmentTaskUpdate(BaseModel):
     status: str | None = None
     progress: int | None = Field(default=None, ge=0, le=100)
     note: str = ""
+    title: str | None = Field(default=None, min_length=1, max_length=240)
+    acceptance: str | None = Field(default=None, max_length=4000)
+    dependencies: str | None = Field(default=None, max_length=1000)
 
 
 class SLAProfileBody(BaseModel):
@@ -1328,11 +1339,14 @@ class SettlementRuleDecisionBody(BaseModel):
 
 
 class SettlementMeasurementBody(BaseModel):
-    order_id: str
-    measurement_type: str = Field(min_length=2, max_length=50)
-    quantity: float = Field(ge=0)
-    unit: str = "count"
-    source: str = "platform"
+    model_config = ConfigDict(extra="forbid")
+    order_id: str = Field(min_length=1, max_length=36)
+    measurement_type: str = Field(pattern="^(download|api_call|model_call|offline_delivery|training_hours|training_attendance|consulting_hours|custom_milestone)$")
+    quantity: Decimal = Field(ge=0, le=Decimal("999999999999.999999"), max_digits=18, decimal_places=6, allow_inf_nan=False)
+    unit: str = Field(default="count", pattern="^(count|hour|token|bytes)$")
+    source: str = Field(default="manual", min_length=1, max_length=120)
+    event_key: str = Field(default="", max_length=180)
+    source_id: str = Field(default="", max_length=180)
     period_start: datetime | None = None
     period_end: datetime | None = None
 
@@ -1342,8 +1356,8 @@ class SettlementBatchBody(BaseModel):
     period_start: datetime | None = None
     period_end: datetime | None = None
     rule_id: str = ""
-    order_ids: list[str] = Field(default_factory=list)
-    idempotency_key: str = ""
+    order_ids: list[str] = Field(default_factory=list, max_length=10000)
+    idempotency_key: str = Field(default="", max_length=120)
     rebuild: bool = False
 
 
@@ -1385,6 +1399,19 @@ class UserOut(BaseModel):
 
 app = FastAPI(title="Market Operations API", version="0.1.0", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def audit_request_context(request: Request, call_next):
+    supplied = request.headers.get("X-Request-Id", "")
+    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", supplied) else secrets.token_hex(16)
+    marker = audit_request_id.set(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = request_id
+        return response
+    finally:
+        audit_request_id.reset(marker)
 security = HTTPBearer(auto_error=False)
 
 
@@ -1396,9 +1423,25 @@ def db_session():
         db.close()
 
 
-def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = "", *, category: str = "", business_domain: str = "", tenant_id: str = "", order_id: str = "", batch_no: str = "", rule_version: str = "", request_id: str = "", risk_level: str = "normal", before: Any | None = None, after: Any | None = None):
+audit_request_id = ContextVar("audit_request_id", default="")
+
+
+def audit(db: Session, actor: str, action: str, target_type: str, target_id: str = "", detail: str = "", *, category: str = "", business_domain: str = "", tenant_id: str = "", order_id: str = "", batch_no: str = "", rule_version: str = "", request_id: str = "", risk_level: str = "normal", before: Any | None = None, after: Any | None = None, result: str = "success"):
     inferred = category or ("settlement" if target_type in {"settlement", "settlement_batch", "settlement_rule", "reconciliation"} or "settlement" in action else "payment_refund" if target_type in {"payment", "refund"} or "payment" in action or "refund" in action else "order" if target_type in {"order", "order_state"} or "order" in action else "product" if target_type in {"product", "product_review"} or "product" in action else "auth" if target_type in {"user", "membership", "identity"} or "login" in action or "register" in action else "ops")
-    db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail, category=inferred, business_domain=business_domain, tenant_id=tenant_id, order_id=order_id, batch_no=batch_no, rule_version=rule_version, request_id=request_id, risk_level=risk_level, before_json=json.dumps(before or {}, ensure_ascii=False, default=str), after_json=json.dumps(after or {}, ensure_ascii=False, default=str)))
+    if order_id:
+        order = db.scalar(select(Order).where(or_(Order.id == order_id, Order.order_no == order_id)))
+        if order:
+            order_id = order.id
+            tenant_id = tenant_id or order.buyer_enterprise_id or ""
+    if target_type == "settlement_proposal":
+        proposal = db.get(SettlementAdjustmentProposal, target_id)
+        settlement = db.get(Settlement, proposal.settlement_id) if proposal else None
+        if settlement:
+            order_id = order_id or settlement.order_id
+            line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
+            batch = db.get(SettlementBatch, line.batch_id) if line else None
+            batch_no = batch_no or (batch.batch_no if batch else "")
+    db.add(AuditLog(actor=actor or "unknown", action=action, target_type=target_type, target_id=target_id, detail=detail, category=inferred, business_domain=business_domain, tenant_id=tenant_id, order_id=order_id, batch_no=batch_no, rule_version=rule_version, request_id=request_id or audit_request_id.get(), risk_level=risk_level, result=result, before_json=json.dumps(before or {}, ensure_ascii=False, default=str), after_json=json.dumps(after or {}, ensure_ascii=False, default=str)))
     notify_settlement_event(db, action, target_type, target_id, order_id, batch_no, after)
 
 
@@ -1924,6 +1967,14 @@ def ensure_review_and_file_schema():
             "success": "BOOLEAN DEFAULT FALSE",
             "detail": "TEXT DEFAULT ''",
         },
+        "settlement_measurements": {
+            "event_key": "VARCHAR(180) DEFAULT '' NOT NULL",
+            "source_id": "VARCHAR(180) DEFAULT '' NOT NULL",
+            "actor_id": "VARCHAR(36) DEFAULT '' NOT NULL",
+            "sample_kind": "VARCHAR(20) DEFAULT 'event' NOT NULL",
+            "scope": "VARCHAR(30) DEFAULT 'order' NOT NULL",
+            "evidence_json": "TEXT DEFAULT '{}' NOT NULL",
+        },
         "settlements": {
             "refund_amount": "NUMERIC(14,2)",
             "net_amount": "NUMERIC(14,2)",
@@ -1940,6 +1991,7 @@ def ensure_review_and_file_schema():
         },
         "settlement_batches": {
             "total_profit": "NUMERIC(14,2) DEFAULT 0",
+            "request_digest": "VARCHAR(64) DEFAULT ''",
         },
         "product_release_versions": {
             "cost": "NUMERIC(14,2) DEFAULT 0",
@@ -2036,6 +2088,9 @@ def ensure_review_and_file_schema():
                 for name, sql_type in columns.items():
                     connection.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {sql_type}"))
         connection.execute(text("UPDATE memberships SET status = 'active' WHERE status IS NULL"))
+        connection.execute(text("UPDATE settlement_measurements SET validation_status = 'pending', validation_message = 'Legacy manual measurement; source evidence not verified' WHERE event_key = '' AND validation_status = 'validated'"))
+        connection.execute(text("UPDATE settlement_measurements SET event_key = 'legacy:' || id WHERE event_key = ''"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_settlement_measurements_event_key ON settlement_measurements(event_key)"))
         connection.execute(text("UPDATE users SET phone_verified = FALSE WHERE phone_verified IS NULL"))
         connection.execute(text("UPDATE users SET email_verified = FALSE WHERE email_verified IS NULL"))
         # Historical development payments predate paid_at. Backfill from the
@@ -3919,14 +3974,7 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
 @app.post("/api/products/{product_id}/publish")
 def publish_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = product_for_enterprise(product_id, user, db)
-    if product.status != "pending_review":
-        raise HTTPException(409, "只有待审核产品可以发布")
-    product.status = "published"
-    product.reviewed_by = user.email
-    product.reviewed_at = now()
-    audit(db, user.email, "publish_product", "product", product.id)
-    db.commit()
-    return product_out(product)
+    raise HTTPException(409, "产品须依次通过业务、质量、安全和运营审核，不能直接发布")
 
 
 def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) -> dict[str, Any]:
@@ -4606,8 +4654,10 @@ def add_saas_order(db: Session, subscription: SaaSSubscription, product: Product
     order = Order(order_no=make_order_no(), buyer_user_id=buyer.id, buyer_enterprise_id=subscription.enterprise_id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.name, billing_cycle=subscription.billing_cycle, subscription_id=subscription.id, business_type=business_type, related_order_id=related_order_id, product_name=product.name, buyer_name=enterprise.name if enterprise else "", amount=amount, paid_amount=amount if paid else 0, main_status="completed" if paid else "created", payment_status="paid" if paid else "unpaid")
     db.add(order)
     db.flush()
-    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid"))
+    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid", paid_at=now() if paid and business_type != "downgrade" else None))
     if paid and business_type != "downgrade":
+        db.flush()
+        settlement_metering["record_order_event"](db, order, "confirm_payment", "paid", buyer.id)
         notify_order_event(db, order, "confirm_payment", "paid")
     return order
 
@@ -4866,11 +4916,7 @@ def order_out(o: Order) -> dict[str, Any]:
 
 @app.get("/api/orders")
 def orders(q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
-    if user.platform_role in {"super_admin", "platform_operator", "security_compliance"}:
-        stmt = select(Order)
-    else:
-        enterprise = first_enterprise(db, user)
-        stmt = select(Order).where(or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id))
+    stmt = settlement_metering["scoped_orders"](db, user)
     if q:
         stmt = stmt.where(or_(Order.order_no.ilike(f"%{q}%"), Order.product_name.ilike(f"%{q}%"), Order.buyer_name.ilike(f"%{q}%")))
     if status:
@@ -4883,6 +4929,7 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(404, "订单不存在")
+    settlement_metering["require_order_access"](db, user, order)
     logs = db.scalars(select(OrderStateLog).where(OrderStateLog.order_id == order.id).order_by(OrderStateLog.created_at)).all()
     payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
     task = db.scalar(select(DeliveryTask).where(DeliveryTask.order_id == order.id).order_by(DeliveryTask.created_at.desc()))
@@ -4893,8 +4940,9 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
 @app.post("/api/orders")
 def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     buyer = first_enterprise(db, user)
-    if user.verified_status != "verified":
-        require_enterprise_admin(db, user, buyer.id)
+    if user.platform_role or user.activation_status != "active":
+        raise HTTPException(403, "企业订单须由活跃企业管理员创建")
+    require_enterprise_admin(db, user, buyer.id)
     product = db.get(Product, body.product_id)
     if not product or product.status != "published":
         raise HTTPException(400, "产品不存在或尚未发布")
@@ -4920,8 +4968,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if not item:
         raise HTTPException(400, "不支持的订单动作")
     domain, expected, target, label = item
-    if body.action in {"confirm_payment", "cancel_order", "accept_delivery", "reject_delivery"}:
-        require_enterprise_admin(db, user, order.buyer_enterprise_id)
+    settlement_metering["require_transition"](db, user, order, body.action)
     if domain == "main":
         current = order.main_status
     elif domain == "payment":
@@ -4950,6 +4997,8 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
         if not payment:
             raise HTTPException(400, "支付单不存在")
+        if order.payment_status not in {"unpaid", "paying", "paid"} or payment.status not in {"unpaid", "paying", "paid"}:
+            raise HTTPException(409, "当前支付状态不允许确认支付")
         if order.business_type == "upgrade" and order.subscription_id and order.product_version_id:
             subscription = db.get(SaaSSubscription, order.subscription_id)
             target_version = db.get(SaaSProductVersion, order.product_version_id)
@@ -4963,7 +5012,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
                 subscription.status = "active"
         payment.status = "paid"
         payment.confirmed_by = user.name
-        payment.paid_at = now()
+        payment.paid_at = payment.paid_at or now()
         order.payment_status = "paid"
         order.paid_amount = order.amount
         log_state(db, order, "payment", current, target, body.action, user, body.reason)
@@ -5063,6 +5112,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     elif body.action in {"approve_refund", "complete_refund"}:
         latest_refund = db.scalar(select(Refund).where(Refund.order_id == order.id).order_by(Refund.created_at.desc()))
         event_version = f"{latest_refund.id}:{latest_refund.status}" if latest_refund else event_version
+    settlement_metering["record_order_event"](db, order, body.action, event_version, user.id)
     notify_order_event(db, order, body.action, event_version)
     audit(db, user.email, body.action, "order", order.id, body.reason)
     db.commit()
@@ -5101,6 +5151,7 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
             order.main_status = "fulfilling"
         audit(db, user.email, "delivery_failed", "delivery_task", task.id, task.last_error, category="delivery", business_domain="delivery", order_id=order.id, risk_level="warning" if task.status != "exception" else "high", after={"retry_count": task.retry_count, "status": task.status, "next_retry_at": task.next_retry_at})
     event_version = f"{task.status}:{task.retry_count}" + (f":{now().isoformat()}" if body.success else "")
+    settlement_metering["record_order_event"](db, order, "delivery_succeeded" if body.success else "delivery_failed", event_version, user.id, task.id)
     notify_order_event(db, order, "delivery_succeeded" if body.success else "delivery_failed", event_version, target_type="delivery_task", target_id=task.id)
     db.commit()
     return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count, "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at, "sla_due_at": task.sla_due_at}, "order": order_out(order)}
@@ -5237,9 +5288,11 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     order = db.get(Order, order_id)
     if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
         raise HTTPException(400, "订单尚未满足清算条件")
-    existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id).order_by(Settlement.created_at.desc()))
-    if existing and existing.status == "locked":
-        raise HTTPException(409, "订单清算单已锁定")
+    existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()))
+    if existing and existing.status in {"locked", "paid", "archived", "disputed"}:
+        raise HTTPException(409, "订单清算单已锁定、付款或存在待处理提案，不允许覆盖")
+    if existing and db.scalar(select(SettlementLine.id).where(SettlementLine.settlement_id == existing.id, SettlementLine.status != "superseded")):
+        raise HTTPException(409, "清算单已关联清算批次，请通过批次重算或调整提案处理")
     body = body or SettlementRuleBody()
     gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     refund_amount = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -5410,6 +5463,8 @@ def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: 
         raise HTTPException(404, "清算单不存在")
     if settlement.status in {"locked", "paid", "superseded"}:
         raise HTTPException(409, "当前清算单已经锁定、付款或作废")
+    if settlement.status == "disputed" or db.scalar(select(SettlementAdjustmentProposal.id).where(SettlementAdjustmentProposal.settlement_id == settlement.id, SettlementAdjustmentProposal.status == "pending")):
+        raise HTTPException(409, "清算单存在未处理调整提案，请先由对方确认或拒绝")
     line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
     batch = db.get(SettlementBatch, line.batch_id) if line else None
     if batch and batch.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
@@ -5511,25 +5566,15 @@ def simulate_settlement_rule(rule_id: str, body: SettlementBatchBody, user: User
 
 @app.post("/api/settlement-measurements")
 def create_settlement_measurement(body: SettlementMeasurementBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    order = db.get(Order, body.order_id)
-    if not order:
-        raise HTTPException(404, "订单不存在")
-    item = SettlementMeasurement(order_id=body.order_id, measurement_type=body.measurement_type, quantity=body.quantity, unit=body.unit, source=body.source, period_start=body.period_start, period_end=body.period_end, validation_status="validated")
-    db.add(item)
-    audit(db, user.email, "create_settlement_measurement", "measurement", item.id, body.measurement_type, category="measurement", business_domain="settlement", order_id=body.order_id, after={"quantity": body.quantity, "unit": body.unit})
+    item, duplicate = settlement_metering["create_manual"](db, user, body)
     db.commit()
     db.refresh(item)
-    return {"id": item.id, "order_id": item.order_id, "measurement_type": item.measurement_type, "quantity": float(item.quantity), "unit": item.unit, "validation_status": item.validation_status, "created_at": item.created_at}
+    return {**settlement_metering["output"](item), "idempotent": duplicate}
 
 
 @app.get("/api/settlement-measurements")
-def settlement_measurements(order_id: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_viewer(user)
-    stmt = select(SettlementMeasurement).order_by(SettlementMeasurement.created_at.desc())
-    if order_id:
-        stmt = stmt.where(SettlementMeasurement.order_id == order_id)
-    items = db.scalars(stmt.limit(500)).all()
-    return {"items": [{"id": x.id, "order_id": x.order_id, "measurement_type": x.measurement_type, "quantity": float(x.quantity or 0), "unit": x.unit, "source": x.source, "validation_status": x.validation_status, "validation_message": x.validation_message, "created_at": x.created_at} for x in items]}
+def settlement_measurements(order_id: str | None = None, offset: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=500), source: str = Query(default="", max_length=120), source_id: str = Query(default="", max_length=180), event_key: str = Query(default="", max_length=180), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    return settlement_metering["list"](db, user, order_id, offset, limit, source, source_id, event_key)
 
 
 @app.post("/api/settlement-batches")
@@ -5538,8 +5583,22 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
     if body.cycle == "monthly" and (not body.period_start or not body.period_end):
         raise HTTPException(400, "按月清算必须提供自然月起止时间")
     key = body.idempotency_key or f"{body.cycle}:{body.period_start}:{body.period_end}:{','.join(sorted(body.order_ids))}"
+    if len(key) > 120:
+        key = "auto:" + hashlib.sha256(key.encode()).hexdigest()
+    request_digest = hashlib.sha256(json.dumps({"cycle": body.cycle, "start": str(body.period_start), "end": str(body.period_end), "orders": sorted(set(body.order_ids)), "rule": body.rule_id}, sort_keys=True).encode()).hexdigest()
+    connection = db.connection()
+    if connection.dialect.name == "postgresql":
+        lock_scope = f"monthly:{body.period_start}:{body.period_end}" if body.cycle == "monthly" else key
+        lock_id = int.from_bytes(hashlib.sha256(lock_scope.encode()).digest()[:8], "big", signed=True)
+        db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+    elif connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
     existing = db.scalar(select(SettlementBatch).where(SettlementBatch.idempotency_key == key))
     if existing and existing.status != "superseded":
+        def normalized(value):
+            return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)) if value else None
+        if (existing.request_digest and existing.request_digest != request_digest) or existing.cycle != body.cycle or normalized(existing.period_start) != normalized(body.period_start) or normalized(existing.period_end) != normalized(body.period_end) or (body.rule_id and existing.rule_id != body.rule_id):
+            raise HTTPException(409, "幂等键已用于不同的清算周期或规则")
         return {"id": existing.id, "batch_no": existing.batch_no, "status": existing.status, "idempotent": True}
     if body.cycle == "monthly":
         existing_period = db.scalar(select(SettlementBatch).where(SettlementBatch.cycle == "monthly", SettlementBatch.period_start == body.period_start, SettlementBatch.period_end == body.period_end, SettlementBatch.status != "superseded").order_by(SettlementBatch.created_at.desc()))
@@ -5565,13 +5624,15 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         order_stmt = order_stmt.where(Payment.paid_at >= body.period_start)
     if body.period_end:
         order_stmt = order_stmt.where(Payment.paid_at < body.period_end)
-    order_ids = body.order_ids or [x.id for x in db.scalars(order_stmt.limit(100)).all()]
+    if body.order_ids:
+        order_stmt = order_stmt.where(Order.id.in_(body.order_ids))
+    order_ids = list(dict.fromkeys(db.scalars(order_stmt.with_only_columns(Order.id).distinct()).all()))
     if body.cycle == "monthly" and order_ids:
         legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids))))))).all()
         for legacy in legacy_batches:
             legacy.status = "superseded"
             audit(db, user.email, "supersede_legacy_settlement_batch", "settlement_batch", legacy.batch_no, "月度批次覆盖旧手工批次", category="settlement", business_domain="settlement", batch_no=legacy.batch_no, risk_level="warning")
-    batch = SettlementBatch(batch_no="BATCH-" + secrets.token_hex(6).upper(), cycle=body.cycle, period_start=body.period_start, period_end=body.period_end, rule_id=rule.id, status="generated", idempotency_key=key, created_by=user.email or user.name)
+    batch = SettlementBatch(batch_no="BATCH-" + secrets.token_hex(6).upper(), cycle=body.cycle, period_start=body.period_start, period_end=body.period_end, rule_id=rule.id, status="generated", idempotency_key=key, request_digest=request_digest, created_by=user.email or user.name)
     db.add(batch)
     db.flush()
     total = Decimal("0")
@@ -5671,6 +5732,8 @@ def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
     settlements = db.scalars(select(Settlement).where(Settlement.id.in_(settlement_ids), Settlement.status != "superseded")).all()
     if not settlements:
         raise HTTPException(409, "批次没有可确认的清算单")
+    if any(item.status == "disputed" for item in settlements) or db.scalar(select(SettlementAdjustmentProposal.id).where(SettlementAdjustmentProposal.settlement_id.in_(settlement_ids), SettlementAdjustmentProposal.status == "pending")):
+        raise HTTPException(409, "批次存在未处理调整提案，不能确认锁定")
     before = {"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}}
     for item in settlements:
         if item.status == "paid":
@@ -5720,6 +5783,8 @@ def pay_settlement_batch(batch_id: str, body: SettlementActionBody, user: User =
     settlements = db.scalars(select(Settlement).where(Settlement.id.in_(settlement_ids), Settlement.status != "superseded")).all()
     if not settlements or any(item.status != "locked" for item in settlements):
         raise HTTPException(409, "所有清算单锁定后才可以付款")
+    if db.scalar(select(SettlementAdjustmentProposal.id).where(SettlementAdjustmentProposal.settlement_id.in_(settlement_ids), SettlementAdjustmentProposal.status == "pending")):
+        raise HTTPException(409, "批次存在未处理调整提案，不能付款")
     before = {"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}}
     batch.status = "paid"
     batch.paid_at = now()
@@ -5932,42 +5997,10 @@ def export_settlement_report(status: str | None = None, start: str | None = None
 @app.get("/api/audit-logs")
 def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_audit_viewer(user)
-    def parse_filter_date(value: str | None, field: str) -> datetime | None:
-        if not value or not value.strip():
-            return None
-        try:
-            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"{field}必须是有效的ISO日期时间") from exc
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-    start_at = parse_filter_date(start, "start")
-    end_at = parse_filter_date(end, "end")
-    stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
-    filters = []
-    if category:
-        filters.append(AuditLog.category == category)
-    if q:
-        pattern = f"%{q}%"
-        filters.append(or_(AuditLog.action.ilike(pattern), AuditLog.target_type.ilike(pattern), AuditLog.target_id.ilike(pattern), AuditLog.detail.ilike(pattern)))
-    if actor:
-        filters.append(AuditLog.actor.ilike(f"%{actor}%"))
-    if order_id:
-        filters.append(AuditLog.order_id == order_id)
-    if batch_no:
-        filters.append(AuditLog.batch_no == batch_no)
-    if rule_version:
-        filters.append(AuditLog.rule_version == rule_version)
-    if risk_level:
-        filters.append(AuditLog.risk_level == risk_level)
-    if start_at:
-        filters.append(AuditLog.created_at >= start_at)
-    if end_at:
-        filters.append(AuditLog.created_at <= end_at)
-    stmt = stmt.where(*filters)
+    stmt = audit_support["query"](db, category, q, actor, order_id, batch_no, rule_version, risk_level, start, end)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     items = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()
-    audit_items = [{"id": x.id, "actor": x.actor, "action": x.action, "target_type": x.target_type, "target_id": x.target_id, "result": x.result, "detail": x.detail, "category": x.category, "business_domain": x.business_domain, "tenant_id": x.tenant_id, "order_id": x.order_id, "batch_no": x.batch_no, "rule_version": x.rule_version, "request_id": x.request_id, "risk_level": x.risk_level, "before": json.loads(x.before_json or "{}"), "after": json.loads(x.after_json or "{}"), "created_at": x.created_at} for x in items]
+    audit_items = audit_support["objects"](db, items)
     return {"items": audit_items, "total": total, "page": page, "page_size": page_size, "pages": (total + page_size - 1) // page_size}
 
 
@@ -5975,7 +6008,8 @@ def audit_logs(category: str | None = None, q: str | None = None, actor: str | N
 def audit_log_categories(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_audit_viewer(user)
     rows = db.execute(select(AuditLog.category, func.count(AuditLog.id)).group_by(AuditLog.category).order_by(func.count(AuditLog.id).desc())).all()
-    return {"items": [{"category": row[0] or "ops", "count": row[1]} for row in rows]}
+    settlement_count = db.scalar(select(func.count()).select_from(audit_support["query"](db, category="settlement_all").subquery())) or 0
+    return {"items": [{"category": row[0] or "ops", "count": row[1]} for row in rows] + [{"category": "settlement_all", "count": settlement_count}]}
 
 
 @app.get("/api/users")
@@ -6032,6 +6066,8 @@ def development_tasks(user: User = Depends(current_user), db: Session = Depends(
 
 @app.patch("/api/development/tasks/{code}")
 def update_development_task(code: str, body: DevelopmentTaskUpdate, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if user.platform_role not in {"super_admin", "platform_operator"}:
+        raise HTTPException(403, "只有平台管理员或平台运营人员可以更新开发任务")
     task = db.scalar(select(DevelopmentTask).where(DevelopmentTask.code == code))
     if not task:
         raise HTTPException(404, "开发任务不存在")
@@ -6041,6 +6077,10 @@ def update_development_task(code: str, body: DevelopmentTaskUpdate, user: User =
         task.status = body.status
     if body.progress is not None:
         task.progress = body.progress
+    for field in ("title", "acceptance", "dependencies"):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(task, field, value)
     if task.status == "done":
         task.progress = 100
     audit(db, user.email, "update_development_task", "development_task", task.code, body.note)
@@ -6582,7 +6622,7 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         order = db.get(Order, task.order_id) if task else None
         member = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]) if order else False, Membership.status == "active")) if order else None
         owner = bool(member)
-    if not owner and not reviewer:
+    if item.file_role != "product_data" and not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
     download_log = None
     if item.file_role == "product_data":
@@ -6592,10 +6632,10 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
             raise HTTPException(400, "下载产品数据文件必须提供订单号")
         else:
             order = db.get(Order, order_id)
-            enterprise = first_enterprise(db, user)
-            member = db.scalar(select(Membership).where(Membership.enterprise_id == enterprise.id, Membership.user_id == user.id, Membership.status == "active"))
-            if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or (order.buyer_enterprise_id != enterprise.id and not reviewer) or (not reviewer and not member):
+            member = db.scalar(select(Membership).where(Membership.enterprise_id == order.buyer_enterprise_id, Membership.user_id == user.id, Membership.status == "active")) if order and not user.platform_role else None
+            if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or user.platform_role or (order.buyer_user_id != user.id and not member):
                 raise HTTPException(403, "当前用户没有该订单文件的下载权限")
+            settlement_metering["require_order_access"](db, user, order)
             product = db.get(Product, item.product_id)
             download_limit = int(product.download_limit or 0) if product else 0
             used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
@@ -6620,6 +6660,8 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         download_log.success = True
         download_log.detail = "下载成功"
         db.add(download_log)
+        db.flush()
+        settlement_metering["record_download"](db, order, download_log, item, len(content))
         audit(db, user.email or user.phone or user.id, "download_file", "file", item.id, item.original_name, category="delivery", business_domain="product", order_id=download_log.order_id)
         db.commit()
     return Response(content=content, media_type=item.content_type, headers={"Content-Disposition": f"inline; filename=download; filename*=UTF-8''{quote(item.original_name)}"})
@@ -6630,10 +6672,11 @@ def order_product_files(order_id: str, user: User = Depends(current_user), db: S
     order = db.get(Order, order_id)
     if not order or order.payment_status != "paid":
         raise HTTPException(404, "订单不存在或尚未支付")
-    enterprise = first_enterprise(db, user)
     reviewer = user.platform_role in {"super_admin", "platform_operator"}
-    if not reviewer and order.buyer_enterprise_id != enterprise.id:
+    member = db.scalar(select(Membership.id).where(Membership.enterprise_id == order.buyer_enterprise_id, Membership.user_id == user.id, Membership.status == "active")) if not user.platform_role else None
+    if not reviewer and (user.platform_role or (order.buyer_user_id != user.id and not member)):
         raise HTTPException(403, "无权查看该订单文件")
+    settlement_metering["require_order_access"](db, user, order)
     items = db.scalars(select(FileObject).where(FileObject.product_id == order.product_id, FileObject.version_id == order.product_version_id, FileObject.file_role == "product_data", FileObject.status != "deleted")).all()
     product = db.get(Product, order.product_id)
     limit = int(product.download_limit or 0) if product else 0
@@ -6643,3 +6686,15 @@ def order_product_files(order_id: str, user: User = Depends(current_user), db: S
 from .message_center import install as install_message_center
 
 message_center = install_message_center(globals())
+
+from .settlement_metering import install as install_settlement_metering
+
+settlement_metering = install_settlement_metering(globals())
+
+from .audit_support import install as install_audit_support
+
+audit_support = install_audit_support(globals())
+
+from .reconciliation_support import install as install_reconciliation_support
+
+ledger_support = install_reconciliation_support(globals())

@@ -46,6 +46,7 @@ def isolated_helpers(names):
         "now": lambda: datetime(2026, 10, 9, 12, tzinfo=timezone.utc),
         "select": MagicMock(), "or_": Mock(),
         "AuditLog": lambda **values: SimpleNamespace(**values),
+        "audit_request_id": SimpleNamespace(get=lambda: "isolated-request"),
     }
     for name in ("User", "Membership", "Order", "Product", "SaaSSubscription", "ApiCredential", "ApiGatewayRoute", "Settlement", "SettlementLine", "SettlementBatch"):
         namespace[name] = QueryField()
