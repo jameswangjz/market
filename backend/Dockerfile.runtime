@@ -1,0 +1,6 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+WORKDIR /app
+COPY requirements.txt /tmp/market-requirements.txt
+RUN cmp -s /app/requirements.txt /tmp/market-requirements.txt
+COPY app ./app

@@ -87,9 +87,9 @@ def run():
                 key_hash=secrets.token_hex(32), key_prefix="test", daily_quota=version.daily_quota,
                 monthly_quota=version.monthly_quota, status="active")
             db.add(credential); db.flush()
-            consumers.append(credential)
             raw_key = "qa_" + secrets.token_urlsafe(24)
             m.sync_apisix_consumer(credential, raw_key, route)
+            consumers.append(credential.apisix_consumer_name)
             url = "http://market-apisix:9080/gateway/" + key + "/health"
             assert httpx.get(url, timeout=10).status_code == 401
             for _ in range(version.rate_limit_per_minute):
@@ -141,10 +141,10 @@ def run():
         db.close(); outer.rollback(); connection.close()
         for key in route_keys:
             m.apisix_admin_request("DELETE", "/routes/" + key)
-        for credential in consumers:
-            m.remove_apisix_consumer(credential)
+        for consumer in consumers:
+            m.apisix_admin_request("DELETE", "/consumers/" + consumer)
             redis = m.apisix_policy_redis()
-            keys = list(redis.scan_iter(match="*" + credential.apisix_consumer_name + "*"))
+            keys = list(redis.scan_iter(match="*" + consumer + "*"))
             if keys: redis.delete(*keys)
         for obj in storage.list_objects(m.MINIO_BUCKET, prefix=prefix + "-provider/", recursive=True):
             storage.remove_object(m.MINIO_BUCKET, obj.object_name)

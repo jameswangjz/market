@@ -40,7 +40,7 @@ def cleanup(state):
     return {"status": "cleaned", "orders": len(ids), "files": len(file_ids)}
 
 
-def prepare(path):
+def prepare(path, offline=False):
     marker = secrets.token_hex(8)
     prefix = "qa-web-" + marker
     state = {"product_id": prefix + "-p", "version_ids": [prefix + "-v1", prefix + "-v2"],
@@ -60,7 +60,7 @@ def prepare(path):
             db.add_all([m.Membership(user_id=buyer.id, enterprise_id=e.id, role="super_admin") for e in enterprises[:2]])
             db.add(m.Membership(user_id=provider.id, enterprise_id=enterprises[2].id, role="super_admin"))
             product = m.Product(id=state["product_id"], enterprise_id=enterprises[2].id, name="商城浏览器隔离验收商品",
-                product_type="dataset", delivery_method="file", status="draft", provider_name=enterprises[2].name,
+                product_type="consulting" if offline else "dataset", delivery_method="consulting" if offline else "file", status="draft", provider_name=enterprises[2].name,
                 description="隔离验收商品，验证完成后自动删除", settlement_rule_mode="custom",
                 settlement_rule_json=json.dumps(dict(platform_rate=20, provider_rate=80, service_rate=0, expert_rate=0, channel_rate=0)))
             db.add(product); db.flush()
@@ -91,6 +91,18 @@ def prepare(path):
             m.trading_policy["validate_submission"](db, product)
             product.status = "published"; db.commit()
         state["token"] = buyer_token
+        state["provider_token"] = provider_token
+        if offline:
+            client = TestClient(m.app)
+            try:
+                response = client.post("/api/orders", headers={"Authorization": "Bearer " + buyer_token},
+                    json={"product_id": state["product_id"], "product_version_id": state["version_ids"][0],
+                          "buyer_enterprise_id": state["enterprise_ids"][0]})
+                assert response.status_code == 200, response.text
+                state["order_id"] = response.json()["id"]
+                assert response.json()["main_status"] == "pending_provider_review"
+            finally:
+                client.close()
         path.write_text(json.dumps(state), encoding="utf-8"); path.chmod(0o600)
         return {"status": "prepared", "product_id": state["product_id"], "token_file": str(path)}
     except Exception:
@@ -101,10 +113,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("prepare", "cleanup"))
     parser.add_argument("--state", default="/tmp/trd-phase2-fixture.json")
+    parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(); path = Path(args.state)
     if args.action == "prepare":
         assert not path.exists(), "Clean up the previous fixture first"
-        result = prepare(path)
+        result = prepare(path, args.offline)
     else:
         result = cleanup(json.loads(path.read_text(encoding="utf-8")))
         path.unlink()

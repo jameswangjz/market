@@ -4801,11 +4801,19 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
     return saas_integration_out(config)
 
 
+def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> None:
+    """Legacy purchase/renew simulate payment inline, so cannot admit administrators."""
+    trading_policy["require_buyer"](db, user, enterprise_id)
+    member = current_membership(db, user, enterprise_id)
+    if member.role != "super_admin":
+        raise HTTPException(403, "该旧订阅接口包含模拟付款，仅企业超级管理员可执行")
+
+
 @app.post("/api/products/{product_id}/saas-subscriptions")
 def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = saas_product(product_id, db)
     enterprise = first_enterprise(db, user)
-    require_enterprise_admin(db, user, enterprise.id)
+    require_legacy_saas_payer(db, user, enterprise.id)
     version = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
     if not version or not config:
@@ -4848,6 +4856,7 @@ def subscription_context(subscription_id: str, user: User, db: Session) -> tuple
 @app.post("/api/saas-subscriptions/{subscription_id}/renew")
 def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, version, config = subscription_context(subscription_id, user, db)
+    require_legacy_saas_payer(db, user, subscription.enterprise_id)
     expires_at = subscription.expires_at
     if expires_at and expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
