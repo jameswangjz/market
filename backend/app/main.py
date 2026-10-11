@@ -3308,8 +3308,12 @@ def grant_application_access(product_id: str, body: ApplicationAccessBody, user:
     existing = db.scalar(select(ApplicationAccessGrant).where(ApplicationAccessGrant.enterprise_id == enterprise.id,
         ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.user_id == body.user_id))
     if existing:
+        original_status = existing.status
         existing.status = "active"
         existing.granted_by = user.email or user.phone or user.id
+        if original_status != "active":
+            audit(db, user.email or user.phone or user.id, "grant_saas_access", "application_access_grant", existing.id,
+                product.name, tenant_id=enterprise.id, before={"status": original_status}, after={"status": "active"})
         db.commit()
         return {"id": existing.id, "status": existing.status, "user_id": existing.user_id}
     grant = ApplicationAccessGrant(enterprise_id=enterprise.id, product_id=product.id, user_id=body.user_id, granted_by=user.email or user.phone or user.id)
