@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { sanitizeSubscription, canRenewSubscription, subscriptionDisplayStatus, termDisplayStatus, renewalPayload, renewalOrder, createSubscriptionSession,
+import { sanitizeSubscription, canRenewSubscription, subscriptionDisplayStatus, termDisplayStatus, renewalPayload, renewalOrder, createSubscriptionSession, newRenewalRequestKey,
   monthlyQuotaCalls, monthlyQuotaThousands } from "../src/subscriptionTerms.js";
 
 const order = { id: "order-1", order_no: "O1", product_id: "product", product_version_id: "v1", product_version_code: "v1.0", snapshot_version: 1,
@@ -18,6 +18,17 @@ const item = {
   limits: { rate_limit_per_minute: 60, daily_quota: 0, monthly_quota: 1001 },
 };
 const created = { id: "renewal", order_no: "R1", payment_status: "unpaid", product_version_id: "v1" };
+
+test("renewal request keys use cryptographic UUIDs on HTTPS and plain HTTP", () => {
+  assert.equal(newRenewalRequestKey({ randomUUID: () => "native-uuid" }), "native-uuid");
+  let calls = 0;
+  const httpCrypto = { getRandomValues: bytes => { bytes.fill(calls++); return bytes; } };
+  const first = newRenewalRequestKey(httpCrypto), second = newRenewalRequestKey(httpCrypto);
+  assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(first, second);
+  assert.equal(calls, 2);
+  assert.throws(() => newRenewalRequestKey({}), /安全生成/);
+});
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 function harness() {
   const context = { order: { ...order }, user: { ...user }, enterprise: { ...enterprise }, token: "token" };

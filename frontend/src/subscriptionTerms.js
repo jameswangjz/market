@@ -95,7 +95,17 @@ export function renewalOrder(data, source, subscription) {
   return { id: order.id, order_no: order.order_no };
 }
 
-export function createSubscriptionSession({ api, getContext, onChange = () => {}, makeKey = () => globalThis.crypto.randomUUID() }) {
+export function newRenewalRequestKey(crypto = globalThis.crypto) {
+  if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
+  if (typeof crypto?.getRandomValues !== "function") throw new Error("浏览器无法安全生成续费请求标识");
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export function createSubscriptionSession({ api, getContext, onChange = () => {}, makeKey = newRenewalRequestKey }) {
   let state = { orderId: "", item: null, loading: false, error: "", modal: null };
   let generation = 0, busy = false, disposed = false;
   const emit = () => { if (!disposed) onChange({ ...state, modal: state.modal ? { ...state.modal } : null }); };
