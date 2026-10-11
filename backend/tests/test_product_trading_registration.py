@@ -80,6 +80,19 @@ class ProductTradingRegistrationTests(unittest.TestCase):
                     action()
                 self.assertEqual(caught.exception.status_code, 409)
 
+    def test_product_detail_exposes_sold_locks_without_order_identifiers(self):
+        before = self.request("GET", "/api/products/product", actor="provider")
+        self.assertFalse(before["delivery_fields_locked"])
+        self.assertFalse(before["versions"][0]["is_sold"])
+        order = self.request("POST", "/api/orders", json={"product_id": "product", "product_version_id": "version", "buyer_enterprise_id": "buyer_tenant"})
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Order, order["id"]).paid_amount = 100
+            db.commit()
+        after = self.request("GET", "/api/products/product", actor="provider")
+        self.assertTrue(after["delivery_fields_locked"])
+        self.assertTrue(after["versions"][0]["is_sold"])
+        self.assertNotIn(order["id"], str(after))
+
     def test_unselected_version_with_files_is_archived_not_deleted(self):
         m = self.m
         with m.SessionLocal() as db:

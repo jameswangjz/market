@@ -1,0 +1,151 @@
+{
+  "status": "passed",
+  "database": "postgresql",
+  "methods": {
+    "training": {
+      "duplicate_payment": {
+        "http_statuses": [
+          200,
+          200
+        ],
+        "worker_pids": [
+          449706,
+          449707
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "review_first": {
+        "http_statuses": [
+          200,
+          200
+        ],
+        "worker_pids": [
+          449705,
+          449708
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "payment_first": {
+        "http_statuses": [
+          409,
+          200
+        ],
+        "worker_pids": [
+          449707,
+          449706
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "optimistic_reviews": {
+        "http_statuses": [
+          200,
+          409
+        ],
+        "worker_pids": [
+          449707,
+          449706
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "notification_failure_rollback_retry": true,
+      "cleanup": "verified no owned rows or FK references remain"
+    },
+    "consulting": {
+      "duplicate_payment": {
+        "http_statuses": [
+          200,
+          200
+        ],
+        "worker_pids": [
+          449708,
+          449705
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "review_first": {
+        "http_statuses": [
+          200,
+          200
+        ],
+        "worker_pids": [
+          449706,
+          449707
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "payment_first": {
+        "http_statuses": [
+          409,
+          200
+        ],
+        "worker_pids": [
+          449708,
+          449705
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "optimistic_reviews": {
+        "http_statuses": [
+          200,
+          409
+        ],
+        "worker_pids": [
+          449705,
+          449708
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "notification_failure_rollback_retry": true,
+      "cleanup": "verified no owned rows or FK references remain"
+    },
+    "custom": {
+      "duplicate_payment": {
+        "http_statuses": [
+          200,
+          200
+        ],
+        "worker_pids": [
+          449707,
+          449706
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "review_first": {
+        "http_statuses": [
+          200,
+          200
+        ],
+        "worker_pids": [
+          449708,
+          449705
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "payment_first": {
+        "http_statuses": [
+          409,
+          200
+        ],
+        "worker_pids": [
+          449707,
+          449706
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "optimistic_reviews": {
+        "http_statuses": [
+          200,
+          409
+        ],
+        "worker_pids": [
+          449707,
+          449706
+        ],
+        "two_blocked_sessions_observed": true
+      },
+      "notification_failure_rollback_retry": true,
+      "cleanup": "verified no owned rows or FK references remain"
+    }
+  },
+  "scope": "HTTP concurrency/control plane; simulated manual payments; catalog/storage excluded"
+}

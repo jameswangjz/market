@@ -3230,6 +3230,11 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
         return {**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency, "review_logs": []}
     else:
         result = product_out(product_for_enterprise(product_id, user, db))
+        sold_versions = set(db.scalars(select(Order.product_version_id).where(
+            Order.product_id == product_id, Order.paid_amount > 0).distinct()).all())
+        result["delivery_fields_locked"] = bool(sold_versions)
+        for version in result["versions"]:
+            version["is_sold"] = version["id"] in sold_versions
     review_actions = (
         "submit_product_review",
         "enter_product_security_review",

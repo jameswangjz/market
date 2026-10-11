@@ -46,3 +46,11 @@ test("integration loading and saving whitelist config without carrying credentia
 test("missing saved version identity stops attachment writes", () => {
   assert.throws(() => bindRegistrationVersions([{ version_code: "v2" }], [{ id: "one", version_code: "v1" }]));
 });
+
+test("sold release configuration is not resaved and sold file uploads are rejected", async () => {
+  const api = { put: async () => assert.fail('Sold config must not be saved'), post: async () => assert.fail('Sold file must not be uploaded') };
+  const versions = [{ id: 'sold', is_sold: true, integration: emptyVersionIntegration() }];
+  await saveRegistrationAttachments(api, { delivery_method: 'api', versions }, 'product');
+  versions[0].fileUpload = new Blob(['archive']);
+  await assert.rejects(saveRegistrationAttachments(api, { delivery_method: 'file', versions }, 'product'), /已售版本/);
+});

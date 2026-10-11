@@ -4308,7 +4308,7 @@ onUnmounted(() => {
         <div class="form-section-title">运营与合规元数据</div>
         <div class="form-grid">
           <label
-            >交付方式<select v-model="productForm.delivery_method">
+            >交付方式<select v-model="productForm.delivery_method" :disabled="productForm.delivery_fields_locked">
               <optgroup label="线上交付">
               <option value="file">文件下载</option>
               <option value="api">API 服务</option>
@@ -4327,11 +4327,11 @@ onUnmounted(() => {
           <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
         </div>
         <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
-          <label class="wide">提供方后端访问URL<input v-model="productForm.upstream_url" type="url" required placeholder="https://provider.example.com/api" /></label>
+          <label class="wide">提供方后端访问URL<input v-model="productForm.upstream_url" :disabled="productForm.delivery_fields_locked" type="url" required placeholder="https://provider.example.com/api" /></label>
         </div>
         <div v-if="productForm.delivery_method === 'tenant_access'" class="form-grid">
-          <label>应用访问URL<input v-model="productForm.application_url" type="url" required /></label>
-          <label>租户/权限开通API URL<input v-model="productForm.integration_api_url" type="url" required /></label>
+          <label>应用访问URL<input v-model="productForm.application_url" :disabled="productForm.delivery_fields_locked" type="url" required /></label>
+          <label>租户/权限开通API URL<input v-model="productForm.integration_api_url" :disabled="productForm.delivery_fields_locked" type="url" required /></label>
         </div>
         <div class="form-grid">
           <label>产品Logo（380×280，必填）<input type="file" accept="image/*,.svg" :required="!productForm.logo_file_id && !productForm.logoFile" @change="productForm.logoFile = $event.target.files[0]" /><small v-if="productForm.logo_file_id" class="muted">已上传产品Logo</small></label>
@@ -4347,12 +4347,14 @@ onUnmounted(() => {
               新增版本
             </button>
           </div>
-          <div
+          <fieldset
               v-for="(version, index) in productForm.versions"
             :key="index"
+            :disabled="productReadOnlyMode || version.is_sold === true"
             class="version-row"
             :class="{ 'api-version-row': ['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method), 'monthly-api-version-row': ['api', 'model_api'].includes(productForm.delivery_method) }"
           >
+            <p v-if="version.is_sold" class="version-lock-notice">已售版本配置已锁定，需要变更请新增版本。</p>
             <label
               >版本号<input v-model="version.version_code" :maxlength="['api', 'model_api'].includes(productForm.delivery_method) ? 40 : 60" required /></label
             ><label
@@ -4403,9 +4405,9 @@ onUnmounted(() => {
               <label>超时（毫秒）<input v-model.number="version.integration.timeout_ms" type="number" min="100" max="120000" step="1" required /></label>
               <label>健康检查路径<input v-model="version.integration.health_path" pattern="/[^\\\\#]*" maxlength="240" required /></label>
               <label>健康检查方法<select v-model="version.integration.health_method" required><option value="GET">GET</option><option value="HEAD">HEAD</option></select></label>
-              <label><input v-model="version.integration.strip_prefix" type="checkbox" />移除网关路径前缀</label>
+              <label class="version-prefix-toggle"><input v-model="version.integration.strip_prefix" type="checkbox" />移除网关路径前缀</label>
             </div>
-          </div>
+          </fieldset>
         </div>
         <div class="form-grid">
           <label
@@ -4892,6 +4894,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.version-editor-head > .text-btn { white-space: nowrap; flex-shrink: 0; }
+fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid #f0f1f3; padding: 12px 0 0; }
+.version-lock-notice { grid-column: 1 / -1; margin: 0; color: #727782; font-size: 12px; }
+.version-row label.version-prefix-toggle { flex-direction: row; align-items: center; gap: 8px; }
+.version-row .version-prefix-toggle input { width: 14px; height: 14px; margin: 0; padding: 0; flex-shrink: 0; }
 .subscription-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .subscription-heading > span { margin-right: auto; }
 .subscription-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
