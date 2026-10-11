@@ -8,3 +8,5 @@ minio==7.2.15
 httpx==0.28.1
 redis==5.2.1
 Pillow==11.1.0
+Authlib==1.6.9
+cryptography==50.0.2

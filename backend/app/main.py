@@ -975,7 +975,8 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 def issue_token(user: User) -> str:
-    return jwt.encode({"sub": user.id, "email": user.email, "exp": now() + timedelta(hours=12)}, JWT_SECRET, algorithm="HS256")
+    issued = now()
+    return jwt.encode({"sub": user.id, "email": user.email, "iat": issued, "exp": issued + timedelta(hours=12)}, JWT_SECRET, algorithm="HS256")
 
 
 class LoginBody(BaseModel):
@@ -6999,3 +7000,7 @@ online_delivery = install_online_delivery(globals())
 from .version_change_quotes import install as install_version_change_quotes
 
 version_change_quotes = install_version_change_quotes(globals())
+
+from .oidc_provider import install as install_oidc_provider
+
+oidc_provider = install_oidc_provider(globals())

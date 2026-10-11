@@ -2,5 +2,7 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 WORKDIR /app
 COPY requirements.txt /tmp/market-requirements.txt
-RUN cmp -s /app/requirements.txt /tmp/market-requirements.txt
+RUN if ! cmp -s /app/requirements.txt /tmp/market-requirements.txt; then \
+      pip install --no-cache-dir -r /tmp/market-requirements.txt; \
+    fi && cp /tmp/market-requirements.txt /app/requirements.txt
 COPY app ./app
