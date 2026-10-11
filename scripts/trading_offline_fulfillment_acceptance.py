@@ -5,6 +5,8 @@ migrated PostgreSQL database and configured MinIO/ClamAV services:
     PYTHONPATH=backend .venv/bin/python scripts/trading_offline_fulfillment_acceptance.py
 
 Uses main's installed HTTP hooks, never substitutes fulfillment or scanners.
+Runs training, consulting and custom (the backend custom-development enum), each
+with an approved/rectified order and a separate provider-rejected order.
 All DB writes use savepoints inside an outer transaction that is rolled back.
 Only this run's provider-user and API-created order storage prefixes are removed.
 Do not run concurrently with other in-process dependency override users.
@@ -23,13 +25,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import main as m
+from app.order_workflow import OFFLINE
 
 
 # Standard harmless antivirus test signature, never an executable payload.
 EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
 
-def run():
+def run_method(method):
+    assert method in OFFLINE, method
     assert m.engine.dialect.name == "postgresql", "Real PostgreSQL is required"
     assert m.MINIO_ENDPOINT and m.CLAMAV_ENABLED, "MinIO and ClamAV must be configured"
     assert hasattr(m, "order_fulfillment"), "Main must install offline fulfillment hooks"
@@ -46,7 +50,8 @@ def run():
     previous = m.app.dependency_overrides.get(m.db_session, missing)
     client = None
     object_prefixes = [prefix + "-provider/"]
-    order_id = None
+    order_ids = []
+    task_ids = []
     try:
         roles = {"provider": "", "provideradmin": "", "buyer": "", "buyeradmin": "",
                  "outsider": "", "member": "", "providermember": "",
@@ -79,7 +84,7 @@ def run():
                                expert_rate=0, channel_rate=0))
         product = m.Product(id=prefix + "-product", enterprise_id=ep.id,
                             name="Isolated offline fulfillment", provider_name=ep.name,
-                            product_type="consulting", delivery_method="consulting",
+                            product_type=method, delivery_method=method,
                             status="draft", settlement_rule_mode="custom",
                             settlement_rule_json=rule)
         db.add(product)
@@ -113,25 +118,122 @@ def run():
         assert client.get(public["logo_url"]).status_code == 200
         body = {"product_id": product.id, "product_version_id": version.id,
                 "buyer_enterprise_id": eb.id, "subscription_months": 1}
-        quote = request("POST", "/orders/quote", body=body).json()
-        created = request("POST", "/orders", body={**body, "quote_id": quote["quote_id"]}).json()
+
+        def create_order():
+            quote = request("POST", "/orders/quote", body=body).json()
+            created = request("POST", "/orders", body={**body, "quote_id": quote["quote_id"]}).json()
+            order_ids.append(created["id"])
+            object_prefixes.append("delivery/" + created["id"] + "/")
+            assert created["main_status"] == "pending_provider_review", created
+            return created
+
+        def review_footprint(oid):
+            db.expire_all()
+            current = db.get(m.Order, oid)
+            payment_rows = db.scalars(select(m.Payment).where(m.Payment.order_id == oid)).all()
+            counts = tuple(db.scalar(select(func.count()).select_from(model).where(model.order_id == oid))
+                           for model in (m.DeliveryTask, m.OrderStateLog, m.AuditLog,
+                                         m.SettlementMeasurement))
+            return (current.main_status, current.payment_status, current.amount,
+                    current.paid_amount, current.updated_at, current.economic_snapshot_json,
+                    current.delivery_snapshot_json,
+                    tuple(sorted((row.id, row.status, row.amount, row.paid_at) for row in payment_rows)),
+                    counts)
+
+        def denied_review(oid, review_body, actor="provider", status=400):
+            before = review_footprint(oid)
+            request("POST", "/orders/" + oid + "/provider-review", actor,
+                    status=status, body=review_body)
+            assert review_footprint(oid) == before, (method, actor, "Denied review mutated fixtures")
+
+        rejected_id = create_order()["id"]
+        rejected_path = "/orders/" + rejected_id
+        for reason in ("", "   ", "\t\n", None):
+            denied_review(rejected_id, {"decision": "reject", "reason": reason},
+                          status=422 if reason is None else 400)
+        denied_review(rejected_id, {"decision": "reject", "amount": 110, "reason": "Reject scope"})
+        rejection_reason = "Internal provider cost review " + method
+        rejected_snapshot = db.get(m.Order, rejected_id).delivery_snapshot_json
+        rejected = request("POST", rejected_path + "/provider-review", "provideradmin",
+                           body={"decision": "reject", "reason": "  " + rejection_reason + "  "}).json()
+        assert rejected["main_status"] == "rejected" and rejected["amount"] == 100, rejected
+        rejected_order = db.get(m.Order, rejected_id)
+        assert rejected_order.delivery_snapshot_json == rejected_snapshot
+        assert m.order_cost(db, rejected_order) == m.Decimal("50.00")
+        rejected_payment = db.scalar(select(m.Payment).where(m.Payment.order_id == rejected_id))
+        assert rejected_payment.status == "unpaid" and rejected_payment.amount == m.Decimal("100.00")
+        assert db.scalar(select(func.count()).select_from(m.DeliveryTask).where(
+            m.DeliveryTask.order_id == rejected_id)) == 0
+        rejection_audits = db.scalars(select(m.AuditLog).where(m.AuditLog.order_id == rejected_id,
+            m.AuditLog.action == "provider_review_reject")).all()
+        assert len(rejection_audits) == 1
+        rejection_audit = rejection_audits[0]
+        assert rejection_audit.actor == users["provideradmin"].email and rejection_audit.tenant_id == ep.id
+        assert json.loads(rejection_audit.before_json)["main_status"] == "pending_provider_review"
+        rejection_after = json.loads(rejection_audit.after_json)
+        assert (rejection_after["main_status"], rejection_after["decision"], rejection_after["reason"]) == (
+            "rejected", "reject", rejection_reason)
+        rejection_logs = db.scalars(select(m.OrderStateLog).where(m.OrderStateLog.order_id == rejected_id,
+            m.OrderStateLog.action == "provider_review_reject")).all()
+        assert len(rejection_logs) == 1
+        assert (rejection_logs[0].domain, rejection_logs[0].from_status, rejection_logs[0].to_status) == (
+            "main", "pending_provider_review", "rejected")
+        assert rejection_reason not in rejection_logs[0].reason
+        for actor in ("buyer", "buyeradmin"):
+            detail = request("GET", rejected_path, actor).text
+            assert rejection_reason not in detail and '"cost"' not in detail
+        denied_review(rejected_id, {"decision": "approve"}, status=409)
+        denied_review(rejected_id, {"decision": "reject", "reason": "Repeat"}, status=409)
+        for action in ("start_payment", "confirm_payment"):
+            before = review_footprint(rejected_id)
+            request("POST", rejected_path + "/transition", status=409, body={"action": action})
+            assert review_footprint(rejected_id) == before, "Rejected order payment mutated fixtures"
+
+        created = create_order()
         order_id = created["id"]
-        object_prefixes.append("delivery/" + order_id + "/")
         path = "/orders/" + order_id
         assert created["main_status"] == "pending_provider_review", created
         order = db.get(m.Order, order_id)
-        assert order.snapshot_version == 1 and order.delivery_method_snapshot == "consulting"
+        assert order.snapshot_version == 1 and order.delivery_method_snapshot == method
         assert (order.buyer_enterprise_id, order.provider_enterprise_id) == (eb.id, ep.id)
         request("POST", path + "/transition", status=409, body={"action": "confirm_payment"})
-        for actor in ("buyer", "buyeradmin", "outsider", "member", "platform"):
-            request("POST", path + "/provider-review", actor, status=403,
-                    body={"decision": "approve"})
+        for actor in ("buyer", "buyeradmin", "outsider", "member", "providermember", "platform", "ops", "monitor"):
+            denied_review(order_id, {"decision": "approve"}, actor, 403)
+            denied_review(order_id, {"decision": "reject", "reason": "Unauthorized reject"}, actor, 403)
+            request("GET", path + "/provider-quote", actor, status=403)
+        for invalid in ({"amount": 101}, {"cost": 51},
+                        {"amount": 49, "cost": 50, "reason": "Below cost"},
+                        {"amount": 100, "cost": 101, "reason": "Cost exceeds price"}):
+            denied_review(order_id, {"decision": "approve", **invalid})
         provider_quote = request("GET", path + "/provider-quote", "provider").json()
+        assert (provider_quote["amount"], provider_quote["cost"]) == ("100.00", "50.00")
+        denied_review(order_id, {"decision": "approve", "expected_updated_at": "2000-01-01T00:00:00Z"},
+                      status=409)
+        approval_reason = "Isolated revised " + method + " scope"
         reviewed = request("POST", path + "/provider-review", "provider", body={
             "decision": "approve", "amount": 120, "cost": 60,
-            "reason": "Isolated revised consulting scope",
+            "reason": approval_reason,
             "expected_updated_at": provider_quote["expected_updated_at"]}).json()
         assert reviewed["main_status"] == "pending_payment" and reviewed["amount"] == 120
+        approved_snapshot = (order.economic_snapshot_json, order.delivery_snapshot_json)
+        assert m.order_cost(db, order) == m.Decimal("60.00")
+        approval_audits = db.scalars(select(m.AuditLog).where(m.AuditLog.order_id == order_id,
+            m.AuditLog.action == "provider_review_approve")).all()
+        assert len(approval_audits) == 1
+        approval_audit = approval_audits[0]
+        assert approval_audit.actor == users["provider"].email and approval_audit.tenant_id == ep.id
+        approval_before, approval_after = json.loads(approval_audit.before_json), json.loads(approval_audit.after_json)
+        assert (approval_before["economic_snapshot"]["amount"], approval_before["economic_snapshot"]["total_cost"]) == (
+            "100.00", "50.00")
+        assert (approval_after["economic_snapshot"]["amount"], approval_after["economic_snapshot"]["total_cost"]) == (
+            "120.00", "60.00")
+        assert approval_after["reason"] == approval_reason and approval_after["main_status"] == "pending_payment"
+        for actor in ("buyer", "buyeradmin"):
+            detail = request("GET", path, actor).text
+            assert approval_reason not in detail
+            assert all('"' + key + '"' not in detail for key in (
+                "cost", "unit_cost", "total_cost", "economic_snapshot", "unit_cost_snapshot", "total_cost_snapshot"))
+        denied_review(order_id, {"decision": "approve", "amount": 130, "reason": "Late quote"}, status=409)
         request("POST", path + "/transition", "buyeradmin", status=403,
                 body={"action": "confirm_payment"})
         request("POST", path + "/transition", body={"action": "confirm_payment"})
@@ -139,9 +241,11 @@ def run():
         assert payment.status == "paid" and payment.amount == m.Decimal("120.00")
         assert m.order_cost(db, order) == m.Decimal("60.00")
         frozen = (order.economic_snapshot_json, order.delivery_snapshot_json)
+        assert frozen == approved_snapshot, "Payment altered approved snapshots"
         tasks = db.scalars(select(m.DeliveryTask).where(m.DeliveryTask.order_id == order_id)).all()
         assert len(tasks) == 1, tasks
         task_id = tasks[0].id
+        task_ids.append(task_id)
         attachments_path = "/delivery-tasks/" + task_id + "/attachments"
 
         def state(main, delivery=None):
@@ -152,9 +256,11 @@ def run():
             task = task_rows[0]
             expected = (main, delivery or main, "completed" if main == "completed" else main)
             assert (current.main_status, current.delivery_status, task.status) == expected
-            assert (task.method, task.delivery_mode, task.assignee) == ("consulting", "manual", ep.id)
+            assert (task.method, task.delivery_mode, task.assignee) == (method, "manual", ep.id)
             assert task.next_retry_at is None
             assert (current.economic_snapshot_json, current.delivery_snapshot_json) == frozen
+            m.order_economics["economic_snapshot"](current)
+            assert m.order_economics["delivery_snapshot"](current)["method"] == method
             detail = request("GET", path, "buyeradmin").json()["order"]
             assert (detail["main_status"], detail["delivery_status"]) == expected[:2]
             visible = request("GET", "/delivery-tasks", "provideradmin").json()["items"]
@@ -196,7 +302,7 @@ def run():
             item = db.get(m.FileObject, attachment["file_id"])
             assert item.scan_status == "clean" and item.scanned_at and item.scan_report
             assert item.file_role == "delivery_attachment" and item.owner_id == users[actor].id
-            assert item.object_name.startswith(object_prefixes[1])
+            assert item.object_name.startswith("delivery/" + order_id + "/")
             assert item.size == len(content) and item.checksum == hashlib.sha256(content).hexdigest()
             stream = storage.get_object(m.MINIO_BUCKET, item.object_name)
             try:
@@ -207,6 +313,10 @@ def run():
             return attachment
 
         state("awaiting_start")
+        before_repeat = footprint()
+        request("POST", path + "/transition", body={"action": "confirm_payment"})
+        assert footprint() == before_repeat, "Paid retry mutated fulfillment"
+        assert db.scalar(select(func.count()).select_from(m.Payment).where(m.Payment.order_id == order_id)) == 1
         for actor in ("buyer", "buyeradmin", "outsider", "member", "providermember",
                       "platform", "ops", "monitor"):
             for action in ("start_delivery", "submit_delivery"):
@@ -218,7 +328,7 @@ def run():
         upload("provider", "eicar.txt", EICAR, 400)
         request("POST", path + "/transition", "provideradmin", body={"action": "start_delivery"})
         state("in_delivery")
-        working = upload("provider", "working.txt", (prefix + " consulting report\n").encode())
+        working = upload("provider", "working.txt", (prefix + " " + method + " report\n").encode())
         request("POST", path + "/transition", "provider", body={"action": "submit_delivery"})
         state("pending_acceptance")
         upload("provider", "frozen.txt", b"Evidence frozen during acceptance", 409)
@@ -228,10 +338,11 @@ def run():
                 denied(action, actor, reason="Revise")
         for reason in ("", "   ", "\t\n", None):
             denied("reject_delivery", "buyeradmin", 422 if reason is None else 400, reason)
+        rectify_reason = "Revise " + method + " scope"
         request("POST", path + "/transition", "buyeradmin",
-                body={"action": "reject_delivery", "reason": "  Revise consulting scope  "})
+                body={"action": "reject_delivery", "reason": "  " + rectify_reason + "  "})
         state("rectifying")
-        assert db.get(m.DeliveryTask, task_id).last_error == "Revise consulting scope"
+        assert db.get(m.DeliveryTask, task_id).last_error == rectify_reason
         revision = upload("provideradmin", "revision.txt", (prefix + " revised scope\n").encode())
         # Catalog edits must not alter this order's fulfillment/economic snapshots.
         product.delivery_method = "file"
@@ -273,7 +384,7 @@ def run():
             ("payment_fulfillment_ready", "pending_fulfillment", "awaiting_start", "buyer", ""),
             ("start_delivery", "awaiting_start", "in_delivery", "provideradmin", ""),
             ("submit_delivery", "in_delivery", "pending_acceptance", "provider", ""),
-            ("reject_delivery", "pending_acceptance", "rectifying", "buyeradmin", "Revise consulting scope"),
+            ("reject_delivery", "pending_acceptance", "rectifying", "buyeradmin", rectify_reason),
             ("submit_delivery", "rectifying", "pending_acceptance", "provideradmin", ""),
             ("accept_delivery", "pending_acceptance", "completed", "buyer", ""))
         audits = db.scalars(select(m.AuditLog).where(m.AuditLog.order_id == order_id,
@@ -309,8 +420,11 @@ def run():
             item["file_id"] for item in evidence}
         assert len(upload_audits) == len(evidence)
         assert all(json.loads(row.after_json)["scan_status"] == "clean" for row in upload_audits)
-        return {"status": "passed", "database": "postgresql", "checks": [
-            "isolated verified party roles and consulting product/logo",
+        return {"status": "passed", "method": method, "database": "postgresql", "checks": [
+            "isolated verified party roles and " + method + " product/logo",
+            "provider rejection with required trimmed reason, internal audit and terminal payment guards",
+            "price below cost and changed quote without reason denied without mutation",
+            "provider quote/review permissions and buyer cost/rejection-reason privacy",
             "API quote/order snapshot, provider review and payment",
             "awaiting_start/in_delivery/pending_acceptance/rectifying/resubmit/completed-accepted",
             "party role denials, required rejection reason and terminal guards",
@@ -318,7 +432,7 @@ def run():
             "party/platform evidence list/download and outsider/member denial",
             "one preserved manual task, immutable snapshots and exact audit/state logs"],
             "fixture": "outer transaction rollback verified; own-prefix MinIO objects removed",
-            "limits": "Manual payment confirmation; no live payment channel or deployment"}
+            "limits": "Sequential requests only; no concurrent quotation/payment or injected-failure rollback; manual payment confirmation"}
     finally:
         primary = sys.exc_info()[1]
         errors = []
@@ -344,10 +458,13 @@ def run():
                 for model, predicate in (
                     (m.User, m.User.id.like(prefix + "-%")),
                     (m.Enterprise, m.Enterprise.id.like(prefix + "-%")),
+                    (m.Membership, m.Membership.user_id.like(prefix + "-%")),
                     (m.Product, m.Product.id == prefix + "-product"),
+                    (m.ProductReleaseVersion, m.ProductReleaseVersion.product_id == prefix + "-product"),
+                    (m.DeliveryAttachment, m.DeliveryAttachment.task_id.in_(task_ids)),
                     (m.FileObject, m.FileObject.owner_id.like(prefix + "-%"))):
                     assert check.scalar(select(func.count()).select_from(model).where(predicate)) == 0
-                if order_id is not None:
+                for order_id in order_ids:
                     for model, predicate in (
                         (m.Order, m.Order.id == order_id),
                         (m.Payment, m.Payment.order_id == order_id),
@@ -371,6 +488,14 @@ def run():
                 primary.add_note(message)
             else:
                 raise RuntimeError(message)
+
+
+def run():
+    methods = ("training", "consulting", "custom")
+    assert set(methods) == OFFLINE, "Offline enum changed; update acceptance coverage"
+    results = [run_method(method) for method in methods]
+    return {"status": "passed", "methods": list(methods), "results": results,
+            "limits": "No concurrent quotation/payment or injected-failure rollback evidence from this script; no live payment channel or deployment"}
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
+import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
+import { canViewProductIntegration } from "./productIntegration.js";
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
@@ -11,6 +13,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
+import { registrationPayload, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import {
@@ -319,6 +322,7 @@ const emptyProductVersion = () => ({
   quota_unit: "",
   quota_amount: 0,
   status: "active",
+  integration: emptyVersionIntegration(),
 });
 const emptyProductForm = () => ({
   name: "",
@@ -1533,7 +1537,7 @@ async function createProduct() {
   productSaving.value = true;
   try {
     const { data } = await api.post("/products", {
-      ...productForm.value,
+      ...registrationPayload(productForm.value),
       catalog_name:
         productForm.value.catalog_name ||
         productDirectories.value[0]?.value ||
@@ -1543,27 +1547,18 @@ async function createProduct() {
     selectedProductId.value = data.id;
     productDetailMode.value = true;
     productForm.value.id = data.id;
-    productForm.value.versions = data.versions;
+    bindRegistrationVersions(productForm.value.versions, data.versions);
     if (productForm.value.logoFile) {
       const form = new FormData();
       form.append("upload", productForm.value.logoFile);
       form.append("product_id", data.id);
       form.append("file_role", "product_logo");
       const uploaded = await api.post("/files/upload", form);
-      await api.put(`/products/${data.id}`, { ...productForm.value, logo_file_id: uploaded.data.id, logoFile: undefined });
       productForm.value.logo_file_id = uploaded.data.id;
       productForm.value.logoFile = null;
+      await api.put(`/products/${data.id}`, registrationPayload(productForm.value));
     }
-    if (productForm.value.fileUpload) {
-      const form = new FormData();
-      form.append("upload", productForm.value.fileUpload);
-      form.append("product_id", data.id);
-      form.append("file_role", "product_data");
-      form.append("version_id", data.versions?.[0]?.id || "");
-      form.append("version", data.versions?.[0]?.version_code || "v1.0");
-      await api.post("/files/upload", form);
-      productForm.value.fileUpload = null;
-    }
+    await saveRegistrationAttachments(api, productForm.value, data.id);
     showProductForm.value = false;
     productForm.value = {
       ...emptyProductForm(),
@@ -1584,6 +1579,7 @@ function openNewProduct() {
   productReadOnlyMode.value = false;
   productReviewMode.value = false;
   selectedProductId.value = "";
+  productFiles.value = [];
   productForm.value = {
     ...emptyProductForm(),
     catalog_name: productDirectories.value[0]?.value || "",
@@ -1607,9 +1603,19 @@ async function openProductDetail(product, review = false) {
   productForm.value = JSON.parse(JSON.stringify({
     ...emptyProductForm(),
     ...detail,
-    versions: detail.versions?.length ? detail.versions : [emptyProductVersion()],
+    versions: detail.versions?.length ? detail.versions.map((version) => ({ ...emptyProductVersion(), ...version })) : [emptyProductVersion()],
   }));
   productForm.value.logoFile = null;
+  if (["api", "model_api"].includes(detail.delivery_method)) {
+    try {
+      await loadRegistrationIntegrations(api, product.id, productForm.value.versions);
+    } catch {
+      if (!productReadOnlyMode.value) {
+        productReadOnlyMode.value = true;
+        notify("版本接入配置加载失败，请重新打开产品后编辑");
+      }
+    }
+  }
   productFiles.value = [];
   productLogoPreview.value = "";
   try {
@@ -1701,10 +1707,12 @@ async function saveProductEdit() {
   productSaving.value = true;
   try {
     const payload = {
-      ...productForm.value,
+      ...registrationPayload(productForm.value),
       catalog_name: productForm.value.catalog_name || "未分类",
       logoFile: undefined,
     };
+    const { data } = await api.put(`/products/${selectedProductId.value}`, payload);
+    bindRegistrationVersions(productForm.value.versions, data.versions);
     if (productForm.value.logoFile) {
       const form = new FormData();
       form.append("upload", productForm.value.logoFile);
@@ -1715,22 +1723,12 @@ async function saveProductEdit() {
       productForm.value.logo_file_id = uploaded.data.id;
       productForm.value.logoFile = null;
     }
-    if (productForm.value.fileUpload) {
-      const form = new FormData();
-      form.append("upload", productForm.value.fileUpload);
-      form.append("product_id", selectedProductId.value);
-      form.append("file_role", "product_data");
-      form.append("version_id", productForm.value.versions[0]?.id || "");
-      form.append("version", productForm.value.versions[0]?.version_code || "v1.0");
-      await api.post("/files/upload", form);
-      productForm.value.fileUpload = null;
-    }
-    await api.put(`/products/${selectedProductId.value}`, payload);
+    await saveRegistrationAttachments(api, productForm.value, selectedProductId.value);
     showProductForm.value = false;
     notify("产品信息已保存");
     await loadViewData("products");
   } catch (error) {
-    notify(error.response?.data?.detail || "产品信息保存失败");
+    notify(error.response?.data?.detail || "产品草稿或附件未全部保存，请重试保存同一产品");
   } finally {
     productSaving.value = false;
   }
@@ -1746,14 +1744,11 @@ function updateVersionMonthlyQuota(version, event) {
   }
 }
 function addProductVersion() {
+  let number = productForm.value.versions.length + 1;
+  while (productForm.value.versions.some((version) => version.version_code === `v${number}.0`)) number++;
   productForm.value.versions.push({
-    version_code: `v${productForm.value.versions.length + 1}.0`,
-    description: "",
-    price: 0,
-    rate_limit_per_minute: 60,
-    daily_quota: 10000,
-    monthly_quota: 0,
-    status: "active",
+    ...emptyProductVersion(),
+    version_code: `v${number}.0`,
   });
 }
 function removeProductVersion(index) {
@@ -4314,18 +4309,21 @@ onUnmounted(() => {
         <div class="form-grid">
           <label
             >交付方式<select v-model="productForm.delivery_method">
+              <optgroup label="线上交付">
               <option value="file">文件下载</option>
               <option value="api">API 服务</option>
               <option value="model_api">模型 API</option>
               <option value="tenant_access">租户/权限开通</option>
+              </optgroup>
+              <optgroup label="线下交付">
               <option value="training">线下培训</option>
               <option value="consulting">咨询交付</option>
               <option value="custom">定制开发</option>
+              </optgroup>
             </select></label
           >
         </div>
         <div v-if="productForm.delivery_method === 'file'" class="form-grid">
-          <label>数据文件（压缩包）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz,.bz2,.xz,.rar,.7z" @change="productForm.fileUpload = $event.target.files[0]" /></label>
           <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
         </div>
         <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
@@ -4336,7 +4334,7 @@ onUnmounted(() => {
           <label>租户/权限开通API URL<input v-model="productForm.integration_api_url" type="url" required /></label>
         </div>
         <div class="form-grid">
-          <label>产品Logo（380×280）<input type="file" accept="image/*,.svg" @change="productForm.logoFile = $event.target.files[0]" /></label>
+          <label>产品Logo（380×280，必填）<input type="file" accept="image/*,.svg" :required="!productForm.logo_file_id && !productForm.logoFile" @change="productForm.logoFile = $event.target.files[0]" /><small v-if="productForm.logo_file_id" class="muted">已上传产品Logo</small></label>
           <label>Logo说明<small class="muted">支持SVG及常见图片格式，提交后执行尺寸和安全校验。</small></label>
         </div>
         <div class="version-editor">
@@ -4356,33 +4354,32 @@ onUnmounted(() => {
             :class="{ 'api-version-row': ['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method), 'monthly-api-version-row': ['api', 'model_api'].includes(productForm.delivery_method) }"
           >
             <label
-              >版本号<input v-model="version.version_code" required /></label
+              >版本号<input v-model="version.version_code" :maxlength="['api', 'model_api'].includes(productForm.delivery_method) ? 40 : 60" required /></label
             ><label
-              >{{ ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method) ? '版本价格（元/月）' : '版本价格' }}<input
+              >{{ ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method) ? '版本价格（元/月）' : '版本价格（元/单）' }}<input
                 v-model.number="version.price"
                 type="number"
-                min="0"
+                :min="version.cost || 0"
                 step="0.01"
                 required /></label
             ><label
-              >{{ ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method) ? '版本成本（元/月）' : '版本成本' }}<input
+              >{{ ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method) ? '版本成本（元/月）' : '版本成本（元/单）' }}<input
                 v-model.number="version.cost"
                 type="number"
                 min="0"
                 step="0.01"
                 required /></label
-            ><label v-if="['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method)" title="该版本每分钟允许的最大调用次数"
-              >每分钟限流<input v-model.number="version.rate_limit_per_minute" type="number" min="1" required /></label
-            ><label v-if="['api', 'model'].includes(productForm.product_type) || ['api', 'model_api'].includes(productForm.delivery_method)" title="该版本每日允许的最大调用次数"
-              >每日配额<input v-model.number="version.daily_quota" type="number" :min="['api', 'model_api'].includes(productForm.delivery_method) ? 0 : 1" step="1" required /></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="该版本每分钟允许的最大调用次数"
+              >每分钟限流（次）<input v-model.number="version.rate_limit_per_minute" type="number" min="1" max="100000" step="1" required /></label
+            ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="0 表示不限"
+              >每日配额（次）<input v-model.number="version.daily_quota" type="number" min="0" max="100000000" step="1" required /><small class="muted">0 表示不限</small></label
             ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="1 表示 1000 次，0 表示不限">
-              每订阅月配额（千次）<input :value="monthlyQuotaThousands(version.monthly_quota ?? 0)" type="number" min="0" step="0.001" required @input="updateVersionMonthlyQuota(version, $event)" /><small class="muted">0 表示不限</small></label
-            ><label v-else-if="['api', 'model'].includes(productForm.product_type)" title="0 表示不单独限制月配额"
-              >每月配额<input v-model.number="version.monthly_quota" type="number" min="0" /></label
+              每订阅月配额（千次）<input :value="monthlyQuotaThousands(version.monthly_quota ?? 0)" type="number" min="0" max="3000000" step="0.001" required @input="updateVersionMonthlyQuota(version, $event)" /><small class="muted">1 千次 = 1000 次；0 表示不限</small></label
             ><label class="version-description"
               >版本简要介绍<textarea
                 v-model="version.description"
                 rows="2"
+                required
                 placeholder="说明该版本的功能范围、能力差异或适用对象"
               ></textarea></label
             ><button v-if="!productReadOnlyMode"
@@ -4393,6 +4390,21 @@ onUnmounted(() => {
             >
               <X :size="16" />
             </button>
+            <label v-if="productForm.delivery_method === 'file'" class="version-description" style="grid-column: 1 / -1">
+              版本交付文件（压缩包，必填）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz,.bz2,.xz,.rar,.7z" :required="version.status === 'active' && !version.fileUpload && !version.uploadedFileName && !productFiles.some((file) => file.version_id === version.id && file.file_role === 'product_data' && ['draft', 'active'].includes(file.status))" @change="version.fileUpload = $event.target.files[0]" />
+              <small class="muted">{{ version.uploadedFileName || productFiles.find((file) => file.version_id === version.id && file.file_role === 'product_data' && ['draft', 'active'].includes(file.status))?.original_name || '待上传版本文件' }}</small>
+            </label>
+            <div v-if="['api', 'model_api'].includes(productForm.delivery_method) && version.integration" class="form-grid" style="grid-column: 1 / -1">
+              <label class="wide">版本上游URL<input v-model="version.integration.upstream_url" type="url" maxlength="500" required /></label>
+              <label>路由标识<input v-model="version.integration.route_key" pattern="[A-Za-z0-9_-]{1,100}" maxlength="100" required /></label>
+              <label>入口认证<select v-model="version.integration.auth_mode" required><option value="api_key">API Key</option></select></label>
+              <label>上游认证<select v-model="version.integration.upstream_auth_mode" required><option value="oauth2">OAuth2（机器凭据）</option><option value="none">无认证</option></select></label>
+              <label>上游Scope<input v-model="version.integration.upstream_scope" maxlength="500" :required="version.integration.upstream_auth_mode === 'oauth2'" /></label>
+              <label>超时（毫秒）<input v-model.number="version.integration.timeout_ms" type="number" min="100" max="120000" step="1" required /></label>
+              <label>健康检查路径<input v-model="version.integration.health_path" pattern="/[^\\\\#]*" maxlength="240" required /></label>
+              <label>健康检查方法<select v-model="version.integration.health_method" required><option value="GET">GET</option><option value="HEAD">HEAD</option></select></label>
+              <label><input v-model="version.integration.strip_prefix" type="checkbox" />移除网关路径前缀</label>
+            </div>
           </div>
         </div>
         <div class="form-grid">
@@ -4505,6 +4517,12 @@ onUnmounted(() => {
           >
         </div>
         </fieldset>
+        <ProductIntegrationPanel
+          v-if="productDetailMode && ['api', 'model_api'].includes(productForm.delivery_method) && canViewProductIntegration(user)"
+          :product="productForm" :api="api" :provider="!user?.platform_role"
+          @credentials="downloadSaasCredentials(productForm)"
+          @changed="openProductDetail(productForm)"
+        />
         <div v-if="productDetailMode && productFiles.length" class="product-file-status">
           <div class="form-section-title">已上传文件与安全状态</div>
           <div v-if="productLogoPreview" class="product-logo-preview"><img :src="productLogoPreview" alt="产品Logo缩略图" /></div>
