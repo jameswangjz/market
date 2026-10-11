@@ -28,6 +28,10 @@ kubectl -n market set image deployment/market-api "api=market-api:${TAG}"
 kubectl -n market rollout status deployment/market-api --timeout=240s
 kubectl -n market set image deployment/message-center-worker "worker=market-api:${TAG}"
 kubectl -n market rollout status deployment/message-center-worker --timeout=240s
+if kubectl -n market get deployment online-delivery-worker >/dev/null 2>&1; then
+  kubectl -n market set image deployment/online-delivery-worker "worker=market-api:${TAG}"
+  kubectl -n market rollout status deployment/online-delivery-worker --timeout=240s
+fi
 kubectl -n market set image deployment/market-web "web=market-web:${TAG}"
 kubectl -n market rollout status deployment/market-web --timeout=240s
 echo "Deployed: $TAG"

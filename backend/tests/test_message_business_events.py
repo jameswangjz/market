@@ -278,7 +278,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             db.flush()
             db.add_all([
                 m.FileObject(id="product_logo", owner_id="provider", product_id="product", object_name="logo", original_name="logo.png", content_type="image/png", file_role="product_logo", scan_status="clean"),
-                m.FileObject(id="product_data", owner_id="provider", product_id="product", version_id="version", object_name="dataset", original_name="dataset.zip", file_role="product_data", scan_status="clean"),
+                m.FileObject(id="product_data", owner_id="provider", product_id="product", version_id="version", object_name="dataset", original_name="dataset.zip", file_role="product_data", size=1, checksum=hashlib.sha256(b"x").hexdigest(), scan_status="clean", scan_report='{"presidio_status":"available"}'),
             ])
             db.add_all([m.FileObject(id=fid, owner_id="buyer", object_name=fid, original_name=fid) for fid in ("front", "back", "license")])
             db.commit()
@@ -376,8 +376,11 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
         task = self.task_id(oid)
         self.request("POST", f"/api/delivery-tasks/{task}/process", actor="ops", json={"success": False, "error": "PRIVATE ERROR"})
         self.assertEqual(self.recipients(target_id=task, title="订单自动交付异常"), {"buyer", "buyer_admin", "provider", "platform", "ops"})
-        self.request("POST", f"/api/delivery-tasks/{task}/process", actor="ops", json={"success": True})
-        self.request("POST", f"/api/orders/{oid}/transition", json={"action": "accept_delivery"})
+        with patch.object(self.m, "Minio") as storage, patch.object(self.m, "MINIO_ENDPOINT", "fixture"):
+            storage.return_value.stat_object.return_value.size = 1
+            storage.return_value.get_object.return_value.read.return_value = b"x"
+            self.request("POST", f"/api/delivery-tasks/{task}/process", actor="ops", json={"success": True})
+        self.request("POST", f"/api/orders/{oid}/transition", expected=409, json={"action": "accept_delivery"})
         for amount in (20, 10):
             self.request("POST", f"/api/orders/{oid}/transition", actor="platform", json={"action": "approve_refund", "refund_amount": amount})
             self.request("POST", f"/api/orders/{oid}/transition", actor="platform", json={"action": "complete_refund"})
