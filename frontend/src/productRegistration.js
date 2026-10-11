@@ -1,10 +1,42 @@
-const versionFields = ["version_code", "description", "price", "cost", "rate_limit_per_minute", "daily_quota", "monthly_quota", "quota_unit", "quota_amount", "status"];
-const productFields = ["name", "product_type", "catalog_name", "provider_name", "provider_type", "description", "usage_scenarios", "delivery_method", "upstream_url", "application_url", "integration_api_url", "download_limit", "logo_file_id", "price", "pricing_strategy", "version", "quality_level", "security_level", "authorization_conditions", "data_source_statement", "compliance_statement", "settlement_rule_mode", "settlement_rule_id", "settlement_rule"];
+const versionFields = ["version_code", "description", "compatibility_mode", "compatibility_notes", "price", "cost", "rate_limit_per_minute", "daily_quota", "monthly_quota", "quota_unit", "quota_amount", "status"];
+const productFields = ["name", "product_type", "catalog_name", "provider_name", "provider_type", "description", "usage_scenarios", "delivery_method", "upstream_url", "application_url", "integration_api_url", "oidc_redirect_uris", "download_limit", "logo_file_id", "price", "pricing_strategy", "version", "quality_level", "security_level", "authorization_conditions", "data_source_statement", "compliance_statement", "settlement_rule_mode", "settlement_rule_id", "settlement_rule"];
 const integrationFields = ["upstream_url", "route_key", "auth_mode", "upstream_auth_mode", "upstream_scope", "timeout_ms", "strip_prefix", "health_path", "health_method"];
+
+export function splitOidcRedirectUris(text) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+export function isValidOidcRedirectUri(value) {
+  if (typeof value !== "string" || value.length > 2000 || /[\s\x00-\x1f\\#*]/.test(value)) return false;
+  const authority = value.match(/^https?:\/\/([^/?#]+)\//i)?.[1];
+  if (!authority || authority.includes("@")) return false;
+  try {
+    const url = new URL(value);
+    if (!url.hostname || url.username || url.password || url.hash || url.port === "0") return false;
+    if (url.protocol === "https:") return true;
+    // Check the original authority too: URL normalizes aliases such as 127.1.
+    return url.protocol === "http:" && /^(localhost|127\.0\.0\.1|market-mock-saas)(?::[0-9]+)?$/i.test(authority);
+  } catch {
+    return false;
+  }
+}
 
 export function registrationPayload(form) {
   const payload = Object.fromEntries(productFields.map((key) => [key, form[key]]));
-  return { ...payload, versions: form.versions.map((version) => Object.fromEntries(versionFields.map((key) => [key, version[key]]))) };
+  const redirects = form.oidc_redirect_uris ?? [];
+  if (!Array.isArray(redirects) || redirects.some((uri) => typeof uri !== "string")) {
+    throw new TypeError("OIDC回调地址须为字符串数组");
+  }
+  const normalizedRedirects = redirects.map((uri) => uri.trim()).filter(Boolean);
+  if (normalizedRedirects.some((uri) => !isValidOidcRedirectUri(uri))) {
+    throw new TypeError("OIDC回调地址须为完整HTTPS URL，不得包含片段或用户信息；开发HTTP仅允许localhost、127.0.0.1或market-mock-saas");
+  }
+  payload.oidc_redirect_uris = normalizedRedirects;
+  return { ...payload, versions: form.versions.map((version) => ({
+    ...Object.fromEntries(versionFields.map((key) => [key, version[key]])),
+    compatibility_mode: version.compatibility_mode ?? "compatible",
+    compatibility_notes: version.compatibility_notes ?? "",
+  })) };
 }
 
 export function emptyVersionIntegration() {

@@ -62,6 +62,9 @@ def install(ns):
             raise HTTPException(400, "产品不存在或尚未发布")
         category = ns["trading_policy"]["delivery_category"](product.delivery_method)
         monthly = product.delivery_method in {"api", "model_api", "tenant_access"}
+        target_subscription = getattr(body, "saas_subscription_id", "")
+        if target_subscription and (product.product_type != "saas" or product.delivery_method != "tenant_access"):
+            raise HTTPException(400, "只有SaaS租户交付支持选择订阅目标")
         months = body.subscription_months
         if not monthly and months != 1:
             raise HTTPException(400, "文件及线下服务为一次性购买，不支持购买月数")
@@ -96,7 +99,7 @@ def install(ns):
                     "quota": {key: int(getattr(version, key, 0) or 0) for key in (
                         "rate_limit_per_minute", "daily_quota", "monthly_quota", "quota_amount")}}
         digest = hashlib.sha256(json.dumps({"user_id": user.id, "buyer": body.buyer_enterprise_id,
-            "economic": economic, "delivery": delivery}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            "economic": economic, "delivery": delivery, "saas_subscription_id": target_subscription}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         public = {"quote_id": digest, "product_id": product.id, "product_version_id": version.id,
                   "product_version_code": version.version_code, "delivery_method": product.delivery_method,
                   "delivery_category": category, "billing_unit": economic["billing_unit"],
@@ -104,7 +107,7 @@ def install(ns):
                   "currency": product.currency}
         return {"public": public, "economic": economic, "delivery": delivery, "amount": amount,
                 "cost": cost, "unit_price": unit_price, "unit_cost": unit_cost, "product": product, "version": version,
-                "buyer_enterprise_id": body.buyer_enterprise_id}
+                "buyer_enterprise_id": body.buyer_enterprise_id, "saas_subscription_id": target_subscription}
 
     def apply_snapshot(order, quoted):
         order.snapshot_version = 1
