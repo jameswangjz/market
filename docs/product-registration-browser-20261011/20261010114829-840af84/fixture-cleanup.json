@@ -1,0 +1,9 @@
+{
+  "status": "cleaned",
+  "fixture": "qa-reg-fe4bbf2467e2",
+  "cleanup": "owned rows and FK leftovers verified absent",
+  "initial_cleanup_pod": "market-api-765c75b875-pmph2",
+  "final_cleanup_pod": "market-api-57778d5566-7t9hv",
+  "final_deployment_tag": "20261010115149-1b1845e",
+  "private_copies": "pod state removed by cleanup; local and deployment-host state/token copies removed"
+}

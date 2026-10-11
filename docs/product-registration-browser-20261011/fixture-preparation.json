@@ -1,0 +1,9 @@
+{
+  "status": "prepared",
+  "fixture": "qa-reg-fe4bbf2467e2",
+  "versions": 2,
+  "layer": "committed PG fixture; validated save_config; no verify/provision/upload",
+  "private_state": "0600 copies preserved across pod replacement, then removed after verified cleanup",
+  "browser_status": "desktop 1440 and mobile 390 passed on 20261010114829-840af84",
+  "cleanup_status": "owned rows and FK leftovers verified absent on final pod market-api-57778d5566-7t9hv"
+}

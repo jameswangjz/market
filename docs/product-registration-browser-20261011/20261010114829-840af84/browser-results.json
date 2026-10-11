@@ -1,0 +1,109 @@
+{
+  "status": "passed",
+  "mode": "read-only",
+  "deploymentTag": "20261010114829-840af84",
+  "checks": [
+    "1440 registration fields/groups and layout; real saved integration GETs; credential permission metadata; locally rejected verify POST",
+    "390 registration fields/groups and layout; real saved integration GETs; credential permission metadata; locally rejected verify POST"
+  ],
+  "screenshots": [
+    "registration-form-1440.png",
+    "registration-file-versions-1440.png",
+    "registration-api-versions-1440.png",
+    "productdetail-integration-1440.png",
+    "productdetail-verify-blocked-1440.png",
+    "registration-form-390.png",
+    "registration-file-versions-390.png",
+    "registration-api-versions-390.png",
+    "productdetail-integration-390.png",
+    "productdetail-verify-blocked-390.png"
+  ],
+  "samples": [
+    {
+      "status": "passed",
+      "panel": {
+        "width": 1440,
+        "left": 211,
+        "right": 1214,
+        "visible": true,
+        "overflow": false,
+        "outside": false,
+        "overlap": false
+      },
+      "apiForm": {
+        "width": 1440,
+        "left": 180,
+        "right": 1260,
+        "visible": true,
+        "overflow": false,
+        "outside": false,
+        "overlap": false
+      },
+      "fileForm": {
+        "width": 1440,
+        "left": 180,
+        "right": 1260,
+        "visible": true,
+        "overflow": false,
+        "outside": false,
+        "overlap": false
+      },
+      "blockedVerify": 1,
+      "permission": {
+        "status": 200,
+        "attachment": true
+      },
+      "viewport": 1440
+    },
+    {
+      "status": "passed",
+      "panel": {
+        "width": 390,
+        "left": 47,
+        "right": 343,
+        "visible": true,
+        "overflow": false,
+        "outside": false,
+        "overlap": false
+      },
+      "apiForm": {
+        "width": 390,
+        "left": 16,
+        "right": 374,
+        "visible": true,
+        "overflow": false,
+        "outside": false,
+        "overlap": false
+      },
+      "fileForm": {
+        "width": 390,
+        "left": 16,
+        "right": 374,
+        "visible": true,
+        "overflow": false,
+        "outside": false,
+        "overlap": false
+      },
+      "blockedVerify": 1,
+      "permission": {
+        "status": 200,
+        "attachment": true
+      },
+      "viewport": 390
+    }
+  ],
+  "failures": [],
+  "limits": [
+    "Real isolated provider admin and two saved API versions; no real-user data",
+    "Verify POST is rejected locally; successful verification is NOT asserted",
+    "OAuth permission reads status/attachment metadata only; no credential body/artifact",
+    "No uploads or registration save; FE004 compatibility/OIDC callback remains partial"
+  ],
+  "assets": [
+    "/assets/index-C9st3nlF.js",
+    "/assets/ConsoleApp-qlJEGKDY.js"
+  ],
+  "cdpBlockedMutations": 0,
+  "networkMutationEvents": 0,
+  "nativeDialogs": 0
+}
