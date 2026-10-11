@@ -29,6 +29,7 @@ export function bindRegistrationVersions(versions, saved) {
 export async function saveRegistrationAttachments(api, form, productId) {
   if (["api", "model_api"].includes(form.delivery_method)) {
     for (const version of form.versions) {
+      if (version.is_sold === true) continue;
       const config = version.integration;
       if (!config) throw new Error("请重新打开产品加载每版本接入配置");
       const payload = Object.fromEntries(integrationFields.map((key) => [key, config[key]]));
@@ -39,6 +40,7 @@ export async function saveRegistrationAttachments(api, form, productId) {
   if (form.delivery_method !== "file") return;
   for (const version of form.versions) {
     if (!version.fileUpload) continue;
+    if (version.is_sold === true) throw new Error("已售版本的交付文件不可覆盖，请新增版本");
     const upload = new FormData();
     upload.append("upload", version.fileUpload);
     upload.append("product_id", productId);
