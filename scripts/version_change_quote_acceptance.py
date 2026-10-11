@@ -173,7 +173,35 @@ def owned_rows(m, db, ids):
                                     center['ExpiredUrgent'].user_id.in_(users)))
     add(m.PlatformNotification, or_(m.PlatformNotification.target_id.in_(targets),
                                    m.PlatformNotification.recipient_user_id.in_(users)))
-    return expand_fk_ids(db, m.Base.metadata, owned)
+    owned = expand_fk_ids(db, m.Base.metadata, owned)
+    # A foreign key proves linkage, not ownership of an unexpected business row.
+    version_products = {vid: ids['products'][group]
+                        for group, versions in ids['versions'].items() for vid in versions.values()}
+    for model, allowed in ((m.User, users), (m.Enterprise, ids['enterprises']),
+                           (m.Product, products),
+                           (m.ProductReleaseVersion, list(version_products)),
+                           (m.SaaSProductVersion, list(version_products))):
+        table = model.__table__
+        if owned.get(table.name):
+            for row in db.scalars(select(model).where(row_predicate(table, owned[table.name]))):
+                check(row.id in allowed, 'External business row; cleanup refused')
+                if model in (m.ProductReleaseVersion, m.SaaSProductVersion):
+                    check(row.product_id == version_products[row.id], 'External version linkage; cleanup refused')
+    for model in (m.Membership, m.Order):
+        table = model.__table__
+        if not owned.get(table.name):
+            continue
+        for row in db.scalars(select(model).where(row_predicate(table, owned[table.name]))):
+            if model is m.Membership:
+                check(row.user_id in users and row.enterprise_id in ids['enterprises'],
+                      'External membership; cleanup refused')
+            else:
+                check(row.product_id in products and row.buyer_user_id == ids['users']['buyer']
+                      and row.buyer_enterprise_id == ids['enterprises'][0]
+                      and row.provider_enterprise_id == ids['enterprises'][1]
+                      and version_products.get(row.product_version_id) == row.product_id,
+                      'External order linkage; cleanup refused')
+    return owned
 
 
 def save_owned(m, db, ids, path, owned):
@@ -189,6 +217,8 @@ def cleanup(m, ids, manifest):
                    .order_by(m.Product.id).with_for_update()).all()
         db.scalars(select(m.Order).where(m.Order.product_id.in_(list(ids['products'].values())))
                    .order_by(m.Order.id).with_for_update()).all()
+        for model, values in ((m.Enterprise, ids['enterprises']), (m.User, list(ids['users'].values()))):
+            db.scalars(select(model).where(model.id.in_(values)).order_by(model.id).with_for_update()).all()
         Outbox = m.message_center['Outbox']
         db.scalars(select(Outbox).where(Outbox.user_id.in_(list(ids['users'].values())))
                    .order_by(Outbox.id).with_for_update()).all()

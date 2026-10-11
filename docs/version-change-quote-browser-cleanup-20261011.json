@@ -1,0 +1,6 @@
+{
+  "status": "passed",
+  "mode": "cleanup",
+  "manifest": "/tmp/market-quote-20261011-browser.json",
+  "cleanup": "verified exact owned DB/FK rows absent; browser token removed"
+}

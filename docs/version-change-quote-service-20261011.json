@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "database": "real PostgreSQL",
+  "gateway_evidence": "synthetic active/verified PG fixtures; no gateway integration verification",
+  "payment_delivery": "paid snapshots and trusted on_delivery_success fixtures; not live verification",
+  "clock": "controlled server time: current three-month term 50%, future one-month term 100%",
+  "manifest": "/tmp/market-quote-20261011-pg.json",
+  "manifest_mode": "0600",
+  "methods": {
+    "api": {
+      "upgrade": "125.00",
+      "downgrade_refund": "125.00",
+      "cent_upgrade": "125.03",
+      "expired_http": 409,
+      "changed_future_http": 409,
+      "paid_future_without_term_http": 409
+    },
+    "model_api": {
+      "upgrade": "125.00",
+      "downgrade_refund": "125.00",
+      "cent_upgrade": "125.03",
+      "expired_http": 409,
+      "changed_future_http": 409,
+      "paid_future_without_term_http": 409
+    },
+    "tenant_access": {
+      "upgrade": "125.00",
+      "downgrade_refund": "125.00",
+      "cent_upgrade": "125.03",
+      "expired_http": 409,
+      "changed_future_http": 409,
+      "paid_future_without_term_http": 409
+    }
+  },
+  "quote_http": "production TestClient routes with real PG sessions",
+  "readonly_business_rows": true,
+  "cost_hidden_dto_and_decoded_jwt": true,
+  "buyer_admin_allowed": true,
+  "member_other_http": 403,
+  "breaking_compatibility_http": 409,
+  "future_paid_segment_included": true,
+  "cleanup": "verified exact owned DB rows and FK children absent"
+}

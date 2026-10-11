@@ -1,7 +1,7 @@
 {
   "scope": "TRD-BE-016 and preview-only slice of TRD-FE-009",
-  "status": "local-verification-passed-deployment-pending",
-  "backend_full_regression": {"passed": 405, "failed": 0, "quote_tests_included": 18},
+  "status": "deployed-and-quote-acceptance-passed",
+  "backend_full_regression": {"passed": 407, "failed": 0, "quote_tests_included": 20, "acceptance_safety_tests_included": 17},
   "final_quote_tests": {"passed": 20, "failed": 0, "overlap_with_full_regression": true},
   "frontend_tests": {"passed": 122, "failed": 0},
   "frontend_production_build": "passed; final built assets tested via local Vite preview",
@@ -13,14 +13,21 @@
     "targets": ["upgrade", "downgrade", "fractional-cent upgrade"],
     "evidence": "version-change-quote-browser-20261011/local-only-not-deployed/browser-results.json"
   },
-  "runtime_deployed": false,
-  "real_pg_acceptance": "pending",
-  "live_task_console_updated": false,
-  "pending_reason": "Development VM SSH closes before authentication and HTTP returns empty response; Windows route selects Mihomo interface",
+  "runtime_deployed": true,
+  "runtime_image_tag": "20261011154640-7c6035c",
+  "runtime_namespace": "market",
+  "runtime_host": "192.168.10.10",
+  "real_pg_acceptance": "passed; version-change-quote-service-20261011.json",
+  "deployed_browser_acceptance": "passed; version-change-quote-browser-20261011/20261011154640-7c6035c/browser-results.json",
+  "runtime_smoke": "passed; version-change-quote-runtime-smoke-20261011.json",
+  "browser_fixture_cleanup": "passed; version-change-quote-browser-cleanup-20261011.json",
+  "live_task_console_updated": true,
+  "tasks": {"TRD-BE-016": {"status": "done", "progress": 100}, "TRD-FE-009": {"status": "in_progress", "progress": 70}},
+  "task_counts": {"done": 136, "in_progress": 7, "todo": 13, "blocked": 2, "review": 0},
   "limits": [
     "No actual version switch, resource provisioning, payment, refund or settlement ledger entries",
     "Gateway and subscription readiness used isolated fixtures, not real APISIX or third-party SaaS verification",
     "No production or real user test data changed",
-    "BE-016 must not be marked done before deployment and real PG acceptance; FE-009 execution remains incomplete"
+    "BE-016 read-only quotes are complete; FE-009 actual execution remains incomplete"
   ]
 }
