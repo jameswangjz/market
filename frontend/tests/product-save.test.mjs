@@ -2,19 +2,21 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { registrationPayload, bindRegistrationVersions, saveRegistrationAttachments } from "../src/productRegistration.js";
 
 const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
 const create = source.slice(source.indexOf("async function createProduct()"), source.indexOf("function openNewProduct()"));
 const edit = source.slice(source.indexOf("async function saveProductEdit()"), source.indexOf("function addProductVersion()"));
-function harness(post, put = async () => ({})) {
+function harness(post, put = async () => ({ data: draft })) {
   const state = {
     productSaving: { value: false }, selectedProductId: { value: "" },
     productDetailMode: { value: false }, productReadOnlyMode: { value: false },
-    productForm: { value: { name: "sample", versions: [{ version_code: "v1" }] } },
+    productForm: { value: { name: "sample", delivery_method: "file", versions: [{ version_code: "v1" }] } },
     productDirectories: { value: [] }, showProductForm: { value: true },
     api: { post, put }, messages: [],
     emptyProductForm: () => ({}), loadViewData: async () => {},
     FormData: class { append() {} },
+    registrationPayload, bindRegistrationVersions, saveRegistrationAttachments,
   };
   state.notify = (message) => state.messages.push(message);
   vm.createContext(state);
@@ -44,9 +46,9 @@ test("failed attachment retains draft and retry edits instead of creating again"
     if (url === "/products") return { data: draft };
     if (++uploads === 1) throw new Error("upload failed");
     return { data: { id: "file-1" } };
-  }, async (url) => { calls.push(url); });
+  }, async (url) => { calls.push(url); return { data: draft }; });
   s.productForm.value.logoFile = {};
-  s.productForm.value.fileUpload = {};
+  s.productForm.value.versions[0].fileUpload = new Blob(["archive"]);
   await s.createProduct();
   assert.equal(s.selectedProductId.value, "draft-1");
   assert.equal(s.productDetailMode.value, true);
@@ -55,9 +57,9 @@ test("failed attachment retains draft and retry edits instead of creating again"
   assert.equal(s.productSaving.value, false);
   await s.saveProductEdit();
   assert.equal(calls.filter((url) => url === "/products").length, 1);
-  assert.equal(calls.at(-1), "/products/draft-1");
+  assert.ok(calls.includes("/products/draft-1"));
   assert.equal(s.productForm.value.logoFile, null);
-  assert.equal(s.productForm.value.fileUpload, null);
+  assert.equal(s.productForm.value.versions[0].fileUpload, null);
 });
 
 test("successful logo is not uploaded again when dataset upload fails", async () => {
@@ -70,13 +72,13 @@ test("successful logo is not uploaded again when dataset upload fails", async ()
     return { data: { id: "dataset-1" } };
   });
   s.productForm.value.logoFile = {};
-  s.productForm.value.fileUpload = {};
+  s.productForm.value.versions[0].fileUpload = new Blob(["archive"]);
   await s.createProduct();
   assert.equal(s.productForm.value.logoFile, null);
   assert.equal(s.productForm.value.logo_file_id, "logo-1");
   await s.saveProductEdit();
   assert.equal(logoUploads, 3); // One logo and two dataset attempts.
-  assert.equal(s.productForm.value.fileUpload, null);
+  assert.equal(s.productForm.value.versions[0].fileUpload, null);
 });
 
 test("failed product creation releases lock without pretending draft exists", async () => {
@@ -91,7 +93,7 @@ test("overlapping edits issue one update and block create during edit", async ()
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
   let updates = 0;
-  const s = harness(async () => { throw new Error("unexpected creation"); }, async () => { updates++; await pending; });
+  const s = harness(async () => { throw new Error("unexpected creation"); }, async () => { updates++; await pending; return { data: draft }; });
   s.selectedProductId.value = "draft-1";
   const first = s.saveProductEdit();
   await s.saveProductEdit();
@@ -99,4 +101,16 @@ test("overlapping edits issue one update and block create during edit", async ()
   assert.equal(updates, 1);
   release(); await first;
   assert.equal(s.productSaving.value, false);
+});
+
+test("sold version rejection prevents all attachment uploads", async () => {
+  let uploads = 0;
+  const s = harness(async () => { uploads++; }, async () => { throw new Error("sold version immutable"); });
+  s.selectedProductId.value = "draft-1";
+  s.productForm.value.logoFile = {};
+  s.productForm.value.versions[0].fileUpload = new Blob(["archive"]);
+  await s.saveProductEdit();
+  assert.equal(uploads, 0);
+  assert.equal(s.showProductForm.value, true);
+  assert.ok(s.productForm.value.versions[0].fileUpload);
 });

@@ -86,6 +86,37 @@ class VersionGatewayTests(unittest.TestCase):
         self.assertIs(self.install(self.ns), self.hooks)
         self.assertIs(self.Config.metadata, self.m.Base.metadata)
 
+    def credential_owner(self, role="super_admin", platform_role=""):
+        user = self.m.User(id="owner", email="owner@example.invalid", name="Owner",
+                           password_hash="not-a-login-password", platform_role=platform_role)
+        self.db.add(user)
+        self.db.flush()
+        self.db.add(self.m.Membership(user_id=user.id, enterprise_id="provider", role=role, status="active"))
+        self.db.add(self.m.OAuthClient(product_id="p", client_id="test-client", client_secret="test-secret", status="active"))
+        self.db.flush()
+        return user
+
+    def test_pending_integration_owner_can_download_credentials(self):
+        owner = self.credential_owner()
+        response = self.m.download_oauth_credentials("p", owner, self.db)
+        self.assertIn(b"test-client", response.body)
+        self.assertIn(b"test-secret", response.body)
+        self.assertIn("attachment", response.headers["content-disposition"])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_member_cannot_download_provider_credentials(self):
+        owner = self.credential_owner(role="member")
+        self.assert_http(403, lambda: self.m.download_oauth_credentials("p", owner, self.db))
+
+    def test_platform_legacy_membership_does_not_allow_provider_secret(self):
+        owner = self.credential_owner(platform_role="super_admin")
+        self.assert_http(403, lambda: self.m.download_oauth_credentials("p", owner, self.db))
+
+    def test_review_stage_cannot_download_credentials(self):
+        owner = self.credential_owner()
+        self.product.status = "operation_review"
+        self.assert_http(409, lambda: self.m.download_oauth_credentials("p", owner, self.db))
+
     def test_review_gate_and_no_commit_rollback(self):
         self.product.status = "operation_review"
         self.assertEqual(self.hooks["on_review_complete"](self.db, self.product, self.user), "pending_integration")
