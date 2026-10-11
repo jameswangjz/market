@@ -145,6 +145,7 @@ class ScheduledHookMockTests(unittest.TestCase):
     def setUp(self):
         self.before_modules = set(sys.modules)
         self.ns = isolated_helpers({"notification_scheduled_events"})
+        self.ns["apisix_enabled"] = lambda: False
         self.clock = self.ns["now"]()
         self.db, self.notify, self.client = Mock(), Mock(), Mock()
         self.ns["notify_business_event"] = self.notify

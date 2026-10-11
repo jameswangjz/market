@@ -1552,6 +1552,15 @@ def notification_scheduled_events(db: Session) -> dict[str, int | bool]:
     current = now()
     horizon = current + timedelta(days=7)
     summary: dict[str, int | bool] = {"saas_candidates": 0, "quota_candidates": 0, "redis_unavailable": False}
+    if apisix_enabled():
+        combinations = db.scalars(select(subscription_terms["Combination"]).where(
+            subscription_terms["Combination"].delivery_method.in_(["api", "model_api"]))).all()
+        for combination in combinations:
+            for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == combination.product_id)).all():
+                try:
+                    subscription_gateway["refresh"](db, combination.enterprise_id, route)
+                except (redis.RedisError, HTTPException, RuntimeError):
+                    summary["redis_unavailable"] = True
     subscriptions = db.scalars(select(SaaSSubscription).where(
         SaaSSubscription.status == "active", SaaSSubscription.expires_at.is_not(None), SaaSSubscription.expires_at <= horizon,
     )).all()
@@ -1595,10 +1604,27 @@ def notification_scheduled_events(db: Session) -> dict[str, int | bool]:
             day, month = current.strftime("%Y-%m-%d"), current.strftime("%Y-%m")
             try:
                 metadata = client.hgetall(f"market:apisix:credential:{credential.apisix_consumer_name}")
-                counts = client.mget([f"{prefix}day:{suffix}:{day}", f"{prefix}month:{suffix}:{month}", f"{prefix}total:{suffix}"])
+                if metadata.get("mode") == "subscription":
+                    periods = json.loads(metadata.get("subscription_periods", "[]"))
+                    active = [p for p in periods if p["start_at"] <= current.timestamp() < p["end_at"] and p["route_key"] == route.route_key]
+                    if len(active) != 1:
+                        continue
+                    period = active[0]
+                    scope = metadata["quota_scope"].replace("%", "%25").replace(":", "%3A")
+                    day = (current + timedelta(hours=8)).strftime("%Y-%m-%d")
+                    month = period["period_key"]
+                    month_token = month.replace("%", "%25").replace(":", "%3A")
+                    subscription_prefix = f"{prefix}subscription:"
+                    counts = client.mget([f"{subscription_prefix}day:{scope}:{day}", f"{subscription_prefix}month:{scope}:{month_token}"])
+                    counts = list(counts) + [0]
+                    metadata = {**metadata, "daily_quota": period["daily_quota"], "monthly_quota": period["monthly_quota"], "total_quota": 0}
+                else:
+                    counts = client.mget([f"{prefix}day:{suffix}:{day}", f"{prefix}month:{suffix}:{month}", f"{prefix}total:{suffix}"])
             except redis.RedisError:
                 summary["redis_unavailable"] = True
                 break
+            except (ValueError, TypeError, KeyError):
+                continue
             if metadata.get("status", "active") != "active":
                 continue
             defaults = (credential.daily_quota if credential.daily_quota is not None else route.daily_quota,
@@ -4177,7 +4203,7 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
     }
 
 
-def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, route: ApiGatewayRoute | None = None) -> bool:
+def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, route: ApiGatewayRoute | None = None, db: Session | None = None) -> bool:
     """Synchronize a credential to APISIX key-auth without exposing Admin API to clients."""
     if not apisix_enabled():
         return True
@@ -4193,11 +4219,20 @@ def sync_apisix_consumer(credential: ApiCredential, raw_key: str | None = None, 
         apisix_policy_redis().hset(f"market:apisix:credential:{credential.apisix_consumer_name}", mapping={"status": credential.status, "daily_quota": daily_quota or 0, "monthly_quota": monthly_quota or 0, "total_quota": credential.total_quota or 0})
     except redis.RedisError as exc:
         raise RuntimeError(f"API 凭据策略缓存同步失败：{exc}") from exc
+    if route:
+        if db is not None:
+            subscription_gateway["sync"](db, credential, route)
+        else:
+            with SessionLocal() as policy_db:
+                subscription_gateway["sync"](policy_db, credential, route)
     return True
 
 
 def api_entitlement_policy(db: Session, enterprise_id: str, route: ApiGatewayRoute) -> dict[str, int]:
     """Aggregate active paid orders into one enterprise/API entitlement."""
+    managed = subscription_gateway["policy"](db, enterprise_id, route)
+    if managed is not None:
+        return managed
     orders = db.scalars(select(Order).where(
         Order.buyer_enterprise_id == enterprise_id,
         Order.product_id == route.product_id,
@@ -4223,6 +4258,8 @@ def api_entitlement_policy(db: Session, enterprise_id: str, route: ApiGatewayRou
 
 def refresh_enterprise_api_credentials(db: Session, enterprise_id: str, route: ApiGatewayRoute) -> None:
     """Refresh shared enterprise credentials after an order entitlement changes."""
+    if subscription_gateway["refresh"](db, enterprise_id, route):
+        return
     policy = api_entitlement_policy(db, enterprise_id, route)
     has_orders = db.scalar(select(func.count(Order.id)).where(
         Order.buyer_enterprise_id == enterprise_id,
@@ -4345,11 +4382,13 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
     if order.payment_status != "paid":
         raise HTTPException(409, "订单支付完成后才可以管理 API 凭据")
     if user.platform_role not in {"super_admin", "platform_operator"}:
-        if order.buyer_user_id == user.id:
-            if user.verified_status != "verified":
-                raise HTTPException(403, "完成个人实名认证后才可以管理 API 凭据")
-        else:
-            require_enterprise_admin(db, user, order.buyer_enterprise_id)
+        if user.verified_status != "verified":
+            raise HTTPException(403, "完成个人实名认证后才可以管理 API 凭据")
+        require_enterprise_admin(db, user, order.buyer_enterprise_id)
+    if order.snapshot_version == 1:
+        entitlement = subscription_terms["current_entitlement"](db, order.buyer_enterprise_id, order.product_id)
+        if not entitlement:
+            raise HTTPException(409, "API 订阅尚未成功交付或已到期")
     product = gateway_product(order.product_id, db)
     if product.status not in {"published", "draft"}:
         raise HTTPException(409, "API 产品已被安全策略下架")
@@ -4360,7 +4399,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute or route.rate_limit_per_minute, "daily_quota": item.daily_quota or route.daily_quota, "monthly_quota": item.monthly_quota or route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute if item.rate_limit_per_minute is not None else route.rate_limit_per_minute, "daily_quota": item.daily_quota if item.daily_quota is not None else route.daily_quota, "monthly_quota": item.monthly_quota if item.monthly_quota is not None else route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -4489,7 +4528,7 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
     db.add(credential)
     db.flush()
     try:
-        sync_apisix_consumer(credential, raw_key, route)
+        sync_apisix_consumer(credential, raw_key, route, db)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
@@ -4502,6 +4541,9 @@ def create_gateway_credential(product_id: str, body: GatewayCredentialBody, user
 @app.get("/api/orders/{order_id}/api-credentials")
 def list_order_api_credentials(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order, product, route, enterprise_id = api_order_context(order_id, user, db)
+    if subscription_gateway["combination"](db, enterprise_id, product.id):
+        refresh_enterprise_api_credentials(db, enterprise_id, route)
+        db.commit()
     items = db.scalars(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == "").order_by(ApiCredential.created_at.desc())).all()
     return {"order_id": order.id, "product_id": product.id, "product_name": product.name, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared_scope": "enterprise", "items": [api_credential_out(x, route) for x in items]}
 
@@ -4512,26 +4554,30 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     version = db.get(ProductReleaseVersion, order.product_version_id)
     if not version:
         raise HTTPException(409, "订单对应的 API 版本不存在")
+    policy = api_entitlement_policy(db, enterprise_id, route)
+    managed = subscription_gateway["combination"](db, enterprise_id, product.id) is not None
+    if managed and any(getattr(body, key) is not None and getattr(body, key) != policy[key]
+                       for key in ("rate_limit_per_minute", "daily_quota", "monthly_quota", "total_quota")):
+        raise HTTPException(400, "订阅凭据限额由已购买版本决定，不允许自行提高或修改")
     credential = db.scalar(select(ApiCredential).where(ApiCredential.route_id == route.id, ApiCredential.enterprise_id == enterprise_id, ApiCredential.order_id == "").order_by(ApiCredential.created_at.desc()))
     if credential and credential.status in {"active", "exhausted"}:
         refresh_enterprise_api_credentials(db, enterprise_id, route)
         db.commit()
         db.refresh(credential)
-        return {**api_credential_out(credential, route), "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "该企业已有共享 API 凭据，本次订单已合并额度；API Key 不会重复生成，请继续使用原凭据"}
+        return {**api_credential_out(credential, route), "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "该企业已有共享 API 凭据，请继续使用原凭据；同版本续费仅延长期限，不叠加配额" if managed else "该企业已有共享 API 凭据，请继续使用原凭据"}
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    policy = api_entitlement_policy(db, enterprise_id, route)
     credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
-        sync_apisix_consumer(credential, raw_key, route)
+        sync_apisix_consumer(credential, raw_key, route, db)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据同步 APISIX Consumer 失败：{exc}") from exc
     audit(db, user.email or user.phone or user.id, "create_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key，仅在本次生成响应中返回，请妥善保存；同企业其它已支付订单会合并到该凭证"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key，仅在本次生成响应中返回，请妥善保存；续费延长期限，不重置已用量"}
 
 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/revoke")
@@ -4562,12 +4608,12 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
     policy = api_entitlement_policy(db, enterprise_id, route)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=policy["rate_limit_per_minute"] or old.rate_limit_per_minute, daily_quota=policy["daily_quota"] or old.daily_quota, monthly_quota=policy["monthly_quota"] or old.monthly_quota, total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=policy["rate_limit_per_minute"], daily_quota=policy["daily_quota"], monthly_quota=policy["monthly_quota"], total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
         remove_apisix_consumer(old)
-        sync_apisix_consumer(credential, raw_key, route)
+        sync_apisix_consumer(credential, raw_key, route, db)
     except RuntimeError as exc:
         db.rollback()
         raise HTTPException(502, f"API 凭据重生成同步 APISIX Consumer 失败：{exc}") from exc
@@ -5036,12 +5082,9 @@ def order_detail(order_id: str, user: User = Depends(current_user), db: Session 
     return {"order": order_out(order), "logs": [{"domain": x.domain, "from_status": x.from_status, "to_status": x.to_status, "action": x.action, "reason": x.reason, "operator": x.operator, "created_at": x.created_at} for x in logs], "payment": {"status": payment.status, "payment_no": payment.payment_no, "amount": float(payment.amount or 0), "proof": payment.proof} if payment else None, "refunds": [{"id": x.id, "refund_no": x.refund_no, "amount": float(x.amount or 0), "status": x.status, "reason": x.reason, "requested_by": x.requested_by, "completed_by": x.completed_by, "created_at": x.created_at, "completed_at": x.completed_at} for x in refunds], "delivery": {"status": task.status, "method": task.method, "assignee": task.assignee, "note": task.note} if task else None}
 
 
-@app.post("/api/orders")
-def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    buyer = trading_policy["require_buyer"](db, user, body.buyer_enterprise_id)
-    quote = order_economics["quote"](db, user, body, lock=True)
-    if body.quote_id and not hmac.compare_digest(body.quote_id, quote["public"]["quote_id"]):
-        raise HTTPException(409, "商品报价或配置已变更，请重新确认报价")
+def create_quoted_order(db: Session, user: User, quote: dict) -> Order:
+    """Build one quoted order inside the caller's transaction."""
+    buyer = trading_policy["require_buyer"](db, user, quote["buyer_enterprise_id"])
     product, version = quote["product"], quote["version"]
     order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=(getattr(version, "name", "") or version.description or version.version_code)[:120], product_name=product.name, buyer_name=buyer.name, amount=quote["amount"], billing_cycle="monthly" if quote["public"]["billing_unit"] == "month" else "", main_status="created")
     order_economics["apply_snapshot"](order, quote)
@@ -5051,6 +5094,16 @@ def create_order(body: OrderBody, user: User = Depends(current_user), db: Sessio
     db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=order.amount, status="unpaid"))
     db.add(OrderStateLog(order_id=order.id, domain="main", from_status="", to_status=order.main_status, action="提交订单", operator=user.name, reason="用户提交"))
     audit(db, user.email, "create_order", "order", order.id, order.order_no)
+    return order
+
+
+@app.post("/api/orders")
+def create_order(body: OrderBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    quote = order_economics["quote"](db, user, body, lock=True)
+    if body.quote_id and not hmac.compare_digest(body.quote_id, quote["public"]["quote_id"]):
+        raise HTTPException(409, "商品报价或配置已变更，请重新确认报价")
+    subscription_terms["validate_purchase"](db, user, quote)
+    order = create_quoted_order(db, user, quote)
     db.commit()
     return order_out(order)
 
@@ -5235,11 +5288,14 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
     if task.status not in {"in_delivery", "retrying", "preparing"}:
         raise HTTPException(409, "当前交付任务不允许处理")
     if body.success:
+        subscription_gateway["verify_delivery"](db, order)
         task.status = "pending_acceptance"
         task.next_retry_at = None
         task.last_error = ""
         order.delivery_status = "pending_acceptance"
         order.main_status = "pending_confirmation"
+        subscription_terms["on_delivery_success"](db, order, user)
+        db.flush()
         audit(db, user.email, "delivery_succeeded", "delivery_task", task.id, "自动交付成功", category="delivery", business_domain="delivery", order_id=order.id, after={"retry_count": task.retry_count})
     else:
         task.retry_count += 1
@@ -6854,3 +6910,9 @@ order_workflow = install_order_workflow(globals())
 from .order_fulfillment import install as install_order_fulfillment
 
 order_fulfillment = install_order_fulfillment(globals())
+from .subscription_terms import install as install_subscription_terms
+
+subscription_terms = install_subscription_terms(globals())
+from .subscription_gateway import install as install_subscription_gateway
+
+subscription_gateway = install_subscription_gateway(globals())

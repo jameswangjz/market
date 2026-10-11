@@ -103,7 +103,8 @@ def install(ns):
                   "subscription_months": months, "unit_price": float(unit_price), "amount": float(amount),
                   "currency": product.currency}
         return {"public": public, "economic": economic, "delivery": delivery, "amount": amount,
-                "cost": cost, "unit_price": unit_price, "unit_cost": unit_cost, "product": product, "version": version}
+                "cost": cost, "unit_price": unit_price, "unit_cost": unit_cost, "product": product, "version": version,
+                "buyer_enterprise_id": body.buyer_enterprise_id}
 
     def apply_snapshot(order, quoted):
         order.snapshot_version = 1
