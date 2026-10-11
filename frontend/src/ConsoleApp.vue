@@ -4659,7 +4659,7 @@ onUnmounted(() => {
         <p v-else-if="deliveryAccessState.error" class="danger-text" role="alert">{{ deliveryAccessState.error }}</p>
         <template v-else-if="deliveryAccessState.ready">
           <div class="table-wrap">
-            <table class="data-table compact">
+            <table class="data-table compact delivery-access-table">
               <thead><tr><th>文件</th><th>下载限制</th><th>已下载</th><th>剩余次数</th><th>操作</th></tr></thead>
               <tbody>
                 <tr v-for="file in deliveryAccessState.files" :key="file.id">
@@ -5031,4 +5031,5 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .provider-review-modal .wide { grid-column: 1 / -1; }
 .provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
 .provider-review-modal .modal-actions { flex-wrap: wrap; }
+.delivery-access-table { min-width: 560px; width: 100%; }
 </style>

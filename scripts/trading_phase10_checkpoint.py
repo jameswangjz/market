@@ -28,7 +28,8 @@ def main():
             raise ValueError('Finish requires deployment and service/browser evidence')
         evidence = json.loads(Path(args.service_evidence).read_text(encoding='utf-8-sig'))
         browser = json.loads(Path(args.browser_evidence).read_text(encoding='utf-8-sig'))
-        assert evidence['status'] == 'passed' and evidence['cleanup'] == 'verified'
+        assert evidence['status'] == 'passed' and evidence['cleanup'].startswith('verified')
+        assert evidence['worker']['status'] == 'passed' and evidence['worker']['mode'] == 'actual deployed worker'
         assert browser['status'] == 'passed' and browser['deploymentTag'] == args.runtime_tag
         updates['TRD-BE-012'] = ('in_progress', 35, '文件自动履约已开发部署，真实PG/MinIO与模拟支付验证通过；订单快照/扫描状态/对象可读性校验、成功即完成、失败重试及权限回收已验证。扫描报告为验收fixture，不代表重做扫描。API/SaaS自动交付尚未完成。')
         updates['TRD-FE-006'] = ('in_progress', 35, '订单第二列文件下载入口、同风格弹框、次数刷新与权限校验已部署；桌面/移动浏览器通过。API/模型API/SaaS访问入口未完成。')
