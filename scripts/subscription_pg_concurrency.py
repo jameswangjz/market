@@ -111,6 +111,11 @@ def cleanup(state):
               [state["product"], state["version"], *state["users"], *state["enterprises"]]),
           "Refusing cleanup outside owned targets")
     with m.SessionLocal() as db:
+        # Live outbox workers can insert attempt children during cleanup.
+        # Lock owned parents first, then discover children under those locks.
+        Outbox = m.message_center["Outbox"]
+        db.scalars(select(Outbox).where(Outbox.user_id.in_(state["users"]))
+                   .order_by(Outbox.id).with_for_update()).all()
         predicates = scopes(db, state)
         # Remember all owned primary keys to detect unexpected FK leftovers too.
         owned_keys = {}

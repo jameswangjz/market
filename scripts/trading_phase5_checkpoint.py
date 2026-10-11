@@ -25,7 +25,8 @@ def main():
         "TRD-BE-011": ("in_progress", 80, "New subscription policies run in native APISIX: stable enterprise/product scope, original-anchor month and Beijing day, atomic Redis quotas, zero unlimited, preserved rotation usage, expired/future/revoked/overlap denial, fail-closed route identity. 14 real Lua+Redis and real three-replica APISIX acceptance passed. Existing used legacy counters are deliberately blocked from direct migration; strict online migration and production recovery gates remain open."),
         "TRD-FE-009": ("in_progress", 45, "Order subscription panel, term list and styled same-version renewal dialog implemented; 67 frontend tests and production build passed. Frozen quota display, stale request protection and stable idempotency keys covered. New subscription panel browser E2E is not yet accepted; upgrade/downgrade preview, compatibility consent and refund/change status await BE016/017/018."),
     }
-    with TestClient(m.app) as client:
+    client = TestClient(m.app)
+    try:
         for path in ("/api/dashboard", "/api/orders", "/api/audit-logs?start=&end="):
             response = client.get(path, headers=headers)
             assert response.status_code == 200, (path, response.status_code)
@@ -34,6 +35,8 @@ def main():
                                     json={"status": status, "progress": progress, "note": note})
             assert response.status_code == 200, (code, response.text)
         snapshot = client.get("/api/development/tasks", headers=headers).json()
+    finally:
+        client.close()
     snapshot["verification"] = {
         "backend_tests": 304, "real_lua_redis_tests": 14, "frontend_tests": 67,
         "runtime_image_tag": args.runtime_tag,
