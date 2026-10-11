@@ -117,6 +117,24 @@ class VersionGatewayTests(unittest.TestCase):
         self.product.status = "operation_review"
         self.assert_http(409, lambda: self.m.download_oauth_credentials("p", owner, self.db))
 
+    def test_credentials_use_product_enterprise_not_default_enterprise(self):
+        from datetime import datetime, timezone
+        owner = self.credential_owner()
+        self.db.add(self.m.Enterprise(id="other", name="Other", credit_code="other"))
+        self.db.flush()
+        self.db.add(self.m.Membership(user_id=owner.id, enterprise_id="other", role="super_admin",
+                                     status="active", created_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
+        self.db.flush()
+        self.assertEqual(self.m.first_enterprise(self.db, owner).id, "other")
+        self.assertIn(b"test-client", self.m.download_oauth_credentials("p", owner, self.db).body)
+
+    def test_outside_enterprise_cannot_download_credentials(self):
+        owner = self.credential_owner()
+        membership = self.db.scalar(select(self.m.Membership).where(self.m.Membership.user_id == owner.id))
+        membership.status = "disabled"
+        self.db.flush()
+        self.assert_http(403, lambda: self.m.download_oauth_credentials("p", owner, self.db))
+
     def test_review_gate_and_no_commit_rollback(self):
         self.product.status = "operation_review"
         self.assertEqual(self.hooks["on_review_complete"](self.db, self.product, self.user), "pending_integration")

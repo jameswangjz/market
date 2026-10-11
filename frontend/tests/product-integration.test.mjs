@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createIntegrationController, integrationStatus } from '../src/productIntegration.js';
+import { canViewProductIntegration, createIntegrationController, integrationStatus } from '../src/productIntegration.js';
+
+test('visibility follows real session roles; platform legacy membership cannot override platform scope', () => {
+  assert.equal(canViewProductIntegration({ enterprise_role: 'super_admin' }), true);
+  assert.equal(canViewProductIntegration({ platform_role: 'super_admin' }), true);
+  assert.equal(canViewProductIntegration({ platform_role: 'quality_reviewer', enterprise_role: 'super_admin' }), false);
+  assert.equal(canViewProductIntegration({ enterprise_role: 'member' }), false);
+  assert.equal(canViewProductIntegration({ enterprise_memberships: [{ status: 'active', role: 'enterprise_admin' }] }), true);
+  assert.equal(canViewProductIntegration({ enterprise_memberships: [{ status: 'disabled', role: 'enterprise_admin' }] }), false);
+});
 
 function fixture() {
   const state = { rows: [], loading: false, busy: '' };

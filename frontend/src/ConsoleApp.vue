@@ -5,6 +5,7 @@ import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
+import { canViewProductIntegration } from "./productIntegration.js";
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
@@ -4517,7 +4518,7 @@ onUnmounted(() => {
         </div>
         </fieldset>
         <ProductIntegrationPanel
-          v-if="productDetailMode && ['api', 'model_api'].includes(productForm.delivery_method) && (['super_admin', 'platform_operator'].includes(user?.platform_role) || (!user?.platform_role && ['super_admin', 'enterprise_admin'].includes(enterprise?.role)))"
+          v-if="productDetailMode && ['api', 'model_api'].includes(productForm.delivery_method) && canViewProductIntegration(user)"
           :product="productForm" :api="api" :provider="!user?.platform_role"
           @credentials="downloadSaasCredentials(productForm)"
           @changed="openProductDetail(productForm)"

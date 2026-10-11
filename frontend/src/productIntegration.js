@@ -1,3 +1,9 @@
+export function canViewProductIntegration(user) {
+  if (user?.platform_role) return ['super_admin', 'platform_operator'].includes(user.platform_role);
+  return ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role)
+    || user?.enterprise_memberships?.some(member => member.status === 'active' && ['super_admin', 'enterprise_admin'].includes(member.role)) === true;
+}
+
 export function integrationStatus(item) {
   if (!item) return '未配置';
   if (item.status === 'verified' && item.healthy) return '验证通过';
