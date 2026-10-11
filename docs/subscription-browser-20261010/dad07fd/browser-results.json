@@ -1,0 +1,419 @@
+{
+  "status": "passed",
+  "mode": "read-only",
+  "checks": [
+    "1440 real list/detail/subscription, owned terms and locally failed read followed by real refresh",
+    "1440 modal styling/bounds, month validation, blocked-request retry and Escape; no HTTP mutations sent",
+    "390 real list/detail/subscription, owned terms and locally failed read followed by real refresh",
+    "390 modal styling/bounds, month validation, blocked-request retry and Escape; no HTTP mutations sent"
+  ],
+  "screenshots": [
+    "subscription-terms-1440.png",
+    "subscription-read-error-1440.png",
+    "subscription-refresh-1440.png",
+    "subscription-renewal-1440.png",
+    "subscription-months-36-1440.png",
+    "subscription-blocked-retry-1440.png",
+    "subscription-terms-390.png",
+    "subscription-read-error-390.png",
+    "subscription-refresh-390.png",
+    "subscription-renewal-390.png",
+    "subscription-months-36-390.png",
+    "subscription-blocked-retry-390.png"
+  ],
+  "samples": [
+    {
+      "viewport": 1440,
+      "panel": {
+        "width": 1440,
+        "height": 1000,
+        "left": 957,
+        "right": 1398,
+        "top": 146,
+        "bottom": 553,
+        "visible": true,
+        "overflow": false,
+        "controlsOutsideX": false,
+        "controlsOutsideY": false,
+        "background": "rgba(0, 0, 0, 0)",
+        "padding": "20px 0px",
+        "borderRadius": "0px"
+      },
+      "table": {
+        "width": 441,
+        "scrollWidth": 620,
+        "overflow": "auto"
+      },
+      "api": {
+        "session": {
+          "user": {
+            "id": "qa-sub-concurrency-b9ce6a6978062-ub",
+            "verified_status": "verified",
+            "activation_status": "active",
+            "platform_role": "",
+            "enterprise_memberships": [
+              {
+                "enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+                "role": "super_admin",
+                "status": "active"
+              }
+            ]
+          },
+          "enterprise": {
+            "id": "qa-sub-concurrency-b9ce6a6978062-eb",
+            "name": "qa-sub-concurrency-b9ce6a6978062-eb",
+            "verification_status": "verified"
+          },
+          "role": "super_admin",
+          "membership_status": "active"
+        },
+        "order": {
+          "id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+          "order_no": "ORD-26101008371176C4",
+          "payment_status": "paid",
+          "buyer_enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+          "main_status": "pending_acceptance",
+          "delivery_status": "pending_acceptance",
+          "product_version_code": "v1"
+        },
+        "detail": {
+          "id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+          "order_no": "ORD-26101008371176C4",
+          "payment_status": "paid",
+          "buyer_enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+          "main_status": "pending_acceptance",
+          "delivery_status": "pending_acceptance",
+          "product_version_code": "v1"
+        },
+        "subscription": {
+          "available": true,
+          "id": "1ace37632db072467f693a15f716b295",
+          "product_id": "qa-sub-concurrency-b9ce6a6978062-p",
+          "enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+          "generation": 1,
+          "anchor_at": "2026-10-10T08:37:11.722327+00:00",
+          "version_id": "qa-sub-concurrency-b9ce6a6978062-v",
+          "version_code": "v1",
+          "expires_at": "2027-03-10T08:37:11.722327+00:00",
+          "status": "active",
+          "current_period": {
+            "starts_at": "2026-10-10T08:37:11.722327+00:00",
+            "ends_at": "2026-11-10T08:37:11.722327+00:00",
+            "index": 0
+          },
+          "limits": {
+            "rate_limit_per_minute": 17,
+            "daily_quota": 123,
+            "monthly_quota": 456,
+            "quota_amount": 789
+          },
+          "can_renew": true,
+          "terms": [
+            {
+              "order_id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+              "order_no": "ORD-26101008371176C4",
+              "version_code": "v1",
+              "starts_at": "2026-10-10T08:37:11.722327+00:00",
+              "ends_at": "2026-12-10T08:37:11.722327+00:00",
+              "status": "active",
+              "months": 2,
+              "generation": 1,
+              "start_month": 0
+            },
+            {
+              "order_id": "218627d608ace3fff8c00c84b7b11660",
+              "order_no": "ORD-2610100837118118",
+              "version_code": "v1",
+              "starts_at": "2026-12-10T08:37:11.722327+00:00",
+              "ends_at": "2027-03-10T08:37:11.722327+00:00",
+              "status": "active",
+              "months": 3,
+              "generation": 1,
+              "start_month": 2
+            }
+          ]
+        },
+        "reads": {
+          "list": 1,
+          "detail": 1,
+          "subscription": 1
+        }
+      },
+      "status": "passed",
+      "modal": {
+        "width": 1440,
+        "height": 1000,
+        "left": 500,
+        "right": 940,
+        "top": 312.5,
+        "bottom": 687.5,
+        "visible": true,
+        "overflow": false,
+        "controlsOutsideX": false,
+        "controlsOutsideY": false,
+        "background": "rgb(255, 255, 255)",
+        "padding": "30px",
+        "borderRadius": "8px"
+      },
+      "counters": {
+        "reads": {
+          "list": 1,
+          "detail": 1,
+          "subscription": 2
+        },
+        "locallyBlockedRenewals": 2,
+        "locallyFailedReads": 1
+      }
+    },
+    {
+      "viewport": 390,
+      "panel": {
+        "width": 390,
+        "height": 844,
+        "left": 27,
+        "right": 363,
+        "top": 0,
+        "bottom": 517,
+        "visible": true,
+        "overflow": false,
+        "controlsOutsideX": false,
+        "controlsOutsideY": false,
+        "background": "rgba(0, 0, 0, 0)",
+        "padding": "20px 0px",
+        "borderRadius": "0px"
+      },
+      "table": {
+        "width": 336,
+        "scrollWidth": 620,
+        "overflow": "auto"
+      },
+      "api": {
+        "session": {
+          "user": {
+            "id": "qa-sub-concurrency-b9ce6a6978062-ub",
+            "verified_status": "verified",
+            "activation_status": "active",
+            "platform_role": "",
+            "enterprise_memberships": [
+              {
+                "enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+                "role": "super_admin",
+                "status": "active"
+              }
+            ]
+          },
+          "enterprise": {
+            "id": "qa-sub-concurrency-b9ce6a6978062-eb",
+            "name": "qa-sub-concurrency-b9ce6a6978062-eb",
+            "verification_status": "verified"
+          },
+          "role": "super_admin",
+          "membership_status": "active"
+        },
+        "order": {
+          "id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+          "order_no": "ORD-26101008371176C4",
+          "payment_status": "paid",
+          "buyer_enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+          "main_status": "pending_acceptance",
+          "delivery_status": "pending_acceptance",
+          "product_version_code": "v1"
+        },
+        "detail": {
+          "id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+          "order_no": "ORD-26101008371176C4",
+          "payment_status": "paid",
+          "buyer_enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+          "main_status": "pending_acceptance",
+          "delivery_status": "pending_acceptance",
+          "product_version_code": "v1"
+        },
+        "subscription": {
+          "available": true,
+          "id": "1ace37632db072467f693a15f716b295",
+          "product_id": "qa-sub-concurrency-b9ce6a6978062-p",
+          "enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+          "generation": 1,
+          "anchor_at": "2026-10-10T08:37:11.722327+00:00",
+          "version_id": "qa-sub-concurrency-b9ce6a6978062-v",
+          "version_code": "v1",
+          "expires_at": "2027-03-10T08:37:11.722327+00:00",
+          "status": "active",
+          "current_period": {
+            "starts_at": "2026-10-10T08:37:11.722327+00:00",
+            "ends_at": "2026-11-10T08:37:11.722327+00:00",
+            "index": 0
+          },
+          "limits": {
+            "rate_limit_per_minute": 17,
+            "daily_quota": 123,
+            "monthly_quota": 456,
+            "quota_amount": 789
+          },
+          "can_renew": true,
+          "terms": [
+            {
+              "order_id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+              "order_no": "ORD-26101008371176C4",
+              "version_code": "v1",
+              "starts_at": "2026-10-10T08:37:11.722327+00:00",
+              "ends_at": "2026-12-10T08:37:11.722327+00:00",
+              "status": "active",
+              "months": 2,
+              "generation": 1,
+              "start_month": 0
+            },
+            {
+              "order_id": "218627d608ace3fff8c00c84b7b11660",
+              "order_no": "ORD-2610100837118118",
+              "version_code": "v1",
+              "starts_at": "2026-12-10T08:37:11.722327+00:00",
+              "ends_at": "2027-03-10T08:37:11.722327+00:00",
+              "status": "active",
+              "months": 3,
+              "generation": 1,
+              "start_month": 2
+            }
+          ]
+        },
+        "reads": {
+          "list": 1,
+          "detail": 1,
+          "subscription": 1
+        }
+      },
+      "status": "passed",
+      "modal": {
+        "width": 390,
+        "height": 844,
+        "left": 16,
+        "right": 374,
+        "top": 234.5,
+        "bottom": 609.5,
+        "visible": true,
+        "overflow": false,
+        "controlsOutsideX": false,
+        "controlsOutsideY": false,
+        "background": "rgb(255, 255, 255)",
+        "padding": "30px",
+        "borderRadius": "8px"
+      },
+      "counters": {
+        "reads": {
+          "list": 1,
+          "detail": 1,
+          "subscription": 2
+        },
+        "locallyBlockedRenewals": 2,
+        "locallyFailedReads": 1
+      }
+    }
+  ],
+  "failures": [],
+  "limits": [
+    "Real dev API reads and isolated persisted buyer superadmin fixture",
+    "Trusted delivery hook grants terms; no actual health or provisioning assertion",
+    "All non-read requests blocked globally by CDP and page instrumentation",
+    "Retry UI uses locally blocked requests, not server renewal responses or fake API success",
+    "Fixture preparation and verified cleanup are separate Python CLI operations"
+  ],
+  "orderId": "707c4e4fcbdf1b3ab83c2dea701f362e",
+  "api": {
+    "session": {
+      "user": {
+        "id": "qa-sub-concurrency-b9ce6a6978062-ub",
+        "verified_status": "verified",
+        "activation_status": "active",
+        "platform_role": "",
+        "enterprise_memberships": [
+          {
+            "enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+            "role": "super_admin",
+            "status": "active"
+          }
+        ]
+      },
+      "enterprise": {
+        "id": "qa-sub-concurrency-b9ce6a6978062-eb",
+        "name": "qa-sub-concurrency-b9ce6a6978062-eb",
+        "verification_status": "verified"
+      },
+      "role": "super_admin",
+      "membership_status": "active"
+    },
+    "order": {
+      "id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+      "order_no": "ORD-26101008371176C4",
+      "payment_status": "paid",
+      "buyer_enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+      "main_status": "pending_acceptance",
+      "delivery_status": "pending_acceptance",
+      "product_version_code": "v1"
+    },
+    "detail": {
+      "id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+      "order_no": "ORD-26101008371176C4",
+      "payment_status": "paid",
+      "buyer_enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+      "main_status": "pending_acceptance",
+      "delivery_status": "pending_acceptance",
+      "product_version_code": "v1"
+    },
+    "subscription": {
+      "available": true,
+      "id": "1ace37632db072467f693a15f716b295",
+      "product_id": "qa-sub-concurrency-b9ce6a6978062-p",
+      "enterprise_id": "qa-sub-concurrency-b9ce6a6978062-eb",
+      "generation": 1,
+      "anchor_at": "2026-10-10T08:37:11.722327+00:00",
+      "version_id": "qa-sub-concurrency-b9ce6a6978062-v",
+      "version_code": "v1",
+      "expires_at": "2027-03-10T08:37:11.722327+00:00",
+      "status": "active",
+      "current_period": {
+        "starts_at": "2026-10-10T08:37:11.722327+00:00",
+        "ends_at": "2026-11-10T08:37:11.722327+00:00",
+        "index": 0
+      },
+      "limits": {
+        "rate_limit_per_minute": 17,
+        "daily_quota": 123,
+        "monthly_quota": 456,
+        "quota_amount": 789
+      },
+      "can_renew": true,
+      "terms": [
+        {
+          "order_id": "707c4e4fcbdf1b3ab83c2dea701f362e",
+          "order_no": "ORD-26101008371176C4",
+          "version_code": "v1",
+          "starts_at": "2026-10-10T08:37:11.722327+00:00",
+          "ends_at": "2026-12-10T08:37:11.722327+00:00",
+          "status": "active",
+          "months": 2,
+          "generation": 1,
+          "start_month": 0
+        },
+        {
+          "order_id": "218627d608ace3fff8c00c84b7b11660",
+          "order_no": "ORD-2610100837118118",
+          "version_code": "v1",
+          "starts_at": "2026-12-10T08:37:11.722327+00:00",
+          "ends_at": "2027-03-10T08:37:11.722327+00:00",
+          "status": "active",
+          "months": 3,
+          "generation": 1,
+          "start_month": 2
+        }
+      ]
+    },
+    "reads": {
+      "list": 1,
+      "detail": 1,
+      "subscription": 1
+    }
+  },
+  "cdpBlockedMutations": 0,
+  "networkMutationEvents": 0,
+  "nativeDialogs": 0
+}

@@ -13,6 +13,11 @@ local schema = {
 }
 
 local quota_script = [[
+-- A request may have read legacy metadata immediately before cutover. Check
+-- again in the same atomic operation as counting, then reload the new policy.
+if redis.call('HGET', KEYS[5], 'mode') == 'subscription' then
+    return {2}
+end
 local minute = redis.call('INCR', KEYS[1])
 local day = redis.call('INCR', KEYS[2])
 local month = redis.call('INCR', KEYS[3])
@@ -198,12 +203,23 @@ function _M.access(conf, ctx)
     end
     local date = os.date("!%Y-%m-%d")
     local month = os.date("!%Y-%m")
-    local result = red:eval(quota_script, 4,
+    local result = red:eval(quota_script, 5,
         "market:apisix:quota:minute:" .. route .. ":" .. consumer .. ":" .. math.floor(ngx.time() / 60),
         "market:apisix:quota:day:" .. route .. ":" .. consumer .. ":" .. date,
         "market:apisix:quota:month:" .. route .. ":" .. consumer .. ":" .. month,
         "market:apisix:quota:total:" .. route .. ":" .. consumer,
+        "market:apisix:credential:" .. consumer,
         70, 86400, 2678400, 31536000, daily_limit, monthly_limit, total_limit)
+    if result and tonumber(result[1]) == 2 then
+        local metadata = red:hgetall("market:apisix:credential:" .. consumer)
+        if not metadata or #metadata == 0 then
+            red:set_keepalive(60000, 100)
+            return reject(503, "API 订阅配额切换信息不可用")
+        end
+        local values = {}
+        for i = 1, #metadata, 2 do values[metadata[i]] = metadata[i + 1] end
+        return subscription_access(red, conf, ctx, values)
+    end
     red:set_keepalive(60000, 100)
     if not result then
         return reject(503, "API 网关配额服务不可用")

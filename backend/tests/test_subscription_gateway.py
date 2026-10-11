@@ -110,6 +110,7 @@ class SubscriptionGatewayTests(unittest.TestCase):
             client.hgetall.return_value = {"status": "active"}
             client.scan_iter.return_value = iter(["own-existing-counter"])
             client.mget.return_value = [8]
+            client.eval.return_value = [0]
             with patch.object(self.m, "apisix_enabled", return_value=True), patch.object(self.m, "apisix_policy_redis", return_value=client):
                 with self.assertRaises(self.m.HTTPException) as error:
                     self.m.subscription_gateway["sync"](db, credential, route)
@@ -117,6 +118,43 @@ class SubscriptionGatewayTests(unittest.TestCase):
             client.hset.assert_not_called()
             client.delete.assert_not_called()
             client.set.assert_not_called()
+
+    def test_session_exposes_verified_enterprise_and_active_memberships(self):
+        with self.m.SessionLocal() as db:
+            db.add(self.m.Membership(user_id="buyer", enterprise_id="other_tenant",
+                                   role="enterprise_admin", status="active"))
+            db.add(self.m.Membership(user_id="buyer", enterprise_id="provider_tenant",
+                                   role="enterprise_admin", status="disabled"))
+            db.commit()
+        data = self.request("GET", "/api/auth/me")
+        self.assertEqual(data["enterprise"]["verification_status"], "verified")
+        self.assertEqual(data["membership_status"], "active")
+        self.assertEqual({member["enterprise_id"] for member in data["user"]["enterprise_memberships"]},
+                         {"buyer_tenant", "other_tenant"})
+        self.assertTrue(all(member["status"] == "active" for member in data["user"]["enterprise_memberships"]))
+
+    def test_platform_session_never_adopts_legacy_enterprise_membership(self):
+        data = self.request("GET", "/api/auth/me", actor="platform")
+        self.assertIsNone(data["enterprise"])
+        self.assertEqual(data["membership_status"], "none")
+        self.assertEqual(data["user"]["enterprise_memberships"], [])
+
+    def test_real_session_and_subscription_contract_enables_safe_renewal(self):
+        order = self.purchase(2)
+        self.deliver(order)
+        session = self.request("GET", "/api/auth/me")
+        item = self.request("GET", f'/api/orders/{order["id"]}/subscription')["item"]
+        self.assertTrue(item["can_renew"])
+        self.assertEqual(session["enterprise"]["verification_status"], "verified")
+        member = next(m for m in session["user"]["enterprise_memberships"]
+                      if m["enterprise_id"] == order["buyer_enterprise_id"])
+        self.assertEqual(member["role"], "super_admin")
+        term = next(t for t in item["terms"] if t["order_id"] == order["id"])
+        self.assertEqual(term["generation"], item["generation"])
+        self.assertEqual(term["start_month"], 0)
+        self.assertEqual(term["months"], 2)
+        self.assertEqual(order["product_version_id"], item["version_id"])
+        self.assertEqual(order["product_version_code"], item["version_code"])
 
 
 if __name__ == "__main__":

@@ -2546,9 +2546,17 @@ def update_profile_contact(body: ContactUpdateBody, user: User = Depends(current
 
 @app.get("/api/auth/me")
 def me(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.status == "active").order_by(Membership.created_at))
+    memberships = db.scalars(select(Membership).where(Membership.user_id == user.id,
+        Membership.status == "active").order_by(Membership.created_at)).all() if not user.platform_role else []
+    membership = memberships[0] if memberships else None
     enterprise = db.get(Enterprise, membership.enterprise_id) if membership else None
-    return {"user": UserOut.model_validate(user).model_dump(), "enterprise": {"id": enterprise.id, "name": enterprise.name} if enterprise else None, "role": membership.role if membership else "member", "business_roles": (membership.business_roles.split(",") if membership else [])}
+    return {"user": {**UserOut.model_validate(user).model_dump(), "enterprise_memberships": [
+        {"enterprise_id": item.enterprise_id, "role": item.role, "status": item.status} for item in memberships]},
+        "enterprise": {"id": enterprise.id, "name": enterprise.name,
+                       "verification_status": enterprise.verification_status} if enterprise else None,
+        "membership_status": membership.status if membership else "none",
+        "role": membership.role if membership else "member",
+        "business_roles": (membership.business_roles.split(",") if membership else [])}
 
 
 def personal_verification_out(item: IdentityVerification) -> dict[str, Any]:

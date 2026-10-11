@@ -1,0 +1,5 @@
+{
+  "status": "cleaned",
+  "fixture": "qa-sub-concurrency-b9ce6a6978062",
+  "cleanup": "verified no owned rows or FK leftovers"
+}
