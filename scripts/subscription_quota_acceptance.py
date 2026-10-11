@@ -205,6 +205,32 @@ def run(args):
         expect("Lua minute enforcement", 429, request())
         expect("minute denial rolls back monthly usage", "20", client.get(month_key))
         expect("monthly counter persistent", -1, client.ttl(month_key))
+        # Exercise the deployed legacy->subscription guard and atomic migration
+        # using only this fixture's counters and identities. No user data moves.
+        from app.quota_cutover import preview, execute
+        legacy_metadata = "market:apisix:credential:" + consumers[0]
+        client.delete(legacy_metadata)
+        client.hset(legacy_metadata, mapping={"status": "active", "daily_quota": 0,
+                                             "monthly_quota": 0, "total_quota": 0})
+        expect("legacy native request before cutover", 200, request())
+        expect("second legacy native request before cutover", 200, request())
+        old_total = f"market:apisix:quota:total:{routes[0]}:{consumers[0]}"
+        expect("legacy lifetime usage retained", "2", client.get(old_total))
+        approved = [(route, consumer, {
+            "mode": "subscription", "quota_scope": scope, "status": "active",
+            "subscription_periods": json.dumps([dict(period, route_key=route)]),
+            "daily_quota": 0, "monthly_quota": 3, "total_quota": 0})
+            for route, consumer in zip(routes, consumers)]
+        prepared = preview(client, scope, approved, actor="isolated-acceptance",
+                           request_id=marker + "-cutover")
+        report = execute(client, prepared, acknowledge_conservative_usage=True,
+                         cutover_guard_verified=True)
+        expect("conservative watermark adds without reset", 22, report["after"]["month"])
+        expect("source lifetime counter not deleted", "2", client.get(old_total))
+        expect("cutover preserves denial", 429, request())
+        repeated = execute(client, prepared, acknowledge_conservative_usage=True,
+                           cutover_guard_verified=True)
+        expect("cutover receipt retry does not double-charge", report, repeated)
         print(json.dumps(dict(result="passed", checks=checks, legacy_migration="BE011 partial"), indent=2))
     finally:
         failures = []
@@ -224,6 +250,9 @@ def run(args):
                 failures.append(f"route {route}: {exc}")
         try:
             counters = list(client.scan_iter(match=prefix + "*:" + token(scope) + ":*"))
+            counters += list(client.scan_iter(match="market:apisix:quota:migration:" + token(scope) + ":*"))
+            for route, consumer in zip(routes, consumers):
+                counters += list(client.scan_iter(match=f"market:apisix:quota:*:{route}:{consumer}*"))
             if metadata_keys or counters:
                 client.delete(*(metadata_keys + counters))
         except Exception as exc:

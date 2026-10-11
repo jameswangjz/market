@@ -3,6 +3,7 @@ import json
 
 from fastapi import HTTPException
 from sqlalchemy import select
+from .quota_cutover import sync_unused, QuotaCutoverError
 
 
 def install(ns):
@@ -48,10 +49,11 @@ def install(ns):
         key = "market:apisix:credential:" + credential.apisix_consumer_name
         previous = client.hgetall(key)
         if previous.get("mode") != "subscription":
-            # Never zero an old counter when moving an existing credential.
-            old = list(client.scan_iter(match=f"market:apisix:quota:*:{route.route_key}:{credential.apisix_consumer_name}*"))
-            if old and any(int(value or 0) > 0 for value in client.mget(old)):
-                raise HTTPException(409, "历史网关用量需完成配额迁移后才可切换订阅计数，当前用量不会清零")
+            try:
+                sync_unused(client, key, data, route.route_key, credential.apisix_consumer_name)
+            except QuotaCutoverError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return True
         client.hset(key, mapping=data)
         return True
 

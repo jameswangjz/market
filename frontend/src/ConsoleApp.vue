@@ -114,14 +114,17 @@ const selectedOrder = ref(null);
 let orderDetailRequest = 0;
 const subscriptionState = ref({ orderId: "", item: null, loading: false, error: "", modal: null });
 const renewalProcessing = ref(false);
+const subscriptionEnterprise = computed(() => buyerEnterprises.value.find(
+  item => item.id === selectedOrder.value?.order.buyer_enterprise_id && item.eligible === true) ||
+  (enterprise.value?.id === selectedOrder.value?.order.buyer_enterprise_id ? enterprise.value : null));
 const subscriptionSession = createSubscriptionSession({
   api,
-  getContext: () => ({ order: selectedOrder.value?.order, user: user.value, enterprise: enterprise.value, token: token.value }),
+  getContext: () => ({ order: selectedOrder.value?.order, user: user.value, enterprise: subscriptionEnterprise.value, token: token.value }),
   onChange: state => { subscriptionState.value = state; },
 });
 const renewalAllowed = computed(() => !subscriptionState.value.loading &&
   subscriptionState.value.orderId === selectedOrder.value?.order.id &&
-  canRenewSubscription(selectedOrder.value?.order, subscriptionState.value.item, user.value, enterprise.value));
+  canRenewSubscription(selectedOrder.value?.order, subscriptionState.value.item, user.value, subscriptionEnterprise.value));
 const renewalModal = computed(() => renewalAllowed.value ? subscriptionState.value.modal : null);
 watch([() => user.value?.id, () => enterprise.value?.id, token], () => {
   orderDetailRequest++;
