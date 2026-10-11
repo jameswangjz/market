@@ -1,6 +1,7 @@
 """Administrator-only, explicit conservative Redis cutover; no silent resets."""
 import argparse
 import json
+import os
 from pathlib import Path
 
 from sqlalchemy import select
@@ -66,7 +67,10 @@ def run(args):
                 db.commit()
             return result
         prepared = preview(client, combo.id, sources, actor=actor.email, request_id=args.request_id)
-        Path(args.plan_file).write_text(json.dumps(prepared, ensure_ascii=False, indent=2), encoding="utf-8")
+        descriptor = os.open(args.plan_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(json.dumps(prepared, ensure_ascii=False, indent=2))
         return {"mode": "preview_only", "scope": combo.id,
                 "estimated_lifetime_watermark": prepared["plan"]["estimated_lifetime_watermark"],
                 "valid_until": prepared["plan"]["valid_until"],
