@@ -273,6 +273,32 @@ class ProductionFixtureSafetyTests(unittest.TestCase):
                         result = acceptance.exercise(m, ids, orders, tokens, current)
                     self.assertTrue(result['readonly_business_rows'])
                     with m.SessionLocal() as db:
+                        unexpected = m.Product(id='external-linked-product',
+                            enterprise_id=ids['enterprises'][1], name='Not fixture owned',
+                            product_type='dataset', status='draft')
+                        db.add(unexpected)
+                        db.commit()
+                        with self.assertRaisesRegex(acceptance.AcceptanceFailure, 'External business row'):
+                            acceptance.owned_rows(m, db, ids)
+                        db.delete(unexpected)
+                        db.commit()
+                        membership = m.Membership(user_id='existing-user',
+                            enterprise_id=ids['enterprises'][0], role='member', status='active')
+                        db.add(membership)
+                        db.commit()
+                        with self.assertRaisesRegex(acceptance.AcceptanceFailure, 'External membership'):
+                            acceptance.owned_rows(m, db, ids)
+                        db.delete(membership)
+                        db.commit()
+                        order = db.get(m.Order, orders['api'][0])
+                        original_version = order.product_version_id
+                        order.product_version_id = ids['versions']['model_api']['source']
+                        db.commit()
+                        with self.assertRaisesRegex(acceptance.AcceptanceFailure, 'External order linkage'):
+                            acceptance.owned_rows(m, db, ids)
+                        order.product_version_id = original_version
+                        db.commit()
+                    with m.SessionLocal() as db:
                         live = m.subscription_terms['current_entitlement'](db, ids['enterprises'][0],
                             ids['products']['browser_api'], at=m.now())
                         self.assertIsNotNone(live)

@@ -1,0 +1,105 @@
+{
+  "expected_tag": "20261011154640-7c6035c",
+  "base_url": "http://192.168.10.10:30080",
+  "checked_at": "2026-10-11T15:52:10.483578+00:00",
+  "transport": "real HTTP to exposed VM web/API endpoint; not TestClient",
+  "read_only": true,
+  "checks": [
+    {
+      "name": "console",
+      "path": "/console",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "name": "web_assets_http",
+      "passed": true,
+      "assets": [
+        {
+          "path": "/assets/index-D-F4JiKd.css",
+          "status": 200,
+          "passed": true,
+          "sha256": "93d82a64752e43f1f2b8ff8e5a483ea55e0c4ebc49f970dd7038a396f497e29c"
+        },
+        {
+          "path": "/assets/index-MHLcImpw.js",
+          "status": 200,
+          "passed": true,
+          "sha256": "fea3447c934443ae3df0640d1d7a88bb2d6a0e2c41a0765974a669ac625b784b"
+        },
+        {
+          "path": "/assets/ConsoleApp-CK0DfDFj.css",
+          "status": 200,
+          "passed": true,
+          "sha256": "c37011555355115565e423e7c2d70081f00f791bd335220f1b0a601ec240c10c"
+        },
+        {
+          "path": "/assets/ConsoleApp-DDKq-YV6.js",
+          "status": 200,
+          "passed": true,
+          "sha256": "747614b1c86a9351e80348ff28685407f1f0b3f8013ff0fb477fa263700cfdcc"
+        }
+      ]
+    },
+    {
+      "name": "api_health",
+      "path": "/api/health",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "name": "current_api_pod",
+      "passed": true,
+      "pod": "market-api-7d65545557-nmxc2",
+      "ready": true
+    },
+    {
+      "name": "api_web_image_tag",
+      "passed": true,
+      "images": {
+        "market-api": "market-api:20261011154640-7c6035c",
+        "market-web": "market-web:20261011154640-7c6035c"
+      }
+    },
+    {
+      "name": "web_asset_tag_identity",
+      "passed": true,
+      "method": "HTTP SHA256 equals current market-web pod files; deployment image tag verified"
+    },
+    {
+      "name": "platform_admin_authenticated_gets",
+      "passed": true,
+      "transport": "real HTTP through VM exposed web/API endpoint",
+      "checks": [
+        {
+          "path": "/api/dashboard",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "path": "/api/orders",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "path": "/api/orders?q=&status=",
+          "status": 200,
+          "passed": true
+        },
+        {
+          "path": "/api/audit-logs?category=&q=&actor=&order_id=&batch_no=&rule_version=&risk_level=&start=&end=&page=1&page_size=50",
+          "status": 200,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "authenticated_get_paths": [
+    "/api/dashboard",
+    "/api/orders",
+    "/api/orders?q=&status=",
+    "/api/audit-logs?category=&q=&actor=&order_id=&batch_no=&rule_version=&risk_level=&start=&end=&page=1&page_size=50"
+  ],
+  "passed": true,
+  "state": "passed"
+}

@@ -1,0 +1,449 @@
+{
+  "status": "passed",
+  "passed": true,
+  "mode": "read-only quote",
+  "checks": [
+    "desktop exact buyer order; live subscription; real options/quote/validate; compatibility gate; backend/UI amounts and future paid segment; modal bounds",
+    "mobile exact buyer order; live subscription; real options/quote/validate; compatibility gate; backend/UI amounts and future paid segment; modal bounds"
+  ],
+  "screenshots": [
+    "version-change-options-desktop.png",
+    "version-change-up-desktop.png",
+    "version-change-up-future-desktop.png",
+    "version-change-up-validated-desktop.png",
+    "version-change-down-desktop.png",
+    "version-change-down-future-desktop.png",
+    "version-change-down-validated-desktop.png",
+    "version-change-cent-desktop.png",
+    "version-change-cent-future-desktop.png",
+    "version-change-cent-validated-desktop.png",
+    "version-change-options-mobile.png",
+    "version-change-up-mobile.png",
+    "version-change-up-future-mobile.png",
+    "version-change-up-validated-mobile.png",
+    "version-change-down-mobile.png",
+    "version-change-down-future-mobile.png",
+    "version-change-down-validated-mobile.png",
+    "version-change-cent-mobile.png",
+    "version-change-cent-future-mobile.png",
+    "version-change-cent-validated-mobile.png"
+  ],
+  "samples": [
+    {
+      "status": "passed",
+      "backend": {
+        "orderId": "024353bc6fe25cb120470913ec8591ec",
+        "orderNo": "ORD-2610111553356271",
+        "quotePosts": 1,
+        "validatePosts": 1,
+        "action": "upgrade",
+        "net_difference": 126.63,
+        "payment_amount": 126.63,
+        "refund_amount": 0,
+        "currency": "CNY",
+        "execution_ready": false,
+        "segments": [
+          {
+            "order_id": "024353bc6fe25cb120470913ec8591ec",
+            "order_no": "ORD-2610111553356271",
+            "version_code": "source",
+            "subscription_months": 3,
+            "starts_at": "2026-08-27T15:53:33.803149+00:00",
+            "ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-10-11T15:54:21.838101+00:00",
+            "remaining_ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ratio": "0.5108635221729066022544283414",
+            "original_amount": 300,
+            "original_remaining_amount": 153.26,
+            "target_full_amount": 450,
+            "target_remaining_amount": 229.89,
+            "net_difference": 76.63
+          },
+          {
+            "order_id": "c7d714210bb6f69d5c286ccb77a1686d",
+            "order_no": "ORD-2610111553357CCF",
+            "version_code": "source",
+            "subscription_months": 1,
+            "starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_ratio": "1",
+            "original_amount": 100,
+            "original_remaining_amount": 100,
+            "target_full_amount": 150,
+            "target_remaining_amount": 150,
+            "net_difference": 50
+          }
+        ],
+        "assets": [
+          "/assets/index-MHLcImpw.js",
+          "/assets/ConsoleApp-DDKq-YV6.js"
+        ]
+      },
+      "width": 1440,
+      "modal": {
+        "left": 322.5,
+        "top": 16,
+        "right": 1102.5,
+        "bottom": 884,
+        "visible": true,
+        "styled": true,
+        "overflow": false,
+        "tablesOverflow": false
+      },
+      "height": 900,
+      "target": "up",
+      "viewport": "desktop"
+    },
+    {
+      "status": "passed",
+      "backend": {
+        "orderId": "024353bc6fe25cb120470913ec8591ec",
+        "orderNo": "ORD-2610111553356271",
+        "quotePosts": 2,
+        "validatePosts": 2,
+        "action": "downgrade",
+        "net_difference": -126.63,
+        "payment_amount": 0,
+        "refund_amount": 126.63,
+        "currency": "CNY",
+        "execution_ready": false,
+        "segments": [
+          {
+            "order_id": "024353bc6fe25cb120470913ec8591ec",
+            "order_no": "ORD-2610111553356271",
+            "version_code": "source",
+            "subscription_months": 3,
+            "starts_at": "2026-08-27T15:53:33.803149+00:00",
+            "ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-10-11T15:54:23.039491+00:00",
+            "remaining_ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ratio": "0.5108633710318538647342995169",
+            "original_amount": 300,
+            "original_remaining_amount": 153.26,
+            "target_full_amount": 150,
+            "target_remaining_amount": 76.63,
+            "net_difference": -76.63
+          },
+          {
+            "order_id": "c7d714210bb6f69d5c286ccb77a1686d",
+            "order_no": "ORD-2610111553357CCF",
+            "version_code": "source",
+            "subscription_months": 1,
+            "starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_ratio": "1",
+            "original_amount": 100,
+            "original_remaining_amount": 100,
+            "target_full_amount": 50,
+            "target_remaining_amount": 50,
+            "net_difference": -50
+          }
+        ],
+        "assets": [
+          "/assets/index-MHLcImpw.js",
+          "/assets/ConsoleApp-DDKq-YV6.js"
+        ]
+      },
+      "width": 1440,
+      "modal": {
+        "left": 322.5,
+        "top": 16,
+        "right": 1102.5,
+        "bottom": 884,
+        "visible": true,
+        "styled": true,
+        "overflow": false,
+        "tablesOverflow": false
+      },
+      "height": 900,
+      "target": "down",
+      "viewport": "desktop"
+    },
+    {
+      "status": "passed",
+      "backend": {
+        "orderId": "024353bc6fe25cb120470913ec8591ec",
+        "orderNo": "ORD-2610111553356271",
+        "quotePosts": 3,
+        "validatePosts": 3,
+        "action": "upgrade",
+        "net_difference": 126.65,
+        "payment_amount": 126.65,
+        "refund_amount": 0,
+        "currency": "CNY",
+        "execution_ready": false,
+        "segments": [
+          {
+            "order_id": "024353bc6fe25cb120470913ec8591ec",
+            "order_no": "ORD-2610111553356271",
+            "version_code": "source",
+            "subscription_months": 3,
+            "starts_at": "2026-08-27T15:53:33.803149+00:00",
+            "ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-10-11T15:54:24.205922+00:00",
+            "remaining_ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ratio": "0.5108632242888234702093397746",
+            "original_amount": 300,
+            "original_remaining_amount": 153.26,
+            "target_full_amount": 450.03,
+            "target_remaining_amount": 229.9,
+            "net_difference": 76.64
+          },
+          {
+            "order_id": "c7d714210bb6f69d5c286ccb77a1686d",
+            "order_no": "ORD-2610111553357CCF",
+            "version_code": "source",
+            "subscription_months": 1,
+            "starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_ratio": "1",
+            "original_amount": 100,
+            "original_remaining_amount": 100,
+            "target_full_amount": 150.01,
+            "target_remaining_amount": 150.01,
+            "net_difference": 50.01
+          }
+        ],
+        "assets": [
+          "/assets/index-MHLcImpw.js",
+          "/assets/ConsoleApp-DDKq-YV6.js"
+        ]
+      },
+      "width": 1440,
+      "modal": {
+        "left": 322.5,
+        "top": 16,
+        "right": 1102.5,
+        "bottom": 884,
+        "visible": true,
+        "styled": true,
+        "overflow": false,
+        "tablesOverflow": false
+      },
+      "height": 900,
+      "target": "cent",
+      "viewport": "desktop"
+    },
+    {
+      "status": "passed",
+      "backend": {
+        "orderId": "024353bc6fe25cb120470913ec8591ec",
+        "orderNo": "ORD-2610111553356271",
+        "quotePosts": 1,
+        "validatePosts": 1,
+        "action": "upgrade",
+        "net_difference": 126.63,
+        "payment_amount": 126.63,
+        "refund_amount": 0,
+        "currency": "CNY",
+        "execution_ready": false,
+        "segments": [
+          {
+            "order_id": "024353bc6fe25cb120470913ec8591ec",
+            "order_no": "ORD-2610111553356271",
+            "version_code": "source",
+            "subscription_months": 3,
+            "starts_at": "2026-08-27T15:53:33.803149+00:00",
+            "ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-10-11T15:54:28.912013+00:00",
+            "remaining_ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ratio": "0.5108626322383252818035426731",
+            "original_amount": 300,
+            "original_remaining_amount": 153.26,
+            "target_full_amount": 450,
+            "target_remaining_amount": 229.89,
+            "net_difference": 76.63
+          },
+          {
+            "order_id": "c7d714210bb6f69d5c286ccb77a1686d",
+            "order_no": "ORD-2610111553357CCF",
+            "version_code": "source",
+            "subscription_months": 1,
+            "starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_ratio": "1",
+            "original_amount": 100,
+            "original_remaining_amount": 100,
+            "target_full_amount": 150,
+            "target_remaining_amount": 150,
+            "net_difference": 50
+          }
+        ],
+        "assets": [
+          "/assets/index-MHLcImpw.js",
+          "/assets/ConsoleApp-DDKq-YV6.js"
+        ]
+      },
+      "width": 390,
+      "modal": {
+        "left": 16,
+        "top": 16,
+        "right": 374,
+        "bottom": 828,
+        "visible": true,
+        "styled": true,
+        "overflow": false,
+        "tablesOverflow": false
+      },
+      "height": 844,
+      "target": "up",
+      "viewport": "mobile"
+    },
+    {
+      "status": "passed",
+      "backend": {
+        "orderId": "024353bc6fe25cb120470913ec8591ec",
+        "orderNo": "ORD-2610111553356271",
+        "quotePosts": 2,
+        "validatePosts": 2,
+        "action": "downgrade",
+        "net_difference": -126.63,
+        "payment_amount": 0,
+        "refund_amount": 126.63,
+        "currency": "CNY",
+        "execution_ready": false,
+        "segments": [
+          {
+            "order_id": "024353bc6fe25cb120470913ec8591ec",
+            "order_no": "ORD-2610111553356271",
+            "version_code": "source",
+            "subscription_months": 3,
+            "starts_at": "2026-08-27T15:53:33.803149+00:00",
+            "ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-10-11T15:54:29.915109+00:00",
+            "remaining_ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ratio": "0.5108625060436795491143317230",
+            "original_amount": 300,
+            "original_remaining_amount": 153.26,
+            "target_full_amount": 150,
+            "target_remaining_amount": 76.63,
+            "net_difference": -76.63
+          },
+          {
+            "order_id": "c7d714210bb6f69d5c286ccb77a1686d",
+            "order_no": "ORD-2610111553357CCF",
+            "version_code": "source",
+            "subscription_months": 1,
+            "starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_ratio": "1",
+            "original_amount": 100,
+            "original_remaining_amount": 100,
+            "target_full_amount": 50,
+            "target_remaining_amount": 50,
+            "net_difference": -50
+          }
+        ],
+        "assets": [
+          "/assets/index-MHLcImpw.js",
+          "/assets/ConsoleApp-DDKq-YV6.js"
+        ]
+      },
+      "width": 390,
+      "modal": {
+        "left": 16,
+        "top": 16,
+        "right": 374,
+        "bottom": 828,
+        "visible": true,
+        "styled": true,
+        "overflow": false,
+        "tablesOverflow": false
+      },
+      "height": 844,
+      "target": "down",
+      "viewport": "mobile"
+    },
+    {
+      "status": "passed",
+      "backend": {
+        "orderId": "024353bc6fe25cb120470913ec8591ec",
+        "orderNo": "ORD-2610111553356271",
+        "quotePosts": 3,
+        "validatePosts": 3,
+        "action": "upgrade",
+        "net_difference": 126.65,
+        "payment_amount": 126.65,
+        "refund_amount": 0,
+        "currency": "CNY",
+        "execution_ready": false,
+        "segments": [
+          {
+            "order_id": "024353bc6fe25cb120470913ec8591ec",
+            "order_no": "ORD-2610111553356271",
+            "version_code": "source",
+            "subscription_months": 3,
+            "starts_at": "2026-08-27T15:53:33.803149+00:00",
+            "ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-10-11T15:54:30.890692+00:00",
+            "remaining_ends_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ratio": "0.5108623833103109903381642512",
+            "original_amount": 300,
+            "original_remaining_amount": 153.26,
+            "target_full_amount": 450.03,
+            "target_remaining_amount": 229.9,
+            "net_difference": 76.64
+          },
+          {
+            "order_id": "c7d714210bb6f69d5c286ccb77a1686d",
+            "order_no": "ORD-2610111553357CCF",
+            "version_code": "source",
+            "subscription_months": 1,
+            "starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_starts_at": "2026-11-27T15:53:33.803149+00:00",
+            "remaining_ends_at": "2026-12-27T15:53:33.803149+00:00",
+            "remaining_ratio": "1",
+            "original_amount": 100,
+            "original_remaining_amount": 100,
+            "target_full_amount": 150.01,
+            "target_remaining_amount": 150.01,
+            "net_difference": 50.01
+          }
+        ],
+        "assets": [
+          "/assets/index-MHLcImpw.js",
+          "/assets/ConsoleApp-DDKq-YV6.js"
+        ]
+      },
+      "width": 390,
+      "modal": {
+        "left": 16,
+        "top": 16,
+        "right": 374,
+        "bottom": 828,
+        "visible": true,
+        "styled": true,
+        "overflow": false,
+        "tablesOverflow": false
+      },
+      "height": 844,
+      "target": "cent",
+      "viewport": "mobile"
+    }
+  ],
+  "failures": [],
+  "limits": [
+    "GET only, except strict quote/validate POSTs for the exact fixture order; downloads denied",
+    "Browser prices follow real server time and are compared to backend DTOs, not fixed 50-percent amounts",
+    "Paid/granted subscriptions and verified gateway records are fixtures, not live gateway or payment verification",
+    "deploymentTag records supplied provenance, not a server image assertion"
+  ],
+  "baseUrl": "http://192.168.10.10:30080",
+  "expectedOrderNo": "ORD-2610111553356271",
+  "deploymentTag": "20261011154640-7c6035c",
+  "blockedRequests": 0,
+  "allowedQuoteValidatePosts": 12,
+  "unexpectedNetworkRequests": 0,
+  "nativeDialogs": 0
+}
