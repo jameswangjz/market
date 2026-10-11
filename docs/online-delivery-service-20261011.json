@@ -1,0 +1,63 @@
+{
+  "status": "passed",
+  "database": "real PostgreSQL",
+  "storage": "real MinIO",
+  "payment": "HTTP simulated confirmation; no bank/payment-provider verification",
+  "scan": "fixture report; no real ClamAV/Presidio scan acceptance",
+  "processing": "production HTTP process on owned task; global queue not invoked",
+  "notification_failure_rollback": "not exercised live; isolated unit-test concern",
+  "notification_recipients": "owned fixture users only; production message creation preserved",
+  "manifest": "/tmp/qa-online-94f50179cd7f.json",
+  "manifest_mode": "0600",
+  "automatic_completion": true,
+  "manual_accept_required": false,
+  "buyer_roles": [
+    "super_admin",
+    "enterprise_admin"
+  ],
+  "denied_http": [
+    403,
+    403
+  ],
+  "downloads_http": [
+    200,
+    429,
+    200,
+    429
+  ],
+  "quota_ready_after_download": false,
+  "missing_object_states": [
+    "retrying",
+    "retrying",
+    "exception"
+  ],
+  "retry_delay_seconds": 10,
+  "manual_retry_repaired": true,
+  "browser_fixture": "/tmp/qa-online-94f50179cd7f.browser.json",
+  "browser_fixture_mode": "0600",
+  "browser_order_quota": "one download available; not downloaded by preparation",
+  "cleanup": "verified exact DB/FK rows and MinIO keys absent; browser token removed",
+  "service_runtime_tag": "20261010152839-9361f01",
+  "final_runtime_tag": "20261010154022-102f7c7",
+  "worker": {
+    "status": "passed",
+    "mode": "actual deployed worker",
+    "order_id": "87bbd8ca13674797da9d0eabbd915ad5",
+    "operator": "jfsh@market.local",
+    "main_status": "completed",
+    "delivery_status": "accepted",
+    "task_status": "completed",
+    "cleanup": "verified exact DB/FK rows and MinIO keys absent; browser token removed",
+    "runtime_tag": "20261010154022-102f7c7"
+  },
+  "tests": {
+    "backend_and_script": 370,
+    "frontend": 99
+  },
+  "limits": [
+    "Scanner reports are fixtures, not real scanner acceptance",
+    "Browser checks are read-only; HTTP acceptance performs actual downloads",
+    "No 10GB load or multi-replica contention test",
+    "API/model API/SaaS automatic fulfillment remains incomplete"
+  ]
+}

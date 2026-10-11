@@ -1,0 +1,116 @@
+{
+  "status": "passed",
+  "passed": true,
+  "mode": "read-only",
+  "checks": [
+    "Desktop table scrollWidth <= clientWidth + 1; every download button fully inside modal and table viewport",
+    "desktop exact second column/order entry; real authenticated access GET; file names and per-file quotas; modal bounds; no download or mutation",
+    "mobile exact second column/order entry; real authenticated access GET; file names and per-file quotas; modal bounds; no download or mutation"
+  ],
+  "screenshots": [
+    "online-delivery-orders-desktop.png",
+    "online-delivery-files-desktop.png",
+    "online-delivery-orders-mobile.png",
+    "online-delivery-files-mobile.png",
+    "online-delivery-counts-mobile.png",
+    "online-delivery-download-mobile.png"
+  ],
+  "samples": [
+    {
+      "backend": {
+        "orderId": "f0861e65fa2893d2b6e6c601b568db03",
+        "orderNo": "ORD-261010153116CE87",
+        "accessStatus": 200,
+        "authenticated": true,
+        "files": [
+          {
+            "id": "qa-online-94f50179cd7f-f0",
+            "name": "fixture.zip",
+            "download_limit": 1,
+            "used_downloads": 0,
+            "remaining_downloads": 1
+          }
+        ],
+        "assets": [
+          "/assets/index-BLZ3YX-4.js",
+          "/assets/ConsoleApp-BQD9MQcM.js"
+        ]
+      },
+      "width": 1440,
+      "additionalBackendGet": true,
+      "modal": {
+        "viewportWidth": 1440,
+        "viewportHeight": 900,
+        "visible": true,
+        "left": 360,
+        "top": 270.5,
+        "right": 1080,
+        "bottom": 629.5,
+        "overflow": false,
+        "tableScrollWidth": 658,
+        "tableClientWidth": 658,
+        "downloadButtonCount": 1,
+        "downloadButtonsOutside": false,
+        "controlsOutside": false,
+        "styled": true
+      },
+      "height": 900,
+      "status": "passed",
+      "viewport": "desktop"
+    },
+    {
+      "backend": {
+        "orderId": "f0861e65fa2893d2b6e6c601b568db03",
+        "orderNo": "ORD-261010153116CE87",
+        "accessStatus": 200,
+        "authenticated": true,
+        "files": [
+          {
+            "id": "qa-online-94f50179cd7f-f0",
+            "name": "fixture.zip",
+            "download_limit": 1,
+            "used_downloads": 0,
+            "remaining_downloads": 1
+          }
+        ],
+        "assets": [
+          "/assets/index-BLZ3YX-4.js",
+          "/assets/ConsoleApp-BQD9MQcM.js"
+        ]
+      },
+      "width": 390,
+      "additionalBackendGet": true,
+      "modal": {
+        "viewportWidth": 390,
+        "viewportHeight": 844,
+        "visible": true,
+        "left": 16,
+        "top": 242.5,
+        "right": 374,
+        "bottom": 601.5,
+        "overflow": false,
+        "tableScrollWidth": 560,
+        "tableClientWidth": 296,
+        "downloadButtonCount": 1,
+        "downloadButtonsOutside": true,
+        "controlsOutside": false,
+        "styled": true
+      },
+      "height": 844,
+      "status": "passed",
+      "viewport": "mobile"
+    }
+  ],
+  "failures": [],
+  "limits": [
+    "Completed file order and private buyer administrator fixture are supplied by the main agent",
+    "No download requests or order mutations; deploymentTag records supplied provenance, not a server version assertion"
+  ],
+  "baseUrl": "http://192.168.10.10:30080",
+  "expectedOrderNo": "ORD-261010153116CE87",
+  "deploymentTag": "20261010154022-102f7c7",
+  "blockedMutationRequests": 0,
+  "networkMutationEvents": 0,
+  "blockedDownloadRequests": 0,
+  "nativeDialogs": 0
+}
