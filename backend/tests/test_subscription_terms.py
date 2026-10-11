@@ -304,7 +304,7 @@ class SubscriptionTermsTests(unittest.TestCase):
         self.deliver(oid)
         result = self.request('GET', f'/api/orders/{oid}/subscription')['item']
         self.assertEqual(set(result), {'available', 'id', 'product_id', 'enterprise_id', 'version_id',
-            'version_code', 'anchor_at', 'generation', 'expires_at', 'status', 'terms', 'current_period', 'limits', 'can_renew'})
+            'version_code', 'anchor_at', 'generation', 'expires_at', 'status', 'terms', 'current_period', 'limits', 'can_renew', 'server_time'})
         self.assertTrue(result['available'])
         self.assertTrue(result['can_renew'])
         self.assertEqual(result['terms'][0]['order_id'], oid)

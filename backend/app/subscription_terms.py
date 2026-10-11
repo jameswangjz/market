@@ -346,6 +346,7 @@ def install(ns):
                                 Combination.product_id == order.product_id))
         if combination is None or order.snapshot_version != 1 or order.delivery_method_snapshot not in MONTHLY:
             return {'item': {'available': False, 'id': None, 'product_id': order.product_id,
+                    'server_time': ns['now'](),
                     'enterprise_id': order.buyer_enterprise_id, 'version_id': None, 'version_code': None,
                     'anchor_at': None, 'generation': None, 'expires_at': None, 'status': 'unavailable',
                     'terms': [], 'current_period': None, 'limits': None, 'can_renew': False}}
@@ -365,6 +366,7 @@ def install(ns):
             except HTTPException:
                 can_renew = False
         return {'item': {'available': entitlement is not None, 'id': combination.id,
+                'server_time': ns['now'](),
                 'product_id': combination.product_id, 'enterprise_id': combination.enterprise_id,
                 'generation': combination.generation, 'anchor_at': combination.anchor_at,
                 'version_id': combination.version_id, 'version_code': combination.version_code,

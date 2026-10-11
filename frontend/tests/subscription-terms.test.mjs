@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { sanitizeSubscription, canRenewSubscription, subscriptionDisplayStatus, termDisplayStatus, renewalPayload, renewalOrder, createSubscriptionSession, newRenewalRequestKey,
-  monthlyQuotaCalls, monthlyQuotaThousands } from "../src/subscriptionTerms.js";
+  monthlyQuotaCalls, monthlyQuotaThousands, serverTimeNow } from "../src/subscriptionTerms.js";
 
 const order = { id: "order-1", order_no: "O1", product_id: "product", product_version_id: "v1", product_version_code: "v1.0", snapshot_version: 1,
   delivery_method: "api", buyer_enterprise_id: "buyer", payment_status: "paid", main_status: "completed" };
@@ -45,7 +45,8 @@ function harness() {
 test("subscription DTO whitelists nested fields and keeps monthly limits independent of term count", () => {
   const result = sanitizeSubscription({ item: { ...item, cost: 9, secret: "hidden", terms: item.terms.map(term => ({ ...term, cost: 4 })),
     limits: { ...item.limits, cost: 1 }, current_period: { ...item.current_period, secret: "hidden" } } });
-  assert.deepEqual(result, item);
+  assert.deepEqual(result, { ...item, server_time: null, client_received_at: result.client_received_at });
+  assert.ok(Number.isFinite(result.client_received_at));
   assert.equal(result.limits.monthly_quota, 1001);
   assert.doesNotMatch(JSON.stringify(result), /cost|secret|hidden/);
   assert.deepEqual(sanitizeSubscription({ item: { available: false, cost: 10, terms: item.terms } }), { available: false });
@@ -54,6 +55,22 @@ test("subscription DTO whitelists nested fields and keeps monthly limits indepen
   assert.equal(malformed.expires_at, null);
   assert.equal(malformed.limits.monthly_quota, null);
   assert.equal(malformed.limits.daily_quota, null);
+});
+
+test("subscription retains server time and stamps local receipt rather than trusting supplied client time", () => {
+  const serverAt = Date.parse("2026-03-30T23:58:00Z");
+  for (const skew of [-20, 20]) {
+    const clientAt = serverAt + skew * 3600000;
+    const value = sanitizeSubscription({ item: { ...item, server_time: new Date(serverAt).toISOString(), client_received_at: 0 } }, clientAt);
+    assert.equal(value.client_received_at, clientAt);
+    assert.equal(value.server_time, new Date(serverAt).toISOString());
+    assert.equal(serverTimeNow(value, clientAt), serverAt);
+    assert.equal(serverTimeNow(value, clientAt + 60000), serverAt + 60000);
+    assert.equal(subscriptionDisplayStatus(value, clientAt), "active");
+    assert.equal(subscriptionDisplayStatus(value, clientAt + 120000), "expired");
+  }
+  assert.throws(() => sanitizeSubscription({ item: { ...item, server_time: "invalid" } }));
+  assert.equal(serverTimeNow(null, 1234), 1234);
 });
 
 test("only verified active buyer administrators renew, with no platform override", () => {
