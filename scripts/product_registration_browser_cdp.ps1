@@ -84,6 +84,22 @@ return ['\u7248\u672c\u53f7','\u7248\u672c\u4ef7\u683c','\u7248\u672c\u6210\u672
     $fileBounds = Layout '.product-modal'
     Js 'document.querySelector(".version-editor").scrollIntoView({block:"start"});true' | Out-Null
     Screenshot "registration-file-versions-$width.png"
+    Assert-Browser '[...document.querySelectorAll(".version-compatibility select")].length===2 && [...document.querySelectorAll(".version-compatibility select")].every(n=>n.value==="compatible")' 'Version compatibility defaults unavailable'
+    Js @'
+(() => {const labels=[...document.querySelectorAll('.product-modal label')];
+for(const [label,value] of [['\u4ea7\u54c1\u7c7b\u578b','saas'],['\u4ea4\u4ed8\u65b9\u5f0f','tenant_access']]){
+const n=labels.find(l=>l.textContent.trim().startsWith(label)).querySelector('select');n.value=value;n.dispatchEvent(new Event('change',{bubbles:true}));}return true;})()
+'@ | Out-Null
+    WaitJs '!!document.querySelector(".oidc-redirect-field textarea")'
+    Assert-Browser @'
+(() => {const n=document.querySelector('.oidc-redirect-field textarea');
+n.value='http://evil.example/callback';n.dispatchEvent(new Event('input',{bubbles:true}));
+const rejected=!n.checkValidity();n.value='https://saas.example/callback\nhttp://market-mock-saas/callback';
+n.dispatchEvent(new Event('input',{bubbles:true}));return rejected&&n.checkValidity();})()
+'@ 'SaaS callback validation did not reject insecure host or accept whitelist'
+    Js 'document.querySelector(".oidc-redirect-field").scrollIntoView({block:"center"});true' | Out-Null
+    Layout '.product-modal' | Out-Null
+    Screenshot "registration-saas-callbacks-$width.png"
     Js @'
 (() => {const labels=[...document.querySelectorAll('.product-modal label')];
 for(const [label,value] of [['\u4ea7\u54c1\u7c7b\u578b','api'],['\u4ea4\u4ed8\u65b9\u5f0f','api']]){

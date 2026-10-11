@@ -1,0 +1,64 @@
+{
+  "status": "passed",
+  "database": "postgresql",
+  "two_blocked_sessions_observed": true,
+  "cleanup": "verified",
+  "scenarios": {
+    "product": {
+      "http_statuses": [
+        200,
+        200
+      ],
+      "worker_pids": [
+        454184,
+        454185
+      ],
+      "two_blocked_sessions_observed": true,
+      "gate": "products",
+      "proof": "pg_blocking_pids: two distinct blocked sessions",
+      "orders": 2,
+      "unpaid": true,
+      "bindings": 1,
+      "subscriptions": 1,
+      "subscription_id": "662062688286a8d134927abc6495df6f",
+      "saas_call_count": 0,
+      "cleanup": "verified no owned rows or FK references remain"
+    },
+    "enterprise": {
+      "http_statuses": [
+        200,
+        200
+      ],
+      "worker_pids": [
+        454183,
+        454184
+      ],
+      "two_blocked_sessions_observed": true,
+      "gate": "enterprises",
+      "proof": "pg_blocking_pids: two distinct blocked sessions",
+      "orders": 2,
+      "unpaid": true,
+      "bindings": 1,
+      "subscriptions": 1,
+      "subscription_id": "299c3f6f2ec082080bf18ebd74875f8b",
+      "saas_call_count": 0,
+      "cleanup": "verified no owned rows or FK references remain"
+    },
+    "history": {
+      "multiple_history_requires_selection": true,
+      "explicit_target_reused": true,
+      "cross_enterprise_rejected": true,
+      "bound_switch_rejected": true,
+      "historical_tenants_unchanged": true,
+      "http_statuses": [
+        409,
+        409,
+        200,
+        409,
+        200
+      ],
+      "saas_call_count": 0,
+      "cleanup": "verified no owned rows or FK references remain"
+    }
+  }
+}

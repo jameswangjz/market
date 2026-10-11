@@ -5,9 +5,13 @@ Discovery explicitly skips missing runtimes; standalone execution fails on skips
 import concurrent.futures
 import copy
 import json
+import os
 from pathlib import Path
+import socket
+import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -394,6 +398,205 @@ return clock[1] * 1000 + math.floor(clock[2] / 1000) + ttl
         self.assertEqual(self.snapshot(), snapshots[0])
         self.assertEqual(self.client.get(self.old()), "1")
         self.assertIsNone(self.client.hget("market:apisix:credential:consumer", "mode"))
+
+    def test_readonly_preflight_exact_live_mapping_and_conservative_fallback(self):
+        self.client.set(self.old(), 17)
+        self.client.set(self.old('minute'), 3)
+        self.client.set(self.old('day', suffix='utc-day'), 4)
+        self.client.set(self.old('month', suffix='utc-month'), 12)
+        prepared = self.prepare()
+        self.client.mset(dict(zip(prepared['keys'][:3], [2, 5, 7])))
+        before = self.snapshot()
+        checked = cutover.execute(self.client, prepared, preflight_only=True)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(checked['mode'], 'preflight_only')
+        self.assertEqual(checked['before'], dict(minute=2, day=5, month=7))
+        self.assertEqual(checked['after'], dict(minute=5, day=22, month=24))
+        self.assertEqual(self.execute(prepared)['after'], checked['after'])
+        self.assertEqual(self.client.get(self.old()), '17')
+
+    def test_large_integer_receipt_preflight_and_storage_remain_exact(self):
+        self.client.set(self.old(), cutover.MAX_COUNT - 7)
+        prepared = self.prepare()
+        self.client.mset(dict(zip(prepared['keys'][:3], [0, 3, 7])))
+        checked = cutover.execute(self.client, prepared, preflight_only=True)
+        expected = dict(minute=0, day=cutover.MAX_COUNT - 4, month=cutover.MAX_COUNT)
+        self.assertEqual(checked['after'], expected)
+        receipt = self.execute(prepared)
+        self.assertEqual(receipt['after'], expected)
+        self.assertEqual(receipt['sources'][0]['lifetime_usage'], cutover.MAX_COUNT - 7)
+        self.assertEqual(self.client.mget(prepared['keys'][:3]),
+                         [str(expected[k]) for k in ['minute', 'day', 'month']])
+        self.assertEqual(self.execute(prepared), receipt)
+
+    def test_real_scan_pagination_preserves_counts_and_replay(self):
+        with self.client.pipeline() as pipe:
+            for i in range(1300):
+                pipe.set(self.old('day', suffix=f'page-{i}'), i % 7)
+            for i in range(1300):
+                pipe.set(f'unrelated:{i}', 'untouched')
+            pipe.set(self.old(), 23)
+            pipe.execute()
+        prepared = self.prepare()
+        self.assertEqual(len(prepared['plan']['sources'][0]['counter_indices']), 1301)
+        before = self.snapshot()
+        checked = cutover.execute(self.client, prepared, preflight_only=True)
+        self.assertGreater(checked['scan_pages'], 2)
+        self.assertEqual(self.snapshot(), before)
+        receipt = self.execute(prepared)
+        self.assertGreater(receipt['scan_pages'], 2)
+        self.assertEqual(receipt['after'], dict(minute=0, day=23, month=23))
+        after = self.snapshot()
+        self.assertEqual(self.execute(prepared), receipt)
+        self.assertEqual(self.snapshot(), after)
+        for key, value in before.items():
+            if not key.startswith('market:apisix:credential:'):
+                self.assertEqual(after[key], value)
+
+    def test_database_growth_after_preflight_rejected_inside_atomic_script(self):
+        prepared = self.prepare()
+        with self.client.pipeline() as pipe:
+            for i in range(cutover.MAX_DATABASE_KEYS):
+                pipe.set(f'unrelated:{i}', 'untouched')
+            pipe.execute()
+        metadata = self.client.dump('market:apisix:credential:consumer')
+        with self.assertRaisesRegex(cutover.QuotaCutoverError, 'database key budget'):
+            cutover.preflight(self.client)
+        for script, keys, args in [
+            (cutover.MIGRATE_SCRIPT, prepared['keys'], [json.dumps(prepared['plan'])]),
+            (cutover.SYNC_SCRIPT, ['market:apisix:credential:consumer'], ['{}', '[]'])]:
+            with self.assertRaisesRegex(runtime.redis.RedisError, 'database key budget'):
+                self.client.eval(script, len(keys), *keys, *args)
+        self.assertEqual(self.client.dump('market:apisix:credential:consumer'), metadata)
+        self.assertEqual(self.client.exists(*prepared['keys'][:4]), 0)
+
+    def test_preview_page_budget_empty_pages_duplicates_and_terminal_page(self):
+        # Protocol fault injection only; real pagination has separate Redis coverage.
+        exact = self.old('day', suffix='last-page')
+        with patch.object(self.client, 'scan', side_effect=[
+                (9, []), (4, [exact, exact]), (0, [self.old()]), (0, [])]):
+            self.assertEqual(cutover.legacy_keys(self.client, 'route', 'consumer'),
+                             sorted([exact, self.old()]))
+        with patch.object(self.client, 'scan', return_value=(1, [])) as scan:
+            with self.assertRaisesRegex(cutover.QuotaCutoverError, 'scan budget'):
+                cutover.legacy_keys(self.client, 'route', 'consumer')
+            self.assertEqual(scan.call_count, cutover.MAX_SCAN_PAGES)
+
+    def test_unknown_topology_replica_and_scan_deadline_are_failclosed(self):
+        for topology in [{}, {'cluster_enabled': 1}]:
+            with patch.object(self.client, 'info', return_value=topology):
+                self.assert_rejected_without_writes(lambda: cutover.preflight(self.client))
+        with patch.object(self.client, 'info', side_effect=[{'cluster_enabled': 0}, {'role': 'slave'}]):
+            self.assert_rejected_without_writes(lambda: cutover.preflight(self.client))
+        budget = {'pages': 0, 'started': runtime.time.monotonic() - 3}
+        self.assert_rejected_without_writes(lambda: cutover.legacy_keys(
+            self.client, 'route', 'consumer', budget=budget))
+
+    def test_atomic_time_deadline_rejects_before_writes(self):
+        prepared = self.prepare()
+        # Deterministic elapsed-clock fault injection in otherwise real Redis EVAL.
+        script = cutover.MIGRATE_SCRIPT.replace("local started = redis.call('TIME')",
+            "local started = redis.call('TIME'); started[1] = tostring(tonumber(started[1])-1)")
+        self.assert_rejected_without_writes(lambda: self.client.eval(
+            script, len(prepared['keys']), *prepared['keys'], json.dumps(prepared['plan'])))
+
+    def test_atomic_page_budget_rejects_without_writes(self):
+        # Each source needs two whole-database scans, even if MATCH finds no keys.
+        self.credentials = [self.credential(f'c{i}') for i in range(16)]
+        for _, consumer, _ in self.credentials:
+            self.legacy_metadata(consumer)
+        prepared = self.prepare()
+        with self.client.pipeline() as pipe:
+            for i in range(3000):
+                pipe.set(f'unrelated:{i}', 'untouched')
+            pipe.execute()
+        self.assert_rejected_without_writes(lambda: self.execute(prepared))
+
+    def test_source_key_byte_limits_and_ambiguous_identity_refuse(self):
+        self.credentials = [self.credential(f'c{i}') for i in range(17)]
+        self.assert_rejected_without_writes(self.prepare)
+        self.credentials = [self.credential()]
+        with self.client.pipeline() as pipe:
+            for i in range(cutover.MAX_PLAN_KEYS):
+                pipe.set(self.old('day', suffix=f'k{i}'), 0)
+            pipe.execute()
+        self.assert_rejected_without_writes(self.prepare)
+        self.client.flushdb()
+        self.legacy_metadata('consumer')
+        self.credentials = [self.credential(extra='x' * cutover.MAX_PLAN_BYTES)]
+        self.assert_rejected_without_writes(self.prepare)
+        for route, consumer in [('route:alias', 'consumer'), ('route', 'consumer:alias')]:
+            self.credentials = [self.credential(consumer, route)]
+            self.assert_rejected_without_writes(self.prepare)
+        self.credentials = [self.credential()]
+        self.client.set(self.old('day', suffix='x' * cutover.MAX_KEY_BYTES), 0)
+        self.assert_rejected_without_writes(self.prepare)
+
+    def test_real_cluster_enabled_node_and_cli_are_explicitly_rejected(self):
+        binary = os.environ['QUOTA_REDIS_SERVER'] if 'QUOTA_REDIS_SERVER' in os.environ else runtime.shutil.which('redis-server')
+        with runtime.tempfile.TemporaryDirectory(prefix='market-quota-cluster-') as directory:
+            for _ in range(100):
+                with socket.socket() as data_socket, socket.socket() as bus_socket:
+                    data_socket.bind(('127.0.0.1', 0))
+                    port = data_socket.getsockname()[1]
+                    if port > 55535:
+                        continue
+                    try:
+                        bus_socket.bind(('127.0.0.1', port + 10000))
+                    except OSError:
+                        continue
+                    break
+            else:
+                self.fail('No free local cluster port pair')
+            server = subprocess.Popen([binary, '--bind', '127.0.0.1', '--port', str(port),
+                '--cluster-enabled', 'yes',
+                '--cluster-config-file', str(Path(directory) / 'nodes.conf'),
+                '--save', '', '--appendonly', 'no'], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            client = runtime.redis.Redis(host='127.0.0.1', port=port, decode_responses=True,
+                socket_timeout=0.2, socket_connect_timeout=0.2,
+                retry=runtime.redis.retry.Retry(runtime.redis.backoff.NoBackoff(), 0))
+            try:
+                for _ in range(100):
+                    if server.poll() is not None:
+                        self.fail('Cluster-enabled Redis failed: ' + server.stderr.read().decode())
+                    try:
+                        client.ping()
+                        break
+                    except runtime.redis.RedisError:
+                        runtime.time.sleep(0.02)
+                self.assertEqual(client.info('cluster')['cluster_enabled'], 1)
+                with self.assertRaisesRegex(cutover.QuotaCutoverError, 'Cluster cutover unsupported'):
+                    cutover.preflight(client)
+                for operation in [lambda: cutover.preview(client, self.scope, self.credentials,
+                        actor='test', request_id='cluster'),
+                        lambda: cutover.sync_unused(client, 'meta', {}, 'route', 'consumer'),
+                        lambda: self.execute(self.prepare(), client=client)]:
+                    with self.assertRaisesRegex(cutover.QuotaCutoverError, 'Cluster cutover unsupported'):
+                        operation()
+                root = Path(__file__).resolve().parents[2]
+                env = dict(os.environ, PYTHONPATH=str(root / 'backend'))
+                command = [sys.executable, str(root / 'scripts/subscription_quota_migrate.py'),
+                           '--redis-preflight', '--redis-url', f'redis://127.0.0.1:{port}/0']
+                result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Cluster cutover unsupported', result.stderr)
+                self.assertEqual(client.dbsize(), 0)
+            finally:
+                client.close()
+                server.terminate()
+                server.wait(timeout=5)
+                server.stderr.close()
+
+    def test_topology_cli_runs_without_business_database_and_is_readonly(self):
+        root = Path(__file__).resolve().parents[2]
+        url = 'unix://' + self.client.connection_pool.connection_kwargs['path']
+        before = self.snapshot()
+        result = subprocess.run([sys.executable, str(root / 'scripts/subscription_quota_migrate.py'),
+            '--redis-preflight', '--redis-url', url],
+            env=dict(os.environ, PYTHONPATH=str(root / 'backend')), capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['topology'], 'standalone_primary')
+        self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == "__main__":

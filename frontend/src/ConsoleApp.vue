@@ -13,7 +13,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
-import { registrationPayload, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
+import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import {
@@ -314,6 +314,8 @@ const selectedProductId = ref("");
 const emptyProductVersion = () => ({
   version_code: "v1.0",
   description: "",
+  compatibility_mode: "compatible",
+  compatibility_notes: "",
   price: 0,
   cost: 0,
   rate_limit_per_minute: 60,
@@ -336,6 +338,7 @@ const emptyProductForm = () => ({
   upstream_url: "",
   application_url: "",
   integration_api_url: "",
+  oidc_redirect_uris: [],
   download_limit: 0,
   logo_file_id: "",
   pricing_strategy: "",
@@ -350,6 +353,16 @@ const emptyProductForm = () => ({
   settlement_rule: { platform_rate: 8, provider_rate: 67, service_rate: 20, expert_rate: 5, channel_rate: 0 },
 });
 const productForm = ref(emptyProductForm());
+const oidcRedirectUrisText = computed({
+  get: () => (productForm.value.oidc_redirect_uris ?? []).join("\n"),
+  set: (text) => { productForm.value.oidc_redirect_uris = text.split(/\r?\n/); },
+});
+function updateOidcRedirectUris(event) {
+  const input = event.target;
+  input.setCustomValidity(splitOidcRedirectUris(input.value).every(isValidOidcRedirectUri)
+    ? ""
+    : "请输入完整HTTPS回调地址，不得包含片段或用户信息；开发HTTP仅允许localhost、127.0.0.1或market-mock-saas");
+}
 let progressTimer;
 
 const nav = [
@@ -1567,7 +1580,7 @@ async function createProduct() {
     notify("产品草稿已创建");
     await loadViewData("products");
   } catch (error) {
-    notify(error.response?.data?.detail || (selectedProductId.value ? "草稿已保存，附件保存失败，请重试保存同一产品" : "创建失败"));
+    notify(error.response?.data?.detail || (error instanceof TypeError ? error.message : "") || (selectedProductId.value ? "草稿已保存，附件保存失败，请重试保存同一产品" : "创建失败"));
   } finally {
     productSaving.value = false;
   }
@@ -1728,7 +1741,7 @@ async function saveProductEdit() {
     notify("产品信息已保存");
     await loadViewData("products");
   } catch (error) {
-    notify(error.response?.data?.detail || "产品草稿或附件未全部保存，请重试保存同一产品");
+    notify(error.response?.data?.detail || (error instanceof TypeError ? error.message : "") || "产品草稿或附件未全部保存，请重试保存同一产品");
   } finally {
     productSaving.value = false;
   }
@@ -4332,6 +4345,7 @@ onUnmounted(() => {
         <div v-if="productForm.delivery_method === 'tenant_access'" class="form-grid">
           <label>应用访问URL<input v-model="productForm.application_url" :disabled="productForm.delivery_fields_locked" type="url" required /></label>
           <label>租户/权限开通API URL<input v-model="productForm.integration_api_url" :disabled="productForm.delivery_fields_locked" type="url" required /></label>
+          <label v-if="productForm.product_type === 'saas'" class="wide oidc-redirect-field">OIDC回调地址<textarea v-model="oidcRedirectUrisText" :disabled="productForm.delivery_fields_locked" rows="3" placeholder="https://app.example.com/oidc/callback" @input="updateOidcRedirectUris"></textarea></label>
         </div>
         <div class="form-grid">
           <label>产品Logo（380×280，必填）<input type="file" accept="image/*,.svg" :required="!productForm.logo_file_id && !productForm.logoFile" @change="productForm.logoFile = $event.target.files[0]" /><small v-if="productForm.logo_file_id" class="muted">已上传产品Logo</small></label>
@@ -4392,6 +4406,10 @@ onUnmounted(() => {
             >
               <X :size="16" />
             </button>
+            <div class="form-grid version-compatibility">
+              <label>版本兼容性<select v-model="version.compatibility_mode" required><option value="compatible">向后兼容</option><option value="breaking">不兼容变更</option></select></label>
+              <label>兼容性说明<textarea v-model="version.compatibility_notes" rows="2"></textarea></label>
+            </div>
             <label v-if="productForm.delivery_method === 'file'" class="version-description" style="grid-column: 1 / -1">
               版本交付文件（压缩包，必填）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz,.bz2,.xz,.rar,.7z" :required="version.status === 'active' && !version.fileUpload && !version.uploadedFileName && !productFiles.some((file) => file.version_id === version.id && file.file_role === 'product_data' && ['draft', 'active'].includes(file.status))" @change="version.fileUpload = $event.target.files[0]" />
               <small class="muted">{{ version.uploadedFileName || productFiles.find((file) => file.version_id === version.id && file.file_role === 'product_data' && ['draft', 'active'].includes(file.status))?.original_name || '待上传版本文件' }}</small>
@@ -4897,6 +4915,10 @@ onUnmounted(() => {
 .version-editor-head > .text-btn { white-space: nowrap; flex-shrink: 0; }
 fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid #f0f1f3; padding: 12px 0 0; }
 .version-lock-notice { grid-column: 1 / -1; margin: 0; color: #727782; font-size: 12px; }
+.version-compatibility { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.version-compatibility label, .oidc-redirect-field { min-width: 0; overflow-wrap: anywhere; }
+.version-compatibility select, .version-compatibility textarea, .oidc-redirect-field textarea { width: 100%; min-width: 0; }
+@media (max-width: 760px) { .version-compatibility { grid-template-columns: minmax(0, 1fr); } }
 .version-row label.version-prefix-toggle { flex-direction: row; align-items: center; gap: 8px; }
 .version-row .version-prefix-toggle input { width: 14px; height: 14px; margin: 0; padding: 0; flex-shrink: 0; }
 .subscription-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

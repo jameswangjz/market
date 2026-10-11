@@ -403,7 +403,8 @@ def install(ns):
             if source.snapshot_version != 1 or source.delivery_method_snapshot not in MONTHLY:
                 raise HTTPException(409, '仅新版快照订阅订单支持续费')
             order_body = ns['OrderBody'](product_id=source.product_id, product_version_id=source.product_version_id,
-                    buyer_enterprise_id=source.buyer_enterprise_id, subscription_months=body.subscription_months)
+                    buyer_enterprise_id=source.buyer_enterprise_id, subscription_months=body.subscription_months,
+                    saas_subscription_id=source.subscription_id if source.delivery_method_snapshot == 'tenant_access' else '')
             quoted = ns['order_economics']['quote'](db, user, order_body, lock=True)
             quoted['buyer_enterprise_id'] = source.buyer_enterprise_id
             combination = validate_purchase(db, user, quoted)

@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "tests_run": 30,
+  "skipped": 0,
+  "failures": 0,
+  "errors": 0,
+  "redis_version": "Redis server v=6.2.14 sha=40305114:0 malloc=libc bits=64 build=dff95a8e7a99d269",
+  "evidence_scope": "Isolated Redis plus gateway Lua; cluster-enabled single-node refusal",
+  "business_redis_accessed": false,
+  "historical_business_migration_completed": false
+}

@@ -35,7 +35,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, create_engine, func, inspect, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
@@ -264,6 +264,7 @@ class Product(Base):
     upstream_url: Mapped[str] = mapped_column(String(500), default="")
     application_url: Mapped[str] = mapped_column(String(500), default="")
     integration_api_url: Mapped[str] = mapped_column(String(500), default="")
+    oidc_redirect_uris_json: Mapped[str] = mapped_column(Text, default="[]")
     download_limit: Mapped[int] = mapped_column(Integer, default=0)
     logo_file_id: Mapped[str] = mapped_column(String(36), default="")
     logo_thumbnail_file_id: Mapped[str] = mapped_column(String(36), default="")
@@ -294,6 +295,8 @@ class ProductReleaseVersion(Base):
     product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
     version_code: Mapped[str] = mapped_column(String(60))
     description: Mapped[str] = mapped_column(Text, default="")
+    compatibility_mode: Mapped[str] = mapped_column(String(20), default="compatible")
+    compatibility_notes: Mapped[str] = mapped_column(Text, default="")
     price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     cost: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=60)
@@ -331,6 +334,8 @@ class SaaSProductVersion(Base):
     version_code: Mapped[str] = mapped_column(String(60))
     name: Mapped[str] = mapped_column(String(120))
     description: Mapped[str] = mapped_column(Text, default="")
+    compatibility_mode: Mapped[str] = mapped_column(String(20), default="compatible")
+    compatibility_notes: Mapped[str] = mapped_column(Text, default="")
     monthly_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     quarterly_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     annual_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
@@ -1092,6 +1097,15 @@ class ProductBody(BaseModel):
     upstream_url: str = ""
     application_url: str = ""
     integration_api_url: str = ""
+    oidc_redirect_uris: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("oidc_redirect_uris")
+    @classmethod
+    def validate_redirects(cls, values, info):
+        from .registration_config import validate_redirect_uris
+        if values and (info.data.get("product_type") != "saas" or info.data.get("delivery_method") != "tenant_access"):
+            raise ValueError("仅SaaS租户交付可配置OIDC回调地址")
+        return validate_redirect_uris(values)
     download_limit: int = Field(default=0, ge=0)
     logo_file_id: str = ""
     price: float = 0
@@ -1111,6 +1125,8 @@ class ProductBody(BaseModel):
 class ProductVersionBody(BaseModel):
     version_code: str = Field(min_length=1, max_length=60)
     description: str = ""
+    compatibility_mode: str = Field(default="compatible", pattern="^(compatible|breaking)$")
+    compatibility_notes: str = Field(default="", max_length=4000)
     price: float = Field(default=0, ge=0)
     cost: float = Field(default=0, ge=0)
     rate_limit_per_minute: int = Field(default=60, ge=1, le=100000)
@@ -1143,6 +1159,8 @@ class SaaSVersionBody(BaseModel):
     version_code: str = Field(min_length=1, max_length=60)
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
+    compatibility_mode: str = Field(default="compatible", pattern="^(compatible|breaking)$")
+    compatibility_notes: str = Field(default="", max_length=4000)
     monthly_price: float = Field(default=0, ge=0)
     quarterly_price: float = Field(default=0, ge=0)
     annual_price: float = Field(default=0, ge=0)
@@ -1233,6 +1251,7 @@ class OrderBody(BaseModel):
     buyer_enterprise_id: str = Field(min_length=1, max_length=36)
     subscription_months: int = Field(default=1, ge=1, le=36, strict=True)
     quote_id: str = Field(default="", max_length=64)
+    saas_subscription_id: str = Field(default="", max_length=36)
 
 
 class TransitionBody(BaseModel):
@@ -1936,6 +1955,7 @@ def ensure_product_metadata_schema():
         "upstream_url": "VARCHAR(500) DEFAULT ''",
         "application_url": "VARCHAR(500) DEFAULT ''",
         "integration_api_url": "VARCHAR(500) DEFAULT ''",
+        "oidc_redirect_uris_json": "TEXT DEFAULT '[]'",
         "download_limit": "INTEGER DEFAULT 0",
         "logo_file_id": "VARCHAR(36) DEFAULT ''",
         "logo_thumbnail_file_id": "VARCHAR(36) DEFAULT ''",
@@ -2041,14 +2061,6 @@ def ensure_review_and_file_schema():
             "total_profit": "NUMERIC(14,2) DEFAULT 0",
             "request_digest": "VARCHAR(64) DEFAULT ''",
         },
-        "product_release_versions": {
-            "cost": "NUMERIC(14,2) DEFAULT 0",
-            "quota_unit": "VARCHAR(20) DEFAULT ''",
-            "quota_amount": "INTEGER DEFAULT 0",
-        },
-        "saas_product_versions": {
-            "cost": "NUMERIC(14,2) DEFAULT 0",
-        },
         "audit_logs": {
             "category": "VARCHAR(40) DEFAULT 'ops'",
             "business_domain": "VARCHAR(50) DEFAULT ''",
@@ -2128,9 +2140,18 @@ def ensure_review_and_file_schema():
         },
         "product_release_versions": {
             "rate_limit_per_minute": "INTEGER DEFAULT 60",
+            "quota_unit": "VARCHAR(20) DEFAULT ''",
+            "quota_amount": "INTEGER DEFAULT 0",
+            "compatibility_mode": "VARCHAR(20) DEFAULT 'compatible'",
+            "compatibility_notes": "TEXT DEFAULT ''",
             "daily_quota": "INTEGER DEFAULT 10000",
             "monthly_quota": "INTEGER DEFAULT 0",
             "cost": "NUMERIC(14,2) DEFAULT 0",
+        },
+        "saas_product_versions": {
+            "cost": "NUMERIC(14,2) DEFAULT 0",
+            "compatibility_mode": "VARCHAR(20) DEFAULT 'compatible'",
+            "compatibility_notes": "TEXT DEFAULT ''",
         },
     }
     with engine.begin() as connection:
@@ -3156,7 +3177,9 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(db_sessi
 
 def product_out(p: Product) -> dict[str, Any]:
     versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "quota_unit": x.quota_unit or "", "quota_amount": x.quota_amount or 0, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
-    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "logo_thumbnail_file_id": p.logo_thumbnail_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    for dto, version in zip(versions, p.versions or []):
+        dto.update(compatibility_mode=version.compatibility_mode or "compatible", compatibility_notes=version.compatibility_notes or "")
+    return {"id": p.id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "oidc_redirect_uris": json.loads(p.oidc_redirect_uris_json or "[]"), "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "logo_thumbnail_file_id": p.logo_thumbnail_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
@@ -3307,6 +3330,8 @@ def create_product(body: ProductBody, user: User = Depends(current_user), db: Se
     trading_policy["require_buyer"](db, user, enterprise.id)
     trading_policy["delivery_category"](body.delivery_method)
     values = body.model_dump()
+    from .registration_config import pop_registration_config
+    pop_registration_config(values)
     versions = values.pop("versions", [])
     custom_rule = values.pop("settlement_rule", {}) or {}
     validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
@@ -3335,9 +3360,13 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
     if db.scalar(select(Order.id).where(Order.product_id == product.id, Order.paid_amount > 0).limit(1)):
+        if json.loads(product.oidc_redirect_uris_json or "[]") != body.oidc_redirect_uris:
+            raise HTTPException(409, "已售产品的OIDC回调地址不可覆盖")
         if any(getattr(product, key) != getattr(body, key) for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")):
             raise HTTPException(409, "已售产品的交付类型和接入地址不可覆盖")
     values = body.model_dump()
+    from .registration_config import pop_registration_config
+    pop_registration_config(values)
     trading_policy["delivery_category"](body.delivery_method)
     versions = values.pop("versions", [])
     custom_rule = values.pop("settlement_rule", {}) or {}
@@ -4691,7 +4720,7 @@ _saas_tokens: dict[str, tuple[str, datetime]] = {}
 
 
 def saas_version_out(item: SaaSProductVersion) -> dict[str, Any]:
-    return {"id": item.id, "product_id": item.product_id, "version_code": item.version_code, "name": item.name, "description": item.description, "monthly_price": float(item.monthly_price or 0), "quarterly_price": float(item.quarterly_price or 0), "annual_price": float(item.annual_price or 0), "perpetual_price": float(item.perpetual_price or 0), "cost": float(item.cost or 0), "max_users": item.max_users, "max_departments": item.max_departments, "max_storage_gb": item.max_storage_gb, "status": item.status, "created_at": item.created_at, "updated_at": item.updated_at}
+    return {"id": item.id, "product_id": item.product_id, "version_code": item.version_code, "name": item.name, "description": item.description, "compatibility_mode": item.compatibility_mode or "compatible", "compatibility_notes": item.compatibility_notes or "", "monthly_price": float(item.monthly_price or 0), "quarterly_price": float(item.quarterly_price or 0), "annual_price": float(item.annual_price or 0), "perpetual_price": float(item.perpetual_price or 0), "cost": float(item.cost or 0), "max_users": item.max_users, "max_departments": item.max_departments, "max_storage_gb": item.max_storage_gb, "status": item.status, "created_at": item.created_at, "updated_at": item.updated_at}
 
 
 def saas_subscription_out(item: SaaSSubscription, version: SaaSProductVersion | None = None) -> dict[str, Any]:
@@ -4886,11 +4915,13 @@ def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: 
     if not version or not config:
         raise HTTPException(400, "SaaS 版本或第三方接口配置不可用")
     saas_cycle_price(version, body.billing_cycle)
+    saas_combinations["guard_legacy_create"](db, enterprise.id, product.id)
     starts = now()
     expires = subscription_expiry(starts, body.billing_cycle)
     subscription = SaaSSubscription(enterprise_id=enterprise.id, product_id=product.id, version_id=version.id, billing_cycle=body.billing_cycle, status="provisioning", starts_at=starts, expires_at=expires, created_by=user.email or user.phone or user.id)
     db.add(subscription)
     db.flush()
+    saas_combinations["bind_legacy"](db, subscription)
     result = execute_saas_operation(db, subscription, "OPEN", {"product_id": product.id, "subscription_id": subscription.id, "version": version.version_code, "billing_cycle": body.billing_cycle, "enterprise_id": enterprise.id, "enterprise_name": enterprise.name}, config, f"open:{subscription.id}")
     subscription.external_app_id = str(result.get("app_id", ""))
     subscription.external_tenant_id = str(result.get("tenant_id", result.get("app_id", "")))
@@ -5106,8 +5137,11 @@ def create_quoted_order(db: Session, user: User, quote: dict) -> Order:
     """Build one quoted order inside the caller's transaction."""
     buyer = trading_policy["require_buyer"](db, user, quote["buyer_enterprise_id"])
     product, version = quote["product"], quote["version"]
+    subscription = saas_combinations["reserve"](db, user, quote)
     order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=(getattr(version, "name", "") or version.description or version.version_code)[:120], product_name=product.name, buyer_name=buyer.name, amount=quote["amount"], billing_cycle="monthly" if quote["public"]["billing_unit"] == "month" else "", main_status="created")
     order_economics["apply_snapshot"](order, quote)
+    if subscription:
+        order.subscription_id = subscription.id
     order_workflow["initialize_order"](db, order, user)
     db.add(order)
     db.flush()
@@ -6933,6 +6967,9 @@ order_fulfillment = install_order_fulfillment(globals())
 from .subscription_terms import install as install_subscription_terms
 
 subscription_terms = install_subscription_terms(globals())
+from .saas_combinations import install as install_saas_combinations
+
+saas_combinations = install_saas_combinations(globals())
 from .subscription_gateway import install as install_subscription_gateway
 
 subscription_gateway = install_subscription_gateway(globals())
