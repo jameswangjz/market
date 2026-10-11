@@ -22,8 +22,6 @@ else
   nerdctl --namespace k8s.io build -t "market-api:${TAG}" -f backend/Dockerfile backend
   nerdctl --namespace k8s.io build -t "market-web:${TAG}" -f frontend/Dockerfile frontend
 fi
-kubectl -n market patch configmap market-config --type merge \
-  -p '{"data":{"UPSTREAM_ALLOWED_HOSTS":"market-mock-api,market-mock-saas","UPSTREAM_ALLOWED_CIDRS":""}}'
 kubectl -n market set image deployment/market-api "api=market-api:${TAG}"
 kubectl -n market rollout status deployment/market-api --timeout=240s
 kubectl -n market set image deployment/message-center-worker "worker=market-api:${TAG}"
