@@ -4,6 +4,7 @@ import Storefront from "./Storefront.vue";
 import { navigate, resolveRoute } from "./routes.js";
 
 const ConsoleApp = defineAsyncComponent(() => import("./ConsoleApp.vue"));
+const OIDCAuthorization = defineAsyncComponent(() => import("./OIDCAuthorization.vue"));
 const location = ref(new URL(window.location.href));
 const route = computed(() => resolveRoute(location.value.pathname));
 function syncRoute() {
@@ -16,6 +17,7 @@ onUnmounted(() => window.removeEventListener("popstate", syncRoute));
 
 <template>
   <ConsoleApp v-if="route.name === 'console'" />
+  <OIDCAuthorization v-else-if="route.name === 'sso'" :key="location.search" :search="location.search" />
   <Storefront v-else-if="['storefront', 'product'].includes(route.name)" :product-id="route.id || ''" :search="location.search" />
   <main v-else class="store-not-found">
     <h1>页面不存在</h1>

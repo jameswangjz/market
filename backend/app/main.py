@@ -239,6 +239,7 @@ class PlatformNotification(Base):
 
 class ApplicationAccessGrant(Base):
     __tablename__ = "application_access_grants"
+    __table_args__ = (UniqueConstraint("enterprise_id", "product_id", "user_id", name="uq_application_grant_scope"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id"), index=True)
     product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
@@ -2201,6 +2202,8 @@ def startup():
     ensure_product_metadata_schema()
     ensure_review_and_file_schema()
     ensure_gateway_version_schema()
+    with engine.begin() as connection:
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_application_grant_scope ON application_access_grants (enterprise_id, product_id, user_id)"))
     repair_settlement_state_consistency()
     with SessionLocal() as db:
         for product in db.scalars(select(Product)).all():
@@ -3295,14 +3298,19 @@ def grant_application_access(product_id: str, body: ApplicationAccessBody, user:
         raise HTTPException(400, "只有 SaaS 应用支持企业用户访问授权")
     enterprise = first_enterprise(db, user)
     require_enterprise_admin(db, user, enterprise.id)
+    db.scalar(select(Enterprise).where(Enterprise.id == enterprise.id).with_for_update())
     member = db.scalar(select(Membership).where(Membership.user_id == body.user_id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
     if not member:
         raise HTTPException(404, "目标用户不是当前企业成员")
     member_user = db.get(User, body.user_id)
     if not member_user or not member_user.is_active or member_user.activation_status == "deleted":
         raise HTTPException(400, "目标用户已被禁用或删除，不能授予应用访问权限")
-    existing = db.scalar(select(ApplicationAccessGrant).where(ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.user_id == body.user_id, ApplicationAccessGrant.status == "active"))
+    existing = db.scalar(select(ApplicationAccessGrant).where(ApplicationAccessGrant.enterprise_id == enterprise.id,
+        ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.user_id == body.user_id))
     if existing:
+        existing.status = "active"
+        existing.granted_by = user.email or user.phone or user.id
+        db.commit()
         return {"id": existing.id, "status": existing.status, "user_id": existing.user_id}
     grant = ApplicationAccessGrant(enterprise_id=enterprise.id, product_id=product.id, user_id=body.user_id, granted_by=user.email or user.phone or user.id)
     db.add(grant)
@@ -7004,3 +7012,7 @@ version_change_quotes = install_version_change_quotes(globals())
 from .oidc_provider import install as install_oidc_provider
 
 oidc_provider = install_oidc_provider(globals())
+from .browser_sso import install as install_browser_sso
+install_browser_sso(globals())
+from .applications import install as install_applications
+install_applications(globals())
