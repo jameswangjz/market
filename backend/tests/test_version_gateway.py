@@ -88,7 +88,8 @@ class VersionGatewayTests(unittest.TestCase):
 
     def credential_owner(self, role="super_admin", platform_role=""):
         user = self.m.User(id="owner", email="owner@example.invalid", name="Owner",
-                           password_hash="not-a-login-password", platform_role=platform_role)
+                           password_hash="not-a-login-password", platform_role=platform_role,
+                           verified_status="verified")
         self.db.add(user)
         self.db.flush()
         self.db.add(self.m.Membership(user_id=user.id, enterprise_id="provider", role=role, status="active"))
@@ -133,6 +134,11 @@ class VersionGatewayTests(unittest.TestCase):
         membership = self.db.scalar(select(self.m.Membership).where(self.m.Membership.user_id == owner.id))
         membership.status = "disabled"
         self.db.flush()
+        self.assert_http(403, lambda: self.m.download_oauth_credentials("p", owner, self.db))
+
+    def test_unverified_enterprise_admin_cannot_download_credentials(self):
+        owner = self.credential_owner()
+        owner.verified_status = "pending"
         self.assert_http(403, lambda: self.m.download_oauth_credentials("p", owner, self.db))
 
     def test_review_gate_and_no_commit_rollback(self):

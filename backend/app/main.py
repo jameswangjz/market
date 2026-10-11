@@ -4050,6 +4050,8 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
         raise HTTPException(404, "产品不存在")
     if user.platform_role:
         raise HTTPException(403, "接入凭据仅可由产品提供企业管理员下载")
+    if user.verified_status != "verified":
+        raise HTTPException(403, "完成个人实名认证后才能下载接入凭据")
     require_enterprise_admin(db, user, product.enterprise_id)
     if product.product_type not in {"api", "model", "saas"} or product.status not in {"published", "pending_integration", "draft"}:
         raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
