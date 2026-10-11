@@ -376,7 +376,8 @@ def install(ns):
                 'can_renew': can_renew,
                 'terms': [{'order_id': term.order_id, 'order_no': number, 'version_code': term.version_code,
                     'starts_at': term.starts_at, 'ends_at': term.ends_at,
-                    'status': term.status, 'months': term.months}
+                    'status': term.status, 'months': term.months,
+                    'generation': term.generation, 'start_month': term.start_month}
                     for term, number in terms]}}
 
     @ns['app'].post('/api/orders/{order_id}/renewal')

@@ -139,6 +139,23 @@ class SubscriptionGatewayTests(unittest.TestCase):
         self.assertEqual(data["membership_status"], "none")
         self.assertEqual(data["user"]["enterprise_memberships"], [])
 
+    def test_real_session_and_subscription_contract_enables_safe_renewal(self):
+        order = self.purchase(2)
+        self.deliver(order)
+        session = self.request("GET", "/api/auth/me")
+        item = self.request("GET", f'/api/orders/{order["id"]}/subscription')["item"]
+        self.assertTrue(item["can_renew"])
+        self.assertEqual(session["enterprise"]["verification_status"], "verified")
+        member = next(m for m in session["user"]["enterprise_memberships"]
+                      if m["enterprise_id"] == order["buyer_enterprise_id"])
+        self.assertEqual(member["role"], "super_admin")
+        term = next(t for t in item["terms"] if t["order_id"] == order["id"])
+        self.assertEqual(term["generation"], item["generation"])
+        self.assertEqual(term["start_month"], 0)
+        self.assertEqual(term["months"], 2)
+        self.assertEqual(order["product_version_id"], item["version_id"])
+        self.assertEqual(order["product_version_code"], item["version_code"])
+
 
 if __name__ == "__main__":
     unittest.main()
