@@ -18,7 +18,13 @@ export function monthlyQuotaCalls(thousands) {
   return Number(calls);
 }
 
-export function sanitizeSubscription(data) {
+export function serverTimeNow(source, clientNow = Date.now()) {
+  const serverTime = date(source?.server_time);
+  if (!serverTime || !Number.isFinite(source?.client_received_at)) return clientNow;
+  return Date.parse(serverTime) + Math.max(0, clientNow - source.client_received_at);
+}
+
+export function sanitizeSubscription(data, receivedAt = Date.now()) {
   const item = data?.item;
   if (item?.available === false && !item.id) return { available: false };
   if (typeof item?.available !== "boolean" || !text(item.id) || !text(item.enterprise_id) ||
@@ -26,10 +32,12 @@ export function sanitizeSubscription(data) {
     throw new Error("订阅信息暂时不可用");
   }
   const period = item.current_period;
+  if (item.server_time != null && !date(item.server_time)) throw new Error("订阅服务器时间无效，请刷新重试");
   return {
     available: item.available, id: item.id, product_id: item.product_id, enterprise_id: item.enterprise_id,
     version_id: item.version_id, version_code: text(item.version_code), anchor_at: date(item.anchor_at),
     generation: count(item.generation), expires_at: date(item.expires_at), status: text(item.status), can_renew: item.can_renew === true,
+    server_time: date(item.server_time), client_received_at: receivedAt,
     terms: item.terms.map(term => ({ order_id: text(term?.order_id), order_no: text(term?.order_no),
       version_code: text(term?.version_code), starts_at: date(term?.starts_at), ends_at: date(term?.ends_at),
       months: count(term?.months), status: text(term?.status), generation: count(term?.generation), start_month: count(term?.start_month) })),
@@ -40,7 +48,7 @@ export function sanitizeSubscription(data) {
 
 export function subscriptionDisplayStatus(subscription, at = Date.now()) {
   if (!subscription?.id) return "unavailable";
-  if (subscription.status === "active" && subscription.expires_at && Date.parse(subscription.expires_at) <= at) return "expired";
+  if (subscription.status === "active" && subscription.expires_at && Date.parse(subscription.expires_at) <= serverTimeNow(subscription, at)) return "expired";
   return subscription.status;
 }
 

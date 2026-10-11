@@ -1,0 +1,26 @@
+{
+  "scope": "TRD-BE-016 and preview-only slice of TRD-FE-009",
+  "status": "local-verification-passed-deployment-pending",
+  "backend_full_regression": {"passed": 405, "failed": 0, "quote_tests_included": 18},
+  "final_quote_tests": {"passed": 20, "failed": 0, "overlap_with_full_regression": true},
+  "frontend_tests": {"passed": 122, "failed": 0},
+  "frontend_production_build": "passed; final built assets tested via local Vite preview",
+  "browser": {
+    "database": "isolated temporary SQLite, separate pooled connections",
+    "routes": "real production HTTP handlers, no production startup",
+    "deployment_tag": "local-only-not-deployed",
+    "viewports": ["1440x900", "390x844"],
+    "targets": ["upgrade", "downgrade", "fractional-cent upgrade"],
+    "evidence": "version-change-quote-browser-20261011/local-only-not-deployed/browser-results.json"
+  },
+  "runtime_deployed": false,
+  "real_pg_acceptance": "pending",
+  "live_task_console_updated": false,
+  "pending_reason": "Development VM SSH closes before authentication and HTTP returns empty response; Windows route selects Mihomo interface",
+  "limits": [
+    "No actual version switch, resource provisioning, payment, refund or settlement ledger entries",
+    "Gateway and subscription readiness used isolated fixtures, not real APISIX or third-party SaaS verification",
+    "No production or real user test data changed",
+    "BE-016 must not be marked done before deployment and real PG acceptance; FE-009 execution remains incomplete"
+  ]
+}

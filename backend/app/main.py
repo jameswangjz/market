@@ -6995,3 +6995,7 @@ subscription_gateway = install_subscription_gateway(globals())
 from .online_delivery import install as install_online_delivery
 
 online_delivery = install_online_delivery(globals())
+
+from .version_change_quotes import install as install_version_change_quotes
+
+version_change_quotes = install_version_change_quotes(globals())

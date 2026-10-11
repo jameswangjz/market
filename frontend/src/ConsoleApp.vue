@@ -14,12 +14,14 @@ import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
 import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
-import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls } from "./subscriptionTerms.js";
+import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessDeliveryFiles, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession } from "./deliveryAccess.js";
+import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
 import {
   Activity,
   ArrowUpRight,
+  ArrowLeftRight,
   BadgeCheck,
   BarChart3,
   Bell,
@@ -165,6 +167,35 @@ const renewalAllowed = computed(() => !subscriptionState.value.loading &&
   subscriptionState.value.orderId === selectedOrder.value?.order.id &&
   canRenewSubscription(selectedOrder.value?.order, subscriptionState.value.item, user.value, subscriptionEnterprise.value));
 const renewalModal = computed(() => renewalAllowed.value ? subscriptionState.value.modal : null);
+const versionChangeState = ref({ open: false, options: null, targetId: "", confirmed: false, quote: null,
+  loading: false, quoting: false, validating: false, validated: false, error: "" });
+const versionChangeClock = ref(Date.now());
+let versionChangeTimer = null;
+function versionChangeContext() {
+  return { order: selectedOrder.value?.order, subscription: subscriptionState.value.item,
+    user: user.value, buyerEnterprise: deliveryBuyerEnterprise(selectedOrder.value?.order),
+    token: token.value, enterpriseId: enterprise.value?.id, subscriptionLoading: subscriptionState.value.loading };
+}
+const versionChangeSession = createVersionChangeSession({
+  api, getContext: versionChangeContext, onChange: state => { versionChangeState.value = state; },
+});
+const versionChangeAllowed = computed(() => !subscriptionState.value.loading && !subscriptionState.value.error &&
+  subscriptionState.value.orderId === selectedOrder.value?.order.id &&
+  canPreviewVersionChange(selectedOrder.value?.order, subscriptionState.value.item, user.value,
+    deliveryBuyerEnterprise(selectedOrder.value?.order), versionChangeClock.value));
+const versionChangeModal = computed(() => versionChangeAllowed.value && versionChangeState.value.open ? versionChangeState.value : null);
+const versionChangeVersions = computed(() => versionChangeState.value.options?.versions.filter(
+  version => version.id !== versionChangeState.value.options.current_version_id) || []);
+const versionChangeTarget = computed(() => versionChangeVersions.value.find(version => version.id === versionChangeState.value.targetId));
+const versionChangeBusy = computed(() => versionChangeState.value.loading || versionChangeState.value.quoting || versionChangeState.value.validating);
+const versionChangeCanQuote = computed(() => versionChangeAllowed.value && !versionChangeBusy.value &&
+  Boolean(versionChangeTarget.value) && (versionChangeTarget.value.compatibility_mode !== "breaking" || versionChangeState.value.confirmed) &&
+  Date.parse(versionChangeState.value.options?.expires_at) > serverTimeNow(versionChangeState.value.options, versionChangeClock.value));
+function versionChangeMoney(value, currency) {
+  return new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format(value);
+}
+watch(() => JSON.stringify(versionChangeContext()), () => versionChangeSession.reset(), { flush: "sync" });
+watch(versionChangeAllowed, allowed => { if (!allowed) versionChangeSession.reset(); }, { flush: "sync" });
 watch([() => user.value?.id, () => enterprise.value?.id, token], () => {
   orderDetailRequest++;
   subscriptionSession.reset();
@@ -2361,6 +2392,10 @@ function nextActions(order) {
 }
 
 onMounted(() => {
+  versionChangeTimer = window.setInterval(() => {
+    versionChangeClock.value = Date.now();
+    versionChangeSession.expire();
+  }, 1000);
   updateUiScale();
   window.addEventListener("resize", updateUiScale);
   if (token.value) loadSession().then(() => { if (user.value) returnAfterLogin(); });
@@ -2370,6 +2405,8 @@ onMounted(() => {
   }, 10000);
 });
 onUnmounted(() => {
+  versionChangeSession.dispose();
+  window.clearInterval(versionChangeTimer);
   deliveryAccessSession.dispose();
   subscriptionSession.dispose();
   orderDetailRequest++;
@@ -4031,6 +4068,7 @@ onUnmounted(() => {
         <section class="drawer-section subscription-terms-panel" aria-label="订阅期限">
           <div class="drawer-section-title subscription-heading">
             <span>订阅期限</span>
+            <button v-if="versionChangeAllowed" class="secondary-btn" :disabled="renewalProcessing || orderActionSubmitting || Boolean(renewalModal)" @click="versionChangeSession.open()"><ArrowLeftRight :size="15" />版本变更</button>
             <button v-if="renewalAllowed" class="secondary-btn" :disabled="renewalProcessing || orderActionSubmitting" @click="subscriptionSession.open()"><RefreshCw :size="15" />续费</button>
             <button class="icon-btn" title="刷新订阅信息" aria-label="刷新订阅信息" :disabled="subscriptionState.loading || Boolean(subscriptionState.modal)" @click="subscriptionSession.load(selectedOrder.order)"><RefreshCw :size="15" /></button>
           </div>
@@ -4632,6 +4670,65 @@ onUnmounted(() => {
         </section>
       </form>
     </div>
+    <div v-if="versionChangeModal" class="modal-scrim" @click.self="versionChangeSession.close()">
+      <section class="modal-card version-change-modal" role="dialog" aria-modal="true" aria-labelledby="version-change-title" tabindex="-1" @keydown.esc="versionChangeSession.close()">
+        <div class="drawer-head">
+          <div><h2 id="version-change-title">版本变更报价</h2><p>{{ selectedOrder.order.product_name }} · {{ selectedOrder.order.order_no }}</p></div>
+          <button class="icon-btn" title="关闭版本变更" aria-label="关闭版本变更" @click="versionChangeSession.close()"><X :size="18" /></button>
+        </div>
+        <p v-if="versionChangeModal.loading" class="muted" role="status">版本信息加载中</p>
+        <form v-else-if="versionChangeModal.options" @submit.prevent="versionChangeSession.quote()">
+          <div class="form-grid">
+            <label class="wide">目标版本
+              <select :value="versionChangeModal.targetId" @change="versionChangeSession.setTarget($event.target.value)">
+                <option value="" disabled>请选择版本</option>
+                <option v-for="version in versionChangeVersions" :key="version.id" :value="version.id">{{ version.version_code }} · {{ fmtMoney(version.monthly_price) }}/月</option>
+              </select>
+            </label>
+          </div>
+          <p class="muted">当前版本 {{ versionChangeModal.options.current_version_code }} · 订阅到期 {{ fmtDate(versionChangeModal.options.expires_at) }}</p>
+          <p v-if="!versionChangeVersions.length" class="muted">暂无其他可用版本</p>
+          <template v-if="versionChangeTarget">
+            <p class="version-change-notes">{{ versionChangeTarget.compatibility_mode === 'breaking' ? '不兼容变更' : '向后兼容' }}<span v-if="versionChangeTarget.compatibility_notes"> · {{ versionChangeTarget.compatibility_notes }}</span></p>
+            <label v-if="versionChangeTarget.compatibility_mode === 'breaking'" class="version-change-confirm"><input type="checkbox" :checked="versionChangeModal.confirmed" @change="versionChangeSession.setConfirmed($event.target.checked)" />确认已了解目标版本的不兼容变更</label>
+          </template>
+          <div class="version-change-quote-action"><button type="submit" class="primary-btn" :disabled="!versionChangeCanQuote"><ArrowLeftRight :size="15" />{{ versionChangeModal.quoting ? '报价获取中' : '获取报价' }}</button></div>
+        </form>
+        <p v-if="versionChangeModal.error" class="danger-text" role="alert">{{ versionChangeModal.error }}</p>
+        <template v-if="versionChangeModal.quote">
+          <div class="version-change-summary">
+            <span :class="['status-pill', versionChangeModal.validated ? 'status-done' : 'status-todo']">{{ versionChangeModal.validated ? '已校验' : '待校验' }}</span>
+            <dl class="subscription-summary">
+              <div><dt>版本变更</dt><dd>{{ versionChangeModal.quote.current_version_code }} → {{ versionChangeModal.quote.target_version_code }}</dd></div>
+              <div><dt>报价到期</dt><dd>{{ fmtDate(versionChangeModal.quote.expires_at) }}</dd></div>
+              <div><dt>{{ versionChangeModal.quote.action === 'upgrade' ? '净应付' : versionChangeModal.quote.action === 'downgrade' ? '净应退' : '净差额' }}</dt><dd><strong>{{ versionChangeMoney(versionChangeModal.quote.action === 'upgrade' ? versionChangeModal.quote.payment_amount : versionChangeModal.quote.action === 'downgrade' ? versionChangeModal.quote.refund_amount : versionChangeModal.quote.net_difference, versionChangeModal.quote.currency) }}</strong></dd></div>
+              <div><dt>报价类型</dt><dd>{{ versionChangeModal.quote.action === 'upgrade' ? '升级' : versionChangeModal.quote.action === 'downgrade' ? '降级' : '无需支付' }} · {{ versionChangeModal.quote.currency }}</dd></div>
+            </dl>
+          </div>
+          <section v-for="segment in versionChangeModal.quote.segments" :key="segment.order_id" class="version-change-segment">
+            <h3>{{ segment.order_no }} <small>{{ segment.version_code }} · {{ segment.subscription_months }}个月</small></h3>
+            <dl class="subscription-summary">
+              <div><dt>订阅段</dt><dd>{{ fmtDate(segment.starts_at) }} 至 {{ fmtDate(segment.ends_at) }}</dd></div>
+              <div><dt>剩余期间</dt><dd>{{ fmtDate(segment.remaining_starts_at) }} 至 {{ fmtDate(segment.remaining_ends_at) }}</dd></div>
+              <div><dt>剩余比例</dt><dd>{{ (Number(segment.remaining_ratio) * 100).toFixed(4) }}%</dd></div>
+              <div><dt>段净差额</dt><dd>{{ versionChangeMoney(segment.net_difference, versionChangeModal.quote.currency) }}</dd></div>
+            </dl>
+            <table class="version-change-amounts">
+              <thead><tr><th>金额</th><th>原版本</th><th>目标版本</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">整段金额</th><td>{{ versionChangeMoney(segment.original_amount, versionChangeModal.quote.currency) }}</td><td>{{ versionChangeMoney(segment.target_full_amount, versionChangeModal.quote.currency) }}</td></tr>
+                <tr><th scope="row">剩余金额</th><td>{{ versionChangeMoney(segment.original_remaining_amount, versionChangeModal.quote.currency) }}</td><td>{{ versionChangeMoney(segment.target_remaining_amount, versionChangeModal.quote.currency) }}</td></tr>
+              </tbody>
+            </table>
+          </section>
+        </template>
+        <div class="modal-actions">
+          <button v-if="versionChangeModal.quote" class="secondary-btn" :disabled="versionChangeBusy" @click="versionChangeSession.validate()"><ShieldCheck :size="15" />{{ versionChangeModal.validating ? '校验中' : '校验报价' }}</button>
+          <button class="secondary-btn" :disabled="versionChangeBusy" @click="versionChangeSession.refresh()"><RefreshCw :size="15" />刷新</button>
+          <button class="secondary-btn" @click="versionChangeSession.close()">关闭</button>
+        </div>
+      </section>
+    </div>
     <div v-if="renewalModal" class="modal-scrim" @click.self="subscriptionSession.close()">
       <section class="modal-card renewal-modal" role="dialog" aria-modal="true" aria-labelledby="renewal-title" @keydown.esc="subscriptionSession.close()">
         <div class="drawer-head">
@@ -5032,4 +5129,20 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
 .provider-review-modal .modal-actions { flex-wrap: wrap; }
 .delivery-access-table { min-width: 560px; width: 100%; }
+.version-change-modal { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border-radius: 8px; }
+.version-change-modal .drawer-head > div { min-width: 0; }
+.version-change-modal .drawer-head .icon-btn { flex-shrink: 0; }
+.version-change-modal .drawer-head p, .version-change-notes, .version-change-segment h3 { overflow-wrap: anywhere; }
+.version-change-modal .wide { grid-column: 1 / -1; min-width: 0; }
+.version-change-modal select { width: 100%; min-width: 0; }
+.version-change-modal .version-change-confirm { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; font-size: 13px; }
+.version-change-modal .version-change-confirm input { width: 16px; height: 16px; flex-shrink: 0; margin: 2px 0 0; }
+.version-change-quote-action { margin-top: 16px; }
+.version-change-summary, .version-change-segment { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e6eb; }
+.version-change-segment h3 { margin: 0; font-size: 14px; }
+.version-change-segment h3 small { display: block; margin-top: 6px; color: #86909c; font-size: 12px; font-weight: 400; }
+.version-change-amounts { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+.version-change-amounts th, .version-change-amounts td { padding: 10px 8px; border-bottom: 1px solid #e5e6eb; text-align: left; overflow-wrap: anywhere; }
+.version-change-amounts thead { background: #f7f8fa; }
+.version-change-modal .modal-actions { flex-wrap: wrap; }
 </style>
