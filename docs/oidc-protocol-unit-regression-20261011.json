@@ -1,0 +1,29 @@
+{
+  "status": "passed",
+  "source_sha": "53100a8",
+  "command": "PYTHONPATH=backend/tests:scripts python -B -m unittest discover -s backend/tests -p test_*.py -q",
+  "discovered": 522,
+  "passed": 478,
+  "skipped": 44,
+  "failed": 0,
+  "duration_seconds": 150.91,
+  "focused_oidc_and_checkpoint_tests": 29,
+  "database_scope": "Isolated local tests; not proof of deployed PostgreSQL behavior",
+  "checks": [
+    "RS256 ID token, nonce, audience, issuer and public-only JWKS",
+    "Mandatory S256 and wrong verifier rejection",
+    "Single-use code, replay revocation and expired code rejection",
+    "Basic and form client authentication",
+    "Cross-enterprise and revoked member grant denial",
+    "Security-down denial with manual-down paid access retained",
+    "Audit failure rolls back code consumption and access token persistence",
+    "Independent OIDC client and no repeated secret echo",
+    "Bounded token request parsing and duplicate parameter rejection",
+    "Task checkpoint cannot mark partial OIDC milestone done"
+  ],
+  "limits": [
+    "44 skipped tests remain skipped; they are not counted as passed",
+    "No third-party RP browser session or platform login bridge acceptance",
+    "No real payment, refund, resource provisioning or settlement posting"
+  ]
+}

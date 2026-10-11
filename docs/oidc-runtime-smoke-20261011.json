@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "runtime_tag": "20261011225833-53100a8",
+  "http_statuses": {
+    "/console": 200,
+    "/.well-known/openid-configuration": 200,
+    "/oidc/jwks": 200,
+    "/api/dashboard": 200,
+    "/api/orders": 200,
+    "/api/audit-logs?q=&actor=&order_id=&batch_no=&rule_version=&risk_level=&start=&end=&page=1&page_size=50": 200
+  },
+  "public_signing_kid": "852516cc1fcf0182132627cd",
+  "persisted_key_after_restart": true,
+  "authlib_version": "1.6.9",
+  "cryptography_version": "50.0.2",
+  "limits": [
+    "No third-party RP browser session verification",
+    "Key stability checked via public JWKS; not a key rotation test"
+  ]
+}

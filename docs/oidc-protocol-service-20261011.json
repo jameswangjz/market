@@ -1,0 +1,25 @@
+{
+  "status": "passed",
+  "database": "real PostgreSQL",
+  "runtime_tag": "20261011225833-53100a8",
+  "transport": "deployed HTTP",
+  "limits": [
+    "Protocol core only; no browser session or third-party RP verification",
+    "Tenant/payment/delivery are synthetic isolated fixtures, not real provisioning"
+  ],
+  "checks": {
+    "rs256_jwks_identity_nonce": true,
+    "pkce_wrong_then_correct": true,
+    "code_replay_revokes_access": true,
+    "concurrent_pg_exchange": "one 200 and one 400",
+    "cross_enterprise_denied": true,
+    "callback_whitelist": true,
+    "grant_revocation": true,
+    "management_token_denied": true,
+    "audit_no_credentials": true,
+    "secret_not_echoed_again": true,
+    "basic_client_auth": true,
+    "security_down_denied": true
+  },
+  "cleanup": "verified exact owned DB rows and FK children absent"
+}
