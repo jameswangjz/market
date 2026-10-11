@@ -5170,6 +5170,11 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if order_fulfillment["handle_transition"](db, user, order, body):
         db.commit()
         return order_out(order)
+    if online_delivery["handles"](order):
+        if body.action == "retry_delivery":
+            online_delivery["retry"](db, user, order, body.reason)
+            db.commit()
+            return order_out(order)
     item = TRANSITIONS.get(body.action)
     if not item:
         raise HTTPException(400, "不支持的订单动作")
@@ -5177,6 +5182,8 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     authorized = order_workflow["authorize_transition"](db, user, order, body.action)
     if not authorized:
         settlement_metering["require_transition"](db, user, order, body.action)
+    if online_delivery["handles"](order) and body.action in {"start_delivery", "submit_delivery", "accept_delivery", "reject_delivery", "confirm_order"}:
+        raise HTTPException(409, "线上文件须通过自动交付验证，无需人工履约或验收")
     if order_workflow["payment_repeat"](db, order, body.action):
         return order_out(order)
     if domain == "main":
@@ -5339,6 +5346,11 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
         raise HTTPException(404, "关联订单不存在")
     order_fulfillment["require_task_result"](db, user, order, task)
     task = db.scalar(select(DeliveryTask).where(DeliveryTask.id == task.id).with_for_update().execution_options(populate_existing=True))
+    if online_delivery["handles"](order):
+        online_delivery["process"](db, order, task, user, force_failure=not body.success)
+        db.commit()
+        return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count,
+            "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at}, "order": order_out(order)}
     if task.status not in {"in_delivery", "retrying", "preparing"}:
         raise HTTPException(409, "当前交付任务不允许处理")
     if body.success:
@@ -6868,14 +6880,21 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
         elif not order_id:
             raise HTTPException(400, "下载产品数据文件必须提供订单号")
         else:
-            order = db.get(Order, order_id)
+            order = db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
             member = db.scalar(select(Membership).where(Membership.enterprise_id == order.buyer_enterprise_id, Membership.user_id == user.id, Membership.status == "active")) if order and not user.platform_role else None
             if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or user.platform_role or (order.buyer_user_id != user.id and not member):
                 raise HTTPException(403, "当前用户没有该订单文件的下载权限")
             settlement_metering["require_order_access"](db, user, order)
+            if order.buyer_enterprise_id:
+                trading_policy["require_buyer"](db, user, order.buyer_enterprise_id)
+            if online_delivery["handles"](order):
+                online_delivery["require_download"](db, user, order, item)
             product = db.get(Product, item.product_id)
             download_limit = order_economics["delivery_snapshot"](order)["download_limit"] if order.snapshot_version == 1 else int(product.download_limit or 0) if product else 0
-            used = db.scalar(select(func.count(FileDownloadLog.id)).where(FileDownloadLog.file_id == item.id, FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))) or 0
+            used_query = select(func.count(FileDownloadLog.id)).where(FileDownloadLog.order_id == order.id, FileDownloadLog.success.is_(True))
+            if not online_delivery["handles"](order):
+                used_query = used_query.where(FileDownloadLog.file_id == item.id)
+            used = db.scalar(used_query) or 0
             download_log = FileDownloadLog(file_id=item.id, order_id=order.id, user_id=user.id, success=False)
             if download_limit > 0 and used >= download_limit:
                 download_log.detail = f"下载次数已达上限：{used}/{download_limit}"
@@ -6973,3 +6992,6 @@ saas_combinations = install_saas_combinations(globals())
 from .subscription_gateway import install as install_subscription_gateway
 
 subscription_gateway = install_subscription_gateway(globals())
+from .online_delivery import install as install_online_delivery
+
+online_delivery = install_online_delivery(globals())

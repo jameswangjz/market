@@ -16,6 +16,7 @@ import { explicitOrderPayload } from "./orderClient.js";
 import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
+import { isNewFileOrder, canAccessDeliveryFiles, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession } from "./deliveryAccess.js";
 import {
   Activity,
   ArrowUpRight,
@@ -114,6 +115,41 @@ const productReviewMode = ref(false);
 const productDirectories = ref([]);
 const orders = ref([]);
 const selectedOrder = ref(null);
+const deliveryAccessOrder = ref(null);
+const deliveryAccessState = ref({ orderId: "", ready: false, files: [], loading: false, error: "", downloadError: "", downloading: "", reason: "" });
+function deliveryBuyerEnterprise(order) {
+  return buyerEnterprises.value.find(item => item.id === order?.buyer_enterprise_id) ||
+    (enterprise.value?.id === order?.buyer_enterprise_id ? enterprise.value : null);
+}
+function canOpenDeliveryAccess(order) {
+  return canAccessDeliveryFiles(order, user.value, deliveryBuyerEnterprise(order));
+}
+const currentDeliveryOrder = computed(() => {
+  const id = deliveryAccessOrder.value?.id;
+  if (!id) return null;
+  return (selectedOrder.value?.order.id === id ? selectedOrder.value.order : orders.value.find(item => item.id === id)) || deliveryAccessOrder.value;
+});
+const deliveryAccessSession = createDeliveryAccessSession({
+  api,
+  getContext: () => ({ order: currentDeliveryOrder.value, user: user.value, buyerEnterprise: deliveryBuyerEnterprise(currentDeliveryOrder.value), enterpriseId: enterprise.value?.id, token: token.value }),
+  onChange: state => { deliveryAccessState.value = state; },
+  downloadProtectedFile,
+});
+function closeDeliveryAccess() {
+  deliveryAccessOrder.value = null;
+  deliveryAccessSession.reset();
+}
+function openDeliveryAccess(order) {
+  if (!canOpenDeliveryAccess(order)) return;
+  closeDeliveryAccess();
+  deliveryAccessOrder.value = order;
+  deliveryAccessSession.load(order);
+}
+watch([user, enterprise, token, buyerEnterprises], closeDeliveryAccess, { deep: true, flush: "sync" });
+watch(() => JSON.stringify(currentDeliveryOrder.value), (value, previous) => {
+  if (deliveryAccessOrder.value && previous !== "null" && value !== previous) closeDeliveryAccess();
+}, { flush: "sync" });
+watch(selectedOrder, closeDeliveryAccess, { flush: "sync" });
 let orderDetailRequest = 0;
 const subscriptionState = ref({ orderId: "", item: null, loading: false, error: "", modal: null });
 const renewalProcessing = ref(false);
@@ -1238,7 +1274,7 @@ async function openOrder(order) {
   const requests = [subscriptionSession.load(data.order)];
   if (isOfflineFulfillmentOrder(data.order)) requests.push(loadOrderDeliveryAttachments(data.order));
   else orderDeliveryAttachments.value = { orderId: "", tasks: [], items: [], loading: false, error: "" };
-  if (data.order.payment_status === "paid") {
+  if (data.order.payment_status === "paid" && !isNewFileOrder(data.order)) {
     requests.push(api.get(`/orders/${order.id}/product-files`).then(({ data: files }) => { if (current()) orderProductFiles.value = files; }).catch(() => {}));
   }
   if (data.order.subscription_id) {
@@ -1269,16 +1305,23 @@ async function openOrder(order) {
   );
   await Promise.all(requests);
 }
+async function downloadProtectedFile(endpoint, name, current = () => true) {
+  const { data } = await api.get(endpoint, { responseType: "blob" });
+  if (!current()) return;
+  const url = URL.createObjectURL(data);
+  try {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 async function downloadOrderProductFile(file) {
   if (!selectedOrder.value) return;
   try {
-    const response = await api.get(`/files/${file.id}/download`, { params: { order_id: selectedOrder.value.order.id }, responseType: "blob" });
-    const url = URL.createObjectURL(response.data);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = file.original_name;
-    link.click();
-    URL.revokeObjectURL(url);
+    await downloadProtectedFile(`/files/${encodeURIComponent(file.id)}/download?order_id=${encodeURIComponent(selectedOrder.value.order.id)}`, file.original_name);
     await openOrder(selectedOrder.value.order);
   } catch (error) {
     notify(error.response?.data?.detail || "文件下载失败");
@@ -1650,13 +1693,7 @@ async function downloadProductFile(file, reportType = "") {
   try {
     const suffix = reportType ? `?report_type=${reportType}` : "";
     const endpoint = reportType ? `/files/${file.id}/scan-report.pdf` : `/files/${file.id}/download`;
-    const { data } = await api.get(`${endpoint}${suffix}`, { responseType: "blob" });
-    const url = URL.createObjectURL(data);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = reportType ? `${file.original_name}.${reportType}.scan-report.pdf` : file.original_name;
-    link.click();
-    URL.revokeObjectURL(url);
+    await downloadProtectedFile(`${endpoint}${suffix}`, reportType ? `${file.original_name}.${reportType}.scan-report.pdf` : file.original_name);
   } catch (error) {
     notify(error.response?.data?.detail || "文件下载失败");
   }
@@ -2333,6 +2370,7 @@ onMounted(() => {
   }, 10000);
 });
 onUnmounted(() => {
+  deliveryAccessSession.dispose();
   subscriptionSession.dispose();
   orderDetailRequest++;
   dialogs.dispose();
@@ -3112,6 +3150,7 @@ onUnmounted(() => {
                 <thead>
                   <tr>
                     <th>订单号</th>
+                    <th>应用访问地址</th>
                     <th>产品和客户</th>
                     <th>主状态</th>
                     <th>支付</th>
@@ -3126,6 +3165,10 @@ onUnmounted(() => {
                     <td>
                       <span class="order-no">{{ order.order_no }}</span
                       ><small>{{ fmtDate(order.created_at) }}</small>
+                    </td>
+                    <td>
+                      <button v-if="canOpenDeliveryAccess(order)" class="text-btn" @click="openDeliveryAccess(order)"><Download :size="15" />下载文件</button>
+                      <span v-else class="muted">{{ deliveryAccessPlaceholder(order) }}</span>
                     </td>
                     <td>
                       <strong>{{ order.product_name }}</strong
@@ -4069,7 +4112,11 @@ onUnmounted(() => {
             </fieldset>
           </template>
         </div>
-        <div v-if="orderProductFiles.items.length" class="drawer-section">
+        <div v-if="canOpenDeliveryAccess(selectedOrder.order)" class="drawer-section">
+          <div class="drawer-section-title">数据文件交付</div>
+          <button class="secondary-btn" @click="openDeliveryAccess(selectedOrder.order)"><Download :size="15" />下载文件</button>
+        </div>
+        <div v-if="!isNewFileOrder(selectedOrder.order) && orderProductFiles.items.length" class="drawer-section">
           <div class="drawer-section-title">数据文件交付</div>
           <p class="muted">本订单下载次数：{{ orderProductFiles.download_limit === 0 ? '不限制' : `${orderProductFiles.items[0]?.downloaded || 0}/${orderProductFiles.download_limit}` }}</p>
           <div v-for="file in orderProductFiles.items" :key="file.id" class="file-status-row">
@@ -4600,6 +4647,40 @@ onUnmounted(() => {
             <button type="submit" class="primary-btn" :disabled="renewalProcessing || renewalModal.submitting || orderActionSubmitting"><ShoppingCart :size="15" />{{ renewalModal.submitting ? '创建中' : renewalModal.attempted ? '重试创建订单' : '创建续费订单' }}</button>
           </div>
         </form>
+      </section>
+    </div>
+    <div v-if="deliveryAccessOrder && canOpenDeliveryAccess(currentDeliveryOrder)" class="modal-scrim" @click.self="closeDeliveryAccess">
+      <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="delivery-access-title" tabindex="-1" @keydown.esc="closeDeliveryAccess">
+        <div class="drawer-head">
+          <div><h2 id="delivery-access-title">下载文件</h2><p>{{ currentDeliveryOrder.order_no }}</p></div>
+          <button class="icon-btn" title="关闭文件交付" aria-label="关闭文件交付" @click="closeDeliveryAccess"><X :size="18" /></button>
+        </div>
+        <p v-if="deliveryAccessState.loading" class="muted" role="status">交付文件加载中</p>
+        <p v-else-if="deliveryAccessState.error" class="danger-text" role="alert">{{ deliveryAccessState.error }}</p>
+        <template v-else-if="deliveryAccessState.ready">
+          <div class="table-wrap">
+            <table class="data-table compact">
+              <thead><tr><th>文件</th><th>下载限制</th><th>已下载</th><th>剩余次数</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-for="file in deliveryAccessState.files" :key="file.id">
+                  <td style="white-space: normal; overflow-wrap: anywhere; min-width: 120px; max-width: 240px">{{ file.name }}</td>
+                  <td>{{ file.download_limit === 0 ? '不限制' : file.download_limit }}</td>
+                  <td>{{ file.used_downloads }}</td>
+                  <td>{{ file.download_limit === 0 ? '不限制' : file.remaining_downloads }}</td>
+                  <td><button class="secondary-btn" :title="!file.url ? '文件下载地址不可用' : file.download_limit !== 0 && file.remaining_downloads === 0 ? '下载次数已用尽' : '下载文件'" :disabled="!canDownloadDeliveryFile(deliveryAccessState, file)" @click="deliveryAccessSession.download(file.id)"><Download :size="15" />{{ deliveryAccessState.downloading === file.id ? '下载中' : '下载' }}</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-if="!deliveryAccessState.files.length" class="muted">暂无交付文件</p>
+        </template>
+        <p v-else class="muted" role="status">{{ deliveryAccessState.reason || '交付文件暂不可用' }}</p>
+        <p v-if="deliveryAccessState.ready && deliveryAccessState.reason" class="muted">{{ deliveryAccessState.reason }}</p>
+        <p v-if="deliveryAccessState.downloadError" class="danger-text" role="alert">{{ deliveryAccessState.downloadError }}</p>
+        <div class="modal-actions">
+          <button class="secondary-btn" :disabled="deliveryAccessState.loading || Boolean(deliveryAccessState.downloading)" @click="deliveryAccessSession.load(currentDeliveryOrder)"><RefreshCw :size="15" />{{ deliveryAccessState.error ? '重试' : '刷新' }}</button>
+          <button class="secondary-btn" @click="closeDeliveryAccess">关闭</button>
+        </div>
       </section>
     </div>
     <div v-if="providerReview && canReviewProviderOrder(providerReview.order, user, enterprise)" class="modal-scrim" @click.self="closeProviderReview">

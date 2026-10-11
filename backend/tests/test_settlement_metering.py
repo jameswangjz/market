@@ -169,8 +169,11 @@ class SettlementMeteringTests(unittest.TestCase):
         failure = next(item for item in self.measurements(oid) if item["source"] == "delivery")
         self.assertEqual(failure["validation_status"], "pending")
         self.assertNotIn("PRIVATE FAILURE", str(failure))
-        self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="ops", json={"success": True})
-        self.request("POST", f"/api/orders/{oid}/transition", json={"action": "accept_delivery"})
+        with patch.object(self.m, 'MINIO_ENDPOINT', 'fixture'), patch.object(self.m, 'Minio') as storage:
+            storage.return_value.stat_object.return_value.size = 1
+            storage.return_value.get_object.return_value.read.return_value = b'x'
+            self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="ops", json={"success": True})
+        self.request("POST", f"/api/orders/{oid}/transition", expected=409, json={"action": "accept_delivery"})
         for amount in (20, 10):
             self.request("POST", f"/api/orders/{oid}/transition", actor="finance", json={"action": "approve_refund", "refund_amount": amount})
             self.request("POST", f"/api/orders/{oid}/transition", expected=409, json={"action": "confirm_payment"})
@@ -185,19 +188,18 @@ class SettlementMeteringTests(unittest.TestCase):
 
     def product_file(self, oid):
         self.pay(oid)
-        with self.m.SessionLocal() as db:
-            db.add(self.m.FileObject(id="download-file", owner_id="provider", product_id="product", version_id="version",
-                                     object_name="data", original_name="data.csv", file_role="product_data", size=9999, status="active"))
-            db.commit()
         response = Mock()
         response.read.return_value = b"actual content"
         storage = Mock()
         storage.get_object.return_value = response
+        storage.stat_object.return_value.size = 1
+        with patch.object(self.m, 'MINIO_ENDPOINT', 'fixture'), patch.object(self.m, 'Minio', return_value=storage):
+            self.request('POST', f'/api/delivery-tasks/{self.task_id(oid)}/process', actor='ops', json={'success': True})
         return storage
 
     def download(self, oid, storage, actor="buyer", expected=200):
         with patch.object(self.m, "MINIO_ENDPOINT", "storage.invalid"), patch.object(self.m, "Minio", return_value=storage):
-            response = self.client.get(f"/api/files/download-file/download?order_id={oid}", headers={"Authorization": "Bearer " + self.tokens[actor]})
+            response = self.client.get(f"/api/files/product_data/download?order_id={oid}", headers={"Authorization": "Bearer " + self.tokens[actor]})
         self.assertEqual(response.status_code, expected, response.text)
         return response
 
@@ -462,6 +464,8 @@ class SettlementMeteringTests(unittest.TestCase):
         with self.m.SessionLocal() as db:
             task = db.get(self.m.DeliveryTask, self.task_id(oid))
             task.delivery_mode = "manual"
+            # This metering case specifically exercises the historical manual adapter.
+            db.get(self.m.Order, oid).snapshot_version = 0
             db.commit()
         self.request("POST", f"/api/delivery-tasks/{self.task_id(oid)}/process", actor="ops", json={"success": True})
         item = next(item for item in self.measurements(oid) if item["measurement_type"] == "offline_delivery")
