@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
@@ -17,7 +17,7 @@ import { explicitOrderPayload } from "./orderClient.js";
 import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
-import { isNewFileOrder, canAccessDeliveryFiles, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession } from "./deliveryAccess.js";
+import { isNewFileOrder, canAccessBuyerDelivery, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
 import {
   Activity,
@@ -125,7 +125,7 @@ function deliveryBuyerEnterprise(order) {
     (enterprise.value?.id === order?.buyer_enterprise_id ? enterprise.value : null);
 }
 function canOpenDeliveryAccess(order) {
-  return canAccessDeliveryFiles(order, user.value, deliveryBuyerEnterprise(order));
+  return canAccessBuyerDelivery(order, user.value, deliveryBuyerEnterprise(order));
 }
 const currentDeliveryOrder = computed(() => {
   const id = deliveryAccessOrder.value?.id;
@@ -137,6 +137,7 @@ const deliveryAccessSession = createDeliveryAccessSession({
   getContext: () => ({ order: currentDeliveryOrder.value, user: user.value, buyerEnterprise: deliveryBuyerEnterprise(currentDeliveryOrder.value), enterpriseId: enterprise.value?.id, token: token.value }),
   onChange: state => { deliveryAccessState.value = state; },
   downloadProtectedFile,
+  onNavigate: value => { window.location.assign(value); },
 });
 function closeDeliveryAccess() {
   deliveryAccessOrder.value = null;
@@ -147,6 +148,29 @@ function openDeliveryAccess(order) {
   closeDeliveryAccess();
   deliveryAccessOrder.value = order;
   deliveryAccessSession.load(order);
+}
+function deliveryActionLabel(order) {
+  const method = deliveryMethod(order);
+  return method === "file" ? "下载文件" : ["api", "model_api"].includes(method) ? "查看接入信息" : method === "saas" ? "访问应用" : "";
+}
+async function manageDeliveryCredentials() {
+  const order = currentDeliveryOrder.value;
+  if (!order) return;
+  closeDeliveryAccess();
+  if (selectedOrder.value?.order.id !== order.id) {
+    try { await openOrder(order); }
+    catch (error) { notify(error.response?.data?.detail || "订单凭据管理信息加载失败"); return; }
+  }
+  await nextTick();
+  const panel = document.querySelector(".api-order-panel");
+  if (panel) panel.scrollIntoView({ behavior: "smooth", block: "center" });
+  else notify("订单凭据管理区域暂不可用");
+}
+async function copyDeliveryGatewayUrl() {
+  const value = deliveryAccessState.value.api?.gateway_url;
+  if (!value) return;
+  try { await navigator.clipboard.writeText(value); notify("网关地址已复制"); }
+  catch { notify("复制失败，请手动选择网关地址"); }
 }
 watch([user, enterprise, token, buyerEnterprises], closeDeliveryAccess, { deep: true, flush: "sync" });
 watch(() => JSON.stringify(currentDeliveryOrder.value), (value, previous) => {
@@ -3222,7 +3246,7 @@ onUnmounted(() => {
                       ><small>{{ fmtDate(order.created_at) }}</small>
                     </td>
                     <td>
-                      <button v-if="canOpenDeliveryAccess(order)" class="text-btn" @click="openDeliveryAccess(order)"><Download :size="15" />下载文件</button>
+                      <button v-if="canOpenDeliveryAccess(order)" class="text-btn" @click="openDeliveryAccess(order)"><Download v-if="deliveryMethod(order) === 'file'" :size="15" /><ExternalLink v-else :size="15" />{{ deliveryActionLabel(order) }}</button>
                       <span v-else class="muted">{{ deliveryAccessPlaceholder(order) }}</span>
                     </td>
                     <td>
@@ -4169,8 +4193,8 @@ onUnmounted(() => {
           </template>
         </div>
         <div v-if="canOpenDeliveryAccess(selectedOrder.order)" class="drawer-section">
-          <div class="drawer-section-title">数据文件交付</div>
-          <button class="secondary-btn" @click="openDeliveryAccess(selectedOrder.order)"><Download :size="15" />下载文件</button>
+          <div class="drawer-section-title">线上交付访问</div>
+          <button class="secondary-btn" @click="openDeliveryAccess(selectedOrder.order)"><Download v-if="deliveryMethod(selectedOrder.order) === 'file'" :size="15" /><ExternalLink v-else :size="15" />{{ deliveryActionLabel(selectedOrder.order) }}</button>
         </div>
         <div v-if="!isNewFileOrder(selectedOrder.order) && orderProductFiles.items.length" class="drawer-section">
           <div class="drawer-section-title">数据文件交付</div>
@@ -4767,12 +4791,12 @@ onUnmounted(() => {
     <div v-if="deliveryAccessOrder && canOpenDeliveryAccess(currentDeliveryOrder)" class="modal-scrim" @click.self="closeDeliveryAccess">
       <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="delivery-access-title" tabindex="-1" @keydown.esc="closeDeliveryAccess">
         <div class="drawer-head">
-          <div><h2 id="delivery-access-title">下载文件</h2><p>{{ currentDeliveryOrder.order_no }}</p></div>
-          <button class="icon-btn" title="关闭文件交付" aria-label="关闭文件交付" @click="closeDeliveryAccess"><X :size="18" /></button>
+          <div><h2 id="delivery-access-title">{{ deliveryActionLabel(currentDeliveryOrder) }}</h2><p>{{ currentDeliveryOrder.order_no }}</p></div>
+          <button class="icon-btn" title="关闭交付访问" aria-label="关闭交付访问" @click="closeDeliveryAccess"><X :size="18" /></button>
         </div>
-        <p v-if="deliveryAccessState.loading" class="muted" role="status">交付文件加载中</p>
+        <p v-if="deliveryAccessState.loading" class="muted" role="status">正在加载交付信息</p>
         <p v-else-if="deliveryAccessState.error" class="danger-text" role="alert">{{ deliveryAccessState.error }}</p>
-        <template v-else-if="deliveryAccessState.ready">
+        <template v-else-if="deliveryAccessState.ready && deliveryMethod(currentDeliveryOrder) === 'file'">
           <div class="table-wrap">
             <table class="data-table compact delivery-access-table">
               <thead><tr><th>文件</th><th>下载限制</th><th>已下载</th><th>剩余次数</th><th>操作</th></tr></thead>
@@ -4789,11 +4813,33 @@ onUnmounted(() => {
           </div>
           <p v-if="!deliveryAccessState.files.length" class="muted">暂无交付文件</p>
         </template>
+        <section v-else-if="['api', 'model_api'].includes(deliveryMethod(currentDeliveryOrder))" class="delivery-api-summary">
+          <dl v-if="deliveryAccessState.api" class="subscription-summary">
+            <div><dt>当前版本</dt><dd>{{ deliveryAccessState.api.version_code }}</dd></div>
+            <div><dt>{{ deliveryAccessState.api.gateway_url ? '网关地址' : '相对网关路径' }}</dt><dd class="delivery-gateway-value"><code>{{ deliveryAccessState.api.gateway_url || deliveryAccessState.api.gateway_base_path }}</code><button v-if="deliveryAccessState.api.gateway_url" class="icon-btn" title="复制网关地址" aria-label="复制网关地址" @click="copyDeliveryGatewayUrl"><Copy :size="15" /></button></dd></div>
+            <div><dt>共享范围</dt><dd>企业共享</dd></div>
+            <div><dt>到期时间</dt><dd>{{ fmtDate(deliveryAccessState.api.expires_at) }}</dd></div>
+            <div><dt>每分钟限流</dt><dd>{{ deliveryAccessState.api.limits.rate_limit_per_minute ?? '-' }}</dd></div>
+            <div><dt>每日额度</dt><dd>{{ deliveryAccessState.api.limits.daily_quota === 0 ? '不限' : deliveryAccessState.api.limits.daily_quota ?? '-' }}</dd></div>
+            <div><dt>每月额度</dt><dd>{{ deliveryAccessState.api.limits.monthly_quota === 0 ? '不限' : deliveryAccessState.api.limits.monthly_quota ?? '-' }}</dd></div>
+            <div v-if="deliveryAccessState.api.limits.quota_amount !== undefined"><dt>额度值（原始单位）</dt><dd>{{ deliveryAccessState.api.limits.quota_amount }}</dd></div>
+          </dl>
+          <p v-if="deliveryAccessState.reason" class="muted">{{ deliveryAccessState.reason }}</p>
+          <button v-if="deliveryAccessState.api" class="secondary-btn" @click="manageDeliveryCredentials"><Settings2 :size="15" />管理企业凭据</button>
+        </section>
+        <section v-else-if="deliveryAccessState.ready && deliveryMethod(currentDeliveryOrder) === 'saas'" class="delivery-saas-summary">
+          <dl class="subscription-summary">
+            <div><dt>订阅</dt><dd>{{ deliveryAccessState.saas.subscription_id }}</dd></div>
+            <div><dt>到期时间</dt><dd>{{ fmtDate(deliveryAccessState.saas.expires_at) }}</dd></div>
+          </dl>
+          <p v-if="deliveryAccessState.launching" class="muted" role="status">正在启动应用</p>
+          <button class="primary-btn" :disabled="deliveryAccessState.launching" @click="deliveryAccessSession.launch"><ArrowUpRight :size="15" />{{ deliveryAccessState.launching ? '启动中' : '访问应用' }}</button>
+        </section>
         <p v-else class="muted" role="status">{{ deliveryAccessState.reason || '交付文件暂不可用' }}</p>
         <p v-if="deliveryAccessState.ready && deliveryAccessState.reason" class="muted">{{ deliveryAccessState.reason }}</p>
         <p v-if="deliveryAccessState.downloadError" class="danger-text" role="alert">{{ deliveryAccessState.downloadError }}</p>
         <div class="modal-actions">
-          <button class="secondary-btn" :disabled="deliveryAccessState.loading || Boolean(deliveryAccessState.downloading)" @click="deliveryAccessSession.load(currentDeliveryOrder)"><RefreshCw :size="15" />{{ deliveryAccessState.error ? '重试' : '刷新' }}</button>
+          <button class="secondary-btn" :disabled="deliveryAccessState.loading || Boolean(deliveryAccessState.downloading) || deliveryAccessState.launching" @click="deliveryAccessSession.load(currentDeliveryOrder)"><RefreshCw :size="15" />{{ deliveryAccessState.error ? '重试' : '刷新' }}</button>
           <button class="secondary-btn" @click="closeDeliveryAccess">关闭</button>
         </div>
       </section>
@@ -5147,6 +5193,10 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
 .provider-review-modal .modal-actions { flex-wrap: wrap; }
 .delivery-access-table { min-width: 560px; width: 100%; }
+.delivery-api-summary { min-width: 0; }
+.delivery-gateway-value { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.delivery-gateway-value code { min-width: 0; overflow-wrap: anywhere; }
+.delivery-gateway-value .icon-btn { flex: 0 0 auto; }
 .version-change-modal { width: min(780px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border-radius: 8px; }
 .version-change-modal .drawer-head > div { min-width: 0; }
 .version-change-modal .drawer-head .icon-btn { flex-shrink: 0; }

@@ -1,0 +1,46 @@
+﻿{
+    "status":  "failed",
+    "mode":  "browser acceptance",
+    "checks":  [
+
+               ],
+    "screenshots":  [
+
+                    ],
+    "samples":  [
+
+                ],
+    "failures":  [
+                     {
+                         "reason":  "Operation failed; inspect phase and startupDiagnostics; private details suppressed",
+                         "stage":  "desktop exact buyer console",
+                         "errorType":  "RuntimeException"
+                     }
+                 ],
+    "startupDiagnostics":  {
+                               "executableFound":  true,
+                               "processStarted":  true,
+                               "portFileFound":  true,
+                               "portFileValid":  true,
+                               "pageTargetCount":  1,
+                               "targetType":  "PSCustomObject",
+                               "websocketLoopback":  true,
+                               "socketConnected":  true,
+                               "cdpReady":  true
+                           },
+    "managementNative":  "not tested; api-credentials GET explicitly denied",
+    "databaseReadonly":  "not measured by browser; separate PG acceptance required",
+    "positiveSSO":  "not tested",
+    "deploymentProvenance":  "supplied tag, not server image verification",
+    "limits":  [
+                   "Synthetic fixtures only; no APISIX, payment, scan, storage or positive SSO proof",
+                   "GET-only scoped network; no management click, entitlement write, POST launch or download",
+                   "SaaS negative only; malformed URL isolation and missing-config/error UI deferred"
+               ],
+    "deploymentTag":  "20261012043020-fa0efa1",
+    "artifactDirectory":  "C:\\Users\\james\\market\\docs\\unified-delivery-artifacts\\20261012043020-fa0efa1\\qa-uda-297fc5cdb54a-b2f8db3a68c741fd93a90818b6615283",
+    "chromeProfileDeleted":  true,
+    "blockedRequests":  0,
+    "managementRequestsAttempted":  0,
+    "nativeDialogs":  0
+}

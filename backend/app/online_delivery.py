@@ -5,11 +5,16 @@ Hooks flush only; process_once owns its worker transaction and never seeds data.
 """
 from datetime import timedelta
 import json
+import os
+import re
+from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 
 from .order_economics import money
+from .oidc_provider import NO_STORE
 
 
 def install(ns):
@@ -164,30 +169,123 @@ def install(ns):
         if item.id not in {row.id for row in files(db, order)}:
             raise HTTPException(403, '文件不属于订单冻结的交付版本')
 
+    def access_order(db, order):
+        eligible(order)
+        if order.main_status != 'completed' or order.delivery_status != 'accepted':
+            raise HTTPException(409, '订单交付尚未完成')
+
+    def api_access(db, order):
+        product = db.get(ns['Product'], order.product_id)
+        if not product or product.status not in {'published', 'draft'}:
+            raise HTTPException(409, '产品已安全下架或不存在，不能访问')
+        entitlement = ns['subscription_terms']['current_entitlement'](
+            db, order.buyer_enterprise_id, order.product_id)
+        if (not entitlement or entitlement['delivery_method'] != order.delivery_method_snapshot
+                or entitlement['delivery_method'] not in {'api', 'model_api'}):
+            raise HTTPException(409, 'API订阅尚未成功交付或已到期')
+        route = ns['product_gateway_route'](db, product.id, entitlement['version_code'], active=True)
+        if not route:
+            raise HTTPException(409, '当前订阅版本的API网关路由尚未启用')
+        now = ns['now']()
+        credential = db.scalar(select(ns['ApiCredential']).where(
+            ns['ApiCredential'].route_id == route.id,
+            ns['ApiCredential'].enterprise_id == order.buyer_enterprise_id,
+            ns['ApiCredential'].order_id == '',
+            ns['ApiCredential'].status == 'active',
+            ns['ApiCredential'].apisix_consumer_name != '',
+            (ns['ApiCredential'].expires_at.is_(None)) | (ns['ApiCredential'].expires_at > now),
+        ).order_by(ns['ApiCredential'].created_at.desc(), ns['ApiCredential'].id))
+        limits = entitlement['limits']
+        expires_at = entitlement['expires_at']
+        public_origin = os.getenv('API_GATEWAY_PUBLIC_URL', '').strip()
+        valid_origin = False
+        try:
+            parsed_origin = urlsplit(public_origin)
+            port = parsed_origin.port
+            valid_origin = (parsed_origin.scheme in {'http', 'https'} and bool(parsed_origin.hostname)
+                and not parsed_origin.username and not parsed_origin.password and port != 0
+                and parsed_origin.path in {'', '/'} and not parsed_origin.query and not parsed_origin.fragment
+                and '\\' not in public_origin
+                and not any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in public_origin))
+        except ValueError:
+            pass
+        valid_route_key = bool(re.fullmatch(r'[A-Za-z0-9_-]{1,100}', route.route_key or ''))
+        ready = credential is not None and valid_origin and valid_route_key
+        reason = ''
+        if not valid_origin:
+            reason = '公共API网关地址未配置或无效'
+        elif not valid_route_key:
+            reason = '当前API网关路由标识无效'
+        elif credential is None:
+            reason = '尚无有效共享API凭据，请先配置凭据'
+        gateway_path = f'/gateway/{route.route_key}' if valid_route_key else ''
+        return {'ready': ready, 'reason': reason, 'api': {
+            'gateway_base_path': gateway_path,
+            'gateway_url': (public_origin.rstrip('/') + gateway_path) if valid_origin and valid_route_key else '',
+            'credentials_path': f'/api/orders/{order.id}/api-credentials',
+            'shared_scope': 'enterprise', 'version_code': entitlement['version_code'],
+            'expires_at': expires_at.isoformat() if expires_at else None,
+            'limits': {key: limits.get(key, 0) for key in (
+                'rate_limit_per_minute', 'daily_quota', 'monthly_quota', 'quota_amount')},
+        }}
+
+    def saas_access(db, user, order):
+        subscription = db.get(ns['SaaSSubscription'], order.subscription_id) if order.subscription_id else None
+        if (not subscription or subscription.enterprise_id != order.buyer_enterprise_id
+                or subscription.product_id != order.product_id):
+            raise HTTPException(409, '订单未关联有效的买方SaaS订阅')
+        ns['applications_access'](db, user, subscription.id,
+            enterprise_id=order.buyer_enterprise_id, product_id=order.product_id)
+        return {'ready': True, 'reason': '', 'saas': {
+            'subscription_id': subscription.id,
+            'launch_path': f'/api/orders/{order.id}/delivery-launch',
+            'expires_at': subscription.expires_at.isoformat() if subscription.expires_at else None,
+        }}
+
     @ns['app'].get('/api/orders/{order_id}/delivery-access')
     def access(order_id: str, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
         order = db.get(Order, order_id)
         if not order:
-            raise HTTPException(404, '订单不存在')
-        require_buyer(db, user, order)
-        result = {'order_id': order.id, 'method': order.delivery_method_snapshot, 'ready': False, 'files': []}
-        if not handles(order):
-            return {**result, 'reason': '该交付类型的统一访问入口尚未完成'}
+            return JSONResponse({'detail': '订单不存在'}, status_code=404, headers=NO_STORE)
         try:
-            eligible(order)
-            if order.main_status != 'completed' or order.delivery_status != 'accepted':
-                raise HTTPException(409, '文件交付尚未完成')
-            rows = files(db, order)
+            require_buyer(db, user, order)
         except HTTPException as exc:
-            return {**result, 'reason': str(exc.detail)}
+            return JSONResponse({'detail': exc.detail}, status_code=exc.status_code, headers=NO_STORE)
+        result = {'order_id': order.id, 'method': order.delivery_method_snapshot, 'ready': False,
+                  'reason': '', 'files': [], 'api': None, 'saas': None}
+        if order.snapshot_version != 1 or order.delivery_method_snapshot not in {'file', 'api', 'model_api', 'tenant_access'}:
+            return JSONResponse({**result, 'reason': '历史或线下订单不支持统一线上访问'}, headers=NO_STORE)
+        try:
+            access_order(db, order)
+            if order.delivery_method_snapshot == 'file':
+                rows = files(db, order)
+            elif order.delivery_method_snapshot in {'api', 'model_api'}:
+                return JSONResponse({**result, **api_access(db, order)}, headers=NO_STORE)
+            else:
+                return JSONResponse({**result, **saas_access(db, user, order)}, headers=NO_STORE)
+        except HTTPException as exc:
+            return JSONResponse({**result, 'reason': str(exc.detail)}, headers=NO_STORE)
         used = db.scalar(select(func.count(ns['FileDownloadLog'].id)).where(
             ns['FileDownloadLog'].order_id == order.id, ns['FileDownloadLog'].success.is_(True))) or 0
         limit = ns['order_economics']['delivery_snapshot'](order)['download_limit']
         remaining = max(0, limit-used) if limit else None
         available = remaining is None or remaining > 0
-        return {**result, 'ready': available, 'reason': '' if available else '该订单的下载次数已用尽',
+        return JSONResponse({**result, 'ready': available, 'reason': '' if available else '该订单的下载次数已用尽',
                 'files': [{'id': item.id, 'name': item.original_name, 'url': f'/api/files/{item.id}/download?order_id={order.id}' if available else '',
-                           'download_limit': limit, 'used_downloads': used, 'remaining_downloads': remaining} for item in rows]}
+                           'download_limit': limit, 'used_downloads': used, 'remaining_downloads': remaining} for item in rows]}, headers=NO_STORE)
+
+    @ns['app'].post('/api/orders/{order_id}/delivery-launch')
+    def launch(order_id: str, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+        order = db.get(Order, order_id)
+        if not order:
+            raise HTTPException(404, '订单不存在')
+        require_buyer(db, user, order)
+        if order.snapshot_version != 1 or order.delivery_method_snapshot != 'tenant_access':
+            raise HTTPException(409, '仅新版SaaS订单支持在线启动')
+        access_order(db, order)
+        data = saas_access(db, user, order)
+        launch_url = ns['applications_launch'](db, user, data['saas']['subscription_id'])
+        return JSONResponse({'order_id': order.id, 'launch_url': launch_url}, headers=NO_STORE)
 
     def process_once():
         with ns['SessionLocal']() as db:

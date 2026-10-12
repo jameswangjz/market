@@ -45,6 +45,46 @@ def install(ns):
         client = db.scalar(select(hooks['Client']).where(hooks['Client'].product_id == product.id))
         return hooks['client_for'](db, client.client_id) if client else None
 
+    def validated_application_address(product):
+        raw_address = product.application_url or ''
+        try:
+            address = urlsplit(raw_address)
+            port = address.port
+        except ValueError as exc:
+            raise HTTPException(409, '应用访问地址无效') from exc
+        if (address.scheme not in {'http', 'https'} or not address.hostname or address.username or address.password
+                or port == 0 or '\\' in raw_address
+                or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in raw_address)):
+            raise HTTPException(409, '应用访问地址无效')
+        return address
+
+    def access_for_subscription(db, user, sid, enterprise_id=None, product_id=None):
+        subscription, product, _ = context(db, user, sid)
+        if ((enterprise_id and subscription.enterprise_id != enterprise_id)
+                or (product_id and subscription.product_id != product_id)):
+            raise HTTPException(409, '应用订阅与订单不匹配')
+        client = client_for_product(db, product)
+        if not client:
+            raise HTTPException(409, '应用尚未配置单点登录')
+        hooks['eligible'](db, user, client, subscription.enterprise_id, subscription.id)
+        if not product.application_url:
+            raise HTTPException(409, '应用访问地址未配置')
+        validated_application_address(product)
+        return subscription, product
+
+    def launch_subscription(db, user, sid):
+        subscription, product = access_for_subscription(db, user, sid)
+        address = validated_application_address(product)
+        query = [(key, value) for key, value in parse_qsl(address.query, keep_blank_values=True) if key != 'enterprise_id']
+        query.append(('enterprise_id', subscription.enterprise_id))
+        ns['audit'](db, user.email or user.id, 'launch_saas_application', 'saas_subscription', subscription.id,
+            '启动已授权应用；不传递登录令牌或凭据', tenant_id=subscription.enterprise_id)
+        db.commit()
+        return urlunsplit(address._replace(query=urlencode(query)))
+
+    ns['applications_access'] = access_for_subscription
+    ns['applications_launch'] = launch_subscription
+
     @ns['app'].get('/api/applications')
     def listing(user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
         if not user.is_active or user.activation_status != 'active' or user.verified_status != 'verified' or user.platform_role:
@@ -85,26 +125,7 @@ def install(ns):
 
     @ns['app'].post('/api/applications/{subscription_id}/launch')
     def launch(subscription_id: str, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
-        subscription, product, member = context(db, user, subscription_id)
-        client = client_for_product(db, product)
-        if not client:
-            raise HTTPException(409, '应用尚未配置单点登录')
-        hooks['eligible'](db, user, client, subscription.enterprise_id, subscription.id)
-        raw_address = product.application_url or ''
-        try:
-            address = urlsplit(raw_address)
-            port = address.port
-        except ValueError as exc:
-            raise HTTPException(409, '应用访问地址无效') from exc
-        if (address.scheme not in {'http', 'https'} or not address.hostname or address.username or address.password
-                or port == 0 or '\\' in raw_address or any(ch.isspace() or ord(ch) < 32 for ch in raw_address)):
-            raise HTTPException(409, '应用访问地址无效')
-        query = [(key, value) for key, value in parse_qsl(address.query, keep_blank_values=True) if key != 'enterprise_id']
-        query.append(('enterprise_id', subscription.enterprise_id))
-        ns['audit'](db, user.email or user.id, 'launch_saas_application', 'saas_subscription', subscription.id,
-            '启动已授权应用；不传递登录令牌或凭据', tenant_id=subscription.enterprise_id)
-        db.commit()
-        return JSONResponse({'launch_url': urlunsplit(address._replace(query=urlencode(query)))}, headers=NO_STORE)
+        return JSONResponse({'launch_url': launch_subscription(db, user, subscription_id)}, headers=NO_STORE)
 
     @ns['app'].get('/api/applications/{subscription_id}/members')
     def members(subscription_id: str, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
