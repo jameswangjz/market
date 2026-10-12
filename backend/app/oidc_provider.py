@@ -6,7 +6,7 @@ import secrets
 import time
 from datetime import timezone
 from functools import lru_cache
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from authlib.jose import JsonWebKey
 from authlib.oauth2.rfc6749 import AuthorizationServer, OAuth2Request
@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Column, ForeignKey, Integer, String, Text, UniqueConstraint, select, update
 from sqlalchemy.exc import IntegrityError
@@ -444,6 +444,100 @@ def install(ns):
             'response_type': 'code', 'grant_type': 'authorization_code',
             'code_challenge_method': 'S256', 'scopes': sorted(SCOPES)}, headers={
                 **NO_STORE, 'Content-Disposition': 'attachment; filename="oidc-credentials.json"'})
+
+    @ns['app'].get('/api/products/{product_id}/saas-integration-credentials-download')
+    def download_saas_integration_credentials(product_id: str,
+            user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+        product = db.get(ns['Product'], product_id)
+        if not product:
+            raise HTTPException(404, '产品不存在')
+        if user.platform_role:
+            raise HTTPException(403, '集成凭据仅可由产品提供企业管理员下载')
+        if (not user.is_active or user.activation_status != 'active'
+                or user.verified_status != 'verified'):
+            raise HTTPException(403, '仅已实名且已激活的提供方管理员可以下载集成凭据')
+        enterprise = db.get(ns['Enterprise'], product.enterprise_id)
+        if not enterprise or enterprise.verification_status != 'verified':
+            raise HTTPException(403, '产品提供企业须完成实名认证')
+        ns['require_enterprise_admin'](db, user, product.enterprise_id)
+        if (product.product_type != 'saas' or product.delivery_method != 'tenant_access'
+                or product.status not in {'published', 'pending_integration'}):
+            raise HTTPException(409, '只有已发布或待接入验证的SaaS产品可以下载集成凭据')
+
+        machine = db.scalar(select(ns['OAuthClient']).where(
+            ns['OAuthClient'].product_id == product.id,
+            ns['OAuthClient'].status == 'active'))
+        oidc = db.scalar(select(OIDCClient).where(OIDCClient.product_id == product.id,
+            OIDCClient.status == 'active'))
+        required_machine_scopes = {'saas.tenant', 'saas.user', 'saas.department'}
+        machine_scopes = set((machine.scope or '').split()) if machine else set()
+        if (not machine or not machine.client_id or not machine.client_secret
+                or not required_machine_scopes.issubset(machine_scopes)):
+            raise HTTPException(409, '现有平台OAuth客户端缺失、已停用或授权范围无效')
+        if not oidc:
+            raise HTTPException(409, '现有OIDC客户端缺失或已停用')
+        oidc_secret = client_secret(oidc)
+        try:
+            redirects = json.loads(product.oidc_redirect_uris_json or '[]')
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(409, '现有OIDC回调登记无效') from exc
+        if (not isinstance(redirects, list) or not redirects
+                or any(not isinstance(uri, str) or not valid_redirect(uri, db=db)
+                    for uri in redirects)):
+            raise HTTPException(409, '现有OIDC回调登记无效')
+
+        platform_issuer = ns['platform_oauth_issuer']()
+        token_url = ns['platform_oauth_token_url']()
+        oidc_issuer = issuer()
+        payload = {
+            'schema_version': '1.0',
+            'product': {'id': product.id, 'name': product.name,
+                'application_url': product.application_url or '',
+                'integration_api_url': product.integration_api_url or ''},
+            'oauth2_api': {
+                'client_id': machine.client_id,
+                'client_secret': machine.client_secret,
+                'token_url': token_url,
+                'introspection_url': platform_issuer.rstrip('/') + '/oauth/introspect',
+                'issuer': platform_issuer,
+                'audience': 'market-resource',
+                'scope': machine.scope,
+                'grant_type': 'client_credentials',
+                'token_validation': 'Resource services validate platform signature, issuer, audience and expiry; use introspection where applicable.',
+            },
+            'oidc_sso': {
+                'client_id': oidc.client_id,
+                'client_secret': oidc_secret,
+                'issuer': oidc_issuer,
+                'discovery_url': oidc_issuer + '/.well-known/openid-configuration',
+                'authorization_url': oidc_issuer + '/oidc/authorize',
+                'token_url': oidc_issuer + '/oidc/token',
+                'userinfo_url': oidc_issuer + '/oidc/userinfo',
+                'jwks_url': oidc_issuer + '/oidc/jwks',
+                'redirect_uris': redirects,
+                'response_type': 'code',
+                'grant_type': 'authorization_code',
+                'code_challenge_method': 'S256',
+                'scopes': sorted(SCOPES),
+            },
+            'instructions': [
+                '两个客户端均为产品共享客户端，不代表购买方或最终用户身份。',
+                'OIDC用户令牌按用户、企业及订阅隔离，不得作为机器凭据使用。',
+                'OAuth2密钥主要用于向平台获取机器Token；SaaS仍须验证平台签发的Token，不用于用户登录。',
+                '凭据仅供提供方服务器端配置，禁止发送给购买方或放入浏览器、前端代码及公开仓库。',
+            ],
+        }
+        ns['audit'](db, user.email or user.phone or user.id,
+            'download_saas_integration_credentials', 'product', product.id,
+            '下载SaaS机器OAuth与OIDC集成凭据；审计不包含密钥',
+            tenant_id=product.enterprise_id)
+        db.commit()
+        filename = quote(f'{product.name}-saas-integration-credentials.json', safe='')
+        return Response(content=json.dumps(payload, ensure_ascii=False, indent=2),
+            media_type='application/json; charset=utf-8', headers={
+                **NO_STORE,
+                'Content-Disposition': 'attachment; filename="saas-integration-credentials.json"; '
+                    f"filename*=UTF-8''{filename}"})
 
     def valid_redirect(uri, db=None):
         try:

@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canViewProductIntegration, createIntegrationController, integrationStatus } from '../src/productIntegration.js';
+import { readFileSync } from 'node:fs';
+import { canManageProviderSaas, canViewProductIntegration, createIntegrationController, integrationStatus } from '../src/productIntegration.js';
+
+test('SaaS config download is gated and cannot fall through to the legacy provider download', () => {
+  const source = readFileSync(new URL('../src/ProductIntegrationPanel.vue', import.meta.url), 'utf8');
+  assert.match(source, /product\.product_type === 'saas' && canManageSaas/);
+  assert.match(source, /v-else-if="product\.product_type !== 'saas' && provider &&/);
+});
 
 test('visibility follows real session roles; platform legacy membership cannot override platform scope', () => {
   assert.equal(canViewProductIntegration({ enterprise_role: 'super_admin' }), true);
@@ -9,6 +16,30 @@ test('visibility follows real session roles; platform legacy membership cannot o
   assert.equal(canViewProductIntegration({ enterprise_role: 'member' }), false);
   assert.equal(canViewProductIntegration({ enterprise_memberships: [{ status: 'active', role: 'enterprise_admin' }] }), true);
   assert.equal(canViewProductIntegration({ enterprise_memberships: [{ status: 'disabled', role: 'enterprise_admin' }] }), false);
+});
+
+test('SaaS management requires an active verified enterprise admin membership for the owning enterprise', () => {
+  const user = {
+    is_active: true, activation_status: 'active', verified_status: 'verified',
+    enterprise_memberships: [
+      { enterprise_id: 'selected', status: 'active', role: 'enterprise_admin' },
+      { enterprise_id: 'owned', status: 'active', role: 'enterprise_admin' },
+      { enterprise_id: 'disabled', status: 'disabled', role: 'super_admin' },
+    ],
+  };
+  const ownedProduct = { id: 'p', enterprise_id: 'owned', product_type: 'saas', status: 'pending_integration' };
+  assert.equal(canManageProviderSaas(user, ownedProduct), true);
+  assert.equal(canManageProviderSaas({ ...user, enterprise_memberships: [{ enterprise_id: 'owned', status: 'active', role: 'super_admin' }] }, { ...ownedProduct, status: 'published' }), true);
+  assert.equal(canManageProviderSaas(user, { ...ownedProduct, enterprise_id: 'other', status: 'published' }), false);
+  assert.equal(canManageProviderSaas(user, { ...ownedProduct, enterprise_id: undefined }), false);
+  assert.equal(canManageProviderSaas(user, { ...ownedProduct, status: 'draft' }), false);
+  assert.equal(canManageProviderSaas({ ...user, platform_role: 'super_admin' }, ownedProduct), false);
+  assert.equal(canManageProviderSaas({ ...user, is_active: false }, ownedProduct), false);
+  assert.equal(canManageProviderSaas({ ...user, activation_status: 'disabled' }, ownedProduct), false);
+  assert.equal(canManageProviderSaas({ ...user, verified_status: 'pending' }, ownedProduct), false);
+  assert.equal(canManageProviderSaas({ ...user, enterprise_memberships: [{ enterprise_id: 'owned', status: 'active', role: 'member' }] }, ownedProduct), false);
+  assert.equal(canManageProviderSaas({ ...user, enterprise_memberships: user.enterprise_memberships.filter(membership => membership.enterprise_id !== 'owned') }, ownedProduct), false);
+  assert.equal(canManageProviderSaas(user, { ...ownedProduct, enterprise_id: 'disabled' }), false);
 });
 
 function fixture() {

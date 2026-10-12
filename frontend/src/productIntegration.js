@@ -4,6 +4,14 @@ export function canViewProductIntegration(user) {
     || user?.enterprise_memberships?.some(member => member.status === 'active' && ['super_admin', 'enterprise_admin'].includes(member.role)) === true;
 }
 
+export function canManageProviderSaas(user, product) {
+  if (user?.platform_role || !user?.is_active || user.activation_status !== 'active' || user.verified_status !== 'verified') return false;
+  if (product?.product_type !== 'saas' || !['pending_integration', 'published'].includes(product.status)) return false;
+  if (!product.enterprise_id) return false;
+  return user.enterprise_memberships?.some(membership => membership.enterprise_id === product.enterprise_id
+      && membership.status === 'active' && ['super_admin', 'enterprise_admin'].includes(membership.role));
+}
+
 export function integrationStatus(item) {
   if (!item) return '未配置';
   if (item.status === 'verified' && item.healthy) return '验证通过';

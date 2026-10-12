@@ -1,6 +1,6 @@
 # SaaS 应用第三方接口对接规范
 
-版本：v1.1
+版本：v1.2
 
 ## 1. 参与方与凭据获取
 
@@ -14,7 +14,7 @@
 
 因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 按本文档校验平台签发的 Token，并提供租户、用户、部门等业务接口。
 
-产品审核通过后，产品所有者可通过 `GET /api/products/{product_id}/oauth-credentials-download` 下载统一 OAuth2 接入配置文件；该文件包含 Token 地址、校验地址、Issuer、Audience、Scope 以及平台分配的客户端信息。
+产品审核通过后，已实名、已激活的提供方企业超级管理员、企业管理员可通过 `GET /api/products/{product_id}/saas-integration-credentials-download` 下载统一 SaaS 接入配置 JSON 文件，前端入口为“下载接入配置”。文件包含 `oauth2_api` 和 `oidc_sso` 两个独立分区及 `instructions` 配置说明；购买方、普通企业成员和平台内部角色无下载权限。
 
 ### 1.2 获取 Token
 
@@ -37,9 +37,11 @@ grant_type=client_credentials&client_id={client_id}&client_secret={client_secret
 
 ### 1.3 发布双客户端与HTTP策略
 
-SaaS 四阶段审核通过后，平台在同一事务内自动创建独立的 OAuth2 接口客户端和 OIDC 登录客户端，进入待接入验证。已实名提供方企业管理员分别下载 `/api/products/{product_id}/oauth-credentials-download` 和 `/api/products/{product_id}/oidc-credentials-download`，重复发布不轮换凭据。
+SaaS 四阶段审核通过后，平台在同一事务内自动创建独立的 OAuth2 接口客户端和 OIDC 登录客户端，进入待接入验证。提供方企业超级管理员和企业管理员统一下载一份接入配置；历史 OAuth/OIDC 单独下载接口仅保留兼容。重复下载及重复发布不轮换凭据；任一客户端缺失、停用或密钥不可恢复时返回 409，不生成部分配置或新密钥。
 
 OAuth2 接口 Scope 为 `saas.tenant saas.user saas.department`；OIDC 使用授权码+PKCE S256，Scope 为 `openid profile email`。OIDC 密钥加密保存，下载包含 issuer、discovery、authorization、token、userinfo、jwks 地址及回调地址。两套客户端不可混用，密钥仅放在服务器，不提供给购买方。
+
+`oauth2_api` 用于平台获取机器 Token、SaaS 校验管理接口请求；`oidc_sso` 用于 SaaS 服务端用户登录。客户端配置均为产品级共享配置，不是买方身份；每个用户的授权码、令牌、企业及租户权限保持独立。完整文件结构和第三方实施步骤见《SaaS应用第三方接口对接规范.md》第 1.3 节。
 
 系统配置提供“应用接入地址允许HTTP”开关，默认关闭；开启后允许应用访问地址、管理接口地址、API/模型API上游及OIDC回调采用HTTP，不取消回调精确匹配或SSRF防护。平台自己的发行者地址由部署配置管理。
 
