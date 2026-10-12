@@ -1,0 +1,20 @@
+﻿{
+    "scope":  "Live deployed platform and local SaaS; real HTTP, no response mocks",
+    "status":  "passed",
+    "checks":  [
+                   "Paid order -\u003e authenticated launch -\u003e OIDC consent -\u003e real mock SaaS session",
+                   "Provider UI shows one unified configuration action; live download authorized, independent credentials, no-store",
+                   "Live system configuration HTTP toggle visible on desktop and mobile"
+               ],
+    "startupDiagnostics":  {
+                               "portFileValid":  true,
+                               "cdpReady":  true,
+                               "executableFound":  true,
+                               "pageTargetCount":  1,
+                               "socketConnected":  true,
+                               "portFileFound":  true,
+                               "websocketLoopback":  true,
+                               "processStarted":  true,
+                               "targetType":  "PSCustomObject"
+                           }
+}
