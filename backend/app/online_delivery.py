@@ -17,15 +17,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from .order_economics import money
 from .oidc_provider import NO_STORE
 from .saas_auto_delivery import install as install_saas_delivery
+from .api_auto_delivery import install as install_api_delivery
 
 
 def install(ns):
     Order, Task, File = ns['Order'], ns['DeliveryTask'], ns['FileObject']
     saas = install_saas_delivery(ns)
+    api = install_api_delivery(ns)
 
     def handles(order):
         return (order.snapshot_version == 1
-                and order.delivery_method_snapshot in {'file', 'tenant_access'})
+                and order.delivery_method_snapshot in {'file', 'tenant_access', 'api', 'model_api'})
 
     def method(order):
         return order.delivery_method_snapshot
@@ -113,6 +115,9 @@ def install(ns):
             if method(order) == 'tenant_access':
                 with db.begin_nested():
                     pending = saas['process'](db, order, task, user, automatic=automatic) is None
+            elif method(order) in {'api', 'model_api'}:
+                with db.begin_nested():
+                    api['process'](db, order, task, user)
             else:
                 verify(db, order)
         except HTTPException as exc:
@@ -120,9 +125,10 @@ def install(ns):
         except SQLAlchemyError:
             raise
         except Exception:
-            if method(order) != 'tenant_access':
+            if method(order) not in {'tenant_access', 'api', 'model_api'}:
                 raise
-            error = 'SaaS 自动开通或结果校验失败'
+            error = ('API 自动交付或结果校验失败'
+                if method(order) in {'api', 'model_api'} else 'SaaS 自动开通或结果校验失败')
         if pending:
             task.next_retry_at = ns['now']() + timedelta(seconds=2)
             task.note = 'SaaS 自动开通阶段已持久化，等待后台继续处理'
@@ -142,7 +148,9 @@ def install(ns):
         else:
             task.last_error = ''
             task.status = 'completed'
-            task.note = ('SaaS 租户、管理员、OIDC 与订阅期限已核验，自动履约完成'
+            task.note = ('API 路由、上游健康与订阅策略已核验，订单已履约；共享 API 凭据需由买方按需生成'
+                if method(order) in {'api', 'model_api'} else
+                'SaaS 租户、管理员、OIDC 与订阅期限已核验，自动履约完成'
                 if method(order) == 'tenant_access' else
                 '文件扫描、快照和持久化可读性检查通过，自动履约完成')
             order.delivery_status = 'accepted'
@@ -323,7 +331,7 @@ def install(ns):
             if not actor:
                 raise RuntimeError('Delivery monitor account unavailable')
             order = db.scalar(select(Order).join(Task, Task.order_id == Order.id).where(
-                Order.snapshot_version == 1, Order.delivery_method_snapshot.in_(['file', 'tenant_access']),
+                Order.snapshot_version == 1, Order.delivery_method_snapshot.in_(['file', 'tenant_access', 'api', 'model_api']),
                 Task.delivery_mode == 'automatic', Task.method == Order.delivery_method_snapshot,
                 Task.status.in_(['in_delivery', 'retrying']), Task.next_retry_at <= ns['now']())
                 .order_by(Task.next_retry_at, Task.id).with_for_update(skip_locked=True, of=Order)

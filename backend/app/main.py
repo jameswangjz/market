@@ -5395,7 +5395,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if not authorized:
         settlement_metering["require_transition"](db, user, order, body.action)
     if online_delivery["handles"](order) and body.action in {"start_delivery", "submit_delivery", "accept_delivery", "reject_delivery", "confirm_order"}:
-        raise HTTPException(409, "线上文件须通过自动交付验证，无需人工履约或验收")
+        raise HTTPException(409, "线上订单须通过自动交付验证，无需人工履约或验收")
     if order_workflow["payment_repeat"](db, order, body.action):
         return order_out(order)
     if domain == "main":

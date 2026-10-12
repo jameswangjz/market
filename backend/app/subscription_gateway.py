@@ -1,5 +1,6 @@
 """Bridge frozen subscription terms to APISIX, retaining legacy policies."""
 import json
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -88,7 +89,11 @@ def install(ns):
             return True
         product = db.get(ns["Product"], order.product_id)
         version = db.get(ns["ProductReleaseVersion"], order.product_version_id)
-        if not product or not version or not ns["version_gateway"]["version_ready"](db, product, version):
+        if not product or not version:
+            raise HTTPException(409, "订单版本网关尚未完成有效接入验证，不能开始订阅计时")
+        frozen_product = SimpleNamespace(id=product.id,
+            product_type=product.product_type, delivery_method=order.delivery_method_snapshot)
+        if not ns["version_gateway"]["version_ready"](db, frozen_product, version):
             raise HTTPException(409, "订单版本网关尚未完成有效接入验证，不能开始订阅计时")
         config = db.scalar(select(ns["version_gateway"]["Config"]).where(
             ns["version_gateway"]["Config"].version_id == version.id))
