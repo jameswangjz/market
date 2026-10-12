@@ -36,7 +36,7 @@ def main():
                 policy.setting_key, 'Enable HTTP explicitly for local SaaS development',
                 before=before, after={'allow_http': True})
             product.oidc_redirect_uris_json = json.dumps(['http://192.168.10.10:30083/sso/callback'])
-            product.application_url = 'http://192.168.10.10:30083/app'
+            application_url_before = product.application_url
             product.integration_api_url = 'http://market-mock-saas:8200/isv.php'
             config = db.scalar(select(m.SaaSIntegrationConfig).where(
                 m.SaaSIntegrationConfig.product_id == PRODUCT_ID).with_for_update())
@@ -48,6 +48,11 @@ def main():
             config.token_url = 'http://market-api:8000/oauth/token'
             oidc, _ = m.oidc_provider['ensure_client'](db, product, admin.email)
             oidc_secret = m.oidc_provider['client_secret'](oidc)
+            product.application_url = f'http://192.168.10.10:30083/sso/apps/{oidc.client_id}'
+            m.audit(db, admin.email, 'configure_saas_app1_oidc_entry', 'product', product.id,
+                'Set scoped mock SaaS launch URL to its registered OIDC entry route',
+                before={'application_url': application_url_before},
+                after={'application_url': product.application_url, 'oidc_client_id': oidc.client_id})
             body = {'client_id': oidc.client_id, 'client_secret': oidc_secret,
                 'product_id': product.id, 'product_name': product.name,
                 'issuer': 'http://192.168.10.10:30080',

@@ -50,16 +50,16 @@ try {
     $result.checks+= 'Paid order -> authenticated launch -> OIDC consent -> real mock SaaS session'
     Set-Actor $fixture.providerToken
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=products'}|Out-Null
-    WaitJs 'document.body.textContent.includes("SaaS-APP1")&&document.body.textContent.includes("OIDC登录凭据")'
+    WaitJs 'document.body.textContent.includes("SaaS-APP1")&&document.body.textContent.includes("OIDC\u767b\u5f55\u51ed\u636e")'
     Shot 'provider-credentials'
     $product=ConvertTo-Json -InputObject $fixture.productId -Compress
     Assert-Browser "(async()=>{const headers={Authorization:'Bearer '+localStorage.getItem('market_token')};const a=await fetch('/api/products/'+$product+'/oauth-credentials-download',{headers});const b=await fetch('/api/products/'+$product+'/oidc-credentials-download',{headers});return a.status===200&&b.status===200&&a.headers.get('cache-control')==='no-store'&&b.headers.get('cache-control')==='no-store'})()" 'Provider credential downloads must succeed without caching'
     $result.checks+= 'Provider UI shows two credential actions; both live downloads authorized and no-store'
     Set-Actor $fixture.adminToken
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=settings'}|Out-Null
-    WaitJs '[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="应用接入")'
-    Js '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="应用接入").click();true'|Out-Null
-    WaitJs 'document.body.textContent.includes("允许应用接入地址使用HTTP")&&!!document.querySelector(".checkbox-line input:checked")'
+    WaitJs '[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="\u5e94\u7528\u63a5\u5165")'
+    Js '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="\u5e94\u7528\u63a5\u5165").click();true'|Out-Null
+    WaitJs 'document.body.textContent.includes("\u5141\u8bb8\u5e94\u7528\u63a5\u5165\u5730\u5740\u4f7f\u7528HTTP")&&!!document.querySelector(".checkbox-line input:checked")'
     Shot 'http-setting-desktop'
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=390;height=844;deviceScaleFactor=1;mobile=$true}|Out-Null
     Shot 'http-setting-mobile'
