@@ -137,6 +137,24 @@ class BrowserSSOTests(unittest.TestCase):
             self.assertEqual(db.query(self.m.ApplicationAccessGrant).filter_by(enterprise_id='buyer_tenant',
                 product_id='product', user_id='member').count(), 1)
 
+    def test_legacy_reactivation_reuses_row_and_is_audited(self):
+        with self.m.SessionLocal() as db:
+            db.add(self.m.User(id='provider_member', email='provider-member@example.invalid', name='Member',
+                password_hash='unused', is_active=True, activation_status='active', verified_status='verified'))
+            db.flush()
+            db.add(self.m.Membership(user_id='provider_member', enterprise_id='provider_tenant', role='member'))
+            grant = self.m.ApplicationAccessGrant(enterprise_id='provider_tenant', product_id='product',
+                user_id='provider_member', granted_by='provider', status='revoked')
+            db.add(grant)
+            db.commit()
+            gid = grant.id
+        result = self.request('POST', '/api/products/product/access-grants', 'provider',
+            json={'user_id': 'provider_member'})
+        self.assertEqual((result['id'], result['status']), (gid, 'active'))
+        with self.m.SessionLocal() as db:
+            logs = db.query(self.m.AuditLog).filter_by(action='grant_saas_access', target_id=gid).all()
+            self.assertEqual(len(logs), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

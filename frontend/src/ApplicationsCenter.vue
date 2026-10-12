@@ -98,11 +98,11 @@ onUnmounted(() => session.dispose());
 .application-members-modal { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border-radius: 8px; }
 .application-members-modal .drawer-head > div { min-width: 0; overflow-wrap: anywhere; }
 .application-members-modal .drawer-head .icon-btn { flex-shrink: 0; }
-.application-member { display: flex; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid #e5e6eb; }
+.application-member { display: flex; flex-direction: row; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid #e5e6eb; }
 .application-member > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .application-member strong, .application-member span, .application-member small { display: block; font-size: 13px; }
 .application-member small, .application-member div span { color: #86909c; margin-top: 4px; font-size: 12px; }
-.application-member input { width: 18px; height: 18px; flex: 0 0 18px; accent-color: #ff6a00; }
+.application-member input { width: 18px; height: 18px; flex: 0 0 18px; padding: 0; margin: 0; accent-color: #ff6a00; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 button:disabled { opacity: .55; cursor: default; }
 @media (max-width: 760px) { .application-row { flex-wrap: wrap; gap: 12px; } .application-description { flex-basis: calc(100% - 60px); } .application-actions { width: 100%; padding-left: 60px; } }

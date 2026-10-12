@@ -11,7 +11,7 @@ CODES = ('TRD-BE-014', 'TRD-BE-015', 'TRD-FE-010', 'TRD-QA-006')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('start', 'finish'))
+    parser.add_argument('phase', choices=('start', 'verify', 'finish'))
     parser.add_argument('--runtime-tag', default='')
     parser.add_argument('--evidence')
     parser.add_argument('--output')
@@ -37,6 +37,9 @@ def main():
         for code in CODES:
             update = {'status': 'in_progress', 'progress': 70 if code == 'TRD-BE-014' else 15,
                 'note': 'Browser login bridge, isolated mock SaaS session and buyer application access are under implementation and verification.'}
+            if args.phase == 'verify':
+                update = {'status': 'in_progress', 'progress': 40 if code == 'TRD-QA-006' else 85,
+                    'note': 'Implementation, unit regression and deployment completed; real mock OPEN passed; browser end-to-end verification remains in progress.'}
             if args.phase == 'finish':
                 update = {'status': 'done', 'progress': 100,
                     'note': 'Browser SSO/session/application and negative-case acceptance passed; scoped cleanup verified; runtime=' + args.runtime_tag}
