@@ -6,7 +6,7 @@ export function splitOidcRedirectUris(text) {
   return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
 
-export function isValidOidcRedirectUri(value) {
+export function isValidOidcRedirectUri(value, options = {}) {
   if (typeof value !== "string" || value.length > 2000 || /[\s\x00-\x1f\\#*]/.test(value)) return false;
   const authority = value.match(/^https?:\/\/([^/?#]+)\//i)?.[1];
   if (!authority || authority.includes("@")) return false;
@@ -14,22 +14,21 @@ export function isValidOidcRedirectUri(value) {
     const url = new URL(value);
     if (!url.hostname || url.username || url.password || url.hash || url.port === "0") return false;
     if (url.protocol === "https:") return true;
-    // Check the original authority too: URL normalizes aliases such as 127.1.
-    return url.protocol === "http:" && /^(localhost|127\.0\.0\.1|market-mock-saas)(?::[0-9]+)?$/i.test(authority);
+    return url.protocol === "http:" && options.allowHttp === true;
   } catch {
     return false;
   }
 }
 
-export function registrationPayload(form) {
+export function registrationPayload(form, options = {}) {
   const payload = Object.fromEntries(productFields.map((key) => [key, form[key]]));
   const redirects = form.oidc_redirect_uris ?? [];
   if (!Array.isArray(redirects) || redirects.some((uri) => typeof uri !== "string")) {
     throw new TypeError("OIDC回调地址须为字符串数组");
   }
   const normalizedRedirects = redirects.map((uri) => uri.trim()).filter(Boolean);
-  if (normalizedRedirects.some((uri) => !isValidOidcRedirectUri(uri))) {
-    throw new TypeError("OIDC回调地址须为完整HTTPS URL，不得包含片段或用户信息；开发HTTP仅允许localhost、127.0.0.1或market-mock-saas");
+  if (normalizedRedirects.some((uri) => !isValidOidcRedirectUri(uri, options))) {
+    throw new TypeError("OIDC回调地址须为完整HTTPS URL（除非管理员已允许HTTP），不得包含片段或用户信息");
   }
   payload.oidc_redirect_uris = normalizedRedirects;
   return { ...payload, versions: form.versions.map((version) => ({

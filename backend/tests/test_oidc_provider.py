@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
+from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 import test_version_change_quotes as fixture
@@ -29,7 +30,8 @@ class OIDCProviderTests(unittest.TestCase):
         pem = rsa.generate_private_key(public_exponent=65537, key_size=2048).private_bytes(
             serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
         self.env = patch.dict(os.environ, OIDC_ISSUER='https://platform.example.invalid',
-            OIDC_SIGNING_KEY_PEM=pem, OIDC_ALLOW_HTTP_DEVELOPMENT='false')
+            OIDC_SIGNING_KEY_PEM=pem, OIDC_ALLOW_HTTP_DEVELOPMENT='false',
+            OIDC_CREDENTIAL_ENCRYPTION_KEY=Fernet.generate_key().decode())
         self.env.start()
         self.addCleanup(self.env.stop)
         with self.m.SessionLocal() as db:

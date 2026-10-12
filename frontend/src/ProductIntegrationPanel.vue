@@ -17,7 +17,10 @@ onUnmounted(controller.dispose);
       <h3>版本接入状态</h3>
       <div class="integration-actions">
         <a href="/api-gateway-integration.md" download="API应用提供方接入统一网关接口与规范.md" class="text-btn"><FileText :size="14" />提供方规范</a>
-        <button v-if="provider && ['pending_integration', 'published'].includes(product.status)" type="button" class="text-btn" @click="emit('credentials')"><Download :size="14" />下载接入凭据</button>
+        <template v-if="provider && ['pending_integration', 'published'].includes(product.status)">
+          <button type="button" class="text-btn" @click="emit('credentials', 'oauth')"><Download :size="14" />{{ product.product_type === 'saas' ? 'OAuth2接口凭据' : '下载接入凭据' }}</button>
+          <button v-if="product.product_type === 'saas'" type="button" class="text-btn" @click="emit('credentials', 'oidc')"><Download :size="14" />OIDC登录凭据</button>
+        </template>
         <button type="button" class="icon-btn" title="刷新接入状态" aria-label="刷新接入状态" :disabled="state.loading || !!state.busy" @click="controller.load"><RefreshCw :size="15" /></button>
       </div>
     </div>

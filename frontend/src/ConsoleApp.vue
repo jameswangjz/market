@@ -401,6 +401,7 @@ const notificationSummary = ref({ unread: 0, unacknowledged_urgent: 0 });
 const notificationPreview = ref(false);
 const notificationFocus = ref("");
 const systemSettingsTab = ref("notifications");
+const applicationAddressPolicy = ref({ allow_http: false });
 useNotificationStream(loadNotificationSummary, { token });
 const enterpriseManageModal = ref(null);
 const enterpriseManageReadOnly = ref(false);
@@ -462,6 +463,7 @@ const developmentFilter = ref("all");
 const search = ref("");
 const showProductForm = ref(false);
 const productSaving = ref(false);
+const saasVerifyBusy = ref("");
 const productDetailMode = ref(false);
 const productDetailTab = ref("info");
 const productReadOnlyMode = ref(false);
@@ -514,9 +516,9 @@ const oidcRedirectUrisText = computed({
 });
 function updateOidcRedirectUris(event) {
   const input = event.target;
-  input.setCustomValidity(splitOidcRedirectUris(input.value).every(isValidOidcRedirectUri)
+  input.setCustomValidity(splitOidcRedirectUris(input.value).every((uri) => isValidOidcRedirectUri(uri, { allowHttp: applicationAddressPolicy.value.allow_http }))
     ? ""
-    : "请输入完整HTTPS回调地址，不得包含片段或用户信息；开发HTTP仅允许localhost、127.0.0.1或market-mock-saas");
+    : "请输入完整HTTPS回调地址（除非管理员已允许HTTP），不得包含片段或用户信息");
 }
 let progressTimer;
 
@@ -721,6 +723,8 @@ async function loadSession() {
     if (token.value !== sessionToken) return;
     user.value = { ...data.user, enterprise_role: data.role, membership_status: data.membership?.status || data.membership_status || "active" };
     enterprise.value = data.enterprise;
+    await loadApplicationAddressPolicy(sessionToken);
+    if (token.value !== sessionToken) return;
     await loadBuyerEnterprises();
     if (token.value !== sessionToken) return;
     await loadNotificationSummary();
@@ -737,6 +741,15 @@ async function loadSession() {
     }
   } catch {
     if (token.value === sessionToken) logout();
+  }
+}
+async function loadApplicationAddressPolicy(sessionToken = token.value) {
+  if (!sessionToken) return;
+  try {
+    const { data } = await api.get("/settings/application-address-policy");
+    if (token.value === sessionToken) applicationAddressPolicy.value = { allow_http: data.allow_http === true };
+  } catch {
+    if (token.value === sessionToken) applicationAddressPolicy.value = { allow_http: false };
   }
 }
 async function loadNotificationSummary() {
@@ -937,15 +950,17 @@ async function loadViewData(view) {
     myEnterpriseInvitations.value = myInvitationData.data.items;
   }
   if (view === "settings") {
-    const [settings, roles] = await Promise.all([
+    const [settings, roles, addressPolicy] = await Promise.all([
       api.get("/admin/settings/notifications"),
       api.get("/admin/platform-roles"),
+      api.get("/admin/settings/application-address-policy"),
     ]);
     notificationSettings.value = {
       ...notificationSettings.value,
       ...settings.data,
     };
     platformRoleItems.value = roles.data;
+    applicationAddressPolicy.value = { allow_http: addressPolicy.data.allow_http === true };
   }
   if (view === "verification") {
     const [personal, enterprise] = await Promise.all([
@@ -1750,7 +1765,7 @@ async function createProduct() {
   productSaving.value = true;
   try {
     const { data } = await api.post("/products", {
-      ...registrationPayload(productForm.value),
+      ...registrationPayload(productForm.value, { allowHttp: applicationAddressPolicy.value.allow_http }),
       catalog_name:
         productForm.value.catalog_name ||
         productDirectories.value[0]?.value ||
@@ -1769,7 +1784,7 @@ async function createProduct() {
       const uploaded = await api.post("/files/upload", form);
       productForm.value.logo_file_id = uploaded.data.id;
       productForm.value.logoFile = null;
-      await api.put(`/products/${data.id}`, registrationPayload(productForm.value));
+      await api.put(`/products/${data.id}`, registrationPayload(productForm.value, { allowHttp: applicationAddressPolicy.value.allow_http }));
     }
     await saveRegistrationAttachments(api, productForm.value, data.id);
     showProductForm.value = false;
@@ -1914,7 +1929,7 @@ async function saveProductEdit() {
   productSaving.value = true;
   try {
     const payload = {
-      ...registrationPayload(productForm.value),
+      ...registrationPayload(productForm.value, { allowHttp: applicationAddressPolicy.value.allow_http }),
       catalog_name: productForm.value.catalog_name || "未分类",
       logoFile: undefined,
     };
@@ -1973,6 +1988,31 @@ function canReviewProduct(product) {
   if (product.status === "operation_review") return ["super_admin", "platform_operator"].includes(role);
   return false;
 }
+function canManageProviderSaas(product) {
+  return product?.product_type === "saas"
+    && !user.value?.platform_role
+    && canViewProductIntegration(user.value);
+}
+async function verifySaasIntegration(product) {
+  if (saasVerifyBusy.value || !canManageProviderSaas(product) || product.status !== "pending_integration") return;
+  saasVerifyBusy.value = product.id;
+  try {
+    const { data } = await api.post(`/products/${product.id}/saas-integration/verify`);
+    try {
+      await loadViewData("products");
+    } catch {
+      notify("SaaS接入验证已完成，但产品列表刷新失败");
+      return;
+    }
+    notify(data.health_check?.status === "passed"
+      ? "SaaS OAuth2与健康检查通过，等待OIDC登录验证"
+      : "SaaS接入验证已完成，等待OIDC登录验证");
+  } catch (error) {
+    notify(error.response?.data?.detail || "SaaS接入验证失败");
+  } finally {
+    saasVerifyBusy.value = "";
+  }
+}
 async function productAction(product, action) {
   try {
     if (action === "unpublish") {
@@ -2027,21 +2067,24 @@ async function productAction(product, action) {
     notify(error.response?.data?.detail || "产品状态操作失败");
   }
 }
-async function downloadSaasCredentials(product) {
+async function downloadSaasCredentials(product, kind = "oauth") {
+  const oidc = kind === "oidc";
+  const protocol = oidc ? "OIDC" : "OAuth";
+  const endpoint = oidc ? "oidc-credentials-download" : "oauth-credentials-download";
   try {
     const { data } = await api.get(
-      `/products/${product.id}/oauth-credentials-download`,
+      `/products/${product.id}/${endpoint}`,
       { responseType: "blob" },
     );
     const url = URL.createObjectURL(data);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${product.name}-platform-oauth-credentials.txt`;
+    link.download = `${product.name}-platform-${kind}-credentials.txt`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    notify("OAuth 凭据文件已下载");
+    notify(`${protocol} 凭据文件已下载`);
   } catch (error) {
-    notify(error.response?.data?.detail || "OAuth 凭据下载失败");
+    notify(error.response?.data?.detail || `${protocol} 凭据下载失败`);
   }
 }
 async function updateTask(task, status) {
@@ -2283,6 +2326,15 @@ async function saveNotificationSettings() {
     notify("通知平台配置已保存");
   } catch (error) {
     notify(error.response?.data?.detail || "通知配置保存失败");
+  }
+}
+async function saveApplicationAddressPolicy() {
+  try {
+    const { data } = await api.patch("/admin/settings/application-address-policy", applicationAddressPolicy.value);
+    applicationAddressPolicy.value = { allow_http: data.allow_http === true };
+    notify("应用接入地址策略已保存");
+  } catch (error) {
+    notify(error.response?.data?.detail || "应用接入地址策略保存失败");
   }
 }
 async function assignPlatformRole() {
@@ -2751,6 +2803,7 @@ onUnmounted(() => {
         <div v-if="activeView === 'settings'" class="tabs settings-tabs">
           <button :class="{ active: systemSettingsTab === 'notifications' }" type="button" @click="systemSettingsTab = 'notifications'">通知与角色</button>
           <button :class="{ active: systemSettingsTab === 'message-center' }" type="button" @click="systemSettingsTab = 'message-center'">消息中心</button>
+          <button :class="{ active: systemSettingsTab === 'application-address' }" type="button" @click="systemSettingsTab = 'application-address'">应用接入</button>
           <button type="button" disabled>安全与审计</button>
         </div>
         <template v-if="activeView === 'messages'"><MessageCenter :initial-id="notificationFocus" @changed="loadNotificationSummary" @navigate="navigateNotification" /></template>
@@ -3194,11 +3247,13 @@ onUnmounted(() => {
                       <span
                         :class="[
                           'status-pill',
-                          `status-${product.status === 'published' ? 'done' : ['pending_review','quality_review','security_review','operation_review'].includes(product.status) ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
+                          `status-${product.status === 'published' ? 'done' : ['pending_integration','pending_review','quality_review','security_review','operation_review'].includes(product.status) ? 'review' : product.status === 'rejected' || product.status === 'security_unpublished' ? 'blocked' : 'todo'}`,
                         ]"
                         >{{
                           product.status === "published"
                             ? "已发布"
+                            : product.status === "pending_integration"
+                              ? "待接入验证"
                             : product.status === "pending_review"
                             ? "业务审核"
                             : product.status === "quality_review"
@@ -3279,14 +3334,26 @@ onUnmounted(() => {
                           >调用方文档</a
                         ><button
                           v-if="
-                            product.status === 'published' &&
-                            ['api', 'model', 'saas'].includes(product.product_type)
+                            product.product_type === 'saas'
+                              ? canManageProviderSaas(product) && ['pending_integration', 'published'].includes(product.status)
+                              : product.status === 'published' && ['api', 'model'].includes(product.product_type)
                           "
                           class="text-btn"
                           @click="downloadSaasCredentials(product)"
                         >
-                          下载 OAuth 凭据
+                          {{ product.product_type === 'saas' ? 'OAuth2接口凭据' : '下载 OAuth 凭据' }}
                         </button>
+                        <button
+                          v-if="canManageProviderSaas(product) && ['pending_integration', 'published'].includes(product.status)"
+                          class="text-btn"
+                          @click="downloadSaasCredentials(product, 'oidc')"
+                        >OIDC登录凭据</button>
+                        <button
+                          v-if="canManageProviderSaas(product) && product.status === 'pending_integration'"
+                          class="text-btn"
+                          :disabled="!!saasVerifyBusy"
+                          @click="verifySaasIntegration(product)"
+                        ><ShieldCheck :size="14" />{{ saasVerifyBusy === product.id ? '验证中' : '验证接入' }}</button>
                       </div>
                     </td>
                   </tr>
@@ -3882,6 +3949,15 @@ onUnmounted(() => {
           </div></template
         >
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'message-center'"><MessageSettings /></template>
+        <template v-else-if="activeView === 'settings' && systemSettingsTab === 'application-address'">
+          <div class="page-heading">
+            <div><div class="eyebrow">平台管理 · 应用接入</div><h1>应用接入地址</h1></div>
+          </div>
+          <section class="panel">
+            <label class="checkbox-line application-address-toggle"><input v-model="applicationAddressPolicy.allow_http" type="checkbox" />允许应用接入地址使用HTTP</label>
+            <button class="primary-btn" @click="saveApplicationAddressPolicy">保存 <ArrowUpRight :size="16" /></button>
+          </section>
+        </template>
         <template v-else-if="activeView === 'settings'"
           ><div class="page-heading">
             <div>
@@ -4761,7 +4837,7 @@ onUnmounted(() => {
         <ProductIntegrationPanel
           v-if="productDetailMode && ['api', 'model_api'].includes(productForm.delivery_method) && canViewProductIntegration(user)"
           :product="productForm" :api="api" :provider="!user?.platform_role"
-          @credentials="downloadSaasCredentials(productForm)"
+          @credentials="kind => downloadSaasCredentials(productForm, kind)"
           @changed="openProductDetail(productForm)"
         />
         <div v-if="productDetailMode && productFiles.length" class="product-file-status">
@@ -5301,6 +5377,7 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .version-change-modal .version-change-confirm { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; font-size: 13px; }
 .version-change-modal .version-change-confirm input { width: 16px; height: 16px; flex-shrink: 0; margin: 2px 0 0; }
 .version-change-quote-action { margin-top: 16px; }
+.application-address-toggle input { width: 16px !important; height: 16px; padding: 0 !important; margin: 0; flex: 0 0 16px; accent-color: #ff6a00; }
 .version-change-summary, .version-change-segment { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e6eb; }
 .version-change-segment h3 { margin: 0; font-size: 14px; }
 .version-change-segment h3 small { display: block; margin-top: 6px; color: #86909c; font-size: 12px; font-weight: 400; }

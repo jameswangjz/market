@@ -2,7 +2,7 @@ import os
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from .oidc_rp import install
 from .store import MachineOperationError, Store
 
@@ -12,6 +12,18 @@ def create_app(*, transport=None):
     store = Store(os.getenv('MOCK_SAAS_DB_PATH', '/data/mock-saas.sqlite3'))
     app.state.store = store
     install(app, store, transport=transport)
+
+    @app.middleware("http")
+    async def identify_mock_app(request, call_next):
+        response = await call_next(request)
+        if request.url.path == '/app' and response.headers.get('content-type', '').startswith('text/html'):
+            content = b''.join([chunk async for chunk in response.body_iterator])
+            content = content.replace(b'<header>', b'<div role="status" style="position:sticky;top:0;z-index:9999;background:#fff3cd;color:#5c4300;padding:8px 14px;text-align:center;font:600 14px sans-serif;border-bottom:1px solid #d6bd68">DEVELOPMENT MOCK SaaS</div><header>', 1)
+            headers = dict(response.headers)
+            headers.pop('content-length', None)
+            return Response(content, status_code=response.status_code, headers=headers,
+                            media_type=response.media_type, background=response.background)
+        return response
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):

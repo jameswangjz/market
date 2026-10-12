@@ -275,7 +275,7 @@ class MockSaaSOIDCTests(unittest.TestCase):
 
     def test_closed_wrong_or_never_opened_tenant_denied(self):
         self.machine('CLOSE')
-        self.machine('CHANGE', to_version='2')
+        self.assertEqual(self.raw_machine('CHANGE', to_version='2').status_code, 409)
         self.login()
         self.assertEqual(self.callback().status_code, 401)
         self.open_tenant()
@@ -490,7 +490,7 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertEqual(tenant['product_id'], 'fixture-product')
         self.assertEqual(self.raw_machine('CLOSE', tenant_id='missing-tenant').status_code, 404)
         self.machine('CLOSE')
-        self.machine('RENEW')
+        self.assertEqual(self.raw_machine('RENEW').status_code, 409)
         self.assertFalse(self.store.tenant('fixture-tenant')['login_open'])
         self.open_tenant()
         self.assertTrue(self.store.tenant('fixture-tenant')['login_open'])
