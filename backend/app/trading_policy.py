@@ -1,6 +1,6 @@
 """Explicit tenant selection and server-side trading eligibility."""
 from fastapi import Depends, HTTPException
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 
 
@@ -8,6 +8,8 @@ def install(ns):
     app, User, Enterprise, Membership = (ns[name] for name in ("app", "User", "Enterprise", "Membership"))
     db_session, current_user = ns["db_session"], ns["current_user"]
     ProductReleaseVersion, FileObject, Order = (ns[name] for name in ("ProductReleaseVersion", "FileObject", "Order"))
+    SaaSVersion = ns.get("SaaSProductVersion")
+    SaaSSubscription = ns.get("SaaSSubscription")
     online = {"file", "api", "model_api", "tenant_access"}
     offline = {"training", "consulting", "custom"}
 
@@ -34,11 +36,79 @@ def install(ns):
             if existing != value:
                 raise HTTPException(409, "已售版本配置不可覆盖，请新增版本")
 
-    def update_versions(db, product, versions):
+    def sync_saas_versions(db, product, removed_codes=()):
+        """Reconcile only this SaaS product's canonical and storefront versions."""
+        if product.product_type != "saas" or SaaSVersion is None:
+            return {"created": 0, "updated": 0, "retained": 0, "deleted": 0}
+
+        db.flush()
+        canonical_rows = list(product.versions)
+        canonical = {version.version_code: version for version in canonical_rows}
+        if len(canonical) != len(canonical_rows):
+            raise HTTPException(409, "产品存在重复版本号，无法同步SaaS版本")
+        specialized_rows = db.scalars(select(SaaSVersion).where(
+            SaaSVersion.product_id == product.id
+        )).all()
+        specialized = {version.version_code: version for version in specialized_rows}
+        if len(specialized) != len(specialized_rows):
+            raise HTTPException(409, "SaaS产品存在重复版本号，无法同步")
+        created = updated = retained = deleted = 0
+        sync_fields = ("description", "compatibility_mode", "compatibility_notes", "cost", "status")
+
+        def is_referenced(row):
+            if db.scalar(select(Order.id).where(Order.product_version_id == row.id).limit(1)):
+                return True
+            return bool(SaaSSubscription is not None and db.scalar(select(SaaSSubscription.id).where(
+                SaaSSubscription.version_id == row.id
+            ).limit(1)))
+
+        for code, version in canonical.items():
+            try:
+                price, cost = Decimal(str(version.price)), Decimal(str(version.cost))
+                if (not price.is_finite() or not cost.is_finite() or price < 0
+                        or cost < 0 or price < cost):
+                    raise ValueError
+            except (InvalidOperation, TypeError, ValueError):
+                raise HTTPException(400, "版本价格或成本无效")
+
+            row = specialized.pop(code, None)
+            if row is None:
+                collision = db.get(SaaSVersion, version.id)
+                if collision is not None:
+                    raise HTTPException(409, "规范版本ID已被其他SaaS版本占用")
+                row = SaaSVersion(id=version.id, product_id=product.id, version_code=code,
+                                  name=code, monthly_price=price)
+                db.add(row)
+                created += 1
+            else:
+                changes = {"monthly_price": price, **{
+                    field: getattr(version, field) for field in sync_fields
+                }}
+                if is_referenced(row) and any(getattr(row, field) != value
+                                               for field, value in changes.items()):
+                    raise HTTPException(409, "已有订单或订阅的SaaS版本配置不可覆盖")
+                updated += 1
+            row.monthly_price = price
+            for field in sync_fields:
+                setattr(row, field, getattr(version, field))
+
+        for row in specialized.values():
+            if row.version_code not in removed_codes:
+                retained += 1
+            elif is_referenced(row):
+                raise HTTPException(409, "已有订单或订阅的SaaS版本不可删除")
+            else:
+                db.delete(row)
+                deleted += 1
+        db.flush()
+        return {"created": created, "updated": updated, "retained": retained, "deleted": deleted}
+
+    def update_versions(db, product, versions, sync=True):
         codes = [item["version_code"] for item in versions]
         if len(codes) != len(set(codes)):
             raise HTTPException(400, "产品版本号不能重复")
         existing = {version.version_code: version for version in product.versions}
+        removed_codes = set(existing) - set(codes)
         for version in existing.values():
             if version.version_code not in codes and db.scalar(sold(version)):
                 raise HTTPException(409, "已售版本不可删除，请保留原版本")
@@ -56,6 +126,9 @@ def install(ns):
                     version.status = "disabled"
                 else:
                     product.versions.remove(version)
+        if sync and product.product_type == "saas":
+            sync_saas_versions(db, product, removed_codes)
+        return removed_codes
 
     def validate_submission(db, product):
         delivery_category(product.delivery_method)
@@ -127,4 +200,5 @@ def install(ns):
 
     return {"require_buyer": require_buyer, "delivery_category": delivery_category,
             "validate_submission": validate_submission, "update_versions": update_versions,
+            "sync_saas_versions": sync_saas_versions,
             "protect_sold_version": protect_sold_version, "protect_sold_file": protect_sold_file}

@@ -3359,6 +3359,8 @@ def create_product(body: ProductBody, user: User = Depends(current_user), db: Se
     db.flush()
     for item in versions:
         db.add(ProductReleaseVersion(product_id=product.id, **item))
+    db.flush()
+    trading_policy["sync_saas_versions"](db, product)
     audit(db, user.email, "create_product", "product", product.id, product.name)
     db.commit()
     db.refresh(product)
@@ -3386,12 +3388,14 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
     validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
     values["settlement_rule_json"] = json.dumps(custom_rule, ensure_ascii=False)
     values["provider_name"] = values["provider_name"] or db.get(Enterprise, product.enterprise_id).name
+    removed_version_codes = set()
     if versions:
         values["version"] = versions[0]["version_code"]
         values["price"] = versions[0]["price"]
-        trading_policy["update_versions"](db, product, versions)
+        removed_version_codes = trading_policy["update_versions"](db, product, versions, sync=False)
     for name, value in values.items():
         setattr(product, name, value)
+    trading_policy["sync_saas_versions"](db, product, removed_version_codes)
     product.review_comment = ""
     audit(db, user.email, "update_product", "product", product.id, product.name)
     db.commit()
