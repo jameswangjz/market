@@ -142,6 +142,10 @@ class ApiAutoDeliveryTests(unittest.TestCase):
             task = db.get(self.m.DeliveryTask, self.task_id(oid))
             self.assertEqual((order.main_status, order.delivery_status, task.status),
                 ('completed', 'accepted', 'completed'), task.last_error)
+            self.assertIn('API 路由、上游健康与订阅策略已核验', task.note)
+            self.assertIn('企业共享凭据状态已保留', task.note)
+            self.assertIn('买方企业管理员可在订单中查看和管理凭据', task.note)
+            self.assertNotIn('共享 API 凭据需由买方按需生成', task.note)
             self.assertEqual(db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).count(), 1)
             credential = db.query(self.m.ApiCredential).filter_by(enterprise_id='buyer_tenant').one()
             self.assertEqual(credential.status, 'active')

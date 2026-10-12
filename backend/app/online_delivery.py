@@ -148,7 +148,7 @@ def install(ns):
         else:
             task.last_error = ''
             task.status = 'completed'
-            task.note = ('API 路由、上游健康与订阅策略已核验，订单已履约；共享 API 凭据需由买方按需生成'
+            task.note = ('API 路由、上游健康与订阅策略已核验，订单已履约；企业共享凭据状态已保留，买方企业管理员可在订单中查看和管理凭据'
                 if method(order) in {'api', 'model_api'} else
                 'SaaS 租户、管理员、OIDC 与订阅期限已核验，自动履约完成'
                 if method(order) == 'tenant_access' else

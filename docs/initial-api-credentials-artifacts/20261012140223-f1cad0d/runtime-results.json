@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "checks": [
+    "api: manual, negative, credential, renewal, revoke",
+    "api: deployed worker",
+    "model_api: manual, negative, credential, renewal, revoke",
+    "model_api: deployed worker"
+  ],
+  "worker_exercised": true,
+  "payment": "simulated",
+  "upstream": "mock-api /v1/echo with platform OAuth",
+  "negative_health": "real 404 before publication; delivery health-path evidence tamper; no service outage",
+  "cleanup": "exact owned fixtures removed; native DB2 rate keys expire"
+}
