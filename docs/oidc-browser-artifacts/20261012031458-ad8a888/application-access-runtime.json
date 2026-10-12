@@ -1,0 +1,24 @@
+{
+  "status": "passed",
+  "database": "real PostgreSQL",
+  "runtime_tag": "20261012031458-ad8a888",
+  "retained_order_id": "f412c49cde66c0e2138be01b8ad2dae3",
+  "retained_order_unchanged": true,
+  "concurrent_grant_requests": 16,
+  "grant_rows": 1,
+  "checks": [
+    "existing-table unique index",
+    "real HTTP grant concurrency",
+    "disabled user denied",
+    "disabled user grant revocation",
+    "reactivation does not restore revoked grant",
+    "cross-enterprise members/launch denied",
+    "positive launch before expiry",
+    "expired subscription launch denied",
+    "positive launch after expiry restoration"
+  ],
+  "limits": [
+    "One API replica; not a distributed load test",
+    "Only exact owned fixture rows modified"
+  ]
+}

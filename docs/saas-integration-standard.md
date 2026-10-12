@@ -184,3 +184,48 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 - 用户删除后再次 `USER_ASSIGN` 可以恢复，部门和部门人员映射可追踪。
 - 相同 `X-Request-Id` 重复请求不会产生重复租户、用户或扣费。
 - 验证 401、429、超时、5xx、业务失败和重复请求的响应格式。
+
+
+## 8. 用户单点登录（OIDC）
+
+本节用于用户浏览器登录，不能替代前文机器接口的 `client_credentials`。SaaS 作为 OIDC 客户端和资源服务，平台作为 OP，采用授权码 + PKCE S256。用户 SSO 客户端与产品管理接口客户端必须分开配置，禁止把机器 Token 当作用户身份。
+
+### 8.1 登记与客户端配置
+
+产品登记时填写 SaaS 应用访问地址和精确 OIDC 回调地址。完成审核后，产品管理员调用 `POST /api/products/{product_id}/oidc-client` 创建独立用户登录客户端，返回 `client_id`、Issuer、回调列表及一次性 `client_secret`。此 Secret 仅在首次创建时返回，后续调用不再次返回；当前用户 SSO Secret 不等同于已有产品机器凭据下载文件，必须由服务端安全保存。浏览器不得保存 Secret 或 OIDC Token。
+
+发现文档：`GET {issuer}/.well-known/openid-configuration`；公钥：`GET {issuer}/oidc/jwks`。生产回调使用 HTTPS，精确匹配白名单，不允许通配符；localhost HTTP 仅限显式开启的开发测试。
+
+### 8.2 登录与回调
+
+用户从平台“我的应用”进入登记的应用访问地址，附带 `enterprise_id` 企业上下文；RP 不得仅凭此参数认定用户身份或授予租户权限。
+
+RP 服务端生成随机 state、nonce、PKCE verifier，保存短期一次性事务并绑定 HttpOnly Cookie。浏览器访问：
+
+```http
+GET {issuer}/oidc/authorize?response_type=code&client_id={oidc_client_id}&redirect_uri={registered_callback}&scope=openid%20profile%20email&state={random_state}&nonce={random_nonce}&code_challenge={S256_challenge}&code_challenge_method=S256&enterprise_id={buyer_enterprise_id}
+```
+
+平台引导登录并由用户明确同意或拒绝。授权回调成功返回 `code`、原 state；拒绝返回 `error=access_denied`、原 state。RP 校验 Cookie、state、事务期限和一次性状态后，由服务端换码：
+
+```http
+POST {issuer}/oidc/token
+Authorization: Basic {base64(oidc_client_id:oidc_client_secret)}
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&code={code}&redirect_uri={registered_callback}&code_verifier={original_verifier}
+```
+
+成功返回 Bearer `access_token`、`id_token` 和 `expires_in`，无 refresh_token。授权码有效期 120 秒，访问令牌及 ID Token 约 300 秒；错误或过期后应重新发起登录，不能重复使用授权码。
+
+### 8.3 验签与租户会话
+
+RP 使用成熟 OIDC 库，以受信任发现文档及 JWKS 验证 RS256 签名、issuer、audience、exp、nonce、at_hash；不得接受其他签名算法或由 Token 自行指定的外部密钥地址。使用 `GET {issuer}/oidc/userinfo` 和 Bearer 用户令牌再次获取身份。
+
+ID Token 与 userinfo 的 `sub`、`enterprise_id`、`subscription_id`、`tenant_id` 必须一致，并匹配本次企业上下文和已通过 OPEN 开通的租户。映射使用 issuer + sub + 企业 + 租户，不得仅按邮箱匹配已有账户。
+
+验证通过后 RP 创建独立 HttpOnly 会话；会话不得超过用户令牌期限。受保护请求需重新校验平台 userinfo 和本地租户状态；用户禁用、授权撤回、订阅到期、安全下架及租户关闭均拒绝访问。用户退出只清除 RP 会话，不意味着平台账户全局退出。平台、RP 审计和访问日志不得记录 Secret、Token 或授权码。
+
+### 8.4 验收边界
+
+必须验证真实浏览器登录、同意/拒绝、错误 state/nonce/PKCE、错误 issuer/audience/签名、授权码重放、跨企业拒绝、普通成员授权撤回和到期/禁用拒绝。开发模拟 RP 使用本地持久化会话及实际平台协议；这不代表第三方生产系统已经完成联调。多副本 RP 应使用共享会话存储，不能直接复制本开发用单副本 SQLite 部署。

@@ -390,9 +390,7 @@ def install(ns):
         except ValueError:
             return False
 
-    @ns['app'].post('/oidc/authorize')
-    def authorize(body: AuthorizationBody, request: Request, user=Depends(ns['current_user']),
-                  db=Depends(ns['db_session'])):
+    def issue_authorization(db, body, request, user):
         issuer()
         keys()
         client = client_for(db, body.client_id)
@@ -412,18 +410,23 @@ def install(ns):
             grant = server.get_consent_grant(protocol, end_user=user)
             status, result, headers = server.create_authorization_response(protocol, grant_user=user, grant=grant)
             if status != 302:
-                db.rollback()
-                return JSONResponse(result, status_code=status, headers=NO_STORE)
+                raise HTTPException(400, 'OIDC授权请求无效')
             ns['audit'](db, user.email or user.phone or user.id, 'oidc_authorize', 'saas_subscription',
                 subscription.id, '用户SSO授权码签发；不记录授权码、state、nonce', tenant_id=body.enterprise_id)
-            db.commit()
-            return JSONResponse({'redirect_url': dict(headers)['Location']}, headers=NO_STORE)
+            return dict(headers)['Location']
         except IntegrityError as exc:
             db.rollback()
             raise HTTPException(409, 'OIDC nonce已使用，请重新发起授权') from exc
         except OAuth2Error:
             db.rollback()
             raise HTTPException(400, 'OIDC授权请求无效')
+
+    @ns['app'].post('/oidc/authorize')
+    def authorize(body: AuthorizationBody, request: Request, user=Depends(ns['current_user']),
+                  db=Depends(ns['db_session'])):
+        location = issue_authorization(db, body, request, user)
+        db.commit()
+        return JSONResponse({'redirect_url': location}, headers=NO_STORE)
 
     @ns['app'].post('/oidc/token')
     async def token(request: Request):
@@ -484,6 +487,8 @@ def install(ns):
         return JSONResponse(dict(user_info(user, row.scope, row.enterprise_id, subscription)), headers=NO_STORE)
 
     ns['OIDCClient'], ns['OIDCCode'] = OIDCClient, OIDCCode
-    hooks = {'Client': OIDCClient, 'Code': OIDCCode, 'eligible': eligible}
+    hooks = {'Client': OIDCClient, 'Code': OIDCCode, 'eligible': eligible,
+        'client_for': client_for, 'valid_redirect': valid_redirect,
+        'issue_authorization': issue_authorization}
     ns['oidc_provider'] = hooks
     return hooks

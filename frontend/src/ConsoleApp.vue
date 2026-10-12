@@ -5,6 +5,7 @@ import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
+import ApplicationsCenter from "./ApplicationsCenter.vue";
 import { canViewProductIntegration } from "./productIntegration.js";
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
@@ -436,6 +437,7 @@ const nav = [
   { key: "overview", label: "运营总览", icon: LayoutDashboard },
   { key: "products", label: "数据与服务", icon: Database },
   { key: "orders", label: "订单中心", icon: ShoppingCart },
+  { key: "applications", label: "我的应用", icon: ExternalLink },
   { key: "delivery", label: "交付与售后", icon: PackageCheck },
   { key: "settlements", label: "清算分账", icon: BarChart3 },
   { key: "audit", label: "审计日志", icon: ShieldCheck },
@@ -625,13 +627,17 @@ async function updateProfileContact() {
 }
 async function loadSession() {
   if (!token.value) return;
+  const sessionToken = token.value;
   api.defaults.headers.common.Authorization = `Bearer ${token.value}`;
   try {
     const { data } = await api.get("/auth/me");
+    if (token.value !== sessionToken) return;
     user.value = { ...data.user, enterprise_role: data.role, membership_status: data.membership?.status || data.membership_status || "active" };
     enterprise.value = data.enterprise;
     await loadBuyerEnterprises();
+    if (token.value !== sessionToken) return;
     await loadNotificationSummary();
+    if (token.value !== sessionToken) return;
     if (user.value.verified_status !== "verified") {
       activeView.value = "products";
       showPersonalVerification.value = true;
@@ -643,7 +649,7 @@ async function loadSession() {
       await refreshData();
     }
   } catch {
-    logout();
+    if (token.value === sessionToken) logout();
   }
 }
 async function loadNotificationSummary() {
@@ -704,6 +710,15 @@ function logout() {
   notificationSummary.value = { unread: 0, unacknowledged_urgent: 0 };
   localStorage.removeItem("market_token");
   delete api.defaults.headers.common.Authorization;
+}
+function synchronizeAccount() {
+  const latest = localStorage.getItem("market_token") || "";
+  if (latest === token.value) return;
+  user.value = null;
+  enterprise.value = null;
+  token.value = latest;
+  if (latest) { api.defaults.headers.common.Authorization = `Bearer ${latest}`; loadSession(); }
+  else delete api.defaults.headers.common.Authorization;
 }
 async function refreshData() {
   loading.value = true;
@@ -2392,6 +2407,7 @@ function nextActions(order) {
 }
 
 onMounted(() => {
+  window.addEventListener("storage", synchronizeAccount);
   versionChangeTimer = window.setInterval(() => {
     versionChangeClock.value = Date.now();
     versionChangeSession.expire();
@@ -2405,6 +2421,7 @@ onMounted(() => {
   }, 10000);
 });
 onUnmounted(() => {
+  window.removeEventListener("storage", synchronizeAccount);
   versionChangeSession.dispose();
   window.clearInterval(versionChangeTimer);
   deliveryAccessSession.dispose();
@@ -2624,6 +2641,7 @@ onUnmounted(() => {
           <button type="button" disabled>安全与审计</button>
         </div>
         <template v-if="activeView === 'messages'"><MessageCenter :initial-id="notificationFocus" @changed="loadNotificationSummary" @navigate="navigateNotification" /></template>
+        <ApplicationsCenter v-else-if="activeView === 'applications' && canAccessConsoleView(user, enterprise, 'applications')" :user="user" :enterprise="enterprise" :token="token" :api="api" />
         <template v-else-if="activeView === 'overview'"
           ><div class="page-heading">
             <div>

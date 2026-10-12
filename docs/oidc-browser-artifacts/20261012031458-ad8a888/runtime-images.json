@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "runtime_tag": "20261012031458-ad8a888",
+  "images": {
+    "market-api": {
+      "image": "market-api:20261012031458-ad8a888",
+      "pod_uid": "3e224fac-0e6d-4226-be97-a6f796e3e9f8",
+      "ready": true
+    },
+    "market-web": {
+      "image": "market-web:20261012031458-ad8a888",
+      "pod_uid": "11abf0f7-623f-4e91-a218-a029363fc04b",
+      "ready": true
+    },
+    "market-mock-saas": {
+      "image": "market-mock-saas:20261012031458-ad8a888",
+      "pod_uid": "e7073fc8-a4a1-49bc-9ec9-a9ee12dc126a",
+      "ready": true
+    }
+  }
+}
