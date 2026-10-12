@@ -4447,6 +4447,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
         if user.verified_status != "verified":
             raise HTTPException(403, "完成个人实名认证后才可以管理 API 凭据")
         require_enterprise_admin(db, user, order.buyer_enterprise_id)
+    entitlement = None
     if order.snapshot_version == 1:
         entitlement = subscription_terms["current_entitlement"](db, order.buyer_enterprise_id, order.product_id)
         if not entitlement:
@@ -4454,7 +4455,8 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
     product = gateway_product(order.product_id, db)
     if product.status not in {"published", "draft"}:
         raise HTTPException(409, "API 产品已被安全策略下架")
-    route = product_gateway_route(db, product.id, order.product_version_code, active=True)
+    route_version = entitlement["version_code"] if entitlement else order.product_version_code
+    route = product_gateway_route(db, product.id, route_version, active=True)
     if not route:
         raise HTTPException(409, "API 网关路由尚未启用")
     return order, product, route, order.buyer_enterprise_id

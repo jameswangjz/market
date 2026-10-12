@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canAccessDeliveryFiles, deliveryAccessPlaceholder, protectedDeliveryUrl, canDownloadDeliveryFile, createDeliveryAccessSession } from "../src/deliveryAccess.js";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { canAccessDeliveryFiles, canAccessBuyerDelivery, deliveryAccessPlaceholder, protectedDeliveryUrl, canDownloadDeliveryFile, createDeliveryAccessSession } from "../src/deliveryAccess.js";
 
 const order = { id: "order-1", buyer_enterprise_id: "buyer", snapshot_version: 1, delivery_method: "file", payment_status: "paid", main_status: "completed", delivery_status: "accepted" };
 const user = { id: "user-1", verified_status: "verified", enterprise_role: "member", enterprise_memberships: [
@@ -55,8 +57,10 @@ test("only new paid completed and accepted file orders pass all state gates", ()
     ...["not_started", "pending_acceptance", "exception"].map(delivery_status => ({ delivery_status }))]) {
     assert.equal(canAccessDeliveryFiles({ ...order, ...changes }, user, buyerEnterprise), false);
   }
-  for (const delivery_method of ["api", "model_api", "tenant_access"]) assert.equal(deliveryAccessPlaceholder({ delivery_method }), "待接入信息");
-  for (const delivery_method of ["file", "training", "consulting", "custom", ""]) assert.equal(deliveryAccessPlaceholder({ delivery_method }), "-");
+  for (const delivery_method of ["api", "model_api"]) assert.equal(deliveryAccessPlaceholder({ delivery_method }), "查看接入信息");
+  assert.equal(deliveryAccessPlaceholder({ delivery_method: "tenant_access" }), "访问应用");
+  assert.equal(deliveryAccessPlaceholder({ delivery_method: "file" }), "下载文件");
+  for (const delivery_method of ["training", "consulting", "custom", ""]) assert.equal(deliveryAccessPlaceholder({ delivery_method }), "-");
 });
 
 test("download URLs must reference the exact protected file and order", () => {
@@ -196,4 +200,100 @@ test("download failures refresh access, surface 403/409 and remain retryable", a
     assert.equal(attempts, 2);
     assert.equal(states.at(-1).downloadError, "");
   }
+});
+
+test("unified buyer access uses actual verified enterprise admin membership for API and SaaS", () => {
+  const apiOrder = { ...order, delivery_method: "api" };
+  const saasOrder = { ...order, delivery_method: "tenant_access", product_type: "saas" };
+  assert.equal(canAccessBuyerDelivery(apiOrder, user, buyerEnterprise), true);
+  assert.equal(canAccessBuyerDelivery(saasOrder, user, buyerEnterprise), true);
+  for (const changes of [{ platform_role: "super_admin" }, { enterprise_memberships: [{ enterprise_id: "buyer", role: "member", status: "active" }] },
+    { enterprise_memberships: [{ enterprise_id: "other", role: "admin", status: "active" }] }, { verified_status: "pending" }]) {
+    assert.equal(canAccessBuyerDelivery(apiOrder, { ...user, ...changes }, buyerEnterprise), false);
+  }
+  assert.equal(deliveryAccessPlaceholder(apiOrder), "查看接入信息");
+  assert.equal(deliveryAccessPlaceholder(saasOrder), "访问应用");
+  for (const changes of [{ delivery_status: "in_delivery" }, { refunded_amount: 0.01 }]) {
+    assert.equal(canAccessBuyerDelivery({ ...apiOrder, ...changes }, user, buyerEnterprise), false);
+  }
+});
+
+test("credential management from the list opens the order drawer before scrolling to its panel", async () => {
+  const source = await readFile(fileURLToPath(new URL("../src/ConsoleApp.vue", import.meta.url)), "utf8");
+  assert.match(source, /const order = currentDeliveryOrder\.value;[\s\S]*?closeDeliveryAccess\(\);[\s\S]*?selectedOrder\.value\?\.order\.id !== order\.id[\s\S]*?await openOrder\(order\)[\s\S]*?document\.querySelector\("\.api-order-panel"\)/);
+  assert.match(source, /class="drawer-section api-order-panel"/);
+  assert.match(source, /v-if="deliveryAccessState\.api" class="secondary-btn" @click="manageDeliveryCredentials"/);
+});
+
+test("API access returns only validated display metadata and supports retry after errors", async () => {
+  const h = harness();
+  const apiOrder = { ...order, delivery_method: "api" };
+  h.setContext({ ...h.context(), order: apiOrder });
+  h.api.get = async () => ({ data: { order_id: order.id, method: "api", ready: true, files: [], api: {
+    gateway_base_path: "/gateway/api-v2", credentials_path: "/api/orders/order-1/api-credentials", shared_scope: "enterprise",
+    gateway_url: "http://api.market.local:30082/gateway/api-v2", version_code: "v2", expires_at: "2030-01-01T00:00:00Z", limits: { rate_limit_per_minute: 60, daily_quota: 0, monthly_quota: 500, quota_amount: 25, total_quota: 999 },
+    api_key: "must-not-survive", secret: "must-not-survive", upstream_url: "https://provider.invalid",
+  } } });
+  await h.session.load(apiOrder);
+  assert.deepEqual(h.state().api, { gateway_base_path: "/gateway/api-v2", credentials_path: "/api/orders/order-1/api-credentials",
+    shared_scope: "enterprise", gateway_url: "http://api.market.local:30082/gateway/api-v2", version_code: "v2", expires_at: "2030-01-01T00:00:00Z",
+    limits: { rate_limit_per_minute: 60, daily_quota: 0, monthly_quota: 500, quota_amount: 25 } });
+  assert.equal(JSON.stringify(h.state()).includes("must-not-survive"), false);
+  h.api.get = async () => ({ data: { order_id: order.id, method: "api", ready: true, files: [], api: {
+    gateway_base_path: "https://evil.invalid", credentials_path: "/api/orders/order-1/api-credentials", shared_scope: "enterprise",
+    version_code: "v2", expires_at: "2030-01-01", limits: { rate_limit_per_minute: 60, daily_quota: 0, monthly_quota: 0 },
+  } } });
+  await h.session.load(apiOrder);
+  assert.match(h.state().error, /无效/);
+  for (const gateway_url of ["/gateway/api/v2", "javascript:alert(1)", "https://u:p@api.example.test/gateway", "https://api.example.test/gateway?key=secret", "https://api.example.test/gateway#fragment"]) {
+    h.api.get = async () => ({ data: { order_id: order.id, method: "api", ready: false, reason: "凭据待配置", files: [], api: {
+      gateway_base_path: "/gateway/api-v2", gateway_url, credentials_path: "/api/orders/order-1/api-credentials", shared_scope: "enterprise",
+      version_code: "v2", expires_at: "2030-01-01", limits: {},
+    } } });
+    await h.session.load(apiOrder);
+    assert.match(h.state().error, /网关地址无效/);
+  }
+  h.api.get = async () => ({ data: { order_id: order.id, method: "api", ready: false, reason: "凭据待配置", files: [], api: {
+    gateway_base_path: "/gateway/api-v2", gateway_url: "", credentials_path: "/api/orders/order-1/api-credentials", shared_scope: "enterprise",
+    version_code: "v2", expires_at: "2030-01-01", limits: { rate_limit_per_minute: 60, daily_quota: 0, monthly_quota: 0 },
+  } } });
+  await h.session.load(apiOrder);
+  assert.equal(h.state().ready, false);
+  assert.equal(h.state().api.gateway_base_path, "/gateway/api-v2");
+  for (const limits of [{ rate_limit_per_minute: -1, daily_quota: 1, monthly_quota: 1 },
+    { rate_limit_per_minute: 1.5, daily_quota: 1, monthly_quota: 1 }, { rate_limit_per_minute: 1, daily_quota: 1, monthly_quota: Number.NaN },
+    { rate_limit_per_minute: 1, daily_quota: 1, monthly_quota: 1, quota_amount: -1 }]) {
+    h.api.get = async () => ({ data: { order_id: order.id, method: "api", ready: true, files: [], api: {
+      gateway_base_path: "/gateway/api-v2", credentials_path: "/api/orders/order-1/api-credentials", shared_scope: "enterprise",
+      version_code: "v2", expires_at: "2030-01-01", limits,
+    } } });
+    await h.session.load(apiOrder);
+    assert.match(h.state().error, /额度信息无效/);
+  }
+});
+
+test("SaaS launch uses authenticated POST only after ready access and ignores stale or unsafe results", async () => {
+  const h = harness(), calls = [], navigations = [];
+  const saasOrder = { ...order, delivery_method: "tenant_access", product_type: "saas" };
+  h.setContext({ ...h.context(), order: saasOrder });
+  h.api.get = async () => ({ data: { order_id: order.id, method: "tenant_access", ready: true, files: [], saas: {
+    subscription_id: "subscription-1", launch_path: "/api/orders/order-1/delivery-launch", expires_at: "2030-01-01T00:00:00Z",
+  } } });
+  h.api.post = async path => { calls.push(path); return { data: { launch_url: "https://app.example.test/start" } }; };
+  const session = createDeliveryAccessSession({ api: h.api, getContext: h.context, onChange: state => h.states.push(state), onNavigate: url => navigations.push(url) });
+  await session.load(saasOrder);
+  await session.launch();
+  assert.deepEqual(calls, ["/orders/order-1/delivery-launch"]);
+  assert.deepEqual(navigations, ["https://app.example.test/start"]);
+  h.api.post = async () => ({ data: { launch_url: "javascript:alert(1)" } });
+  await session.launch();
+  assert.match(h.state().error, /地址无效/);
+
+  const pending = deferred();
+  h.api.post = () => pending.promise;
+  const launching = session.launch();
+  session.reset();
+  pending.resolve({ data: { launch_url: "https://stale.example.test" } });
+  await launching;
+  assert.deepEqual(navigations, ["https://app.example.test/start"]);
 });
