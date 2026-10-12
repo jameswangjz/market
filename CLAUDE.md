@@ -10,7 +10,7 @@ API/SaaS integration, settlement, auditing and platform support.
 ## Current status
 2026-10-12: SaaS provider OAuth2/OIDC combined download and browser SSO are
 deployed. API/model API automatic fulfillment is deployed as
-20261012140223-f1cad0d in the existing online delivery worker, including initial
+20261012153143-50244a8 in the existing online delivery worker, including initial
 buyer credential issuance, encrypted storage and buyer-only JSON download.
 API/model runtime and desktop/mobile browser checkout, simulated payment,
 worker fulfillment and credential download passed. Runtime acceptance uses exact disposable fixtures;
