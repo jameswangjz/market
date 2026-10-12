@@ -1,0 +1,19 @@
+﻿{
+    "scope":  "Synthetic HTTP responses; real deployed frontend; no live payment, download, SaaS provisioning or SSO",
+    "status":  "passed",
+    "checks":  [
+                   "desktop: file auto-refresh; actual SaaS address; pending SaaS disabled; authenticated launch request",
+                   "mobile: file auto-refresh; actual SaaS address; pending SaaS disabled; authenticated launch request"
+               ],
+    "startupDiagnostics":  {
+                               "portFileValid":  true,
+                               "cdpReady":  true,
+                               "executableFound":  true,
+                               "pageTargetCount":  1,
+                               "socketConnected":  true,
+                               "portFileFound":  true,
+                               "websocketLoopback":  true,
+                               "processStarted":  true,
+                               "targetType":  "PSCustomObject"
+                           }
+}
