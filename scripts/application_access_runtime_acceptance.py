@@ -18,7 +18,20 @@ def run(args):
     owned = browser.read_control(args.manifest, ids)
     m = scope.load_main()
     with m.SessionLocal() as db:
-        scope.owned_rows(m, db, ids)
+        # Shared product dependencies can be retained after a real buyer purchases
+        # the fixture; validate only the exact rows this acceptance may change.
+        for role in ('admin', 'member', 'other'):
+            user_id = ids['users'][role]
+            user = db.get(m.User, user_id)
+            scope.check(user is not None and user.id.startswith(ids['run_id'] + '-') and
+                user.name == user_id and user.email == user_id + '@example.invalid' and
+                not user.platform_role, 'Synthetic user ownership mismatch')
+        product = db.get(m.Product, owned['product_id'])
+        enterprise = db.get(m.Enterprise, owned['enterprise_id'])
+        scope.check(product is not None and product.id == ids['products']['tenant_access'] and
+            product.name == product.id and product.enterprise_id == ids['enterprises'][1] and
+            enterprise is not None and enterprise.name == enterprise.id and
+            enterprise.credit_code == enterprise.id, 'Synthetic enterprise/product ownership mismatch')
         indexes = inspect(db.connection()).get_indexes('application_access_grants')
         scope.check(any(index['unique'] and set(index['column_names']) ==
             {'enterprise_id', 'product_id', 'user_id'} for index in indexes), 'Existing-table unique index absent')
@@ -35,6 +48,12 @@ def run(args):
             subscription.external_tenant_id == owned['tenant_id'],
             'Subscription ownership mismatch; acceptance refused')
         original_expiry = subscription.expires_at
+        retained = db.get(m.Order, args.retained_order) if args.retained_order else None
+        if args.retained_order:
+            scope.check(retained is not None and retained.product_id == owned['product_id'] and
+                retained.buyer_user_id not in ids['users'].values(), 'Retained external order mismatch')
+        retained_snapshot = {column.key: getattr(retained, column.key)
+            for column in m.Order.__table__.columns} if retained else None
     base = browser.origin(args.base_url)
     prefix = '/api/applications/' + owned['subscription_id']
 
@@ -79,6 +98,8 @@ def run(args):
             db.commit()
         request('POST', prefix + '/launch', 'member')
         return {'status': 'passed', 'database': 'real PostgreSQL', 'runtime_tag': owned['runtime_tag'],
+            'retained_order_id': args.retained_order or None,
+            'retained_order_unchanged': bool(retained_snapshot),
             'concurrent_grant_requests': 16, 'grant_rows': count,
             'checks': ['existing-table unique index', 'real HTTP grant concurrency',
                 'disabled user denied', 'disabled user grant revocation', 'reactivation does not restore revoked grant',
@@ -91,6 +112,12 @@ def run(args):
             db.get(m.SaaSSubscription, owned['subscription_id']).expires_at = original_expiry
             db.commit()
         request('POST', prefix + '/grants', json={'user_id': ids['users']['member'], 'granted': original_granted})
+        if retained_snapshot:
+            with m.SessionLocal() as db:
+                retained = db.get(m.Order, args.retained_order)
+                scope.check(retained is not None and retained_snapshot ==
+                    {column.key: getattr(retained, column.key) for column in m.Order.__table__.columns},
+                    'Retained order changed; acceptance refused')
 
 
 def main():
@@ -98,6 +125,7 @@ def main():
     parser.add_argument('--manifest', required=True)
     parser.add_argument('--base-url', default='http://192.168.10.10:30080')
     parser.add_argument('--output', required=True)
+    parser.add_argument('--retained-order', help='Exact external order to verify unchanged, never modify')
     args = parser.parse_args()
     logging.disable(logging.CRITICAL)
     result = run(args)

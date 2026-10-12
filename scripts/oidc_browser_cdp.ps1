@@ -416,6 +416,14 @@ checkbox_inside_modal:q.left>=r.left&&q.right<=r.right&&q.top>=r.top&&q.bottom<=
 horizontal_overflow:m.scrollWidth>m.clientWidth+1};})()
 '@
     Shot 'mobile-members.png'
+    $layout = $result.mobile_member_modal_layout
+    if ($layout.label_direction -cne 'row' -or $layout.checkbox_width -ne 18 -or $layout.checkbox_height -ne 18 -or
+        $layout.padding_left -cne '0px' -or $layout.padding_right -cne '0px' -or
+        $layout.padding_top -cne '0px' -or $layout.padding_bottom -cne '0px' -or
+        -not $layout.checkbox_inside_modal -or $layout.horizontal_overflow) {
+        throw 'Mobile member row or checkbox layout assertion failed'
+    }
+    $script:checks += 'mobile_member_row_layout'
     $script:checks += 'applications_listing_members_ui'
     $script:stage = 'member launch UI'
     ClearSession; Navigate ($fixture.baseUrl + '/console?view=applications'); Login $fixture.memberLogin

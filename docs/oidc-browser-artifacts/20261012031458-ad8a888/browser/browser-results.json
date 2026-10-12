@@ -1,0 +1,95 @@
+{
+  "status": "passed",
+  "database": "real PostgreSQL",
+  "browser_sso": "passed",
+  "mock_session": "passed",
+  "application_access": "passed",
+  "negative_cases": "passed",
+  "limits": [
+    "Paid and delivered terms are synthetic scoped fixtures",
+    "Mobile uses Chromium device emulation",
+    "No payment, settlement or external SaaS delivery verification"
+  ],
+  "runtime_tag": "20261012031458-ad8a888",
+  "run_id": "qa-vcq-a044ea9ea181",
+  "mobile_member_modal_layout": {
+    "viewport_width": 390,
+    "viewport_height": 844,
+    "label_direction": "row",
+    "modal_left": 16,
+    "modal_top": 133.5,
+    "modal_right": 374,
+    "modal_bottom": 710.5,
+    "checkbox_width": 18,
+    "checkbox_height": 18,
+    "checkbox_left": 335,
+    "checkbox_right": 353,
+    "checkbox_top": 560,
+    "checkbox_bottom": 578,
+    "padding_left": "0px",
+    "padding_right": "0px",
+    "padding_top": "0px",
+    "padding_bottom": "0px",
+    "checkbox_inside_modal": true,
+    "horizontal_overflow": false
+  },
+  "checks": [
+    "owned_grant_restored_for_repeat",
+    "desktop_login_consent_rp_session",
+    "mobile_login_consent_rp_session",
+    "reject_no_rp_session",
+    "cross_enterprise_denied",
+    "mobile_member_row_layout",
+    "applications_listing_members_ui",
+    "applications_launch_ui",
+    "grant_revoke_rp_session_and_listing"
+  ],
+  "screenshots": [
+    "desktop-consent.png",
+    "desktop-app.png",
+    "mobile-consent.png",
+    "mobile-app.png",
+    "applications.png",
+    "mobile-members.png"
+  ],
+  "blocked_requests": 0,
+  "screenshot_hashes": {
+    "mobile-consent.png": "ad3e28d4904e6bd379aabfd161e87a102f480651d27e305d680c02ad884f0b49",
+    "applications.png": "e6218a70a8a539af58d89c8ce609fc114c95194c750a7a6d4c6a57b6094b24ba",
+    "mobile-members.png": "e675c36968cfc7ff1b36072a044090dfc91ffe610478806c821f46b5fb51d2b3",
+    "desktop-app.png": "4db4574716f5cbf646ed25032f37b580d1514e9287b06e0edf7b3834007e8e44",
+    "desktop-consent.png": "c475eaeda2eda229129023c4b6f275682febd64ac8cec6456608e82439fdc5e8",
+    "mobile-app.png": "4caa4eef188c324c312a4108922f6910594007b66ac148f5a6fac5f7d6fd0502"
+  },
+  "startup": {
+    "chrome_path_exists": true,
+    "process_started": true,
+    "cdp_http_seen": true,
+    "target_count": 4,
+    "page_target_seen": true,
+    "websocket_connected": true,
+    "cdp_initialized": true
+  },
+  "flow": {
+    "rp_entry_status": 0,
+    "op_authorize_status": 0,
+    "platform_login_status": 200,
+    "consent_details_status": 200,
+    "consent_decision_status": 200,
+    "rp_callback_status": 400,
+    "rp_app_status": 401,
+    "login_form_seen": true,
+    "login_form_submitted": true,
+    "connection_refused": 0,
+    "connection_reset": 0
+  },
+  "relay": {
+    "owned": true,
+    "vm_health_status": 200,
+    "loopback_listener_seen": true,
+    "loopback_tcp_connected": true,
+    "loopback_health_status": 200,
+    "service_verified": true
+  },
+  "blocked_request_details": []
+}

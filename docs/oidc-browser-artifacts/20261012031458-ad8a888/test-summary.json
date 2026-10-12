@@ -1,0 +1,25 @@
+{
+  "backend_full": {
+    "run": 562,
+    "passed": 518,
+    "skipped": 44,
+    "failed": 0
+  },
+  "checkpoint_focused": {
+    "run": 4,
+    "passed": 4,
+    "failed": 0
+  },
+  "frontend": {
+    "run": 146,
+    "passed": 146,
+    "failed": 0
+  },
+  "build": "passed",
+  "runtime_tag": "20261012031458-ad8a888",
+  "limits": [
+    "Skipped tests are not passed tests",
+    "Checkpoint tests were run separately after full regression",
+    "Real third-party production environment not validated"
+  ]
+}
