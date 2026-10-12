@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "scope": "actual worker restart, owned route fault, and actual trade monthly snapshot",
+  "runtime_tag": "20261012165357-a27e25a",
+  "restart": {
+    "change_id": "13dd89749118bc5123efcc14eb879392",
+    "status": "completed",
+    "target_http": 200,
+    "source_http": 403,
+    "funding_identity_preserved": true,
+    "monthly_counter": [1, 2]
+  },
+  "fault": {
+    "change_id": "e7cea2cfd578d1026fbe49c82a67d8cc",
+    "status": "compensated",
+    "attempts": 3,
+    "minimum_delay_seconds": 9,
+    "funding_refunded": true,
+    "ledger_void": true,
+    "source_restored": true
+  },
+  "monthly": {
+    "original_orders": 2,
+    "completed_changes": 4,
+    "posted_adjustments": 8,
+    "original_paid": "120.00",
+    "adjustment_net": "0.00",
+    "settled_gross": "120.00",
+    "isolated_schema_removed": true,
+    "checks": ["five-party conservation", "funding/refund exclusion", "exact adjustment links", "report/export", "replay/rebuild/confirmed immutability"]
+  },
+  "cleanup": "exact owned live fixtures removed; private schema dropped; protected order and product unchanged",
+  "worker_batch_restored": 10,
+  "not_tested": ["browser transactions", "real bank transfers", "cross-month adjustments", "all resource fault boundaries"]
+}

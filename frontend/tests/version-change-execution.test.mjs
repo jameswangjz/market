@@ -210,3 +210,15 @@ test("other source orders are accepted only when bound to the active combination
   assert.throws(() => sanitizeVersionChangeExecution(siblingTerm, order, "combo-2", true));
   assert.throws(() => sanitizeVersionChangeExecution(siblingTerm, order, "", true));
 });
+
+test("validated quote has a reachable submit control without closing and clearing its session", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const consoleSource = await readFile(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+  const executionSource = await readFile(new URL("../src/VersionChangeExecution.vue", import.meta.url), "utf8");
+  assert.match(consoleSource, /ref="versionChangeExecutionRef"/);
+  assert.match(consoleSource, /versionChangeModal\.quote && versionChangeModal\.validated/);
+  assert.match(consoleSource, /@click="versionChangeExecutionRef\?\.submit\(\)"/);
+  assert.match(executionSource, /if \(quoteReady\.value && !quotePending\.value\)/);
+  assert.match(executionSource, /defineExpose\(\{ submit \}\)/);
+  assert.match(executionSource, /<Teleport to="body">/);
+});

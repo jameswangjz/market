@@ -285,6 +285,7 @@ const renewalModal = computed(() => renewalAllowed.value ? subscriptionState.val
 const versionChangeState = ref({ open: false, options: null, targetId: "", confirmed: false, quote: null,
   loading: false, quoting: false, validating: false, validated: false, error: "" });
 const versionChangeClock = ref(Date.now());
+const versionChangeExecutionRef = ref(null);
 let versionChangeTimer = null;
 function versionChangeContext() {
   return { order: selectedOrder.value?.order, subscription: typeof versionChangeSubscription !== "undefined"
@@ -4373,6 +4374,7 @@ onUnmounted(() => {
           <p v-else class="muted">此订单暂无订阅权益</p>
         </section>
         <VersionChangeExecution
+          ref="versionChangeExecutionRef"
           v-if="versionChangeHistoryAllowed"
           :api="api"
           :order="selectedOrder.order"
@@ -5029,6 +5031,7 @@ onUnmounted(() => {
         </template>
         <div class="modal-actions">
           <button v-if="versionChangeModal.quote" class="secondary-btn" :disabled="versionChangeBusy" @click="versionChangeSession.validate()"><ShieldCheck :size="15" />{{ versionChangeModal.validating ? '校验中' : '校验报价' }}</button>
+          <button v-if="versionChangeModal.quote && versionChangeModal.validated" class="primary-btn" :disabled="versionChangeBusy" @click="versionChangeExecutionRef?.submit()"><ArrowLeftRight :size="15" />提交变更请求</button>
           <button class="secondary-btn" :disabled="versionChangeBusy" @click="versionChangeSession.refresh()"><RefreshCw :size="15" />刷新</button>
           <button class="secondary-btn" @click="versionChangeSession.close()">关闭</button>
         </div>

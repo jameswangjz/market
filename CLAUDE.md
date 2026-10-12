@@ -17,8 +17,16 @@ worker fulfillment and credential download passed. Runtime acceptance uses exact
 review approval is a fixture precondition and payments are simulated. Do not
 close TRD-BE-012 or full-flow QA solely on these narrower adapter checks.
 
-Version-change Saga/economic adjustments and associated recovery remain
-unfinished. Real payment/bank reconciliation needs external test data.
+Durable version-change Saga and monthly signed-ledger integration are deployed
+as 20261012165357-a27e25a. Real API/model and mock SaaS upgrade/downgrade worker
+checks passed; monthly HTTP checks previously used synthetic ledger fixtures.
+Actual worker restart and owned target-route fault compensation passed, as did
+actual API/model worker ledger snapshots through isolated monthly HTTP settlement.
+All corresponding live fixtures and private schemas were precisely removed;
+the protected order/product were unchanged and worker batch was restored to 10.
+Browser Saga is still being verified separately. Cross-month and all-resource
+fault matrices remain open; do not treat this narrower regression as completion.
+Real payment/bank reconciliation needs external test data.
 
 ## Owner
 wangjizhong, biru (reviews and merges PRs)
@@ -48,6 +56,6 @@ fulfillment. Download is restricted to verified buyer enterprise administrators,
 not platform personnel. This requires the persistent market-api-credentials
 Secret/API_CREDENTIAL_ENCRYPTION_KEY; never rotate it on deployment. Preserve
 revoked and legacy hash-only keys rather than silently issuing replacements.
-Version-change adjustment ledger code is internal groundwork only, not a
-completed Saga, refund flow or monthly settlement integration. See
-docs/初始调用凭据与升降级清算补偿设计-20261012.md for boundaries and tests.
+Ordinary refunds after version changes (TRD-BE-019) remain a separate unfinished
+workflow; do not confuse them with simulated version-change funding refunds.
+See docs/升降级Saga与月度清算接入详细设计-20261012.md for boundaries and tests.

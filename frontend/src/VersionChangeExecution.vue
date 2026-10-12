@@ -31,7 +31,8 @@ const moneyStatuses = { unpaid: "未支付", paying: "支付处理中", paid: "�
 const moneyStatus = value => moneyStatuses[value] || (value ? "处理中" : "无");
 const statusClass = status => ["completed", "compensated"].includes(status) ? "done" : status === "exception" ? "error" : "pending";
 const permission = item => versionChangeExecutionPermissions(props.user, props.order, item, props.enterprise);
-function submit() { submitConfirm.value = true; }
+function submit() { if (quoteReady.value && !quotePending.value) submitConfirm.value = true; }
+defineExpose({ submit });
 async function confirmSubmit() { submitConfirm.value = false; if (await execution.submit()) { props.quoteSession.reset(); emit("refresh"); } }
 function openHistory() { execution.open(); }
 async function confirmAction(item) { await execution.confirmPayment(item, reason.value); reason.value = ""; execution.cancelConfirm(); }
@@ -81,6 +82,7 @@ onUnmounted(() => execution.dispose());
         <button v-if="permission(item).retry" type="button" :disabled="state.actionId === item.id" @click="execution.retry(item)"><RotateCw :size="14" />重试</button>
       </div>
     </article>
+    <Teleport to="body">
     <div v-if="state.confirmItem || submitConfirm" class="vce-confirm-backdrop" @click.self="state.confirmItem ? execution.cancelConfirm() : submitConfirm = false">
       <form v-if="state.confirmItem" class="vce-confirm" role="dialog" aria-modal="true" aria-labelledby="vce-confirm-title" @submit.prevent="confirmAction(state.confirmItem)">
         <div class="vce-confirm-head"><h3 id="vce-confirm-title">{{ user.platform_role ? '确认人工支付' : '模拟确认支付' }}</h3><button type="button" class="vce-icon" aria-label="关闭确认" @click="execution.cancelConfirm()"><X :size="16" /></button></div>
@@ -95,6 +97,7 @@ onUnmounted(() => execution.dispose());
         <div class="vce-confirm-actions"><button type="button" @click="submitConfirm = false">返回</button><button type="button" :disabled="quotePending" @click="confirmSubmit"><Check :size="14" />确认提交</button></div>
       </section>
     </div>
+    </Teleport>
   </section>
 </template>
 

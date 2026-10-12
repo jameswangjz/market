@@ -2,9 +2,9 @@
 
 This script exercises API/model-API gateway publication, an HTTP purchase and
 delivery, upgrade funding, the durable version-change worker, APISIX calls and
-usage continuity. It deliberately does not claim monthly-ledger, downgrade, or
-future-renewal acceptance. Run only against an explicitly selected deployed PG
-and APISIX environment; this file has not been run against a remote deployment.
+usage continuity, including downgrade and linked simulated refunds. It does not
+claim browser, restart/fault, monthly-ledger, or future-renewal acceptance. Run
+only against an explicitly selected deployed PG and APISIX environment.
 
 The 0600 manifest is created before any route or consumer is published. Cleanup
 uses only exact qa-vcs roots and recorded external identifiers.
