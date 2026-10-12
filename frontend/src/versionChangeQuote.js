@@ -18,7 +18,8 @@ export function canPreviewVersionChange(order, subscription, user, buyerEnterpri
       Number(order.refunded_amount || 0) !== 0 ||
       !subscription?.id || subscription.available !== true || subscription.status !== "active" ||
       !text(subscription.version_id) || !text(subscription.version_code) ||
-      order.product_version_id !== subscription.version_id || order.product_version_code !== subscription.version_code ||
+      (subscription.can_version_change !== true &&
+        (order.product_version_id !== subscription.version_id || order.product_version_code !== subscription.version_code)) ||
       !Number.isSafeInteger(subscription.generation) || subscription.generation < 1 ||
       !date(subscription.expires_at) || Date.parse(subscription.expires_at) <= at ||
       subscription.enterprise_id !== order.buyer_enterprise_id ||
@@ -218,6 +219,11 @@ export function createVersionChangeSession({ api, getContext, onChange = () => {
       if (current(generation, request, context)) { state.quoting = state.validating = false; emit(); }
     }
   }
-  return { open, refresh, reset, close: reset, setTarget, setConfirmed, expire,
+  function executionPayload(idempotencyKey) {
+    expire();
+    if (!state.open || !state.validated || !state.quote || !quoteToken || typeof idempotencyKey !== "string" || !idempotencyKey.trim()) return null;
+    return { quote_token: quoteToken, idempotency_key: idempotencyKey };
+  }
+  return { open, refresh, reset, close: reset, setTarget, setConfirmed, expire, executionPayload, state: () => ({ ...state }),
     quote: () => requestQuote(), validate: () => requestQuote(true), dispose() { reset(); disposed = true; } };
 }

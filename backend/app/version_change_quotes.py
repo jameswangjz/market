@@ -52,6 +52,40 @@ def iso(value):
     return utc(value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value).isoformat()
 
 
+def integration_context(ns, db, product, version):
+    if product.delivery_method in {'api', 'model_api'}:
+        gateway = ns.get('version_gateway', {})
+        Config, Route = gateway.get('Config'), ns.get('ApiGatewayRoute')
+        if Config is None or Route is None:
+            return None
+        config = db.scalar(select(Config).where(Config.version_id == version.id))
+        if config is None:
+            return None
+        route = db.get(Route, config.route_id) if config.route_id else None
+        return {'kind': 'api', 'config_id': config.id, 'revision_id': config.revision_id,
+                'evidence_hash': config.evidence_hash, 'route_id': config.route_id,
+                'route_key': route.route_key if route else config.route_key,
+                'upstream_url': config.upstream_url,
+                'route_upstream_url': route.upstream_url if route else None,
+                'config_status': config.status, 'config_healthy': config.healthy,
+                'route_status': route.status if route else None,
+                'validated_ip': route.validated_ip if route else None}
+    if product.delivery_method == 'tenant_access':
+        Config = ns.get('SaaSIntegrationConfig')
+        if Config is None:
+            return None
+        config = db.scalar(select(Config).where(Config.product_id == product.id))
+        if config is None:
+            return None
+        safe = {key: getattr(config, key, None) for key in (
+            'id', 'base_url', 'operation_path', 'token_url', 'client_id', 'scope',
+            'auth_mode', 'timeout_ms', 'status')}
+        fingerprint = hashlib.sha256(json.dumps(safe, sort_keys=True, separators=(',', ':'),
+            ensure_ascii=True).encode()).hexdigest()
+        return {'kind': 'saas', 'config_id': config.id, 'config_fingerprint': fingerprint}
+    return None
+
+
 def install(ns):
     Order, Product = ns['Order'], ns['Product']
     terms = ns['subscription_terms']
@@ -72,8 +106,8 @@ def install(ns):
         if (not combo or combo.status != 'active' or not source_term
                 or source_term.combination_id != combo.id or source_term.generation != combo.generation
                 or combo.delivery_method != order.delivery_method_snapshot
-                or order.product_version_id != combo.version_id
-                or order.product_version_code != combo.version_code
+                or terms['effective_snapshot'](db, order, source_term)['version_id'] != combo.version_id
+                or terms['effective_snapshot'](db, order, source_term)['version_code'] != combo.version_code
                 or not combo.anchor_at <= at < CalendarAnchor(combo.anchor_at).boundary(combo.total_months)):
             raise HTTPException(409, '订单不属于当前有效订阅组合')
         if order.delivery_method_snapshot == 'tenant_access':
@@ -117,12 +151,12 @@ def install(ns):
                     or original.buyer_enterprise_id != order.buyer_enterprise_id
                     or original.product_id != order.product_id or original.snapshot_version != 1
                     or original.delivery_method_snapshot != combo.delivery_method
-                    or original.product_version_id != term.version_id
-                    or original.product_version_code != term.version_code
+                    or terms['effective_snapshot'](db, original, term)['version_id'] != term.version_id
+                    or terms['effective_snapshot'](db, original, term)['version_code'] != term.version_code
                     or original.subscription_months != term.months
                     or (previous is not None and term.starts_at != previous)):
                 raise HTTPException(409, '订阅时段或订单快照不一致，请先核实权益')
-            if terms_snapshot(original)['currency'] != currency:
+            if terms['effective_snapshot'](db, original, term)['economic'].get('currency') != currency:
                 raise HTTPException(409, '订阅原订单币种不一致，不能直接计算差价')
             previous = term.ends_at
         if (not rows or not rows[0][0].starts_at <= at < rows[0][0].ends_at
@@ -144,12 +178,20 @@ def install(ns):
         return {'mode': mode, 'notes': version.compatibility_notes or '', 'confirmation_required': mode == 'breaking'}
 
     def prepare(db, user, order_id, target_id, confirmed, at):
+        source = db.scalar(select(Order).where(Order.id == order_id).execution_options(populate_existing=True))
+        if not source:
+            raise HTTPException(404, '订单不存在')
+        ns['trading_policy']['require_buyer'](db, user, source.buyer_enterprise_id)
+        db.scalar(select(Product).where(Product.id == source.product_id).with_for_update())
         order, combo = subject(db, user, order_id, at)
         if target_id == combo.version_id:
             raise HTTPException(409, '请选择不同于当前订阅的目标版本')
         body = ns['OrderBody'](product_id=order.product_id, product_version_id=target_id,
             buyer_enterprise_id=order.buyer_enterprise_id, subscription_months=1)
         target = ns['order_economics']['quote'](db, user, body, lock=True)
+        guard = ns.get('version_change_saga', {}).get('assert_no_pending')
+        if callable(guard):
+            guard(db, order.buyer_enterprise_id, order.product_id)
         combo = terms['lock_combination'](db, order.buyer_enterprise_id, order.product_id)
         # Re-read eligibility after the enterprise lock serializes renewal/delivery.
         order, current_combo = subject(db, user, order_id, at)
@@ -162,15 +204,16 @@ def install(ns):
             raise HTTPException(409, '目标版本与原订单币种不同，不能直接计算差价')
         rows = eligible_segments(db, order, combo, at)
         version = target['version']
+        target_integration = integration_context(ns, db, target['product'], version)
         compat = compatibility(version)
         if compat['confirmation_required'] and not confirmed:
             raise HTTPException(409, '目标版本存在不兼容变更，请明确确认兼容性后获取报价')
-        segments, internal, state = [], [], []
+        segments, internal, state, snapshots_by_term = [], [], [], {}
         for term, original in rows:
             ratio = remaining_ratio(term.starts_at, term.ends_at, at)
-            old = terms_snapshot(original)
-            old_revenue = money(money(original.amount) * ratio)
-            old_cost = money(money(original.total_cost_snapshot) * ratio)
+            old = terms['effective_snapshot'](db, original, term)
+            old_revenue = money(old['amount'] * ratio)
+            old_cost = money(old['cost'] * ratio)
             full_revenue = money(target['unit_price'] * term.months)
             full_cost = money(target['unit_cost'] * term.months)
             new_revenue, new_cost = money(full_revenue * ratio), money(full_cost * ratio)
@@ -179,35 +222,51 @@ def install(ns):
                 'version_code': term.version_code, 'subscription_months': term.months,
                 'starts_at': iso(term.starts_at), 'ends_at': iso(term.ends_at),
                 'remaining_starts_at': iso(max(at, term.starts_at)), 'remaining_ends_at': iso(term.ends_at),
-                'remaining_ratio': str(ratio), 'original_amount': float(money(original.amount)),
+                'remaining_ratio': str(ratio), 'original_amount': float(old['amount']),
                 'original_remaining_amount': float(old_revenue), 'target_full_amount': float(full_revenue),
                 'target_remaining_amount': float(new_revenue), 'net_difference': float(delta)})
             internal.append({'order_id': original.id, 'term_id': term.id,
                 'old': {'revenue': str(-old_revenue), 'cost': str(-old_cost),
-                        'profit': str(-(old_revenue-old_cost)), 'rule': old['settlement_rule'], 'version_id': term.version_id},
+                        'profit': str(-(old_revenue-old_cost)), 'rule': old['economic']['settlement_rule'], 'version_id': old['version_id']},
                 'target': {'revenue': str(new_revenue), 'cost': str(new_cost),
                            'profit': str(new_revenue-new_cost), 'rule': target['economic']['settlement_rule'], 'version_id': version.id}})
             state.append({'term_id': term.id, 'start_month': term.start_month, 'months': term.months,
                 'status': term.status, 'economic': original.economic_snapshot_json,
-                'delivery': original.delivery_snapshot_json, 'paid': str(original.paid_amount),
+                'delivery': original.delivery_snapshot_json, 'effective': {
+                    'economic': old['economic'], 'delivery': old['delivery'],
+                    'amount': str(old['amount']), 'cost': str(old['cost']),
+                    'version_id': old['version_id'], 'version_code': old['version_code']},
+                'paid': str(original.paid_amount),
                 'refunded': str(original.refunded_amount), 'main_status': original.main_status,
                 'delivery_status': original.delivery_status, 'updated_at': iso(original.updated_at)})
+            effective_economic = dict(target['economic'])
+            effective_economic.update(subscription_months=term.months,
+                amount=str(money(target['unit_price'] * term.months)),
+                total_cost=str(money(target['unit_cost'] * term.months)))
+            snapshots_by_term[term.id] = {'economic': effective_economic, 'delivery': target['delivery'],
+                                          'integration': target_integration}
         total = sum((Decimal(segment['target']['revenue'])+Decimal(segment['old']['revenue'])
                      for segment in internal), Decimal(0))
         money(abs(total))
         fingerprint = {'source_order_id': order.id, 'combination_id': combo.id,
             'generation': combo.generation, 'anchor_at': iso(combo.anchor_at), 'total_months': combo.total_months,
             'combo_updated_at': iso(combo.updated_at), 'target': target['economic'],
-            'target_delivery': target['delivery'], 'target_updated_at': iso(version.updated_at),
+            'target_delivery': target['delivery'], 'target_integration': target_integration,
+            'target_updated_at': iso(version.updated_at),
             'compatibility': compat, 'confirmed': confirmed, 'at': iso(at), 'state': state, 'internal': internal}
         digest = hmac.new(ns['JWT_SECRET'].encode(), json.dumps(fingerprint, sort_keys=True,
             separators=(',', ':')).encode(), hashlib.sha256).hexdigest()
+        if target_integration is not None:
+            frozen_integration = dict(target_integration, quote_fingerprint=digest)
+            for snapshot in snapshots_by_term.values():
+                snapshot['integration'] = frozen_integration
         result = {'order_id': order.id, 'combination_id': combo.id, 'current_version_code': combo.version_code,
             'target_version_code': version.version_code, 'action': 'upgrade' if total > 0 else 'downgrade' if total < 0 else 'no_payment',
             'net_difference': float(total), 'payment_amount': float(max(total, Decimal(0))),
             'refund_amount': float(max(-total, Decimal(0))), 'currency': currency,
             'compatibility': compat, 'segments': segments, 'execution_ready': False}
-        return {'public': result, 'internal': internal, 'digest': digest, 'combo': combo, 'current_end': rows[0][0].ends_at}
+        return {'public': result, 'internal': internal, 'digest': digest, 'combo': combo,
+                'current_end': rows[0][0].ends_at, 'snapshots_by_term': snapshots_by_term}
 
     def make_quote(db, user, order_id, body):
         at = utc(ns['now']())

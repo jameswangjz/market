@@ -1,0 +1,19 @@
+﻿{
+    "scope":  "Real browser checkout, simulated payment, deployed worker and credential download; approved fixture products, not product review",
+    "status":  "passed",
+    "checks":  [
+                   "desktop: real checkout; simulated payment; worker delivery; same shared credential; authenticated JSON download; cost and secret isolation",
+                   "mobile: real checkout; simulated payment; worker delivery; same shared credential; authenticated JSON download; cost and secret isolation"
+               ],
+    "startupDiagnostics":  {
+                               "portFileValid":  true,
+                               "cdpReady":  true,
+                               "executableFound":  true,
+                               "pageTargetCount":  1,
+                               "socketConnected":  true,
+                               "portFileFound":  true,
+                               "websocketLoopback":  true,
+                               "processStarted":  true,
+                               "targetType":  "PSCustomObject"
+                           }
+}

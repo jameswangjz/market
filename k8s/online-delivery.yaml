@@ -33,8 +33,10 @@ spec:
             - {name: ONLINE_DELIVERY_WORKER_INTERVAL, value: '2'}
             - {name: ONLINE_DELIVERY_WORKER_BATCH, value: '10'}
             - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+            - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
             - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
             - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+            - {name: API_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-api-credentials, key: API_CREDENTIAL_ENCRYPTION_KEY}}}
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: '1', memory: 512Mi}

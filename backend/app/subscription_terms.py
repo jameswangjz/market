@@ -23,10 +23,11 @@ import hashlib
 import json
 import secrets
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import CheckConstraint, Column, ForeignKey, Integer, String, UniqueConstraint, select
+from sqlalchemy import CheckConstraint, Column, ForeignKey, Integer, String, Text, UniqueConstraint, event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.types import DateTime, TypeDecorator
 
@@ -122,7 +123,212 @@ def install(ns):
         months = Column(Integer, nullable=False)
         order_id = Column(ForeignKey('orders.id'), nullable=False, unique=True)
 
-    Combination, Term, Renewal = SubscriptionCombination, SubscriptionTerm, SubscriptionRenewal
+    class SubscriptionTermRevision(Base):
+        __tablename__ = 'subscription_term_revisions'
+        __table_args__ = (
+            UniqueConstraint('change_id', 'term_id', name='uq_subscription_term_revision_change_term'),
+            UniqueConstraint('term_id', 'revision_number', name='uq_subscription_term_revision_number'),
+        )
+        id = Column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+        change_id = Column(String(36), nullable=False, index=True)
+        term_id = Column(ForeignKey('subscription_terms.id'), nullable=False, index=True)
+        revision_number = Column(Integer, nullable=False)
+        economic_snapshot_json = Column(Text, nullable=False)
+        delivery_snapshot_json = Column(Text, nullable=False)
+        version_id = Column(String(36), nullable=False)
+        version_code = Column(String(60), nullable=False)
+        created_at = Column(UTCDateTime(), nullable=False, default=ns['now'])
+
+    @event.listens_for(SubscriptionTermRevision, 'before_update')
+    def reject_revision_update(mapper, connection, target):
+        raise ValueError('subscription term revisions are immutable')
+
+    @event.listens_for(SubscriptionTermRevision, 'before_delete')
+    def reject_revision_delete(mapper, connection, target):
+        raise ValueError('subscription term revisions are immutable')
+
+    Combination, Term, Renewal, Revision = (SubscriptionCombination, SubscriptionTerm,
+                                               SubscriptionRenewal, SubscriptionTermRevision)
+
+    def verified_revision(db, revision, order, term):
+        ledger_model = ns.get('version_change_ledger', {}).get('Model')
+        if ledger_model is None:
+            return False
+        economic = json.loads(revision.economic_snapshot_json)
+        delivery = json.loads(revision.delivery_snapshot_json)
+        if (economic.get('product_id') != order.product_id
+                or economic.get('product_version_id') != revision.version_id
+                or economic.get('version_code') != revision.version_code
+                or economic.get('subscription_months') != term.months
+                or delivery.get('method') != order.delivery_method_snapshot):
+            return False
+        try:
+            full_revenue = money(economic['amount'])
+            full_cost = money(economic['total_cost'])
+            expected_rule = json.dumps(economic['settlement_rule'], sort_keys=True,
+                separators=(',', ':'), ensure_ascii=False)
+        except (KeyError, TypeError, ValueError):
+            return False
+        entries = db.scalars(select(ledger_model).where(ledger_model.change_id == revision.change_id,
+            ledger_model.source_order_id == order.id, ledger_model.combination_id == term.combination_id,
+            ledger_model.side == 'target')).all()
+        if len(entries) != 1:
+            return False
+        entry = entries[0]
+        if (entry.status not in {'pending', 'posted'} or entry.target_version_id != revision.version_id
+                or entry.currency != economic.get('currency')
+                or entry.rule_json != expected_rule):
+            return False
+        elapsed = entry.effective_at - term.starts_at
+        duration = term.ends_at - term.starts_at
+        duration_us = (duration.days * 86400 + duration.seconds) * 1000000 + duration.microseconds
+        remaining = max(0, min(duration_us, (duration_us -
+            ((elapsed.days * 86400 + elapsed.seconds) * 1000000 + elapsed.microseconds))))
+        if duration_us <= 0:
+            return False
+        ratio = Decimal(remaining) / Decimal(duration_us)
+        if (money(entry.revenue) != money(full_revenue * ratio)
+                or money(entry.cost) != money(full_cost * ratio)):
+            return False
+        if entry.status == 'posted':
+            return True
+        saga = ns.get('version_change_saga', {})
+        Request = saga.get('VersionChangeRequest')
+        request = db.get(Request, revision.change_id) if Request is not None else None
+        if not request or not request.resource_applied:
+            return False
+        try:
+            proof = json.loads(request.evidence_json or '{}')
+            target_snapshots = json.loads(request.target_snapshots_json or '{}')
+        except (TypeError, ValueError):
+            return False
+        frozen = target_snapshots.get(term.id)
+        return bool(
+            isinstance(frozen, dict)
+            and frozen.get('economic') == economic
+            and frozen.get('delivery') == delivery
+            and proof.get('request_change_id') == revision.change_id
+            and proof.get('resource_change_id') == revision.change_id
+            and isinstance(proof.get('evidence_fingerprint'), str)
+            and len(proof['evidence_fingerprint']) == 64
+            and all(char in '0123456789abcdef' for char in proof['evidence_fingerprint'])
+        )
+
+    def effective_snapshot(db, order, term):
+        revisions = db.scalars(select(Revision).where(Revision.term_id == term.id).order_by(
+            Revision.revision_number.desc())).all()
+        revision = None
+        for candidate in revisions:
+            if verified_revision(db, candidate, order, term):
+                revision = candidate
+                break
+        economic = (json.loads(revision.economic_snapshot_json) if revision else
+                    ns['order_economics']['economic_snapshot'](order))
+        delivery = (json.loads(revision.delivery_snapshot_json) if revision else
+                    ns['order_economics']['delivery_snapshot'](order))
+        return {'economic': economic, 'delivery': delivery,
+                'amount': money(money(economic['unit_price']) * term.months),
+                'cost': money(money(economic['unit_cost']) * term.months),
+                'version_id': revision.version_id if revision else order.product_version_id,
+                'version_code': revision.version_code if revision else order.product_version_code}
+
+    def apply_version_change(db, combination, target_version_id, target_version_code,
+                             snapshots_by_term, at, change_id):
+        at = utc(at)
+        combination = db.scalar(select(Combination).where(Combination.id == combination.id)
+            .with_for_update().execution_options(populate_existing=True))
+        if combination is None or combination.status != 'active':
+            raise HTTPException(409, '版本变更订阅组合不存在或已停用')
+        existing = db.scalars(select(Revision).where(Revision.change_id == change_id)).all()
+        existing_by_term = {revision.term_id: revision for revision in existing}
+        if existing_by_term:
+            rows = db.scalars(select(Term).where(Term.id.in_(set(snapshots_by_term)),
+                Term.combination_id == combination.id, Term.generation == combination.generation,
+                Term.status == 'active').with_for_update()).all()
+            if {row.id for row in rows} != set(snapshots_by_term):
+                raise HTTPException(409, '版本变更已有未知或失效期限修订')
+            if set(existing_by_term) != {row.id for row in rows}:
+                raise HTTPException(409, '版本变更已有不完整期限修订')
+            if (combination.version_id != target_version_id or combination.version_code != target_version_code
+                    or any(row.version_id != target_version_id or row.version_code != target_version_code
+                           for row in rows)):
+                raise HTTPException(409, '已应用版本变更与当前订阅版本不一致')
+            for term in rows:
+                revision = existing_by_term[term.id]
+                snapshot = snapshots_by_term[term.id]
+                expected_economic = json.dumps(snapshot.get('economic'), sort_keys=True,
+                    separators=(',', ':'), ensure_ascii=False)
+                expected_delivery = json.dumps(snapshot.get('delivery'), sort_keys=True,
+                    separators=(',', ':'), ensure_ascii=False)
+                if (revision.version_id != target_version_id or revision.version_code != target_version_code
+                        or revision.economic_snapshot_json != expected_economic
+                        or revision.delivery_snapshot_json != expected_delivery
+                        or not verified_revision(db, revision, db.get(Order, term.order_id), term)):
+                    raise HTTPException(409, '重复版本变更快照与已应用修订不一致')
+            return rows
+        rows = db.scalars(select(Term).where(Term.combination_id == combination.id,
+            Term.generation == combination.generation, Term.status == 'active', Term.ends_at > at)
+            .with_for_update()).all()
+        if not rows or {row.id for row in rows} != set(snapshots_by_term):
+            raise HTTPException(409, '版本变更期限集合已变化，请重新报价')
+        ledger_model = ns.get('version_change_ledger', {}).get('Model')
+        if ledger_model is None:
+            raise HTTPException(409, '版本变更账本尚未安装')
+        ledger_rows = db.scalars(select(ledger_model).where(ledger_model.change_id == change_id,
+            ledger_model.combination_id == combination.id, ledger_model.side == 'target')).all()
+        eligible_sources = {row.source_order_id for row in ledger_rows
+                            if row.status in {'pending', 'posted'} and row.target_version_id == target_version_id}
+        saga = ns.get('version_change_saga', {})
+        Request = saga.get('VersionChangeRequest')
+        request = db.get(Request, change_id) if Request is not None else None
+        refund_verified = bool(request and request.resource_applied and request.status != 'compensated'
+            and all(row.status in {'pending', 'posted'} for row in ledger_rows))
+        if (not ledger_rows or {row.source_order_id for row in ledger_rows} != {row.order_id for row in rows}
+                or eligible_sources != {row.order_id for row in rows}
+                or (not refund_verified and any(row.status != 'posted' for row in ledger_rows))):
+            raise HTTPException(409, '版本变更账本尚未验证入账')
+        for term in rows:
+            snapshot = snapshots_by_term[term.id]
+            economic, delivery = snapshot.get('economic'), snapshot.get('delivery')
+            if (not isinstance(economic, dict) or not isinstance(delivery, dict)
+                    or economic.get('billing_unit') != 'month'
+                    or economic.get('product_id') != combination.product_id
+                    or economic.get('product_version_id') != target_version_id
+                    or economic.get('version_code') != target_version_code
+                    or economic.get('subscription_months') != term.months
+                    or not isinstance(economic.get('currency'), str)
+                    or len(economic['currency']) != 3
+                    or delivery.get('method') != combination.delivery_method):
+                raise HTTPException(409, '版本变更目标快照与订阅不匹配')
+            try:
+                unit_price, unit_cost = money(economic['unit_price']), money(economic['unit_cost'])
+                if (money(economic['amount']) != money(unit_price * term.months)
+                        or money(economic['total_cost']) != money(unit_cost * term.months)):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                raise HTTPException(409, '版本变更目标经济快照无效') from None
+            quota = delivery.get('quota')
+            if not isinstance(quota, dict) or any(type(quota.get(key)) is not int or quota[key] < 0
+                    for key in LIMIT_KEYS):
+                raise HTTPException(409, '版本变更目标额度快照无效')
+            candidate = Revision(change_id=change_id, term_id=term.id,
+                economic_snapshot_json=json.dumps(economic, sort_keys=True, separators=(',', ':'), ensure_ascii=False),
+                delivery_snapshot_json=json.dumps(delivery, sort_keys=True, separators=(',', ':'), ensure_ascii=False),
+                version_id=target_version_id, version_code=target_version_code, revision_number=1, created_at=at)
+            if not verified_revision(db, candidate, db.get(Order, term.order_id), term):
+                raise HTTPException(409, '版本变更账本与目标快照不匹配')
+            last_number = db.scalar(select(Revision.revision_number).where(Revision.term_id == term.id)
+                                    .order_by(Revision.revision_number.desc()).limit(1)) or 0
+            candidate.revision_number = last_number + 1
+            db.add(candidate)
+            term.version_id, term.version_code = target_version_id, target_version_code
+        combination.version_id, combination.version_code = target_version_id, target_version_code
+        combination.updated_at = at
+        db.flush()
+        return rows
+
+    def pending_guard():
+        return ns.get('version_change_saga', {}).get('assert_no_pending')
 
     def lock_combination(db, enterprise_id, product_id):
         # A preexisting enterprise row serializes even the first combination
@@ -169,6 +375,10 @@ def install(ns):
         public = quoted['public']
         if public['delivery_method'] not in MONTHLY:
             return None
+        db.scalar(select(ns['Product']).where(ns['Product'].id == public['product_id']).with_for_update())
+        guard = pending_guard()
+        if callable(guard):
+            guard(db, enterprise_id, public['product_id'])
         combination = lock_combination(db, enterprise_id, public['product_id'])
         if combination and combination.status == 'active' and utc(ns['now']()) < expires(combination):
             if (combination.version_id != public['product_version_id']
@@ -181,6 +391,10 @@ def install(ns):
         """Trusted verified-success caller only; parent Order must be locked/refreshed."""
         if order.snapshot_version != 1 or order.delivery_method_snapshot not in MONTHLY:
             return None
+        db.scalar(select(ns['Product']).where(ns['Product'].id == order.product_id).with_for_update())
+        guard = pending_guard()
+        if callable(guard):
+            guard(db, order.buyer_enterprise_id, order.product_id)
         success_at = utc(at if at is not None else ns['now']())
         paid_snapshot(order)
         combination = lock_combination(db, order.buyer_enterprise_id, order.product_id)
@@ -265,8 +479,9 @@ def install(ns):
             .order_by(Term.start_month).execution_options(populate_existing=True)).all()
         anchor = CalendarAnchor(combination.anchor_at)
         for term, order in rows:
+            effective = effective_snapshot(db, order, term)
             if (order.buyer_enterprise_id != enterprise_id or order.product_id != product_id
-                    or order.product_version_id != term.version_id or order.product_version_code != term.version_code
+                    or effective['version_id'] != term.version_id or effective['version_code'] != term.version_code
                     or order.delivery_method_snapshot != combination.delivery_method
                     or order.subscription_months != term.months):
                 continue
@@ -274,7 +489,8 @@ def install(ns):
             if term.starts_at != expected.start or term.ends_at != expected.end:
                 continue
             try:
-                delivery = paid_snapshot(order)
+                paid_snapshot(order)
+                delivery = effective_snapshot(db, order, term)['delivery']
             except HTTPException:
                 continue
             period = anchor.period_at(instant)
@@ -314,8 +530,9 @@ def install(ns):
             Term.version_code == combination.version_code).order_by(Term.start_month)
             .execution_options(populate_existing=True)).all()
         for term, order in rows:
+            effective = effective_snapshot(db, order, term)
             if (order.buyer_enterprise_id != enterprise_id or order.product_id != product_id
-                    or order.product_version_id != term.version_id or order.product_version_code != term.version_code
+                    or effective['version_id'] != term.version_id or effective['version_code'] != term.version_code
                     or order.delivery_method_snapshot != combination.delivery_method
                     or order.subscription_months != term.months):
                 continue
@@ -323,7 +540,8 @@ def install(ns):
             if term.starts_at != bounds.start or term.ends_at != bounds.end:
                 continue
             try:
-                delivery = paid_snapshot(order)
+                paid_snapshot(order)
+                delivery = effective_snapshot(db, order, term)['delivery']
             except HTTPException:
                 continue
             for index in range(term.start_month, term.start_month + term.months):
@@ -349,22 +567,49 @@ def install(ns):
                     'server_time': ns['now'](),
                     'enterprise_id': order.buyer_enterprise_id, 'version_id': None, 'version_code': None,
                     'anchor_at': None, 'generation': None, 'expires_at': None, 'status': 'unavailable',
-                    'terms': [], 'current_period': None, 'limits': None, 'can_renew': False}}
+                    'terms': [], 'current_period': None, 'limits': None, 'can_renew': False,
+                    'can_version_change': False}}
         terms = db.execute(select(Term, Order.order_no).join(Order, Term.order_id == Order.id)
                            .where(Term.combination_id == combination.id)
                            .order_by(Term.generation, Term.start_month, Term.id)).all()
         entitlement = current_entitlement(db, order.buyer_enterprise_id, order.product_id)
         source_term = db.scalar(select(Term).where(Term.order_id == order.id, Term.status == 'active'))
-        can_renew = (not user.platform_role and combination.status == 'active' and source_term is not None
+        source_effective = effective_snapshot(db, order, source_term) if source_term is not None else None
+        source_verified = False
+        if source_term is not None:
+            try:
+                paid_snapshot(order)
+                source_verified = True
+            except HTTPException:
+                pass
+        can_renew = (not user.platform_role and source_verified and combination.status == 'active' and source_term is not None
                      and source_term.generation == combination.generation
-                     and order.product_version_id == combination.version_id
-                     and order.product_version_code == combination.version_code
+                     and source_effective['version_id'] == combination.version_id
+                     and source_effective['version_code'] == combination.version_code
                      and order.delivery_method_snapshot == combination.delivery_method)
+        can_version_change = (not user.platform_role and source_verified and combination.status == 'active' and source_term is not None
+                     and source_term.generation == combination.generation
+                     and entitlement is not None and entitlement['term_id'] == source_term.id
+                     and source_effective['version_id'] == combination.version_id
+                     and source_effective['version_code'] == combination.version_code
+                     and order.delivery_method_snapshot == combination.delivery_method
+                     and utc(ns['now']()) < expires(combination))
         if can_renew:
             try:
                 paid_snapshot(order)
             except HTTPException:
                 can_renew = False
+        pending_change = False
+        guard = pending_guard()
+        if callable(guard):
+            try:
+                guard(db, order.buyer_enterprise_id, order.product_id)
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                pending_change = True
+        can_renew = can_renew and not pending_change
+        can_version_change = can_version_change and not pending_change
         return {'item': {'available': entitlement is not None, 'id': combination.id,
                 'server_time': ns['now'](),
                 'product_id': combination.product_id, 'enterprise_id': combination.enterprise_id,
@@ -376,6 +621,7 @@ def install(ns):
                     'index': entitlement['period_index']},
                 'limits': None if entitlement is None else entitlement['limits'],
                 'can_renew': can_renew,
+                'can_version_change': can_version_change,
                 'terms': [{'order_id': term.order_id, 'order_no': number, 'version_code': term.version_code,
                     'starts_at': term.starts_at, 'ends_at': term.ends_at,
                     'status': term.status, 'months': term.months,
@@ -389,8 +635,7 @@ def install(ns):
             if source is None:
                 raise HTTPException(404, '订单不存在')
             ns['trading_policy']['require_buyer'](db, user, source.buyer_enterprise_id)
-            # Lock Product before the combination, but let retries return even
-            # when the catalog version is no longer available for new quotes.
+            # Keep the catalog lock ahead of the saga check and subscription locks.
             db.scalar(select(ns['Product']).where(ns['Product'].id == source.product_id).with_for_update())
             combination = db.scalar(select(Combination).where(
                 Combination.enterprise_id == source.buyer_enterprise_id, Combination.product_id == source.product_id))
@@ -412,10 +657,11 @@ def install(ns):
             combination = validate_purchase(db, user, quoted)
             term = db.scalar(select(Term).where(Term.order_id == source.id, Term.status == 'active'))
             paid_snapshot(source)
+            source_effective = effective_snapshot(db, source, term) if term else None
             if (combination is None or combination.status != 'active' or term is None
                     or term.generation != combination.generation
-                    or source.product_version_id != combination.version_id
-                    or source.product_version_code != combination.version_code
+                    or source_effective['version_id'] != combination.version_id
+                    or source_effective['version_code'] != combination.version_code
                     or source.delivery_method_snapshot != combination.delivery_method):
                 raise HTTPException(409, '续费须使用当前订阅版本的有效源订单')
             if (quoted['public']['product_version_code'] != combination.version_code
@@ -451,11 +697,13 @@ def install(ns):
             raise
 
     hooks = {'SubscriptionCombination': Combination, 'SubscriptionTerm': Term, 'SubscriptionRenewal': Renewal,
+             'SubscriptionTermRevision': Revision, 'Revision': Revision,
              'Combination': Combination, 'Term': Term,
              'validate_purchase': validate_purchase, 'on_delivery_success': on_delivery_success,
              'current_entitlement': current_entitlement, 'lock_combination': lock_combination,
-             'quota_periods': quota_periods}
+             'quota_periods': quota_periods, 'effective_snapshot': effective_snapshot,
+             'apply_version_change': apply_version_change}
     ns.update({key: hooks[key] for key in ('SubscriptionCombination', 'SubscriptionTerm', 'SubscriptionRenewal',
-                                         'Combination', 'Term')})
+                                         'Combination', 'Term', 'SubscriptionTermRevision')})
     ns['subscription_terms'] = hooks
     return hooks

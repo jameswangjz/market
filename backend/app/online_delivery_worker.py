@@ -1,4 +1,4 @@
-"""Standalone worker for new file deliveries using the API image/config."""
+"""Standalone worker for verified file, API, model API, and SaaS deliveries."""
 
 import importlib
 import logging

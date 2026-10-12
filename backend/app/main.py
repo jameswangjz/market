@@ -36,7 +36,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, create_engine, func, inspect, or_, select, text, update
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, and_, case, create_engine, func, inspect, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -509,6 +509,7 @@ class ApiCredential(Base):
     name: Mapped[str] = mapped_column(String(120), default="默认 API 凭证")
     key_prefix: Mapped[str] = mapped_column(String(24), default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    secret_encrypted: Mapped[str] = mapped_column(Text, default="")
     apisix_consumer_name: Mapped[str] = mapped_column(String(180), default="")
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -2150,6 +2151,7 @@ def ensure_review_and_file_schema():
             "monthly_quota": "INTEGER",
             "total_quota": "INTEGER DEFAULT 0",
             "apisix_consumer_name": "VARCHAR(180) DEFAULT ''",
+            "secret_encrypted": "TEXT DEFAULT '' NOT NULL",
         },
         "delivery_attachments": {
             "task_id": "VARCHAR(36)",
@@ -4543,10 +4545,9 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
         raise HTTPException(404, "订单不存在")
     if order.payment_status != "paid":
         raise HTTPException(409, "订单支付完成后才可以管理 API 凭据")
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        if user.verified_status != "verified":
-            raise HTTPException(403, "完成个人实名认证后才可以管理 API 凭据")
-        require_enterprise_admin(db, user, order.buyer_enterprise_id)
+    if user.platform_role:
+        raise HTTPException(403, "平台账号不能管理买方 API 凭据")
+    trading_policy["require_buyer"](db, user, order.buyer_enterprise_id)
     entitlement = None
     if order.snapshot_version == 1:
         entitlement = subscription_terms["current_entitlement"](db, order.buyer_enterprise_id, order.product_id)
@@ -4563,7 +4564,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute if item.rate_limit_per_minute is not None else route.rate_limit_per_minute, "daily_quota": item.daily_quota if item.daily_quota is not None else route.daily_quota, "monthly_quota": item.monthly_quota if item.monthly_quota is not None else route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "secret_download_available": item.status == "active" and bool(item.secret_encrypted), "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute if item.rate_limit_per_minute is not None else route.rate_limit_per_minute, "daily_quota": item.daily_quota if item.daily_quota is not None else route.daily_quota, "monthly_quota": item.monthly_quota if item.monthly_quota is not None else route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -4734,7 +4735,8 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
         db.refresh(credential)
         return {**api_credential_out(credential, route), "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "该企业已有共享 API 凭据，请继续使用原凭据；同版本续费仅延长期限，不叠加配额" if managed else "该企业已有共享 API 凭据，请继续使用原凭据"}
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    encrypted_key = initial_api_credentials["encrypt"](raw_key)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), secret_encrypted=encrypted_key, rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -4745,7 +4747,7 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     audit(db, user.email or user.phone or user.id, "create_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key，仅在本次生成响应中返回，请妥善保存；续费延长期限，不重置已用量"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key；之后可由买方企业管理员通过凭据下载接口再次获取。续费延长期限，不重置已用量"}
 
 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/revoke")
@@ -4775,8 +4777,9 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
+    encrypted_key = initial_api_credentials["encrypt"](raw_key)
     policy = api_entitlement_policy(db, enterprise_id, route)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=policy["rate_limit_per_minute"], daily_quota=policy["daily_quota"], monthly_quota=policy["monthly_quota"], total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), secret_encrypted=encrypted_key, rate_limit_per_minute=policy["rate_limit_per_minute"], daily_quota=policy["daily_quota"], monthly_quota=policy["monthly_quota"], total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -4788,7 +4791,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     audit(db, user.email or user.phone or user.id, "regenerate_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};from={old.id}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用，新 API Key 仅在本次响应中返回，请妥善保存"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用；买方企业管理员可通过凭据下载接口再次获取新 API Key"}
 
 
 @app.get("/api/products/{product_id}/gateway-credentials")
@@ -5166,6 +5169,8 @@ def subscription_context(subscription_id: str, user: User, db: Session) -> tuple
 @app.post("/api/saas-subscriptions/{subscription_id}/renew")
 def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, version, config = subscription_context(subscription_id, user, db)
+    if db.scalar(select(saas_combinations["Binding"].id).where(saas_combinations["Binding"].subscription_id == subscription.id)):
+        raise HTTPException(409, "该订阅使用组合期限管理，请从订单详情续费")
     require_legacy_saas_payer(db, user, subscription.enterprise_id)
     expires_at = subscription.expires_at
     if expires_at and expires_at.tzinfo is None:
@@ -5188,6 +5193,8 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
 @app.post("/api/saas-subscriptions/{subscription_id}/change-version")
 def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, current_version, config = subscription_context(subscription_id, user, db)
+    if db.scalar(select(saas_combinations["Binding"].id).where(saas_combinations["Binding"].subscription_id == subscription.id)):
+        raise HTTPException(409, "该订阅须通过订单版本变更报价与资金资源流程变更版本")
     target = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
     if not target or target.id == current_version.id:
         raise HTTPException(400, "目标 SaaS 版本无效")
@@ -5217,6 +5224,7 @@ def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User =
 @app.post("/api/saas-subscriptions/{subscription_id}/close")
 def close_saas_subscription(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, version, config = subscription_context(subscription_id, user, db)
+    version_change_saga["assert_no_pending"](db, subscription.enterprise_id, subscription.product_id)
     result = execute_saas_operation(db, subscription, "CLOSE", {"tenant_id": subscription.external_tenant_id}, config, f"close:{subscription.id}")
     subscription.status = "closed"
     subscription.closed_at = now()
@@ -5228,6 +5236,7 @@ def close_saas_subscription(subscription_id: str, user: User = Depends(current_u
 @app.post("/api/saas-subscriptions/{subscription_id}/restore")
 def restore_saas_subscription(subscription_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, version, config = subscription_context(subscription_id, user, db)
+    version_change_saga["assert_no_pending"](db, subscription.enterprise_id, subscription.product_id)
     if subscription.status != "closed" or not subscription.recover_until or subscription.recover_until < now():
         raise HTTPException(409, "SaaS 租户已超过可恢复期限")
     result = execute_saas_operation(db, subscription, "OPEN", {"tenant_id": subscription.external_tenant_id, "version": version.version_code, "enterprise_id": subscription.enterprise_id}, config, f"restore:{subscription.id}")
@@ -5376,9 +5385,25 @@ def create_order(body: OrderBody, user: User = Depends(current_user), db: Sessio
 
 @app.post("/api/orders/{order_id}/transition")
 def transition_order(order_id: str, body: TransitionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    order_peek = db.get(Order, order_id)
+    if not order_peek:
+        raise HTTPException(404, "订单不存在")
+    if order_peek.business_type == "version_change_payment":
+        if not version_change_saga["handle_transition"](db, user, order_peek, body):
+            raise HTTPException(409, "版本变更资金支付处理失败")
+        db.commit()
+        return order_out(db.get(Order, order_id))
+    monthly_delivery = order_peek.delivery_method_snapshot in {"api", "model_api", "tenant_access"}
+    if monthly_delivery and order_peek.buyer_enterprise_id:
+        db.scalar(select(Product).where(Product.id == order_peek.product_id).with_for_update())
     order = db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
     if not order:
         raise HTTPException(404, "订单不存在")
+    if (order.delivery_method_snapshot in {"api", "model_api", "tenant_access"}
+            and order.buyer_enterprise_id
+            and body.action in {"start_payment", "confirm_payment", "cancel_order", "approve_refund", "complete_refund"}):
+        version_change_saga["assert_no_pending"](db, order.buyer_enterprise_id, order.product_id)
+    version_change_saga["require_order_transition"](db, user, order, body.action)
     if order_fulfillment["handle_transition"](db, user, order, body):
         db.commit()
         return order_out(order)
@@ -5395,7 +5420,7 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     if not authorized:
         settlement_metering["require_transition"](db, user, order, body.action)
     if online_delivery["handles"](order) and body.action in {"start_delivery", "submit_delivery", "accept_delivery", "reject_delivery", "confirm_order"}:
-        raise HTTPException(409, "线上文件须通过自动交付验证，无需人工履约或验收")
+        raise HTTPException(409, "线上订单须通过自动交付验证，无需人工履约或验收")
     if order_workflow["payment_repeat"](db, order, body.action):
         return order_out(order)
     if domain == "main":
@@ -5730,7 +5755,7 @@ def settlement_detail(settlement_id: str, user: User = Depends(current_user), db
     lifecycle_logs = db.scalars(select(AuditLog).where(AuditLog.target_id.in_(audit_ids), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
     lifecycle = [{"action": item.action, "actor": item.actor, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in lifecycle_logs]
     proposals = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
-    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle}
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle, "version_change": version_change_settlement["describe"](db, settlement.id)}
 
 
 @app.post("/api/settlements/generate/{order_id}")
@@ -5739,6 +5764,8 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     order = db.get(Order, order_id)
     if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
         raise HTTPException(400, "订单尚未满足清算条件")
+    if version_change_settlement["is_funding_order"](order):
+        raise HTTPException(409, "版本变更差价支付单不单独清算，请按月清算关联的经济调整")
     existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()))
     if existing and existing.status in {"locked", "paid", "archived", "disputed"}:
         raise HTTPException(409, "订单清算单已锁定、付款或存在待处理提案，不允许覆盖")
@@ -5994,11 +6021,11 @@ def simulate_settlement_rule(rule_id: str, body: SettlementBatchBody, user: User
     rule = db.get(SettlementRule, rule_id)
     if not rule:
         raise HTTPException(404, "清算规则不存在")
-    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"])).limit(20)).all()]
+    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.business_type != "version_change_payment").limit(20)).all()]
     rows = []
     for order_id in order_ids:
         order = db.get(Order, order_id)
-        if not order:
+        if not order or version_change_settlement["is_funding_order"](order):
             continue
         gross = Decimal(str(order.paid_amount or order.amount or 0))
         refund = min(Decimal(str(order.refunded_amount or 0)), gross)
@@ -6073,7 +6100,9 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         rule = SettlementRule(rule_no="RULE-DEFAULT", version="v1", name="默认清算规则", status="active", platform_rate=8, provider_rate=67, service_rate=20, expert_rate=5, tax_rate=0, created_by="system")
         db.add(rule)
         db.flush()
-    order_stmt = select(Order).join(Payment, Payment.order_id == Order.id).where(Payment.status.in_(["paid", "refunding", "refunded"]), Payment.paid_at.is_not(None))
+    version_change_links = globals().get("VersionChangeSettlementLink")
+    linked_version_change_ids = select(version_change_links.settlement_id) if version_change_links else select(Settlement.id).where(False)
+    order_stmt = select(Order).join(Payment, Payment.order_id == Order.id).where(Payment.status.in_(["paid", "refunding", "refunded"]), Payment.paid_at.is_not(None), Order.business_type != "version_change_payment")
     if body.period_start:
         order_stmt = order_stmt.where(Payment.paid_at >= body.period_start)
     if body.period_end:
@@ -6082,7 +6111,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         order_stmt = order_stmt.where(Order.id.in_(body.order_ids))
     order_ids = list(dict.fromkeys(db.scalars(order_stmt.with_only_columns(Order.id).distinct()).all()))
     if body.cycle == "monthly" and order_ids:
-        legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids))))))).all()
+        legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids), Settlement.id.not_in(linked_version_change_ids))))))).all()
         for legacy in legacy_batches:
             legacy.status = "superseded"
             audit(db, user.email, "supersede_legacy_settlement_batch", "settlement_batch", legacy.batch_no, "月度批次覆盖旧手工批次", category="settlement", business_domain="settlement", batch_no=legacy.batch_no, risk_level="warning")
@@ -6096,7 +6125,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         order = db.get(Order, order_id)
         if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
             continue
-        prior_settlements = db.scalars(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded")).all()
+        prior_settlements = db.scalars(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded", Settlement.id.not_in(linked_version_change_ids))).all()
         finalized = next((item for item in prior_settlements if item.status in {"locked", "paid", "archived"}), None)
         if finalized:
             audit(db, user.email, "skip_finalized_settlement_order", "settlement", finalized.settlement_no, "订单已有已完成清算，批次不重复生成", category="settlement", business_domain="settlement", order_id=order.id, risk_level="warning")
@@ -6134,7 +6163,9 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
     if body.period_end:
         refund_stmt = refund_stmt.where(Refund.completed_at < body.period_end)
     refund_count = 0
-    for refund in (db.scalars(refund_stmt).all() if body.cycle == "monthly" else []):
+    refunds = db.scalars(refund_stmt).all() if body.cycle == "monthly" else []
+    refunds = [refund for refund in refunds if not version_change_settlement["is_change_refund"](db, refund)]
+    for refund in refunds:
         refund_count += 1
         settlement = create_refund_negative_settlement(db, refund, user.email or user.name)
         prior_lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded")).all()
@@ -6149,12 +6180,15 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         total += Decimal(str(settlement.net_amount or 0))
         total_profit += Decimal(str(settlement.profit_amount or 0))
         audit(db, user.email, "generate_refund_settlement_line", "settlement", settlement.settlement_no, "退款完成日期纳入月度清算", category="settlement_adjustment", business_domain="settlement", order_id=settlement.order_id, batch_no=batch.batch_no, after={"refund_id": refund.id, "status": settlement.status, "net_amount": float(settlement.net_amount or 0), "profit_amount": float(settlement.profit_amount or 0)})
+    version_change_totals = version_change_settlement["include_into_batch"](db, batch, body, user.email or user.name)
+    total += version_change_totals["amount"]
+    total_profit += version_change_totals["profit"]
     batch.total_amount = total
     batch.total_profit = total_profit
     batch.exception_count = 0
-    audit(db, user.email, "create_settlement_batch", "settlement_batch", batch.batch_no, f"orders={len(order_ids)} refunds={refund_count}", category="settlement", business_domain="settlement", batch_no=batch.batch_no, rule_version=rule.version, before={"status": "none"}, after={"status": batch.status, "total_amount": float(total), "total_profit": float(total_profit), "order_count": len(order_ids), "refund_count": refund_count, "exception_count": 0})
+    audit(db, user.email, "create_settlement_batch", "settlement_batch", batch.batch_no, f"orders={len(order_ids)} refunds={refund_count} version_changes={version_change_totals['count']}", category="settlement", business_domain="settlement", batch_no=batch.batch_no, rule_version=rule.version, before={"status": "none"}, after={"status": batch.status, "total_amount": float(total), "total_profit": float(total_profit), "order_count": len(order_ids), "refund_count": refund_count, "version_change_count": version_change_totals["count"], "exception_count": 0})
     db.commit()
-    return {"id": batch.id, "batch_no": batch.batch_no, "total_amount": float(total), "total_profit": float(total_profit), "exception_count": exceptions, "status": batch.status, "rule_version": rule.version}
+    return {"id": batch.id, "batch_no": batch.batch_no, "total_amount": float(total), "total_profit": float(total_profit), "version_change_count": version_change_totals["count"], "exception_count": exceptions, "status": batch.status, "rule_version": rule.version}
 
 
 @app.get("/api/settlement-batches")
@@ -6358,24 +6392,58 @@ def reject_settlement_correction(correction_id: str, body: SettlementActionBody,
 @app.get("/api/settlement-reports")
 def settlement_reports(status: str | None = None, start: str | None = None, end: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
-    stmt = select(Settlement).where(Settlement.status != "superseded")
+    from .subscription_calendar import BUSINESS_TIMEZONE
+    stmt = select(Settlement).outerjoin(SettlementLine, and_(
+        SettlementLine.settlement_id == Settlement.id, SettlementLine.status != "superseded"))
+    stmt = stmt.outerjoin(SettlementBatch, and_(SettlementBatch.id == SettlementLine.batch_id,
+        SettlementBatch.status != "superseded")).where(Settlement.status != "superseded").distinct()
+    accounting_date = func.coalesce(case((SettlementBatch.cycle == "monthly",
+                                         SettlementBatch.period_start)), Settlement.created_at)
+    def filter_date(value: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value)
+            return (parsed.replace(tzinfo=BUSINESS_TIMEZONE) if parsed.tzinfo is None else parsed).astimezone(timezone.utc)
+        except ValueError:
+            raise HTTPException(400, "清算报表日期格式无效") from None
     if status:
         stmt = stmt.where(Settlement.status == status)
     if start:
-        stmt = stmt.where(Settlement.created_at >= datetime.fromisoformat(start))
+        stmt = stmt.where(accounting_date >= filter_date(start))
     if end:
-        stmt = stmt.where(Settlement.created_at < datetime.fromisoformat(end) + timedelta(days=1))
+        stmt = stmt.where(accounting_date < filter_date(end) + timedelta(days=1))
     items = db.scalars(stmt.order_by(Settlement.created_at.desc()).limit(2000)).all()
-    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "cost_amount": 0.0, "profit_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "channel_fee": 0.0, "tax_amount": 0.0, "count": len(items), "participants": []}
+    report_lines = db.scalars(select(SettlementLine).where(
+        SettlementLine.settlement_id.in_([item.id for item in items]),
+        SettlementLine.status != "superseded").order_by(SettlementLine.created_at)).all() if items else []
+    lines_by_settlement: dict[str, list[SettlementLine]] = {}
+    for line in report_lines:
+        lines_by_settlement.setdefault(line.settlement_id, []).append(line)
+    batches_by_id = {}
+    batch_ids = {line.batch_id for line in report_lines}
+    if batch_ids:
+        batches_by_id = {batch.id: batch for batch in db.scalars(select(SettlementBatch).where(
+            SettlementBatch.id.in_(batch_ids))).all()}
+    dated_items = []
+    for item in items:
+        financial_at = item.created_at
+        financial_batches = [batches_by_id[line.batch_id] for line in lines_by_settlement.get(item.id, [])
+            if line.batch_id in batches_by_id and batches_by_id[line.batch_id].cycle == "monthly"
+            and batches_by_id[line.batch_id].status != "superseded" and batches_by_id[line.batch_id].period_start]
+        if financial_batches:
+            financial_at = max(financial_batches, key=lambda batch: batch.created_at).period_start
+        financial_at = financial_at.replace(tzinfo=timezone.utc) if financial_at.tzinfo is None else financial_at
+        financial_at = financial_at.astimezone(BUSINESS_TIMEZONE)
+        dated_items.append((item, financial_at))
+    summary = {"gross_amount": 0.0, "refund_amount": 0.0, "net_amount": 0.0, "cost_amount": 0.0, "profit_amount": 0.0, "platform_fee": 0.0, "provider_share": 0.0, "service_share": 0.0, "expert_fee": 0.0, "channel_fee": 0.0, "tax_amount": 0.0, "count": len(dated_items), "participants": []}
     participant_totals: dict[tuple[str, str], dict[str, Any]] = {}
     rows = []
-    for x in items:
+    for x, financial_at in dated_items:
         order = db.get(Order, x.order_id)
         fields = ["gross_amount", "refund_amount", "net_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee", "tax_amount"]
         values = {field: float(getattr(x, field) or 0) for field in fields}
         for field in fields:
             summary[field] += values[field]
-        lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == x.id).order_by(SettlementLine.created_at)).all()
+        lines = lines_by_settlement.get(x.id, [])
         participants = [{"participant_type": line.participant_type, "participant_id": line.participant_id, "participant_name": line.participant_name, "amount": float(line.amount or 0)} for line in lines]
         participant_defaults = [
             ("platform", "", "平台运营方", "platform_fee"),
@@ -6405,7 +6473,9 @@ def settlement_reports(status: str | None = None, start: str | None = None, end:
     products: dict[tuple[str, str], dict[str, Any]] = {}
     breakdown_fields = ["gross_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee"]
     for row in rows:
-        month = row["created_at"].strftime("%Y-%m") if row.get("created_at") else "未知月份"
+        settlement_id = row["id"]
+        financial_at = next((date for item, date in dated_items if item.id == settlement_id), None)
+        month = financial_at.strftime("%Y-%m") if financial_at else "未知月份"
         monthly_item = monthly.setdefault(month, empty_breakdown(month))
         product_key = (row.get("product_id", ""), row.get("product_name", "未命名产品"))
         product_item = products.setdefault(product_key, empty_breakdown(row.get("product_name", "未命名产品")))
@@ -7208,6 +7278,10 @@ saas_combinations = install_saas_combinations(globals())
 from .subscription_gateway import install as install_subscription_gateway
 
 subscription_gateway = install_subscription_gateway(globals())
+from .api_buyer_credentials import install as install_api_buyer_credentials
+
+initial_api_credentials = install_api_buyer_credentials(globals())
+
 from .online_delivery import install as install_online_delivery
 
 online_delivery = install_online_delivery(globals())
@@ -7215,6 +7289,19 @@ online_delivery = install_online_delivery(globals())
 from .version_change_quotes import install as install_version_change_quotes
 
 version_change_quotes = install_version_change_quotes(globals())
+
+from .version_change_ledger import install as install_version_change_ledger
+
+version_change_ledger = install_version_change_ledger(globals())
+from .version_change_resources import install as install_version_change_resources
+
+version_change_resources = install_version_change_resources(globals())
+from .version_change_saga import install as install_version_change_saga
+
+version_change_saga = install_version_change_saga(globals())
+from .version_change_settlement import install as install_version_change_settlement
+
+version_change_settlement = install_version_change_settlement(globals())
 
 from .oidc_provider import install as install_oidc_provider
 

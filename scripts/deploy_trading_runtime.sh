@@ -30,6 +30,13 @@ if kubectl -n market get deployment online-delivery-worker >/dev/null 2>&1; then
   kubectl -n market set image deployment/online-delivery-worker "worker=market-api:${TAG}"
   kubectl -n market rollout status deployment/online-delivery-worker --timeout=240s
 fi
+if [[ -f k8s/version-change.yaml ]]; then
+  sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/version-change.yaml | kubectl apply -f -
+  kubectl -n market rollout status deployment/version-change-worker --timeout=240s
+elif kubectl -n market get deployment version-change-worker >/dev/null 2>&1; then
+  kubectl -n market set image deployment/version-change-worker "worker=market-api:${TAG}"
+  kubectl -n market rollout status deployment/version-change-worker --timeout=240s
+fi
 kubectl -n market set image deployment/market-web "web=market-web:${TAG}"
 kubectl -n market rollout status deployment/market-web --timeout=240s
 echo "Deployed: $TAG"

@@ -14,11 +14,14 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
+import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
 import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
+import { canReadVersionChangeHistory } from "./versionChangeExecution.js";
+import VersionChangeExecution from "./VersionChangeExecution.vue";
 import {
   Activity,
   ArrowUpRight,
@@ -242,12 +245,36 @@ watch(() => JSON.stringify(currentDeliveryOrder.value), (value, previous) => {
 watch(selectedOrder, closeDeliveryAccess, { flush: "sync" });
 let orderDetailRequest = 0;
 const subscriptionState = ref({ orderId: "", item: null, loading: false, error: "", modal: null });
+const versionChangeCapability = ref({ orderId: "", allowed: false });
 const renewalProcessing = ref(false);
 const subscriptionEnterprise = computed(() => buyerEnterprises.value.find(
   item => item.id === selectedOrder.value?.order.buyer_enterprise_id && item.eligible === true) ||
   (enterprise.value?.id === selectedOrder.value?.order.buyer_enterprise_id ? enterprise.value : null));
+const versionChangeSubscription = computed(() => subscriptionState.value.item ? {
+  ...subscriptionState.value.item,
+  can_version_change: versionChangeCapability.value.orderId === selectedOrder.value?.order.id && versionChangeCapability.value.allowed,
+} : null);
+const versionChangeHistoryAllowed = computed(() => {
+  const order = selectedOrder.value?.order;
+  return Boolean(order && canReadVersionChangeHistory(order, user.value, deliveryBuyerEnterprise(order)));
+});
+const subscriptionApi = {
+  ...api,
+  get(...args) {
+    const order = selectedOrder.value?.order;
+    const context = [order?.id, user.value?.id, enterprise.value?.id, token.value].join(":");
+    const expectedPath = order?.id ? `/orders/${encodeURIComponent(order.id)}/subscription` : "";
+    return api.get(...args).then(response => {
+      const current = [selectedOrder.value?.order.id, user.value?.id, enterprise.value?.id, token.value].join(":");
+      if (args[0] === expectedPath && context === current) {
+        versionChangeCapability.value = { orderId: order.id, allowed: response.data?.item?.can_version_change === true };
+      }
+      return response;
+    });
+  },
+};
 const subscriptionSession = createSubscriptionSession({
-  api,
+  api: subscriptionApi,
   getContext: () => ({ order: selectedOrder.value?.order, user: user.value, enterprise: subscriptionEnterprise.value, token: token.value }),
   onChange: state => { subscriptionState.value = state; },
 });
@@ -260,7 +287,8 @@ const versionChangeState = ref({ open: false, options: null, targetId: "", confi
 const versionChangeClock = ref(Date.now());
 let versionChangeTimer = null;
 function versionChangeContext() {
-  return { order: selectedOrder.value?.order, subscription: subscriptionState.value.item,
+  return { order: selectedOrder.value?.order, subscription: typeof versionChangeSubscription !== "undefined"
+    ? versionChangeSubscription.value : subscriptionState.value.item,
     user: user.value, buyerEnterprise: deliveryBuyerEnterprise(selectedOrder.value?.order),
     token: token.value, enterpriseId: enterprise.value?.id, subscriptionLoading: subscriptionState.value.loading };
 }
@@ -269,7 +297,8 @@ const versionChangeSession = createVersionChangeSession({
 });
 const versionChangeAllowed = computed(() => !subscriptionState.value.loading && !subscriptionState.value.error &&
   subscriptionState.value.orderId === selectedOrder.value?.order.id &&
-  canPreviewVersionChange(selectedOrder.value?.order, subscriptionState.value.item, user.value,
+  canPreviewVersionChange(selectedOrder.value?.order, typeof versionChangeSubscription !== "undefined"
+    ? versionChangeSubscription.value : subscriptionState.value.item, user.value,
     deliveryBuyerEnterprise(selectedOrder.value?.order), versionChangeClock.value));
 const versionChangeModal = computed(() => versionChangeAllowed.value && versionChangeState.value.open ? versionChangeState.value : null);
 const versionChangeVersions = computed(() => versionChangeState.value.options?.versions.filter(
@@ -308,7 +337,14 @@ async function submitRenewal() {
 function closeOrder() {
   orderDetailRequest++;
   selectedOrder.value = null;
+  if (typeof versionChangeCapability !== "undefined") versionChangeCapability.value = { orderId: "", allowed: false };
   subscriptionSession.reset();
+}
+async function refreshVersionChangeContext() {
+  const order = selectedOrder.value?.order;
+  versionChangeSession.reset();
+  if (order) await openOrder(order);
+  await refreshData();
 }
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
@@ -319,6 +355,7 @@ const apiOrderState = ref({
   gateway_base_path: "",
 });
 const apiCredentialReveal = ref(null);
+const apiCredentialDownloading = ref("");
 const gatewayItems = ref([]);
 const gatewayOverview = ref({ summary: {}, apisix_enabled: false, metrics_url: "" });
 const gatewayAlerts = ref([]);
@@ -1428,6 +1465,7 @@ async function openOrder(order) {
   const request = ++orderDetailRequest;
   const context = [user.value?.id, enterprise.value?.id, token.value].join(":");
   subscriptionSession.reset();
+  if (typeof versionChangeCapability !== "undefined") versionChangeCapability.value = { orderId: "", allowed: false };
   selectedOrder.value = null;
   const { data } = await api.get(`/orders/${order.id}`);
   const current = () => request === orderDetailRequest && context === [user.value?.id, enterprise.value?.id, token.value].join(":");
@@ -1714,7 +1752,7 @@ async function createOrderApiCredential() {
     apiCredentialReveal.value = data.api_key ? data : null;
     await openOrder(order);
     apiCredentialReveal.value = data.api_key ? data : null;
-    notify(data.api_key ? "企业共享 API 凭据已生成，请立即保存 API Key" : "已复用企业共享 API 凭据，本次订单额度已合并");
+    notify(data.api_key ? "企业共享 API 凭据已生成，请妥善保存" : "已复用企业共享 API 凭据；同版本续费仅延长期限，不叠加配额");
   } catch (error) {
     notify(error.response?.data?.detail || "API 凭据生成失败");
   }
@@ -1749,9 +1787,38 @@ async function regenerateOrderApiCredential(item) {
     );
     await openOrder(order);
     apiCredentialReveal.value = data;
-    notify("API 凭据已重新生成，请立即保存新 API Key");
+    notify("API 凭据已重新生成，请妥善保存；授权买方企业管理员可下载调用凭据");
   } catch (error) {
     notify(error.response?.data?.detail || "API 凭据重新生成失败");
+  }
+}
+async function downloadOrderApiCredential(item) {
+  const order = selectedOrder.value?.order;
+  if (!order || apiCredentialDownloading.value) return;
+  apiCredentialDownloading.value = item.id;
+  try {
+    await downloadApiCredential({
+      api,
+      order,
+      user: user.value,
+      buyerEnterprise: deliveryBuyerEnterprise(order),
+      credential: item,
+      saveBlob: (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        try {
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = filename;
+          link.click();
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      },
+    });
+  } catch (error) {
+    notify(error.response?.data?.detail || "调用凭据下载失败");
+  } finally {
+    apiCredentialDownloading.value = "";
   }
 }
 async function copyApiCredential() {
@@ -4305,6 +4372,22 @@ onUnmounted(() => {
           </template>
           <p v-else class="muted">此订单暂无订阅权益</p>
         </section>
+        <VersionChangeExecution
+          v-if="versionChangeHistoryAllowed"
+          :api="api"
+          :order="selectedOrder.order"
+          :user="user"
+          :enterprise="deliveryBuyerEnterprise(selectedOrder.order)"
+          :quote-session="versionChangeSession"
+          :quote="versionChangeState.quote"
+          :validated="versionChangeState.validated"
+          :can-request="versionChangeAllowed"
+          :drawer-open="Boolean(selectedOrder)"
+          :tenant-id="enterprise?.id || ''"
+          :session-token="token"
+          :combination-id="subscriptionState.item?.id || ''"
+          @refresh="refreshVersionChangeContext"
+        />
         <div class="state-grid">
           <div>
             <small>主状态</small
@@ -4469,7 +4552,7 @@ onUnmounted(() => {
           <div class="drawer-section-title">API 调用凭据（企业共享）</div>
           <p class="muted">
             网关路径：{{ apiOrderState.gateway_base_path }} ·
-            同一企业购买同一 API 服务的多个订单共用一套凭据，订单额度自动合并；凭据原文仅在首次生成或重新生成时显示。
+            企业内同一 API 服务共用一套凭据；同版本续费仅延长期限，不叠加配额。授权买方企业管理员可下载调用凭据。
           </p>
           <div class="action-list">
             <button class="secondary-btn" @click="createOrderApiCredential">
@@ -4486,11 +4569,23 @@ onUnmounted(() => {
               ><small
                 >{{ item.key_prefix }} ·
                 {{ item.status === "active" ? "启用中" : "已停用" }} ·
-                企业共享总额度 {{ item.total_quota || "不限" }} ·
+                每分钟 {{ item.rate_limit_per_minute ?? "-" }} 次 ·
+                每日 {{ item.daily_quota === 0 ? "不限" : item.daily_quota ?? "-" }} 次 ·
+                每订阅月 {{ item.monthly_quota === 0 ? "不限" : item.monthly_quota ?? "-" }} 次 ·
+                总额度 {{ item.total_quota === 0 ? "不限" : item.total_quota ?? "-" }} ·
                 {{ fmtDate(item.created_at) }}</small
               >
             </div>
             <div class="action-list">
+              <button
+                v-if="canDownloadApiCredential(selectedOrder?.order, user, deliveryBuyerEnterprise(selectedOrder?.order), item)"
+                class="text-btn"
+                :disabled="Boolean(apiCredentialDownloading)"
+                title="下载调用凭据"
+                @click="downloadOrderApiCredential(item)"
+              >
+                <Download :size="14" />{{ apiCredentialDownloading === item.id ? '下载中' : '下载调用凭据' }}
+              </button>
               <button
                 v-if="item.status === 'active'"
                 class="text-btn danger-text"
@@ -4519,7 +4614,7 @@ onUnmounted(() => {
               </button>
             </div>
             <small class="muted"
-              >请立即保存。平台不会再次显示此 API Key 原文。</small
+              >可下载调用凭据，请妥善保存。</small
             >
           </div>
         </div>
@@ -5311,6 +5406,15 @@ onUnmounted(() => {
       <aside class="modal-card settlement-detail-modal" @click.stop>
         <div class="drawer-head"><div><span class="eyebrow">SETTLEMENT DETAIL</span><h2>{{ settlementDetail.settlement_no }}</h2><p class="muted">清算单完整关联信息和状态生命周期</p></div><button class="icon-btn" @click="closeSettlementDetail"><X :size="19" /></button></div>
         <div class="drawer-section"><div class="drawer-section-title">清算批次与订单</div><div class="state-grid settlement-context-grid"><div><small>清算批次</small><strong>{{ settlementDetail.batch?.batch_no || '-' }}</strong></div><div><small>批次 ID</small><strong>{{ settlementDetail.batch?.id || '-' }}</strong></div><div><small>批次状态</small><strong>{{ settlementDetail.batch?.status || '-' }}</strong></div><div><small>清算单 ID</small><strong>{{ settlementDetail.id }}</strong></div><div><small>订单号</small><strong>{{ settlementDetail.order?.order_no || '-' }}</strong></div><div><small>订单 ID</small><strong>{{ settlementDetail.order?.id || '-' }}</strong></div><div><small>购买方</small><strong>{{ settlementDetail.order?.buyer_name || '-' }}</strong></div><div><small>当前状态</small><strong>{{ settlementStatusLabel(settlementDetail.status) }}</strong></div></div></div>
+        <div v-if="settlementDetail.version_change" class="settlement-version-change">
+          <div class="settlement-version-change-title">版本变更关联</div>
+          <div class="settlement-version-change-grid">
+            <div><small>类型</small><strong>{{ settlementDetail.version_change.side === 'old' ? '原版本冲回' : settlementDetail.version_change.side === 'target' ? '目标版本计入' : '版本变更' }}</strong></div>
+            <div><small>变更号</small><strong>{{ settlementDetail.version_change.change_no || '-' }}</strong></div>
+            <div><small>冻结规则</small><strong>{{ settlementDetail.version_change.rule_version || '-' }}</strong></div>
+            <div><small>入账时间</small><strong>{{ settlementDetail.version_change.posted_at ? fmtDate(settlementDetail.version_change.posted_at) : '-' }}</strong></div>
+          </div>
+        </div>
         <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>

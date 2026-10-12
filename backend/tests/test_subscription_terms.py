@@ -304,9 +304,11 @@ class SubscriptionTermsTests(unittest.TestCase):
         self.deliver(oid)
         result = self.request('GET', f'/api/orders/{oid}/subscription')['item']
         self.assertEqual(set(result), {'available', 'id', 'product_id', 'enterprise_id', 'version_id',
-            'version_code', 'anchor_at', 'generation', 'expires_at', 'status', 'terms', 'current_period', 'limits', 'can_renew', 'server_time'})
+            'version_code', 'anchor_at', 'generation', 'expires_at', 'status', 'terms', 'current_period', 'limits',
+            'can_renew', 'can_version_change', 'server_time'})
         self.assertTrue(result['available'])
         self.assertTrue(result['can_renew'])
+        self.assertTrue(result['can_version_change'])
         self.assertEqual(result['terms'][0]['order_id'], oid)
         self.assertEqual(result['current_period']['index'], 0)
         for word in ('unit_cost', 'total_cost', 'upstream', 'secret', 'settlement_rule'):
@@ -315,6 +317,7 @@ class SubscriptionTermsTests(unittest.TestCase):
         for actor in ('buyer', 'buyer_admin', 'finance', 'platform'):
             item = self.request('GET', f'/api/orders/{oid}/subscription', actor)['item']
             self.assertEqual(item['can_renew'], actor in ('buyer', 'buyer_admin'))
+            self.assertEqual(item['can_version_change'], actor in ('buyer', 'buyer_admin'))
         for actor in ('provider', 'outsider', 'inactive', 'ops', 'reviewer'):
             self.request('GET', f'/api/orders/{oid}/subscription', actor, 403)
         self.request('GET', f'/api/orders/{oid}/subscription', 'disabled_ops', 401)

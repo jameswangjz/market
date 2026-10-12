@@ -1,7 +1,10 @@
 """HTTP integration of subscription grants and non-additive gateway policy."""
 import json
+import os
 import unittest
+from unittest.mock import Mock
 from unittest.mock import patch
+from cryptography.fernet import Fernet
 
 import test_message_business_events as fixtures
 
@@ -12,14 +15,67 @@ class SubscriptionGatewayTests(unittest.TestCase):
         fixtures.BusinessRoutesHTTPTests.setUpClass.__func__(cls)
 
     tearDownClass = classmethod(fixtures.BusinessRoutesHTTPTests.tearDownClass.__func__)
-    setUp = fixtures.BusinessRoutesHTTPTests.setUp
     tearDown = fixtures.BusinessRoutesHTTPTests.tearDown
     request = fixtures.BusinessRoutesHTTPTests.request
+
+    def setUp(self):
+        fixtures.BusinessRoutesHTTPTests.setUp(self)
+        encryption_env = patch.dict(os.environ, {
+            'API_CREDENTIAL_ENCRYPTION_KEY': Fernet.generate_key().decode(),
+            'API_GATEWAY_PUBLIC_URL': 'https://gateway.example.invalid',
+        })
+        encryption_env.start()
+        self.addCleanup(encryption_env.stop)
+        self.redis_hashes = {}
+        self.redis = Mock()
+        self.redis.hgetall.side_effect = lambda key: dict(self.redis_hashes.get(key, {}))
+        self.redis.hset.side_effect = self.redis_hset
+        self.redis.delete.side_effect = self.redis_delete
+        self.redis.scan.side_effect = lambda cursor, match, count: (0, [])
+        self.redis.dbsize.return_value = 0
+        self.redis.info.side_effect = lambda section: (
+            {'cluster_enabled': 0} if section == 'cluster' else {'role': 'master'})
+        self.redis.eval.side_effect = self.redis_eval
+        self.redis_patch = patch.object(self.m, 'apisix_policy_redis', return_value=self.redis)
+        self.redis_patch.start()
+        self.addCleanup(self.redis_patch.stop)
+        self.apisix_consumers = {}
+
+    def redis_hset(self, key, mapping):
+        self.redis_hashes.setdefault(key, {}).update(
+            {str(field): str(value) for field, value in mapping.items()})
+
+    def redis_delete(self, key):
+        return int(self.redis_hashes.pop(key, None) is not None)
+
+    def redis_eval(self, _script, numkeys, *args):
+        data = json.loads(args[numkeys])
+        self.redis_hashes.setdefault(args[0], {}).update(
+            {str(field): str(value) for field, value in data.items()})
+        return [1]
+
+    def admin(self, method, path, payload=None):
+        if method == 'GET' and path.startswith('/routes/'):
+            return self.expected_route
+        if path.startswith('/consumers/'):
+            name = path.rsplit('/', 1)[-1]
+            if method == 'PUT':
+                if not isinstance(payload, dict) or payload.get('username') != name:
+                    raise AssertionError((method, path, payload))
+                self.apisix_consumers[name] = json.loads(json.dumps(payload))
+                return {'node': {'value': self.apisix_consumers[name]}}
+            if method == 'GET':
+                return {'node': {'value': self.apisix_consumers[name]}}
+            if method == 'DELETE':
+                self.apisix_consumers.pop(name, None)
+                return {'node': {'value': {'username': name}}}
+        raise AssertionError((method, path, payload))
 
     def purchase(self, months=1):
         m = self.m
         with m.SessionLocal() as db:
-            db.get(m.Product, "product").delivery_method = "api"
+            product = db.get(m.Product, "product")
+            product.product_type, product.delivery_method = "api", "api"
             version = db.get(m.ProductReleaseVersion, "version")
             version.rate_limit_per_minute, version.daily_quota, version.monthly_quota = 60, 10, 1000
             db.commit()
@@ -27,6 +83,26 @@ class SubscriptionGatewayTests(unittest.TestCase):
             result = self.request("POST", "/api/orders", json={"product_id": "product",
                 "product_version_id": "version", "buyer_enterprise_id": "buyer_tenant",
                 "subscription_months": months})
+        with m.SessionLocal() as db:
+            route = db.get(m.ApiGatewayRoute, 'api-route')
+            if not route:
+                route = m.ApiGatewayRoute(id='api-route', product_id='product', version='v1',
+                    route_key='api-route', upstream_url='https://example.com', status='active')
+                db.add(route)
+                db.flush()
+                config = m.version_gateway['Config'](id='api-config', product_id='product',
+                    version_id='version', route_id=route.id, upstream_url=route.upstream_url,
+                    route_key=route.route_key, version_code='v1', auth_mode='api_key',
+                    upstream_auth_mode=route.upstream_auth_mode, upstream_scope=route.upstream_scope,
+                    timeout_ms=route.timeout_ms, strip_prefix=route.strip_prefix,
+                    health_method=route.health_method, health_path=route.health_path,
+                    rate_limit_per_minute=60, daily_quota=10, monthly_quota=1000,
+                    status='verified', healthy=True, verified_at=m.now(), health_status_code=200,
+                    evidence_hash='test-evidence')
+                db.add(config)
+            expected_route = m.apisix_route_payload(route, db.get(m.Product, 'product'), db)
+            db.commit()
+        self.expected_route = expected_route
         return result
 
     def deliver(self, order):
@@ -34,7 +110,9 @@ class SubscriptionGatewayTests(unittest.TestCase):
         self.request("POST", f"/api/orders/{oid}/transition", json={"action": "confirm_payment"})
         with self.m.SessionLocal() as db:
             tid = db.scalar(self.select(self.m.DeliveryTask.id).where(self.m.DeliveryTask.order_id == oid))
-        with patch.dict(self.m.subscription_gateway, {"verify_delivery": lambda *args: True}):
+        with patch.dict(self.m.subscription_gateway, {"verify_delivery": lambda *args: True}), \
+                patch.object(self.m, 'apisix_enabled', return_value=True), \
+                patch.object(self.m, 'apisix_admin_request', side_effect=self.admin):
             return self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="platform", json={"success": True})
 
     def test_paid_not_delivered_has_no_entitlement_or_credentials(self):
@@ -49,10 +127,13 @@ class SubscriptionGatewayTests(unittest.TestCase):
         self.request("POST", f'/api/orders/{order["id"]}/transition', json={"action": "confirm_payment"})
         with self.m.SessionLocal() as db:
             tid = db.scalar(self.select(self.m.DeliveryTask.id).where(self.m.DeliveryTask.order_id == order["id"]))
-        self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="platform", expected=409, json={"success": True})
+        with patch.object(self.m, 'apisix_enabled', return_value=True), \
+                patch.object(self.m, 'apisix_admin_request', return_value={'node': {'value': {'uri': '/wrong'}}}):
+            result = self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="platform", json={"success": True})
         with self.m.SessionLocal() as db:
             self.assertIsNone(db.scalar(self.select(self.m.SubscriptionTerm.id)))
-            self.assertEqual(db.get(self.m.DeliveryTask, tid).status, "in_delivery")
+            self.assertEqual(result['task']['status'], 'retrying')
+            self.assertEqual(db.get(self.m.DeliveryTask, tid).status, "retrying")
 
     def test_two_delivered_orders_queue_periods_and_do_not_add_quota(self):
         first = self.purchase(1)
@@ -66,8 +147,7 @@ class SubscriptionGatewayTests(unittest.TestCase):
             self.assertEqual(len({p["period_key"] for p in periods}), 3)
             combo = db.scalar(self.select(self.m.SubscriptionCombination))
             self.assertEqual(combo.total_months, 3)
-            route = self.m.ApiGatewayRoute(product_id="product", version="v1", route_key="test", upstream_url="https://example.com")
-            db.add(route); db.flush()
+            route = db.get(self.m.ApiGatewayRoute, 'api-route')
             policy = self.m.subscription_gateway["policy"](db, "buyer_tenant", route)
             self.assertEqual(policy["monthly_quota"], 1000)
             self.assertEqual(policy["total_quota"], 0)
@@ -77,9 +157,7 @@ class SubscriptionGatewayTests(unittest.TestCase):
         self.deliver(order)
         with self.m.SessionLocal() as db:
             saved = db.get(self.m.Order, order["id"])
-            route = self.m.ApiGatewayRoute(product_id="product", version=saved.product_version_code,
-                route_key="test", upstream_url="https://example.com")
-            db.add(route); db.flush()
+            route = db.get(self.m.ApiGatewayRoute, 'api-route')
             credential = self.m.ApiCredential(route_id=route.id, enterprise_id="buyer_tenant", key_hash="own-key",
                 status="revoked", apisix_consumer_name="own-consumer")
             db.get(self.m.ProductReleaseVersion, "version").monthly_quota = 999999
@@ -101,9 +179,7 @@ class SubscriptionGatewayTests(unittest.TestCase):
         self.deliver(order)
         with self.m.SessionLocal() as db:
             saved = db.get(self.m.Order, order["id"])
-            route = self.m.ApiGatewayRoute(product_id="product", version=saved.product_version_code,
-                route_key="own-route", upstream_url="https://example.com")
-            db.add(route); db.flush()
+            route = db.get(self.m.ApiGatewayRoute, 'api-route')
             credential = self.m.ApiCredential(route_id=route.id, enterprise_id="buyer_tenant", key_hash="own-key",
                 status="active", apisix_consumer_name="own-consumer")
             client = Mock()

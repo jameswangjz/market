@@ -1,0 +1,54 @@
+# Use the exact tested API image tag, never latest.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: version-change-worker
+  namespace: market
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 1, maxUnavailable: 0}
+  selector:
+    matchLabels: {app: version-change-worker}
+  template:
+    metadata:
+      labels: {app: version-change-worker}
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: worker
+          image: market-api:REPLACE_WITH_DEPLOYED_TAG
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: [python, -m, app.version_change_worker]
+          envFrom:
+            - configMapRef: {name: market-config}
+          env:
+            - {name: PYTHONPATH, value: /app}
+            - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+            - {name: VERSION_CHANGE_WORKER_INTERVAL, value: '2'}
+            - {name: VERSION_CHANGE_WORKER_BATCH, value: '10'}
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+            - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
+            - {name: API_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-api-credentials, key: API_CREDENTIAL_ENCRYPTION_KEY}}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          startupProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/version-change-heartbeat').stat().st_mtime < 120"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/version-change-heartbeat').stat().st_mtime < 120"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/version-change-heartbeat').stat().st_mtime < 240"]
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

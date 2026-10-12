@@ -132,6 +132,20 @@ class VersionChangeQuoteTests(unittest.TestCase):
         self.assertEqual(sum((Decimal(x['target']['profit'])+Decimal(x['old']['profit']) for x in result['internal'])), 50)
         self.assertNotEqual(result['internal'][0]['old']['rule']['version'], '')
 
+    def test_quote_fingerprint_is_frozen_into_each_integration_snapshot(self):
+        oid, _ = self.prepare()
+        context = {'kind': 'api', 'config_id': 'cfg', 'revision_id': 'rev-7',
+            'evidence_hash': 'a' * 64, 'route_id': 'route', 'route_key': 'route-v2',
+            'upstream_url': 'https://upstream.invalid/v2'}
+        with self.m.SessionLocal() as db, patch.object(
+                self.quote_module, 'integration_context', return_value=context):
+            prepared = self.m.version_change_quotes['prepare'](
+                db, db.get(self.m.User, 'buyer'), oid, 'v2', False, self.m.now())
+        self.assertTrue(prepared['snapshots_by_term'])
+        for snapshot in prepared['snapshots_by_term'].values():
+            self.assertEqual(snapshot['integration'], {
+                **context, 'quote_fingerprint': prepared['digest']})
+
     def test_public_json_and_decoded_token_hide_cost_rules_and_upstream(self):
         oid, _ = self.prepare()
         quoted = self.quote(oid)
