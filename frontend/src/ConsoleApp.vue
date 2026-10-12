@@ -6,7 +6,7 @@ import MessageSettings from "./MessageSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
 import ApplicationsCenter from "./ApplicationsCenter.vue";
-import { canViewProductIntegration } from "./productIntegration.js";
+import { canManageProviderSaas, canViewProductIntegration } from "./productIntegration.js";
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
@@ -1988,13 +1988,8 @@ function canReviewProduct(product) {
   if (product.status === "operation_review") return ["super_admin", "platform_operator"].includes(role);
   return false;
 }
-function canManageProviderSaas(product) {
-  return product?.product_type === "saas"
-    && !user.value?.platform_role
-    && canViewProductIntegration(user.value);
-}
 async function verifySaasIntegration(product) {
-  if (saasVerifyBusy.value || !canManageProviderSaas(product) || product.status !== "pending_integration") return;
+  if (saasVerifyBusy.value || !canManageProviderSaas(user.value, product) || product.status !== "pending_integration") return;
   saasVerifyBusy.value = product.id;
   try {
     const { data } = await api.post(`/products/${product.id}/saas-integration/verify`);
@@ -2067,10 +2062,12 @@ async function productAction(product, action) {
     notify(error.response?.data?.detail || "产品状态操作失败");
   }
 }
-async function downloadSaasCredentials(product, kind = "oauth") {
-  const oidc = kind === "oidc";
-  const protocol = oidc ? "OIDC" : "OAuth";
-  const endpoint = oidc ? "oidc-credentials-download" : "oauth-credentials-download";
+async function downloadSaasCredentials(product, kind = "") {
+  const isSaas = product.product_type === "saas";
+  const credentialKind = isSaas ? "saas-config" : kind || "oauth";
+  const endpoint = isSaas
+    ? "saas-integration-credentials-download"
+    : `${kind === "oidc" ? "oidc" : "oauth"}-credentials-download`;
   try {
     const { data } = await api.get(
       `/products/${product.id}/${endpoint}`,
@@ -2079,12 +2076,18 @@ async function downloadSaasCredentials(product, kind = "oauth") {
     const url = URL.createObjectURL(data);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${product.name}-platform-${kind}-credentials.txt`;
+    link.download = isSaas
+      ? `${product.name}-SaaS应用接入配置.json`
+      : `${product.name}-platform-${credentialKind}-credentials.txt`;
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    notify(`${protocol} 凭据文件已下载`);
+    notify(isSaas ? "SaaS应用接入配置已下载" : `${kind === "oidc" ? "OIDC" : "OAuth"} 凭据文件已下载`);
   } catch (error) {
-    notify(error.response?.data?.detail || `${protocol} 凭据下载失败`);
+    let detail = error.response?.data?.detail;
+    if (typeof Blob !== "undefined" && error.response?.data instanceof Blob) {
+      try { detail = JSON.parse(await error.response.data.text()).detail; } catch { /* Use the generic download error. */ }
+    }
+    notify(typeof detail === "string" ? detail : isSaas ? "SaaS应用接入配置下载失败" : `${kind === "oidc" ? "OIDC" : "OAuth"} 凭据下载失败`);
   }
 }
 async function updateTask(task, status) {
@@ -3335,21 +3338,16 @@ onUnmounted(() => {
                         ><button
                           v-if="
                             product.product_type === 'saas'
-                              ? canManageProviderSaas(product) && ['pending_integration', 'published'].includes(product.status)
+                              ? canManageProviderSaas(user, product)
                               : product.status === 'published' && ['api', 'model'].includes(product.product_type)
                           "
                           class="text-btn"
                           @click="downloadSaasCredentials(product)"
                         >
-                          {{ product.product_type === 'saas' ? 'OAuth2接口凭据' : '下载 OAuth 凭据' }}
+                          {{ product.product_type === 'saas' ? '下载接入配置' : '下载 OAuth 凭据' }}
                         </button>
                         <button
-                          v-if="canManageProviderSaas(product) && ['pending_integration', 'published'].includes(product.status)"
-                          class="text-btn"
-                          @click="downloadSaasCredentials(product, 'oidc')"
-                        >OIDC登录凭据</button>
-                        <button
-                          v-if="canManageProviderSaas(product) && product.status === 'pending_integration'"
+                          v-if="canManageProviderSaas(user, product) && product.status === 'pending_integration'"
                           class="text-btn"
                           :disabled="!!saasVerifyBusy"
                           @click="verifySaasIntegration(product)"
@@ -4836,7 +4834,7 @@ onUnmounted(() => {
         </fieldset>
         <ProductIntegrationPanel
           v-if="productDetailMode && ['api', 'model_api'].includes(productForm.delivery_method) && canViewProductIntegration(user)"
-          :product="productForm" :api="api" :provider="!user?.platform_role"
+          :product="productForm" :api="api" :provider="!user?.platform_role" :can-manage-saas="canManageProviderSaas(user, productForm)"
           @credentials="kind => downloadSaasCredentials(productForm, kind)"
           @changed="openProductDetail(productForm)"
         />

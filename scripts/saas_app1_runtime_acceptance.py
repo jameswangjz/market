@@ -38,7 +38,16 @@ def main():
         login = oidc.json()
         assert login['client_secret'] and login['client_id'] not in oauth.text
         assert 'saas.department' in oauth.text
+        bundle = client.get(prefix + '/saas-integration-credentials-download', headers=tokens['provider'])
+        assert bundle.status_code == 200 and bundle.headers['cache-control'] == 'no-store'
+        combined = bundle.json()
+        assert combined['schema_version'] == '1.0' and combined['product']['id'] == product.id
+        assert combined['oidc_sso']['client_secret'] == login['client_secret']
+        assert combined['oauth2_api']['client_secret'] in oauth.text
+        assert combined['oauth2_api']['client_id'] != combined['oidc_sso']['client_id']
+        assert combined['instructions']
         for actor in ('buyer', 'admin'):
+            assert client.get(prefix + '/saas-integration-credentials-download', headers=tokens[actor]).status_code == 403
             assert client.get(prefix + '/oidc-credentials-download', headers=tokens[actor]).status_code == 403
             assert client.get(prefix + '/oauth-credentials-download', headers=tokens[actor]).status_code == 403
         access = client.get('/api/orders/' + order.id + '/delivery-access', headers=tokens['buyer'])
@@ -49,7 +58,8 @@ def main():
     print(json.dumps({'status': 'passed', 'order_no': order.order_no,
         'delivery_status': 'accepted', 'subscription_status': 'active',
         'retry_count': task.retry_count, 'operation_count': len(operations),
-        'provider_dual_downloads': True, 'buyer_and_platform_download_denied': True,
+        'provider_unified_download': True, 'existing_secrets_preserved': True,
+        'buyer_and_platform_download_denied': True,
         'http_policy_enabled': True, 'browser_sso': 'separate verification'}, ensure_ascii=False))
 
 

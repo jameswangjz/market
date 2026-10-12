@@ -50,11 +50,14 @@ try {
     $result.checks+= 'Paid order -> authenticated launch -> OIDC consent -> real mock SaaS session'
     Set-Actor $fixture.providerToken
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=products'}|Out-Null
-    WaitJs 'document.body.textContent.includes("SaaS-APP1")&&document.body.textContent.includes("OIDC\u767b\u5f55\u51ed\u636e")'
+    WaitJs 'document.body.textContent.includes("SaaS-APP1")&&document.body.textContent.includes("\u4e0b\u8f7d\u63a5\u5165\u914d\u7f6e")'
     Shot 'provider-credentials'
     $product=ConvertTo-Json -InputObject $fixture.productId -Compress
-    Assert-Browser "(async()=>{const headers={Authorization:'Bearer '+localStorage.getItem('market_token')};const a=await fetch('/api/products/'+$product+'/oauth-credentials-download',{headers});const b=await fetch('/api/products/'+$product+'/oidc-credentials-download',{headers});return a.status===200&&b.status===200&&a.headers.get('cache-control')==='no-store'&&b.headers.get('cache-control')==='no-store'})()" 'Provider credential downloads must succeed without caching'
-    $result.checks+= 'Provider UI shows two credential actions; both live downloads authorized and no-store'
+    Assert-Browser "(async()=>{const headers={Authorization:'Bearer '+localStorage.getItem('market_token')};const a=await fetch('/api/products/'+$product+'/saas-integration-credentials-download',{headers});if(a.status!==200||a.headers.get('cache-control')!=='no-store')return false;const v=await a.json();return v.schema_version==='1.0'&&v.product.id===$product&&v.oauth2_api.client_id!==v.oidc_sso.client_id&&!!v.oauth2_api.client_secret&&!!v.oidc_sso.client_secret&&v.instructions.length>0})()" 'Unified provider configuration must include independent clients without caching'
+    Assert-Browser '[...document.querySelectorAll("tr")].filter(r=>r.textContent.includes("SaaS-APP1")).some(r=>[...r.querySelectorAll("button")].filter(b=>b.textContent.includes("\u4e0b\u8f7d\u63a5\u5165\u914d\u7f6e")).length===1&&!r.textContent.includes("OIDC\u767b\u5f55\u51ed\u636e"))' 'SaaS product must expose exactly one configuration download action'
+    Js '[...document.querySelectorAll("tr")].find(r=>r.textContent.includes("SaaS-APP1")).querySelectorAll("button").forEach(b=>{if(b.textContent.includes("\u4e0b\u8f7d\u63a5\u5165\u914d\u7f6e"))b.click()});true'|Out-Null
+    WaitJs 'document.body.textContent.includes("SaaS\u5e94\u7528\u63a5\u5165\u914d\u7f6e\u5df2\u4e0b\u8f7d")'
+    $result.checks+= 'Provider UI shows one unified configuration action; live download authorized, independent credentials, no-store'
     Set-Actor $fixture.adminToken
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=settings'}|Out-Null
     WaitJs '[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="\u5e94\u7528\u63a5\u5165")'

@@ -3,7 +3,7 @@ import { reactive, watch, onUnmounted } from 'vue';
 import { RefreshCw, ShieldCheck, Download, FileText } from 'lucide-vue-next';
 import { createIntegrationController, integrationStatus } from './productIntegration.js';
 
-const props = defineProps({ product: { type: Object, required: true }, api: { type: Object, required: true }, provider: Boolean });
+const props = defineProps({ product: { type: Object, required: true }, api: { type: Object, required: true }, provider: Boolean, canManageSaas: Boolean });
 const emit = defineEmits(['changed', 'credentials']);
 const state = reactive({ rows: [], busy: '', loading: false });
 const controller = createIntegrationController({ state, api: props.api, product: () => props.product, changed: () => emit('changed') });
@@ -17,10 +17,8 @@ onUnmounted(controller.dispose);
       <h3>版本接入状态</h3>
       <div class="integration-actions">
         <a href="/api-gateway-integration.md" download="API应用提供方接入统一网关接口与规范.md" class="text-btn"><FileText :size="14" />提供方规范</a>
-        <template v-if="provider && ['pending_integration', 'published'].includes(product.status)">
-          <button type="button" class="text-btn" @click="emit('credentials', 'oauth')"><Download :size="14" />{{ product.product_type === 'saas' ? 'OAuth2接口凭据' : '下载接入凭据' }}</button>
-          <button v-if="product.product_type === 'saas'" type="button" class="text-btn" @click="emit('credentials', 'oidc')"><Download :size="14" />OIDC登录凭据</button>
-        </template>
+        <button v-if="product.product_type === 'saas' && canManageSaas" type="button" class="text-btn" @click="emit('credentials', 'saas-config')"><Download :size="14" />下载接入配置</button>
+        <button v-else-if="product.product_type !== 'saas' && provider && ['pending_integration', 'published'].includes(product.status)" type="button" class="text-btn" @click="emit('credentials', 'oauth')"><Download :size="14" />下载接入凭据</button>
         <button type="button" class="icon-btn" title="刷新接入状态" aria-label="刷新接入状态" :disabled="state.loading || !!state.busy" @click="controller.load"><RefreshCw :size="15" /></button>
       </div>
     </div>
