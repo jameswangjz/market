@@ -1,4 +1,7 @@
 import unittest
+import os
+import importlib
+from unittest.mock import patch
 from sqlalchemy import inspect, text
 from pydantic import ValidationError
 import test_message_business_events as fixtures
@@ -14,12 +17,15 @@ class RegistrationConfigTests(unittest.TestCase):
     def test_redirect_uri_whitelist_validation(self):
         valid = ['https://saas.example.com/callback', 'http://localhost:8000/callback',
                  'http://127.0.0.1/callback', 'http://market-mock-saas/callback']
+        with self.assertRaises(ValidationError):
+            self.m.ProductBody(name='test', product_type='saas', delivery_method='tenant_access', oidc_redirect_uris=valid)
+        self.request('PATCH', '/api/admin/settings/application-address-policy', actor='platform', json={'allow_http': True})
         body = self.m.ProductBody(name='test', product_type='saas', delivery_method='tenant_access', oidc_redirect_uris=valid+valid)
         self.assertEqual(body.oidc_redirect_uris, valid)
-        invalid = ['http://example.com/callback', 'https://user:pass@example.com/callback',
+        invalid = ['https://user:pass@example.com/callback',
                    'https://example.com/callback#token', 'https://example.com/callback#',
                    'https://*.example.com/callback', 'javascript:alert(1)',
-                   'https://example.com /callback', 'http://localhost.evil.com/callback',
+                   'https://example.com /callback',
                    'https://example.com:99999/callback', '//example.com/callback']
         for uri in invalid:
             with self.subTest(uri=uri), self.assertRaises(ValidationError):
@@ -48,6 +54,28 @@ class RegistrationConfigTests(unittest.TestCase):
         self.request('PUT', '/api/products/'+data['id'], actor='provider', expected=409, json={
             'name': 'configuration fixture', 'product_type': 'saas', 'delivery_method': 'tenant_access',
             'oidc_redirect_uris': ['https://saas.example.com/new-callback']})
+
+    def test_explicit_development_callback_origin_requires_flag_and_exact_origin(self):
+        uri = 'http://192.168.10.10:30083/sso/callback'
+        validate = importlib.import_module(self.m.__package__ + '.registration_config').validate_redirect_uris
+        with patch.dict(os.environ, OIDC_DEVELOPMENT_REDIRECT_ORIGINS='http://192.168.10.10:30083',
+                        OIDC_ALLOW_HTTP_DEVELOPMENT='false'):
+            with self.assertRaises(ValueError):
+                validate([uri])
+        with patch.dict(os.environ, OIDC_DEVELOPMENT_REDIRECT_ORIGINS='http://192.168.10.10:30083',
+                        OIDC_ALLOW_HTTP_DEVELOPMENT='true'):
+            self.assertEqual(validate([uri]), [uri])
+            for invalid in ('http://192.168.10.10:30084/sso/callback',
+                            'http://192.168.10.11:30083/sso/callback',
+                            'http://192.168.10.10:30083/sso/callback#token',
+                            'http://user:secret@192.168.10.10:30083/sso/callback'):
+                with self.subTest(uri=invalid), self.assertRaises(ValueError):
+                    validate([invalid])
+        for origin in ('http://192.168.10.10:30083/path', 'http://192.168.10.10:30083?x=1',
+                       'http://*.10.10:30083', 'http://user:secret@192.168.10.10:30083'):
+            with patch.dict(os.environ, OIDC_DEVELOPMENT_REDIRECT_ORIGINS=origin,
+                            OIDC_ALLOW_HTTP_DEVELOPMENT='true'), self.assertRaises(ValueError):
+                validate([uri])
 
     def test_compatibility_rejects_unknown_mode(self):
         with self.assertRaises(ValidationError):

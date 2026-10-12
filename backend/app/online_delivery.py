@@ -12,16 +12,23 @@ from urllib.parse import urlsplit
 from fastapi import Depends, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 from .order_economics import money
 from .oidc_provider import NO_STORE
+from .saas_auto_delivery import install as install_saas_delivery
 
 
 def install(ns):
     Order, Task, File = ns['Order'], ns['DeliveryTask'], ns['FileObject']
+    saas = install_saas_delivery(ns)
 
     def handles(order):
-        return order.snapshot_version == 1 and order.delivery_method_snapshot == 'file'
+        return (order.snapshot_version == 1
+                and order.delivery_method_snapshot in {'file', 'tenant_access'})
+
+    def method(order):
+        return order.delivery_method_snapshot
 
     def eligible(order):
         if (order.payment_status != 'paid' or money(order.paid_amount) != money(order.amount)
@@ -86,10 +93,10 @@ def install(ns):
         return {'main_status': order.main_status, 'delivery_status': order.delivery_status,
                 'task_status': task.status, 'retry_count': task.retry_count}
 
-    def process(db, order, task, user, force_failure=False):
+    def process(db, order, task, user, force_failure=False, automatic=False):
         if not handles(order):
-            raise HTTPException(409, '此自动交付适配器只支持新版文件订单')
-        if (task.order_id != order.id or task.method != 'file' or task.delivery_mode != 'automatic'):
+            raise HTTPException(409, '此自动交付适配器只支持新版线上订单')
+        if (task.order_id != order.id or task.method != method(order) or task.delivery_mode != 'automatic'):
             raise HTTPException(409, '交付任务与订单快照不一致')
         if task.status == 'completed' and order.main_status == 'completed' and order.delivery_status == 'accepted':
             return True
@@ -99,12 +106,30 @@ def install(ns):
             raise HTTPException(409, '自动重试已达到三次上限，请人工处理')
         before = state(order, task)
         error = None
+        pending = False
         try:
             if force_failure:
                 raise HTTPException(503, '交付人员标记本次尝试失败')
-            verify(db, order)
+            if method(order) == 'tenant_access':
+                with db.begin_nested():
+                    pending = saas['process'](db, order, task, user, automatic=automatic) is None
+            else:
+                verify(db, order)
         except HTTPException as exc:
             error = str(exc.detail)
+        except SQLAlchemyError:
+            raise
+        except Exception:
+            if method(order) != 'tenant_access':
+                raise
+            error = 'SaaS 自动开通或结果校验失败'
+        if pending:
+            task.next_retry_at = ns['now']() + timedelta(seconds=2)
+            task.note = 'SaaS 自动开通阶段已持久化，等待后台继续处理'
+            order.delivery_status = 'in_delivery'
+            order.updated_at = ns['now']()
+            db.flush()
+            return None
         task.next_retry_at = None
         if error:
             task.retry_count += 1
@@ -117,7 +142,9 @@ def install(ns):
         else:
             task.last_error = ''
             task.status = 'completed'
-            task.note = '文件扫描、快照和持久化可读性检查通过，自动履约完成'
+            task.note = ('SaaS 租户、管理员、OIDC 与订阅期限已核验，自动履约完成'
+                if method(order) == 'tenant_access' else
+                '文件扫描、快照和持久化可读性检查通过，自动履约完成')
             order.delivery_status = 'accepted'
             order.main_status = 'completed'
             action = 'delivery_succeeded'
@@ -296,8 +323,8 @@ def install(ns):
             if not actor:
                 raise RuntimeError('Delivery monitor account unavailable')
             order = db.scalar(select(Order).join(Task, Task.order_id == Order.id).where(
-                Order.snapshot_version == 1, Order.delivery_method_snapshot == 'file',
-                Task.delivery_mode == 'automatic', Task.method == 'file',
+                Order.snapshot_version == 1, Order.delivery_method_snapshot.in_(['file', 'tenant_access']),
+                Task.delivery_mode == 'automatic', Task.method == Order.delivery_method_snapshot,
                 Task.status.in_(['in_delivery', 'retrying']), Task.next_retry_at <= ns['now']())
                 .order_by(Task.next_retry_at, Task.id).with_for_update(skip_locked=True, of=Order)
                 .execution_options(populate_existing=True))
@@ -307,10 +334,11 @@ def install(ns):
                 .execution_options(populate_existing=True)).all()
             if len(tasks) != 1:
                 raise RuntimeError('Order has duplicate delivery tasks')
-            process(db, order, tasks[0], actor)
+            process(db, order, tasks[0], actor, automatic=True)
             db.commit()
             return True
 
-    hooks = dict(handles=handles, process=process, process_once=process_once, require_download=require_download, retry=retry)
+    hooks = dict(handles=handles, process=process, process_once=process_once,
+        require_download=require_download, retry=retry)
     ns['online_delivery'] = hooks
     return hooks

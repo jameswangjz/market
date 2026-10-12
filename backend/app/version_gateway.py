@@ -90,11 +90,13 @@ def install(ns):
         locked_product(db, product)
         if product.status != "operation_review":
             raise HTTPException(409, "Hook requires the final approved review stage")
-        if requires_integration(product):
+        saas_gate = product.product_type == "saas" and product.delivery_method == "tenant_access"
+        if requires_integration(product) or saas_gate:
             product.status = "pending_integration"
-            for config in db.scalars(select(VersionGatewayConfig).where(
-                    VersionGatewayConfig.product_id == product.id)).all():
-                invalidate(config)
+            if requires_integration(product):
+                for config in db.scalars(select(VersionGatewayConfig).where(
+                        VersionGatewayConfig.product_id == product.id)).all():
+                    invalidate(config)
         else:
             product.status = "published"
         ns["audit"](db, actor(user), "review_complete_integration_gate", "product",
@@ -110,6 +112,7 @@ def install(ns):
         body = ns["GatewayConfigBody"].model_validate(body.model_dump() if hasattr(body, "model_dump") else body)
         try:
             ns["validate_upstream_url"](body.upstream_url.rstrip("/") + body.health_path)
+            ns["application_address_policy"]["validate_url"](body.upstream_url, db=db)
         except ValueError as exc:
             raise HTTPException(400, "后端地址或健康检查路径格式不安全") from exc
         if body.version != version.version_code or body.auth_mode != "api_key":

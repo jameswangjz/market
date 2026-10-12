@@ -1,5 +1,8 @@
 # Mock SaaS OIDC RP
 
+This is a development mock. The signed-in `/app` page displays a persistent
+`DEVELOPMENT MOCK SaaS` banner; it is not a production SaaS implementation.
+
 This development RP preserves `/health`, `/oauth/token` client-credentials and
 `/isv.php` machine operations. OIDC user tokens are separate from machine tokens
 and platform console authentication. It does not verify third-party SaaS or
@@ -65,7 +68,27 @@ subscription. Non-OPEN calls may omit `product_id` only
 when the referenced tenant already exists and belongs to the token's product.
 Any supplied product/enterprise/subscription must agree with the persisted
 identity. These ownership checks and mutations share one SQLite write transaction.
-RENEW persists its returned status/expiry but never reopens a CLOSED login gate.
+`STATUS` requires `tenant_id`, `enterprise_id` and `subscription_id`, checks
+product ownership and immutable tenant identity, and reads persisted tenant,
+user and OIDC client state without changing or caching it. `application_ready`
+is true only when the tenant login gate is open and the supplied configured
+OIDC client belongs to the token product. The admin is reported active only
+when the supplied user ID exists as an active persisted user.
+
+Mutation calls may include an `idempotency_key` (up to 180 characters). Results
+and canonical request hashes are persisted atomically, scoped by product; reuse
+with a different body returns 409. STATUS is read-only and does not use this
+cache. RENEW accepts a platform `expires_at` ISO timestamp or `subscription_months`
+(1-36); requested expiries must be future dates and cannot shorten the current
+expiry. Legacy renewal calls extend from the current expiry, or from now when
+expired, using monthly, quarterly, annual or perpetual billing cycles. RENEW
+persists its status/expiry but never reopens a CLOSED login gate. CLOSED tenant
+records can be explicitly restored with OPEN for 30 days; other mutations are
+rejected while closed.
+OPEN returns persisted product, enterprise, subscription, version, tenant and
+app identifiers. USER_ASSIGN returns both `platform_user_id` and
+`external_user_id` with tenant ownership fields. RENEW echoes the persisted
+expiry together with the supplied start/delivery timestamps and idempotency key.
 The platform's machine token currently binds only the product; enterprise and
 subscription are frozen by the first authorized OPEN, not independent OP claims.
 USER_UNASSIGN resolves platform or external user IDs to the same persisted row;

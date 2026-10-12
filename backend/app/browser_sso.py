@@ -31,7 +31,7 @@ def install(ns):
     def validate(db, body):
         client = hooks['client_for'](db, body.client_id)
         if (not client or not client.check_redirect_uri(body.redirect_uri)
-                or not hooks['valid_redirect'](body.redirect_uri) or body.response_type != 'code'
+                or not hooks['valid_redirect'](body.redirect_uri, db=db) or body.response_type != 'code'
                 or 'openid' not in body.scope.split() or not set(body.scope.split()) <= SCOPES):
             raise HTTPException(400, 'OIDC客户端、回调或授权参数无效')
         return client

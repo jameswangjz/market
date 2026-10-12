@@ -42,12 +42,19 @@ test("registration supplies callback and compatibility defaults for older forms"
   assert.equal(payload.versions[0].compatibility_notes, "");
 });
 
-test("OIDC callbacks accept HTTPS and only exact HTTP development hosts", () => {
+test("OIDC callbacks accept HTTPS by default", () => {
   for (const uri of [
     "https://app.example/callback", "https://app.example/", "https://app.example:8443/callback?state=abc",
-    "https://[::1]/callback", "HTTPS://app.example/callback", "http://localhost:8200/callback",
-    "http://127.0.0.1/callback", "http://market-mock-saas:8200/callback", "http://LOCALHOST/callback",
+    "https://[::1]/callback", "HTTPS://app.example/callback",
   ]) assert.equal(isValidOidcRedirectUri(uri), true, uri);
+});
+
+test("OIDC callbacks allow HTTP only when runtime policy explicitly enables it", () => {
+  for (const uri of ["http://localhost:8200/callback", "http://example.com/callback", "http://market-mock-saas:8200/callback"]) {
+    assert.equal(isValidOidcRedirectUri(uri), false, uri);
+    assert.equal(isValidOidcRedirectUri(uri, { allowHttp: true }), true, uri);
+  }
+  assert.equal(isValidOidcRedirectUri("http://example.com/callback", { allowHttp: false }), false);
 });
 
 test("OIDC callbacks reject insecure hosts, parser normalization, fragments and userinfo", () => {
@@ -70,9 +77,10 @@ test("OIDC callbacks reject insecure hosts, parser normalization, fragments and 
 });
 
 test("registration rejects invalid callback values before persistence", () => {
-  for (const redirects of ["https://app.example/callback", [123], [null], ["http://evil.example/callback"], ["https://app.example/#"]]) {
+  for (const redirects of ["https://app.example/callback", [123], [null], ["http://evil.example/callback"], ["http://localhost/callback"], ["https://app.example/#"]]) {
     assert.throws(() => registrationPayload({ oidc_redirect_uris: redirects, versions: [] }), /OIDC/);
   }
+  assert.deepEqual(registrationPayload({ oidc_redirect_uris: ["http://app.example/callback"], versions: [] }, { allowHttp: true }).oidc_redirect_uris, ["http://app.example/callback"]);
   assert.deepEqual(splitOidcRedirectUris(" https://app.example/one \r\n\nhttps://app.example/two\n"), ["https://app.example/one", "https://app.example/two"]);
 });
 
@@ -80,7 +88,7 @@ test("new and reset forms have independent defaults and multiline editing preser
   const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
   const start = source.indexOf("const emptyProductVersion =");
   const end = source.indexOf("let progressTimer;", start);
-  const state = { computed, ref, emptyVersionIntegration, splitOidcRedirectUris, isValidOidcRedirectUri };
+  const state = { computed, ref, applicationAddressPolicy: ref({ allow_http: false }), emptyVersionIntegration, splitOidcRedirectUris, isValidOidcRedirectUri };
   vm.createContext(state);
   vm.runInContext(source.slice(start, end) + "\nthis.form = productForm; this.redirectText = oidcRedirectUrisText; this.reset = emptyProductForm; this.emptyVersion = emptyProductVersion; this.validateRedirects = updateOidcRedirectUris;", state);
   assert.equal(state.form.value.oidc_redirect_uris.length, 0);
@@ -94,6 +102,7 @@ test("new and reset forms have independent defaults and multiline editing preser
   const input = { value: "http://evil.example/callback", setCustomValidity: (message) => { validity = message; } };
   state.validateRedirects({ target: input });
   assert.match(validity, /HTTPS/);
+  state.applicationAddressPolicy.value.allow_http = true;
   input.value = " https://app.example/one \n\nhttp://market-mock-saas:8200/callback";
   state.validateRedirects({ target: input });
   assert.equal(validity, "");

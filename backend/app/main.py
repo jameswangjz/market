@@ -366,6 +366,10 @@ class SaaSIntegrationConfig(Base):
     status: Mapped[str] = mapped_column(String(30), default="draft")
     updated_by: Mapped[str] = mapped_column(String(180), default="")
     credentials_revealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_status: Mapped[str] = mapped_column(String(30), default="pending")
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_by: Mapped[str] = mapped_column(String(180), default="")
+    health_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
@@ -1101,13 +1105,19 @@ class ProductBody(BaseModel):
     integration_api_url: str = ""
     oidc_redirect_uris: list[str] = Field(default_factory=list, max_length=20)
 
+    @field_validator("upstream_url", "application_url", "integration_api_url")
+    @classmethod
+    def validate_integration_addresses(cls, value):
+        return application_address_policy["validate_url"](value, allow_empty=True)
+
     @field_validator("oidc_redirect_uris")
     @classmethod
     def validate_redirects(cls, values, info):
         from .registration_config import validate_redirect_uris
         if values and (info.data.get("product_type") != "saas" or info.data.get("delivery_method") != "tenant_access"):
             raise ValueError("仅SaaS租户交付可配置OIDC回调地址")
-        return validate_redirect_uris(values)
+        return validate_redirect_uris(values,
+            allow_http=application_address_policy["allow_http"]())
     download_limit: int = Field(default=0, ge=0)
     logo_file_id: str = ""
     price: float = 0
@@ -2107,6 +2117,13 @@ def ensure_review_and_file_schema():
         },
         "saas_integration_configs": {
             "credentials_revealed_at": "TIMESTAMP WITH TIME ZONE",
+            "verification_status": "VARCHAR(30) DEFAULT 'pending'",
+            "verified_at": "TIMESTAMP WITH TIME ZONE",
+            "verified_by": "VARCHAR(180) DEFAULT ''",
+            "health_status_code": "INTEGER",
+        },
+        "oidc_clients": {
+            "secret_encrypted": "TEXT",
         },
         "api_gateway_routes": {
             "monthly_quota": "INTEGER DEFAULT 0",
@@ -3503,10 +3520,30 @@ def platform_oauth_issuer() -> str:
     return os.getenv("PLATFORM_OAUTH_ISSUER", "http://market-api:8000")
 
 
+def saas_management_target(product: Product, db: Session) -> tuple[str, str]:
+    from urllib.parse import urlsplit
+
+    value = (product.integration_api_url or "").strip()
+    try:
+        application_address_policy["validate_url"](value, db=db)
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise HTTPException(409, "请先配置有效的 SaaS 第三方管理接口地址") from exc
+    if (not parsed.hostname or not parsed.netloc or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or port == 0
+            or parsed.path and not parsed.path.startswith("/")):
+        raise HTTPException(409, "请先配置有效的 SaaS 第三方管理接口地址")
+    return f"{parsed.scheme}://{parsed.netloc}", parsed.path or "/"
+
+
 def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.invoke") -> OAuthClient:
+    if product.product_type == "saas":
+        scope = "saas.tenant saas.user saas.department"
     client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id))
     if client:
-        client.status = "active"
+        if product.product_type == "saas":
+            client.scope = scope
         existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if existing_saas:
             existing_saas.client_id = client.client_id
@@ -3593,6 +3630,10 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
         raise HTTPException(400, "驳回时必须填写审核意见")
     actor = user.email or user.phone or user.id
     before_status = product.status
+    saas_target = None
+    if (body.decision == "approve" and stage == "operation"
+            and product.product_type == "saas"):
+        saas_target = saas_management_target(product, db)
     security_scan = None
     if body.decision == "reject":
         product.status = "rejected"
@@ -3603,6 +3644,8 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
         security_scan = run_product_security_scan(product, db, actor)
     elif stage == "operation":
         version_gateway["on_review_complete"](db, product, user)
+        if product.product_type == "saas" and product.delivery_method == "tenant_access":
+            oidc_provider["ensure_client"](db, product, actor)
     product.review_comment = body.comment.strip() or ("已通过，进入" + {"business": "质量审核", "quality": "安全审核", "operation": "发布"}[stage])
     product.reviewed_by = actor
     product.reviewed_at = now()
@@ -3612,12 +3655,27 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
         notify_platform_role(db, "security_compliance", "产品待安全审核", f"产品“{product.name}”已通过质量审核，请查看病毒和数据安全扫描报告。", "product", product.id)
     if body.decision == "approve" and stage == "operation" and product.product_type == "saas":
         config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
+        base_url, operation_path = saas_target
         if not config:
             client_id = "market_" + secrets.token_urlsafe(12)
             client_secret = secrets.token_urlsafe(32)
-            mock_base_url = os.getenv("MOCK_SAAS_BASE_URL", "http://market-mock-saas:8200").rstrip("/")
-            config = SaaSIntegrationConfig(product_id=product.id, base_url=mock_base_url, operation_path="/isv.php", token_url=mock_base_url + "/oauth/token", client_id=client_id, client_secret=client_secret, auth_mode="oauth2", status="active", updated_by=user.email or user.phone or user.id)
+            config = SaaSIntegrationConfig(product_id=product.id, base_url=base_url,
+                operation_path=operation_path, token_url=platform_oauth_token_url(),
+                client_id=client_id, client_secret=client_secret, scope="saas.tenant saas.user saas.department",
+                auth_mode="oauth2", status="active", updated_by=actor)
             db.add(config)
+        config.base_url = base_url
+        config.operation_path = operation_path
+        config.token_url = platform_oauth_token_url()
+        config.scope = "saas.tenant saas.user saas.department"
+        config.auth_mode = "oauth2"
+        config.status = "active"
+        config.verification_status = "pending"
+        config.verified_at = None
+        config.verified_by = ""
+        config.health_status_code = None
+        config.updated_by = actor
+        db.flush()
     if body.decision == "approve" and stage == "operation" and product.product_type in {"api", "model", "saas"}:
         client = ensure_oauth_client(db, product)
         for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == product.id)).all():
@@ -3644,6 +3702,9 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             except HTTPException as exc:
                 audit(db, actor, "version_integration_pending", "product", product.id,
                       f"version={version.id}; status={exc.status_code}", result="failed")
+    if (body.decision == "approve" and stage == "operation" and product.product_type == "saas"
+            and product.delivery_method == "tenant_access"):
+        product.status = "pending_integration"
     audit(db, actor, f"{stage}_{'approve' if body.decision == 'approve' else 'reject'}_product", "product", product.id, product.review_comment, before={"status": before_status}, after={"status": product.status})
     db.commit()
     return product_out(product) | ({"security_report": security_scan_out(security_scan)} if security_scan else {})
@@ -4106,10 +4167,15 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
     require_enterprise_admin(db, user, product.enterprise_id)
     if product.product_type not in {"api", "model", "saas"} or product.status not in {"published", "pending_integration", "draft"}:
         raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
+    if product.status == "draft" and not (product.reviewed_at and product.reviewed_by):
+        raise HTTPException(409, "未完成审核的产品不能下载接入凭据")
     client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id, OAuthClient.status == "active"))
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id, SaaSIntegrationConfig.status == "active"))
     if not client:
         raise HTTPException(404, "平台 OAuth 客户端不存在")
+    audit(db, user.email or user.phone or user.id, "download_oauth_credentials", "oauth_client", client.id,
+          "下载平台OAuth凭据；不记录密钥", tenant_id=product.enterprise_id)
+    db.commit()
     content = "\n".join([
         "平台统一 OAuth2 接入配置",
         f"产品名称: {product.name}",
@@ -4131,6 +4197,35 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
     disposition = f'attachment; filename="platform-oauth-credentials.txt"; filename*=UTF-8\'\'{encoded_filename}'
     return Response(content=content, media_type="text/plain; charset=utf-8", headers={
         "Content-Disposition": disposition, "Cache-Control": "no-store", "Pragma": "no-cache"})
+
+
+@app.get("/api/products/{product_id}/credential-metadata")
+def product_credential_metadata(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(404, "产品不存在")
+    member = db.scalar(select(Membership).where(Membership.user_id == user.id,
+        Membership.enterprise_id == product.enterprise_id, Membership.status == "active",
+        Membership.role.in_(["super_admin", "enterprise_admin"])))
+    provider_admin = bool(not user.platform_role and user.is_active
+        and user.activation_status == "active" and user.verified_status == "verified" and member)
+    approved = product.status in {"published", "pending_integration"} or (
+        product.status == "draft" and bool(product.reviewed_at and product.reviewed_by))
+    oauth_client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id,
+        OAuthClient.status == "active"))
+    oidc_client = db.scalar(select(oidc_provider["Client"]).where(
+        oidc_provider["Client"].product_id == product.id,
+        oidc_provider["Client"].status == "active"))
+    config = db.scalar(select(SaaSIntegrationConfig).where(
+        SaaSIntegrationConfig.product_id == product.id)) if product.product_type == "saas" else None
+    return JSONResponse({"product_id": product.id, "product_status": product.status,
+        "provider_admin": provider_admin,
+        "oauth_download_available": provider_admin and approved and product.product_type in {"api", "model", "saas"} and bool(oauth_client),
+        "oidc_download_available": provider_admin and product.status in {"published", "pending_integration"}
+            and product.product_type == "saas" and product.delivery_method == "tenant_access"
+            and bool(oidc_client and oidc_client.secret_encrypted),
+        "saas_integration_status": config.verification_status if config else "not_configured"},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
 
 @app.post("/api/products/{product_id}/publish")
@@ -4536,6 +4631,10 @@ def rollback_gateway_config(product_id: str, version: str = "", user: User = Dep
 @app.put("/api/products/{product_id}/gateway-config")
 def save_gateway_config(product_id: str, body: GatewayConfigBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = gateway_product(product_id, db)
+    try:
+        application_address_policy["validate_url"](body.upstream_url, db=db)
+    except ValueError as exc:
+        raise HTTPException(400, "后端地址不符合当前系统 HTTP/HTTPS 策略") from exc
     release = db.scalar(select(ProductReleaseVersion).where(ProductReleaseVersion.product_id == product.id,
                                                            ProductReleaseVersion.version_code == body.version))
     if not release:
@@ -4764,7 +4863,7 @@ def saas_cycle_price(version: SaaSProductVersion, cycle: str) -> Decimal:
 def saas_integration_out(config: SaaSIntegrationConfig | None) -> dict[str, Any] | None:
     if not config:
         return None
-    return {"id": config.id, "product_id": config.product_id, "base_url": config.base_url, "operation_path": config.operation_path, "token_url": config.token_url, "client_id": config.client_id, "scope": config.scope, "auth_mode": config.auth_mode, "timeout_ms": config.timeout_ms, "retention_days": config.retention_days, "status": config.status, "updated_at": config.updated_at}
+    return {"id": config.id, "product_id": config.product_id, "base_url": config.base_url, "operation_path": config.operation_path, "token_url": config.token_url, "client_id": config.client_id, "scope": config.scope, "auth_mode": config.auth_mode, "timeout_ms": config.timeout_ms, "retention_days": config.retention_days, "status": config.status, "verification_status": config.verification_status, "verified_at": config.verified_at, "verified_by": config.verified_by, "health_status_code": config.health_status_code, "updated_at": config.updated_at}
 
 
 def saas_access_token(config: SaaSIntegrationConfig) -> str:
@@ -4900,6 +4999,10 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
     require_enterprise_admin(db, user, product.enterprise_id)
     if body.auth_mode == "oauth2" and not body.token_url:
         raise HTTPException(400, "OAuth2 模式必须配置 Token 地址")
+    try:
+        application_address_policy["validate_url"](body.base_url, db=db)
+    except ValueError as exc:
+        raise HTTPException(400, "SaaS 应用管理地址必须符合系统 HTTP/HTTPS 策略") from exc
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
     values = body.model_dump()
     if config:
@@ -4910,10 +5013,97 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
         config = SaaSIntegrationConfig(product_id=product.id, updated_by=user.email or user.phone or user.id, **values)
         db.add(config)
     config.status = "active"
+    config.verification_status = "pending"
+    config.verified_at = None
+    config.verified_by = ""
+    config.health_status_code = None
     config.updated_by = user.email or user.phone or user.id
     db.commit()
     db.refresh(config)
     return saas_integration_out(config)
+
+
+@app.post("/api/products/{product_id}/saas-integration/verify")
+def verify_saas_integration(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    if (user.platform_role or not user.is_active or user.activation_status != "active"
+            or user.verified_status != "verified"):
+        raise HTTPException(403, "仅已实名且已激活的提供方企业管理员可以验证 SaaS 接入")
+    require_enterprise_admin(db, user, product.enterprise_id)
+    if product.status != "pending_integration":
+        raise HTTPException(409, "只有待接入验证的 SaaS 产品可以验证并发布")
+    config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id).with_for_update())
+    before = {"product_status": product.status,
+        "integration_verification_status": config.verification_status if config else "not_configured"}
+    client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id,
+        OAuthClient.status == "active"))
+    required_scopes = {"saas.tenant", "saas.user", "saas.department"}
+    if (not config or config.status != "active" or config.auth_mode != "oauth2"
+            or not config.client_id or not config.client_secret or not client
+            or client.client_id != config.client_id or client.client_secret != config.client_secret
+            or not required_scopes.issubset(set((config.scope or "").split()))
+            or not required_scopes.issubset(set((client.scope or "").split()))):
+        raise HTTPException(409, "SaaS OAuth2 凭据、配置或授权范围无效")
+    try:
+        application_address_policy["validate_url"](config.base_url, db=db)
+    except ValueError as exc:
+        raise HTTPException(409, "SaaS 管理地址不符合当前系统 HTTP/HTTPS 策略") from exc
+    try:
+        application = urlparse(config.base_url)
+        if (application.scheme not in {"http", "https"} or not application.hostname
+                or application.username or application.password or application.query
+                or application.fragment or application.port == 0):
+            raise ValueError("invalid_base_url")
+        app_url = urlparse(product.application_url or "")
+        if (app_url.scheme not in {"http", "https"} or not app_url.hostname
+                or app_url.username or app_url.password or app_url.fragment or app_url.port == 0):
+            raise ValueError("invalid_application_url")
+        application_address_policy["validate_url"](product.application_url, db=db)
+        _saas_tokens.pop(config.id, None)
+        token = saas_access_token(config)
+        health_url = f"{application.scheme}://{application.netloc}/health"
+        response = validated_http_request("GET", health_url, timeout=5, follow_redirects=False,
+            headers={"Authorization": "Bearer " + token})
+        if not 200 <= response.status_code < 300:
+            raise RuntimeError("health_check_failed")
+        callbacks = json.loads(product.oidc_redirect_uris_json or "[]")
+        if (not isinstance(callbacks, list) or not callbacks
+                or any(not isinstance(uri, str) or not oidc_provider["valid_redirect"](uri, db=db) for uri in callbacks)):
+            raise ValueError("invalid_oidc_registration")
+        oidc_client, _ = oidc_provider["ensure_client"](db, product,
+            user.email or user.phone or user.id)
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            config.verification_status = "pending"
+            config.verified_at = None
+            config.verified_by = ""
+            audit(db, user.email or user.phone or user.id, "verify_saas_integration", "product",
+                  product.id, "SaaS OAuth2或健康检查未通过", result="failed")
+            db.commit()
+        raise
+    except Exception:
+        config.verification_status = "pending"
+        config.verified_at = None
+        config.verified_by = ""
+        config.health_status_code = getattr(locals().get("response"), "status_code", None)
+        audit(db, user.email or user.phone or user.id, "verify_saas_integration", "product",
+              product.id, "SaaS OAuth2或健康检查未通过", result="failed")
+        db.commit()
+        raise HTTPException(502, "SaaS OAuth2 或健康检查未通过") from None
+    config.verification_status = "verified"
+    config.verified_at = now()
+    config.verified_by = user.email or user.phone or user.id
+    config.health_status_code = response.status_code
+    product.status = "published"
+    audit(db, user.email or user.phone or user.id, "verify_saas_integration", "product",
+          product.id, "提供方确认接入；SaaS OAuth2、健康检查及OIDC登记检查通过。此项不代表浏览器SSO已端到端联调",
+          before=before, after={"product_status": product.status,
+              "integration_verification_status": config.verification_status,
+              "health_status_code": response.status_code, "oidc_client_id": oidc_client.client_id})
+    db.commit()
+    return {"product": product_out(product), "integration": saas_integration_out(config),
+        "health_check": {"status": "passed", "status_code": response.status_code},
+        "verification_status": "verified", "browser_sso_end_to_end_tested": False}
 
 
 def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> None:
@@ -4927,6 +5117,8 @@ def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> No
 @app.post("/api/products/{product_id}/saas-subscriptions")
 def create_saas_subscription(product_id: str, body: SaaSSubscriptionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     product = saas_product(product_id, db)
+    if product.status != "published":
+        raise HTTPException(409, "SaaS 产品尚未完成接入验证，暂不可订阅")
     enterprise = first_enterprise(db, user)
     require_legacy_saas_payer(db, user, enterprise.id)
     version = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
@@ -6978,6 +7170,10 @@ audit_support = install_audit_support(globals())
 from .reconciliation_support import install as install_reconciliation_support
 
 ledger_support = install_reconciliation_support(globals())
+
+from .application_address_policy import install as install_application_address_policy
+
+application_address_policy = install_application_address_policy(globals())
 
 from .trading_policy import install as install_trading_policy
 

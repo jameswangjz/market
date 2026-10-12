@@ -12,7 +12,22 @@
 
 当前实现方式是：SaaS 产品审核通过时，由数据集运营服务管理平台生成该产品的 `client_id`、`client_secret`、Token 地址、Scope 和业务 API 地址配置。产品所有者可以登录平台，在产品列表中重复下载 OAuth 凭据文件，并将其中的信息配置到第三方 SaaS 应用中。文件下载受企业管理员权限保护；测试和生产环境应使用不同客户端。
 
-因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 需要使用下载的凭据配置其 OAuth2 认证和后续业务接口认证，并按照本文档约定提供 Token 和业务接口。
+因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 是资源服务，须校验平台签发的 Token 并提供业务接口，不需要为平台提供独立的 Token 授权服务器。
+
+### 1.3 发布时自动生成两套凭据
+
+四阶段审核通过后进入“待接入验证”，平台在审核事务内自动创建互相独立的 OAuth2 接口客户端和 OIDC 登录客户端。提供方企业的已实名超级管理员、管理员可在产品页面分别下载“OAuth2接口凭据”和“OIDC登录凭据”，对应接口如下：
+
+- `GET /api/products/{product_id}/oauth-credentials-download`：平台调用管理接口所需的客户端配置，Scope 为 `saas.tenant saas.user saas.department`。
+- `GET /api/products/{product_id}/oidc-credentials-download`：SaaS 服务端登录客户端配置，包含 `client_id`、`client_secret`、`issuer`、发现地址、授权地址、Token 地址、UserInfo 地址、JWKS 地址及已登记回调地址。
+
+OIDC 使用授权码流程和 PKCE S256，Scope 为 `openid profile email`；SaaS 必须核验 state、nonce、ID Token 签名及 issuer/audience，并按企业和租户隔离用户会话。不能把 client_credentials 令牌当作用户登录令牌。
+
+两套密钥不得混用，不得发送给购买方或写入浏览器代码。下载可重复进行，响应禁止缓存并记录审计。重复发布不自动轮换凭据；历史仅保存摘要的 OIDC 密钥不可恢复，须经过受控轮换。
+
+提供方完成服务器配置后，调用 `POST /api/products/{product_id}/saas-integration/verify` 验证接入。该检查验证平台取 Token、管理接口健康及 OIDC 登记配置，不替代最终用户浏览器 SSO 联调。产品通过接入检查后正式可购买。
+
+系统配置的“应用接入地址允许HTTP”默认关闭。明确开启后，允许登记 HTTP 应用地址、管理接口地址及回调地址，但仍执行 URL 安全校验、回调精确匹配及上游 SSRF 防护；正式生产环境推荐 HTTPS。
 
 ### 1.2 获取 Token
 

@@ -16,6 +16,7 @@ from authlib.oauth2.rfc6749.requests import BasicOAuth2Payload
 from authlib.oauth2.rfc7636 import CodeChallenge
 from authlib.oidc.core import UserInfo
 from authlib.oidc.core.grants import OpenIDCode
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Depends, HTTPException, Request
@@ -95,6 +96,7 @@ def install(ns):
         product_id = Column(ForeignKey('products.id'), unique=True, nullable=False)
         client_id = Column(String(180), unique=True, nullable=False)
         secret_hash = Column(String(64), nullable=False)
+        secret_encrypted = Column(Text, nullable=True)
         status = Column(String(30), default='active', nullable=False)
 
         def get_client_id(self):
@@ -169,6 +171,50 @@ def install(ns):
             return None
         client.redirect_uris = json.loads(product.oidc_redirect_uris_json or '[]')
         return client
+
+    def credential_cipher():
+        key = os.getenv('OIDC_CREDENTIAL_ENCRYPTION_KEY', '')
+        if not key:
+            raise HTTPException(503, 'OIDC凭据加密密钥尚未配置')
+        try:
+            return Fernet(key.encode())
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(503, 'OIDC凭据加密密钥配置无效') from exc
+
+    def ensure_client(db, product, actor='system'):
+        redirects = json.loads(product.oidc_redirect_uris_json or '[]')
+        if not isinstance(redirects, list) or not redirects or any(
+                not isinstance(uri, str) or not valid_redirect(uri, db=db) for uri in redirects):
+            raise HTTPException(409, 'SaaS产品须登记有效OIDC回调地址后才能发布')
+        client = db.scalar(select(OIDCClient).where(OIDCClient.product_id == product.id)
+                           .with_for_update())
+        if client:
+            if not client.secret_encrypted:
+                raise HTTPException(409, '现有OIDC客户端仅保存不可恢复的密钥摘要；请通过受控凭据轮换流程处理')
+            if client.status != 'active':
+                raise HTTPException(409, '现有OIDC客户端已停用；请通过受控凭据轮换流程处理')
+            client_secret(client)
+            return client, None
+        secret = secrets.token_urlsafe(48)
+        cipher = credential_cipher()
+        client = OIDCClient(product_id=product.id, client_id='oidc_' + secrets.token_hex(16),
+            secret_hash=digest(secret), secret_encrypted=cipher.encrypt(secret.encode()).decode())
+        db.add(client)
+        db.flush()
+        ns['audit'](db, actor, 'create_oidc_client', 'oidc_client', client.id,
+            '自动创建SaaS OIDC客户端；不包含密钥', tenant_id=product.enterprise_id)
+        return client, secret
+
+    def client_secret(client):
+        if not client.secret_encrypted:
+            raise HTTPException(409, '现有OIDC客户端仅保存不可恢复的密钥摘要；请通过受控凭据轮换流程处理')
+        try:
+            secret = credential_cipher().decrypt(client.secret_encrypted.encode()).decode()
+        except (InvalidToken, ValueError, UnicodeDecodeError) as exc:
+            raise HTTPException(503, 'OIDC凭据无法解密；请检查持久化加密密钥配置') from exc
+        if not secrets.compare_digest(client.secret_hash, digest(secret)):
+            raise HTTPException(503, 'OIDC凭据加密内容与摘要不匹配')
+        return secret
 
     def eligible(db, user, client, enterprise_id, subscription_id=None):
         if (not user or not user.is_active or user.activation_status != 'active'
@@ -362,31 +408,48 @@ def install(ns):
             ns['require_enterprise_admin'](db, user, product.enterprise_id)
         if product.status not in {'published', 'pending_integration'}:
             raise HTTPException(409, '产品需先完成审核')
+        client, secret = ensure_client(db, product, user.email or user.phone or user.id)
         redirects = json.loads(product.oidc_redirect_uris_json or '[]')
-        if not redirects:
-            raise HTTPException(409, '请先登记OIDC回调地址')
-        if any(not valid_redirect(uri) for uri in redirects):
-            raise HTTPException(400, 'OIDC回调地址无效')
-        client = db.scalar(select(OIDCClient).where(OIDCClient.product_id == product.id))
-        secret = None
-        if not client:
-            secret = secrets.token_urlsafe(48)
-            client = OIDCClient(product_id=product.id, client_id='oidc_' + secrets.token_hex(16),
-                secret_hash=digest(secret))
-            db.add(client)
-            db.flush()
-            ns['audit'](db, user.email or user.phone or user.id, 'create_oidc_client',
-                'oidc_client', client.id, '独立用户SSO客户端；不包含密钥', tenant_id=product.enterprise_id)
         db.commit()
         return JSONResponse({'client_id': client.client_id, 'client_secret': secret,
             'issuer': issuer(), 'redirect_uris': redirects, 'status': client.status,
             'secret_available_once': secret is not None}, headers=NO_STORE)
 
-    def valid_redirect(uri):
+    @ns['app'].get('/api/products/{product_id}/oidc-credentials-download')
+    def download_credentials(product_id: str, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+        product = db.get(ns['Product'], product_id)
+        if not product:
+            raise HTTPException(404, '产品不存在')
+        if user.platform_role:
+            raise HTTPException(403, '接入凭据仅可由产品提供企业管理员下载')
+        if user.verified_status != 'verified':
+            raise HTTPException(403, '完成个人实名认证后才能下载接入凭据')
+        ns['require_enterprise_admin'](db, user, product.enterprise_id)
+        if product.product_type != 'saas' or product.delivery_method != 'tenant_access' or product.status not in {'published', 'pending_integration'}:
+            raise HTTPException(409, '只有已发布或待集成的SaaS产品可以下载OIDC凭据')
+        client = db.scalar(select(OIDCClient).where(OIDCClient.product_id == product.id,
+            OIDCClient.status == 'active'))
+        if not client:
+            raise HTTPException(404, 'OIDC客户端不存在')
+        secret = client_secret(client)
+        base = issuer()
+        redirects = json.loads(product.oidc_redirect_uris_json or '[]')
+        ns['audit'](db, user.email or user.phone or user.id, 'download_oidc_credentials',
+            'oidc_client', client.id, '下载OIDC凭据；不记录密钥', tenant_id=product.enterprise_id)
+        db.commit()
+        return JSONResponse({'client_id': client.client_id, 'client_secret': secret, 'issuer': base,
+            'discovery_url': base + '/.well-known/openid-configuration', 'token_url': base + '/oidc/token',
+            'authorization_url': base + '/oidc/authorize', 'userinfo_url': base + '/oidc/userinfo',
+            'jwks_url': base + '/oidc/jwks', 'redirect_uris': redirects,
+            'response_type': 'code', 'grant_type': 'authorization_code',
+            'code_challenge_method': 'S256', 'scopes': sorted(SCOPES)}, headers={
+                **NO_STORE, 'Content-Disposition': 'attachment; filename="oidc-credentials.json"'})
+
+    def valid_redirect(uri, db=None):
         try:
-            validate_redirect_uris([uri])
-            return (urlsplit(uri).scheme == 'https'
-                or os.getenv('OIDC_ALLOW_HTTP_DEVELOPMENT') == 'true')
+            validate_redirect_uris([uri],
+                allow_http=ns['application_address_policy']['allow_http'](db))
+            return True
         except ValueError:
             return False
 
@@ -394,7 +457,7 @@ def install(ns):
         issuer()
         keys()
         client = client_for(db, body.client_id)
-        if not client or not client.check_redirect_uri(body.redirect_uri) or not valid_redirect(body.redirect_uri):
+        if not client or not client.check_redirect_uri(body.redirect_uri) or not valid_redirect(body.redirect_uri, db=db):
             raise HTTPException(400, 'OIDC客户端或回调地址无效')
         if 'openid' not in body.scope.split() or not set(body.scope.split()) <= SCOPES:
             raise HTTPException(400, 'OIDC scope无效')
@@ -489,6 +552,7 @@ def install(ns):
     ns['OIDCClient'], ns['OIDCCode'] = OIDCClient, OIDCCode
     hooks = {'Client': OIDCClient, 'Code': OIDCCode, 'eligible': eligible,
         'client_for': client_for, 'valid_redirect': valid_redirect,
-        'issue_authorization': issue_authorization}
+        'issue_authorization': issue_authorization, 'ensure_client': ensure_client,
+        'client_secret': client_secret}
     ns['oidc_provider'] = hooks
     return hooks

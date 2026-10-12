@@ -35,6 +35,16 @@ grant_type=client_credentials&client_id={client_id}&client_secret={client_secret
 
 平台在服务端缓存 Token，并在过期前刷新。第三方不得要求浏览器直接获取 Token，也不得把 `client_secret` 放在前端代码中。
 
+### 1.3 发布双客户端与HTTP策略
+
+SaaS 四阶段审核通过后，平台在同一事务内自动创建独立的 OAuth2 接口客户端和 OIDC 登录客户端，进入待接入验证。已实名提供方企业管理员分别下载 `/api/products/{product_id}/oauth-credentials-download` 和 `/api/products/{product_id}/oidc-credentials-download`，重复发布不轮换凭据。
+
+OAuth2 接口 Scope 为 `saas.tenant saas.user saas.department`；OIDC 使用授权码+PKCE S256，Scope 为 `openid profile email`。OIDC 密钥加密保存，下载包含 issuer、discovery、authorization、token、userinfo、jwks 地址及回调地址。两套客户端不可混用，密钥仅放在服务器，不提供给购买方。
+
+系统配置提供“应用接入地址允许HTTP”开关，默认关闭；开启后允许应用访问地址、管理接口地址、API/模型API上游及OIDC回调采用HTTP，不取消回调精确匹配或SSRF防护。平台自己的发行者地址由部署配置管理。
+
+提供方企业管理员完成配置并显式调用 `POST /api/products/{product_id}/saas-integration/verify` 后，平台验证机器Token获取、管理接口健康和OIDC回调登记；全部通过即将接入状态标记为已验证并发布为可购买。此验证不执行第三方RP浏览器登录，不代表端到端SSO已联调；浏览器SSO需单独测试验收。付费自动交付时仍校验远端管理员、应用及客户端与订单产品的匹配关系。
+
 ## 2. 业务接口公共约定
 
 ```http

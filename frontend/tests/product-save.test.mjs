@@ -10,6 +10,7 @@ const edit = source.slice(source.indexOf("async function saveProductEdit()"), so
 function harness(post, put = async () => ({ data: draft })) {
   const state = {
     productSaving: { value: false }, selectedProductId: { value: "" },
+    applicationAddressPolicy: { value: { allow_http: false } },
     productDetailMode: { value: false }, productReadOnlyMode: { value: false },
     productForm: { value: { name: "sample", delivery_method: "file", versions: [{ version_code: "v1" }] } },
     productDirectories: { value: [] }, showProductForm: { value: true },
