@@ -2,10 +2,12 @@
 import hashlib
 import copy
 import importlib
+import json
 import os
 import unittest
 from datetime import timedelta
 from unittest.mock import Mock, patch
+from cryptography.fernet import Fernet
 from sqlalchemy import event
 
 import test_message_business_events as fixtures
@@ -33,6 +35,10 @@ class ApiAutoDeliveryTests(unittest.TestCase):
             if not connection.connection.driver_connection.in_transaction else None)
         api_module = importlib.import_module(m.__package__ + '.api_auto_delivery')
         self.api = api_module.install(vars(m))
+        self.encryption_key = Fernet.generate_key().decode()
+        encryption_env = patch.dict(os.environ, {'API_CREDENTIAL_ENCRYPTION_KEY': self.encryption_key})
+        encryption_env.start()
+        self.addCleanup(encryption_env.stop)
         with m.SessionLocal() as db:
             db.add(m.User(id='delivery-worker', name='Worker', email='jfsh@market.local',
                 password_hash='unused', platform_role='delivery_monitor', verified_status='verified',
@@ -67,7 +73,15 @@ class ApiAutoDeliveryTests(unittest.TestCase):
         self.redis = Mock()
         self.redis_values = {}
         self.redis.hgetall.side_effect = lambda key: self.redis_values.get(key, {})
-        self.redis.hset.side_effect = lambda key, mapping: self.redis_values.setdefault(key, {}).update(mapping)
+        self.redis.hset.side_effect = lambda key, mapping: self.redis_values.setdefault(key, {}).update(
+            {str(field): str(value) for field, value in mapping.items()})
+        self.redis.delete.side_effect = lambda key: int(self.redis_values.pop(key, None) is not None)
+        self.redis.info.side_effect = lambda section: (
+            {'cluster_enabled': 0} if section == 'cluster' else {'role': 'master'})
+        self.redis.dbsize.return_value = 0
+        self.redis.scan.side_effect = lambda cursor, match, count: (0, [])
+        self.redis.eval.side_effect = self.redis_eval
+        self.apisix_consumers = {}
         self.route_payload = None
         self.patches = [
             patch.dict(m.version_gateway, {'version_ready': lambda *args: True}),
@@ -85,13 +99,25 @@ class ApiAutoDeliveryTests(unittest.TestCase):
     def admin_request(self, method, path, payload=None):
         if method == 'GET' and path == '/routes/route-v1':
             return self.expected_route
-        if method == 'GET' and path.startswith('/consumers/'):
+        if path.startswith('/consumers/'):
             name = path.rsplit('/', 1)[-1]
-            credential = self._credential
-            return {'node': {'value': {'username': name, 'plugins': {
-                'key-auth': {'key': self._raw_key},
-                'market-gateway-quota': {'route_key': getattr(self, 'consumer_route_key', 'route-v1')}}}}}
+            if method == 'PUT':
+                if not isinstance(payload, dict) or payload.get('username') != name:
+                    raise AssertionError((method, path, payload))
+                self.apisix_consumers[name] = copy.deepcopy(payload)
+                return {'node': {'value': self.apisix_consumers[name]}}
+            if method == 'GET':
+                return {'node': {'value': self.apisix_consumers[name]}}
+            if method == 'DELETE':
+                self.apisix_consumers.pop(name, None)
+                return {'node': {'value': {'username': name}}}
         raise AssertionError((method, path))
+
+    def redis_eval(self, _script, numkeys, *args):
+        data = json.loads(args[numkeys])
+        self.redis_values.setdefault(args[0], {}).update(
+            {str(field): str(value) for field, value in data.items()})
+        return [1]
 
     def create(self, months=1):
         with patch.dict(self.m.storefront, {'versions_for': lambda db, product: [{'id': 'version'}]}):
@@ -109,36 +135,45 @@ class ApiAutoDeliveryTests(unittest.TestCase):
                 db.commit()
         return self.m.online_delivery['process_once']()
 
-    def assert_fulfilled_without_key(self, oid):
+    def assert_fulfilled_with_initial_key(self, oid):
         self.step(oid)
         with self.m.SessionLocal() as db:
             order = db.get(self.m.Order, oid)
             task = db.get(self.m.DeliveryTask, self.task_id(oid))
             self.assertEqual((order.main_status, order.delivery_status, task.status),
-                ('completed', 'accepted', 'completed'))
+                ('completed', 'accepted', 'completed'), task.last_error)
             self.assertEqual(db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).count(), 1)
-            self.assertEqual(db.query(self.m.ApiCredential).filter_by(enterprise_id='buyer_tenant').count(), 0)
+            credential = db.query(self.m.ApiCredential).filter_by(enterprise_id='buyer_tenant').one()
+            self.assertEqual(credential.status, 'active')
+            self.assertTrue(credential.secret_encrypted)
+            self.assertNotEqual(credential.secret_encrypted, credential.key_hash)
+            credential_id = credential.id
         access = self.request('GET', f'/api/orders/{oid}/delivery-access')
-        self.assertFalse(access['ready'])
-        self.assertIn('共享API凭据', access['reason'])
+        self.assertTrue(access['ready'], access['reason'])
         self.assertIn('credentials_path', access['api'])
+        response = self.client.get(f'/api/orders/{oid}/api-credentials/{credential_id}/download',
+            headers={'Authorization': 'Bearer ' + self.tokens['buyer']})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store, no-cache, must-revalidate')
+        self.assertEqual(response.json()['credential_id'], credential_id)
+        self.assertTrue(response.json()['api_key'].startswith('mk_'))
 
-    def test_api_completes_without_creating_key(self):
-        self.assert_fulfilled_without_key(self.create())
+    def test_api_completes_with_encrypted_initial_key_and_buyer_download(self):
+        self.assert_fulfilled_with_initial_key(self.create())
 
-    def test_model_api_completes_without_creating_key(self):
+    def test_model_api_completes_with_encrypted_initial_key(self):
         with self.m.SessionLocal() as db:
             product = db.get(self.m.Product, 'product')
             product.product_type, product.delivery_method = 'model', 'model_api'
             db.commit()
-        self.assert_fulfilled_without_key(self.create())
+        self.assert_fulfilled_with_initial_key(self.create())
 
     def test_frozen_method_survives_later_product_delivery_edit(self):
         oid = self.create()
         with self.m.SessionLocal() as db:
             db.get(self.m.Product, 'product').delivery_method = 'file'
             db.commit()
-        self.assert_fulfilled_without_key(oid)
+        self.assert_fulfilled_with_initial_key(oid)
 
     def test_route_match_accepts_apisix_defaults_but_rejects_disable_or_extra_plugin(self):
         expected = self.expected_route
@@ -213,15 +248,18 @@ class ApiAutoDeliveryTests(unittest.TestCase):
                 monthly_quota=300, rate_limit_per_minute=30)
             db.add(credential)
             db.commit()
-            self._credential, self._raw_key = credential, 'wrong-consumer-key'
+            payload = {'username': 'consumer-existing', 'plugins': {
+                'key-auth': {'key': 'wrong-consumer-key'},
+                'market-gateway-quota': {'route_key': 'route-v1'}}}
+            self.apisix_consumers['consumer-existing'] = payload
         self.step(oid)
         with self.m.SessionLocal() as db:
             self.assertEqual(db.query(self.m.SubscriptionTerm).count(), 0)
             db.query(self.m.DeliveryTask).filter_by(order_id=oid).one().status = 'retrying'
             db.commit()
 
-        self._raw_key = 'market-secret-key'
-        self.redis.hset.side_effect = RuntimeError('private Redis endpoint detail')
+        self.apisix_consumers['consumer-existing']['plugins']['key-auth']['key'] = 'market-secret-key'
+        self.redis.eval.side_effect = RuntimeError('private Redis endpoint detail')
         self.step(oid)
         with self.m.SessionLocal() as db:
             self.assertEqual(db.query(self.m.SubscriptionTerm).count(), 0)
@@ -249,7 +287,9 @@ class ApiAutoDeliveryTests(unittest.TestCase):
                 key_hash=hashlib.sha256(b'market-secret-key').hexdigest(),
                 apisix_consumer_name='consumer-existing', status='active'))
             db.commit()
-        self._credential, self._raw_key = 'present', 'market-secret-key'
+        self.apisix_consumers['consumer-existing'] = {'username': 'consumer-existing', 'plugins': {
+            'key-auth': {'key': 'market-secret-key'},
+            'market-gateway-quota': {'route_key': 'different-route'}}}
         self.consumer_route_key = 'different-route'
         self.step(oid)
         with self.m.SessionLocal() as db:
@@ -263,7 +303,9 @@ class ApiAutoDeliveryTests(unittest.TestCase):
                 apisix_consumer_name='consumer-existing', status='active', daily_quota=12,
                 monthly_quota=300, rate_limit_per_minute=30))
             db.commit()
-        self._credential, self._raw_key = 'present', 'market-secret-key'
+        self.apisix_consumers['consumer-existing'] = {'username': 'consumer-existing', 'plugins': {
+            'key-auth': {'key': 'market-secret-key'},
+            'market-gateway-quota': {'route_key': 'route-v1'}}}
         baseline = {'mode': 'subscription', 'quota_scope': 'prior-scope', 'status': 'active',
             'subscription_periods': '[]', 'daily_quota': '12', 'monthly_quota': '300', 'total_quota': '0'}
         self.redis_values['market:apisix:credential:consumer-existing'] = baseline.copy()
@@ -334,18 +376,13 @@ class ApiAutoDeliveryTests(unittest.TestCase):
         self.step(first)
         with self.m.SessionLocal() as db:
             combo = db.query(self.m.SubscriptionCombination).one()
-            credential = self.m.ApiCredential(route_id='route', enterprise_id='buyer_tenant',
-                order_id='', key_prefix='market-secret', key_hash=hashlib.sha256(b'market-secret-key').hexdigest(),
-                apisix_consumer_name='consumer-existing', status='active', daily_quota=12,
-                monthly_quota=300, rate_limit_per_minute=30)
-            db.add(credential)
-            db.commit()
-            self._credential, self._raw_key = credential, 'market-secret-key'
-            self.redis_values['market:apisix:credential:consumer-existing'] = {'mode': 'subscription'}
+            credential = db.query(self.m.ApiCredential).one()
+            consumer_name = credential.apisix_consumer_name
+            self.redis_values['market:apisix:credential:' + consumer_name] = {'mode': 'subscription'}
             combo_id = combo.id
         renewal = self.create(2)
         self.step(renewal)
-        live_policy = self.redis_values['market:apisix:credential:consumer-existing']
+        live_policy = self.redis_values['market:apisix:credential:' + consumer_name]
         self.assertIn('subscription_periods', live_policy)
         self.assertNotEqual(live_policy, {'mode': 'subscription'})
         with self.m.SessionLocal() as db:

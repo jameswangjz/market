@@ -505,13 +505,14 @@ def consumer_journal(m, saved, path):
     return journal
 
 
-def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60):
+def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60, browser_fixture=None):
     import httpx
     from fastapi.testclient import TestClient
     from sqlalchemy import event, select
 
     held_orders = set()
     checks = []
+    browser_orders = []
     session_class = m.SessionLocal.class_
 
     def hold_manual_tasks(db, *_):
@@ -672,11 +673,38 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60):
             with m.SessionLocal() as db:
                 term_ids = list(db.scalars(select(Term.id).where(Term.order_id == oid)))
                 check(term_ids == [original_term_id], 'Repeated processing duplicated subscription grant')
-                check(not db.scalars(select(m.ApiCredential).where(m.ApiCredential.route_id == route_id)).all(),
-                      'Delivery unexpectedly generated buyer credentials')
-            credential = request('POST', '/api/orders/' + oid + '/api-credentials', body={'name': saved['run_id']})
-            raw_key = credential.pop('api_key', None)
-            check(isinstance(raw_key, str) and bool(raw_key), 'One-time buyer secret missing')
+                rows = db.scalars(select(m.ApiCredential).where(m.ApiCredential.route_id == route_id)).all()
+                check(len(rows) == 1 and rows[0].status == 'active' and rows[0].secret_encrypted,
+                      'Initial delivery must create one encrypted shared credential')
+                credential_id = rows[0].id
+                check(db.scalar(select(m.AuditLog).where(m.AuditLog.order_id == oid,
+                    m.AuditLog.action == 'issue_initial_api_credential')) is not None,
+                    'Automatic credential issuance audit missing')
+            listed = request('GET', '/api/orders/' + oid + '/api-credentials')
+            credential = next(row for row in listed['items'] if row['id'] == credential_id)
+            check(credential.get('secret_download_available') is True and 'api_key' not in credential
+                  and 'secret_encrypted' not in credential, 'Credential listing leaks a secret or lacks download')
+            download_path = '/api/orders/' + oid + '/api-credentials/' + credential_id + '/download'
+            downloaded = client.get(download_path, headers={'Authorization': 'Bearer ' + tokens['buyer']})
+            check(downloaded.status_code == 200 and 'no-store' in downloaded.headers.get('cache-control', '')
+                  and 'attachment;' in downloaded.headers.get('content-disposition', ''),
+                  'Buyer secret download must be an authenticated non-cacheable attachment')
+            raw_key = downloaded.json().get('api_key')
+            check(isinstance(raw_key, str) and raw_key.startswith('mk_'), 'Downloaded initial buyer secret missing')
+            for role in ('seller', 'ops'):
+                denied = client.get(download_path, headers={'Authorization': 'Bearer ' + tokens[role]})
+                check(denied.status_code == 403, 'Provider or platform role downloaded buyer secret')
+            shared_initial = request('POST', '/api/orders/' + oid + '/api-credentials', body={})
+            check(shared_initial['id'] == credential_id and 'api_key' not in shared_initial,
+                  'Manual create unexpectedly rotated the automatic initial credential')
+            access = request('GET', '/api/orders/' + oid + '/delivery-access')
+            check(access.get('ready') is True, 'Automatic credential issuance did not make order access ready')
+            with m.SessionLocal() as db:
+                audit_row = db.scalar(select(m.AuditLog).where(m.AuditLog.order_id == oid,
+                    m.AuditLog.action == 'download_api_credential'))
+                check(audit_row is not None, 'Credential download audit was not committed')
+                check(raw_key not in repr({c.name: getattr(audit_row, c.name)
+                    for c in m.AuditLog.__table__.columns}), 'Credential secret leaked into audit')
             item = next(c for c in saved['consumers'] if c['id'] == credential['id'])
             metadata = redis.hgetall('market:apisix:credential:' + item['name'])
             check(metadata.get('mode') == 'subscription' and metadata.get('status') == 'active',
@@ -708,17 +736,24 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60):
                 check(combo.total_months == 2, 'Renewal did not extend the shared subscription')
             invoke(item['route'], raw_key, scope, period, saved['products'][index])
             check(redis.get(month_key) == '2', 'Shared credential did not preserve counting')
-            request('POST', '/api/orders/' + oid + '/api-credentials/' + credential['id'] + '/revoke')
-            renew(oid)
-            listed = request('GET', '/api/orders/' + oid + '/api-credentials')
-            revoked = next(c for c in listed['items'] if c['id'] == credential['id'])
-            check(revoked['status'] == 'revoked', 'Renewal reactivated a revoked credential')
-            response = httpx.get(gateway_url.rstrip('/') + '/gateway/' + item['route'] + '/v1/echo',
-                                 headers={'X-API-Key': raw_key}, timeout=15)
-            check(response.status_code in {401, 403}, 'Revoked credential still invokes APISIX')
-            check(redis.get(month_key) == '2', 'Revoked invocation changed usage')
+            if browser_fixture:
+                with m.SessionLocal() as db:
+                    browser_orders.append({'id': oid, 'order_no': db.get(m.Order, oid).order_no,
+                        'product_id': saved['products'][index], 'credential_id': credential['id'],
+                        'method': 'api' if index == 0 else 'model_api'})
+            else:
+                request('POST', '/api/orders/' + oid + '/api-credentials/' + credential['id'] + '/revoke')
+                renew(oid)
+                listed = request('GET', '/api/orders/' + oid + '/api-credentials')
+                revoked = next(c for c in listed['items'] if c['id'] == credential['id'])
+                check(revoked['status'] == 'revoked', 'Renewal reactivated a revoked credential')
+                response = httpx.get(gateway_url.rstrip('/') + '/gateway/' + item['route'] + '/v1/echo',
+                                     headers={'X-API-Key': raw_key}, timeout=15)
+                check(response.status_code in {401, 403}, 'Revoked credential still invokes APISIX')
+                check(redis.get(month_key) == '2', 'Revoked invocation changed usage')
             raw_key = None
-            checks.append(('api' if index == 0 else 'model_api') + ': manual, negative, credential, renewal, revoke')
+            checks.append(('api' if index == 0 else 'model_api') + ': manual, negative, credential, renewal' +
+                          ('' if browser_fixture else ', revoke'))
             if worker:
                 worker_oid = buy(index, hold=False)
                 deadline = time.monotonic() + worker_timeout
@@ -733,9 +768,12 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60):
                     check(audit and audit.actor == 'jfsh@market.local', 'Unexpected worker delivery actor')
                     check(db.scalar(select(Term).where(Term.order_id == worker_oid)) is not None,
                           'Worker success lacks subscription term')
-                    check(db.get(m.ApiCredential, credential['id']).status == 'revoked',
-                          'Worker delivery reactivated revoked credential')
+                    check(db.get(m.ApiCredential, credential['id']).status == ('active' if browser_fixture else 'revoked'),
+                          'Worker delivery changed shared credential lifecycle')
                 checks.append(('api' if index == 0 else 'model_api') + ': deployed worker')
+        if browser_fixture:
+            write_manifest(browser_fixture, {'run_id': saved['run_id'], 'token': tokens['buyer'],
+                'orders': browser_orders, 'enterprise_id': saved['enterprises'][0]}, create=True)
         return {'status': 'passed', 'checks': checks, 'worker_exercised': worker,
                 'payment': 'simulated', 'upstream': 'mock-api /v1/echo with platform OAuth',
                 'negative_health': 'real 404 before publication; delivery health-path evidence tamper; no service outage'}
@@ -764,8 +802,15 @@ def run(args):
     saved['authorized'] = True
     write_manifest(path, saved)
     try:
-        result = exercise(m, saved, path, args.gateway_url, args.worker, args.worker_timeout)
-    finally:
+        result = exercise(m, saved, path, args.gateway_url, args.worker, args.worker_timeout,
+                          getattr(args, 'browser_fixture', None))
+    except BaseException:
+        cleanup(m, saved, path)
+        raise
+    else:
+        if getattr(args, 'browser_fixture', None):
+            result['cleanup'] = 'pending browser acceptance; exact owned cleanup required'
+            return result
         cleanup(m, saved, path)
     result['cleanup'] = 'exact owned fixtures removed; native DB2 rate keys expire'
     return result
@@ -778,6 +823,7 @@ def main(argv=None):
     parser.add_argument('--gateway-url', default='http://market-apisix:9080')
     parser.add_argument('--worker', action='store_true')
     parser.add_argument('--worker-timeout', type=int, choices=range(1, 121), default=60)
+    parser.add_argument('--browser-fixture', help='Private 0600 token file; retain fixtures for browser, then --cleanup')
     args = parser.parse_args(argv)
     previous_logging_disable = logging.root.manager.disable
     logging.disable(logging.CRITICAL)

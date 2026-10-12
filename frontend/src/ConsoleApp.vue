@@ -14,6 +14,7 @@ import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
+import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
 import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
@@ -319,6 +320,7 @@ const apiOrderState = ref({
   gateway_base_path: "",
 });
 const apiCredentialReveal = ref(null);
+const apiCredentialDownloading = ref("");
 const gatewayItems = ref([]);
 const gatewayOverview = ref({ summary: {}, apisix_enabled: false, metrics_url: "" });
 const gatewayAlerts = ref([]);
@@ -1714,7 +1716,7 @@ async function createOrderApiCredential() {
     apiCredentialReveal.value = data.api_key ? data : null;
     await openOrder(order);
     apiCredentialReveal.value = data.api_key ? data : null;
-    notify(data.api_key ? "企业共享 API 凭据已生成，请立即保存 API Key" : "已复用企业共享 API 凭据，本次订单额度已合并");
+    notify(data.api_key ? "企业共享 API 凭据已生成，请妥善保存" : "已复用企业共享 API 凭据；同版本续费仅延长期限，不叠加配额");
   } catch (error) {
     notify(error.response?.data?.detail || "API 凭据生成失败");
   }
@@ -1749,9 +1751,38 @@ async function regenerateOrderApiCredential(item) {
     );
     await openOrder(order);
     apiCredentialReveal.value = data;
-    notify("API 凭据已重新生成，请立即保存新 API Key");
+    notify("API 凭据已重新生成，请妥善保存；授权买方企业管理员可下载调用凭据");
   } catch (error) {
     notify(error.response?.data?.detail || "API 凭据重新生成失败");
+  }
+}
+async function downloadOrderApiCredential(item) {
+  const order = selectedOrder.value?.order;
+  if (!order || apiCredentialDownloading.value) return;
+  apiCredentialDownloading.value = item.id;
+  try {
+    await downloadApiCredential({
+      api,
+      order,
+      user: user.value,
+      buyerEnterprise: deliveryBuyerEnterprise(order),
+      credential: item,
+      saveBlob: (blob, filename) => {
+        const url = URL.createObjectURL(blob);
+        try {
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = filename;
+          link.click();
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      },
+    });
+  } catch (error) {
+    notify(error.response?.data?.detail || "调用凭据下载失败");
+  } finally {
+    apiCredentialDownloading.value = "";
   }
 }
 async function copyApiCredential() {
@@ -4469,7 +4500,7 @@ onUnmounted(() => {
           <div class="drawer-section-title">API 调用凭据（企业共享）</div>
           <p class="muted">
             网关路径：{{ apiOrderState.gateway_base_path }} ·
-            同一企业购买同一 API 服务的多个订单共用一套凭据，订单额度自动合并；凭据原文仅在首次生成或重新生成时显示。
+            企业内同一 API 服务共用一套凭据；同版本续费仅延长期限，不叠加配额。授权买方企业管理员可下载调用凭据。
           </p>
           <div class="action-list">
             <button class="secondary-btn" @click="createOrderApiCredential">
@@ -4486,11 +4517,23 @@ onUnmounted(() => {
               ><small
                 >{{ item.key_prefix }} ·
                 {{ item.status === "active" ? "启用中" : "已停用" }} ·
-                企业共享总额度 {{ item.total_quota || "不限" }} ·
+                每分钟 {{ item.rate_limit_per_minute ?? "-" }} 次 ·
+                每日 {{ item.daily_quota === 0 ? "不限" : item.daily_quota ?? "-" }} 次 ·
+                每订阅月 {{ item.monthly_quota === 0 ? "不限" : item.monthly_quota ?? "-" }} 次 ·
+                总额度 {{ item.total_quota === 0 ? "不限" : item.total_quota ?? "-" }} ·
                 {{ fmtDate(item.created_at) }}</small
               >
             </div>
             <div class="action-list">
+              <button
+                v-if="canDownloadApiCredential(selectedOrder?.order, user, deliveryBuyerEnterprise(selectedOrder?.order), item)"
+                class="text-btn"
+                :disabled="Boolean(apiCredentialDownloading)"
+                title="下载调用凭据"
+                @click="downloadOrderApiCredential(item)"
+              >
+                <Download :size="14" />{{ apiCredentialDownloading === item.id ? '下载中' : '下载调用凭据' }}
+              </button>
               <button
                 v-if="item.status === 'active'"
                 class="text-btn danger-text"
@@ -4519,7 +4562,7 @@ onUnmounted(() => {
               </button>
             </div>
             <small class="muted"
-              >请立即保存。平台不会再次显示此 API Key 原文。</small
+              >可下载调用凭据，请妥善保存。</small
             >
           </div>
         </div>

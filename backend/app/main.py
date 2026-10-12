@@ -509,6 +509,7 @@ class ApiCredential(Base):
     name: Mapped[str] = mapped_column(String(120), default="默认 API 凭证")
     key_prefix: Mapped[str] = mapped_column(String(24), default="")
     key_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    secret_encrypted: Mapped[str] = mapped_column(Text, default="")
     apisix_consumer_name: Mapped[str] = mapped_column(String(180), default="")
     status: Mapped[str] = mapped_column(String(30), default="active", index=True)
     rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -2150,6 +2151,7 @@ def ensure_review_and_file_schema():
             "monthly_quota": "INTEGER",
             "total_quota": "INTEGER DEFAULT 0",
             "apisix_consumer_name": "VARCHAR(180) DEFAULT ''",
+            "secret_encrypted": "TEXT DEFAULT '' NOT NULL",
         },
         "delivery_attachments": {
             "task_id": "VARCHAR(36)",
@@ -4563,7 +4565,7 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
 
 
 def api_credential_out(item: ApiCredential, route: ApiGatewayRoute) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute if item.rate_limit_per_minute is not None else route.rate_limit_per_minute, "daily_quota": item.daily_quota if item.daily_quota is not None else route.daily_quota, "monthly_quota": item.monthly_quota if item.monthly_quota is not None else route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
+    return {"id": item.id, "name": item.name, "key_prefix": item.key_prefix, "status": item.status, "secret_download_available": item.status == "active" and bool(item.secret_encrypted), "product_version_id": item.product_version_id, "rate_limit_per_minute": item.rate_limit_per_minute if item.rate_limit_per_minute is not None else route.rate_limit_per_minute, "daily_quota": item.daily_quota if item.daily_quota is not None else route.daily_quota, "monthly_quota": item.monthly_quota if item.monthly_quota is not None else route.monthly_quota, "total_quota": item.total_quota or 0, "expires_at": item.expires_at, "last_used_at": item.last_used_at, "created_at": item.created_at}
 
 
 @app.get("/api/products/{product_id}/gateway-config")
@@ -4734,7 +4736,8 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
         db.refresh(credential)
         return {**api_credential_out(credential, route), "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "该企业已有共享 API 凭据，请继续使用原凭据；同版本续费仅延长期限，不叠加配额" if managed else "该企业已有共享 API 凭据，请继续使用原凭据"}
     raw_key = "mk_" + secrets.token_urlsafe(30)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
+    encrypted_key = initial_api_credentials["encrypt"](raw_key)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=body.name.strip() or f"{product.name} 企业共享 API 凭据", key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), secret_encrypted=encrypted_key, rate_limit_per_minute=body.rate_limit_per_minute if body.rate_limit_per_minute is not None else policy["rate_limit_per_minute"], daily_quota=body.daily_quota if body.daily_quota is not None else policy["daily_quota"], monthly_quota=body.monthly_quota if body.monthly_quota is not None else policy["monthly_quota"], total_quota=body.total_quota if body.total_quota is not None else policy["total_quota"], expires_at=body.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -4745,7 +4748,7 @@ def create_order_api_credential(order_id: str, body: GatewayCredentialBody, user
     audit(db, user.email or user.phone or user.id, "create_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};order={order.order_no}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key，仅在本次生成响应中返回，请妥善保存；续费延长期限，不重置已用量"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "shared": True, "warning": "这是企业共享 API Key；之后可由买方企业管理员通过凭据下载接口再次获取。续费延长期限，不重置已用量"}
 
 
 @app.post("/api/orders/{order_id}/api-credentials/{credential_id}/revoke")
@@ -4775,8 +4778,9 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
         raise HTTPException(404, "API 凭据不存在")
     old.status = "revoked"
     raw_key = "mk_" + secrets.token_urlsafe(30)
+    encrypted_key = initial_api_credentials["encrypt"](raw_key)
     policy = api_entitlement_policy(db, enterprise_id, route)
-    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), rate_limit_per_minute=policy["rate_limit_per_minute"], daily_quota=policy["daily_quota"], monthly_quota=policy["monthly_quota"], total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
+    credential = ApiCredential(route_id=route.id, enterprise_id=enterprise_id, order_id="", product_version_id="", name=old.name, key_prefix=raw_key[:12], key_hash=hashlib.sha256(raw_key.encode()).hexdigest(), secret_encrypted=encrypted_key, rate_limit_per_minute=policy["rate_limit_per_minute"], daily_quota=policy["daily_quota"], monthly_quota=policy["monthly_quota"], total_quota=policy["total_quota"], expires_at=old.expires_at, created_by=user.email or user.phone or user.id)
     db.add(credential)
     db.flush()
     try:
@@ -4788,7 +4792,7 @@ def regenerate_order_api_credential(order_id: str, credential_id: str, user: Use
     audit(db, user.email or user.phone or user.id, "regenerate_shared_api_credential", "api_credential", credential.id, f"enterprise={enterprise_id};from={old.id}")
     db.commit()
     db.refresh(credential)
-    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用，新 API Key 仅在本次响应中返回，请妥善保存"}
+    return {**api_credential_out(credential, route), "api_key": raw_key, "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "warning": f"旧凭据 {old.key_prefix} 已停用；买方企业管理员可通过凭据下载接口再次获取新 API Key"}
 
 
 @app.get("/api/products/{product_id}/gateway-credentials")
@@ -7208,6 +7212,10 @@ saas_combinations = install_saas_combinations(globals())
 from .subscription_gateway import install as install_subscription_gateway
 
 subscription_gateway = install_subscription_gateway(globals())
+from .api_buyer_credentials import install as install_api_buyer_credentials
+
+initial_api_credentials = install_api_buyer_credentials(globals())
+
 from .online_delivery import install as install_online_delivery
 
 online_delivery = install_online_delivery(globals())
@@ -7215,6 +7223,10 @@ online_delivery = install_online_delivery(globals())
 from .version_change_quotes import install as install_version_change_quotes
 
 version_change_quotes = install_version_change_quotes(globals())
+
+from .version_change_ledger import install as install_version_change_ledger
+
+version_change_ledger = install_version_change_ledger(globals())
 
 from .oidc_provider import install as install_oidc_provider
 

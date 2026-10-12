@@ -49,7 +49,9 @@ API 提供方的服务可以部署在独立 Kubernetes 集群、虚拟机、物�
 - 普通企业成员不可获取文件或 API 凭据；平台管理角色不因此获得买方 Secret；
 - 公开商城允许匿名浏览，订阅须选择符合权限的企业；买方发起支付仅限企业超级管理员，平台财务保留人工到账确认。
 
-首次获取凭据时，平台生成 API Key 并只在本次操作结果中显示原文。同一企业后续订单会复用已有 API Key，不会重复生成；调用方必须立即保存，不要把 API Key 写入前端代码、镜像或公开代码仓库。
+首次自动交付时，平台生成企业共享 API Key，并以专用加密密钥加密保存。买方企业已实名超级管理员、管理员可以在订单页点击“下载调用凭据”，取得包含 Key ID、API Key、网关地址及限流配额的 JSON 配置文件；此下载会记录不含密钥的审计日志，响应禁止缓存。同一企业同版本后续订单复用已有 API Key，不会重复生成。不要把 API Key 写入前端代码、镜像或公开代码仓库。
+
+已主动停用的凭据不会因自动交付或续费恢复；历史仅保存摘要的凭据不能再次下载原文，须通过受控重新生成处理。平台的提供方 OAuth 接入凭据与买方调用 Key 不同，不包含在本下载文件中。
 
 订单页面支持停用和重新生成企业共享凭据。重新生成会立即停用旧凭据，但不重置企业产品组合的已用次数。同版本续费不会自动恢复手工停用的凭据。未交付、未开始或已到期的时段不能用于当前调用；所有有效权益结束后网关拒绝访问。跨版本切换及其退款、冲回清算仍属于后续开发内容，不能将旧版额度退款算法视为新订阅完整处理能力。
 
@@ -57,6 +59,7 @@ API 提供方的服务可以部署在独立 Kubernetes 集群、虚拟机、物�
 
 ```http
 GET  /api/orders/{order_id}/api-credentials
+GET  /api/orders/{order_id}/api-credentials/{credential_id}/download
 POST /api/orders/{order_id}/api-credentials
 POST /api/orders/{order_id}/api-credentials/{credential_id}/revoke
 POST /api/orders/{order_id}/api-credentials/{credential_id}/regenerate

@@ -1,7 +1,10 @@
 """HTTP integration of subscription grants and non-additive gateway policy."""
 import json
+import os
 import unittest
+from unittest.mock import Mock
 from unittest.mock import patch
+from cryptography.fernet import Fernet
 
 import test_message_business_events as fixtures
 
@@ -12,9 +15,61 @@ class SubscriptionGatewayTests(unittest.TestCase):
         fixtures.BusinessRoutesHTTPTests.setUpClass.__func__(cls)
 
     tearDownClass = classmethod(fixtures.BusinessRoutesHTTPTests.tearDownClass.__func__)
-    setUp = fixtures.BusinessRoutesHTTPTests.setUp
     tearDown = fixtures.BusinessRoutesHTTPTests.tearDown
     request = fixtures.BusinessRoutesHTTPTests.request
+
+    def setUp(self):
+        fixtures.BusinessRoutesHTTPTests.setUp(self)
+        encryption_env = patch.dict(os.environ, {
+            'API_CREDENTIAL_ENCRYPTION_KEY': Fernet.generate_key().decode(),
+            'API_GATEWAY_PUBLIC_URL': 'https://gateway.example.invalid',
+        })
+        encryption_env.start()
+        self.addCleanup(encryption_env.stop)
+        self.redis_hashes = {}
+        self.redis = Mock()
+        self.redis.hgetall.side_effect = lambda key: dict(self.redis_hashes.get(key, {}))
+        self.redis.hset.side_effect = self.redis_hset
+        self.redis.delete.side_effect = self.redis_delete
+        self.redis.scan.side_effect = lambda cursor, match, count: (0, [])
+        self.redis.dbsize.return_value = 0
+        self.redis.info.side_effect = lambda section: (
+            {'cluster_enabled': 0} if section == 'cluster' else {'role': 'master'})
+        self.redis.eval.side_effect = self.redis_eval
+        self.redis_patch = patch.object(self.m, 'apisix_policy_redis', return_value=self.redis)
+        self.redis_patch.start()
+        self.addCleanup(self.redis_patch.stop)
+        self.apisix_consumers = {}
+
+    def redis_hset(self, key, mapping):
+        self.redis_hashes.setdefault(key, {}).update(
+            {str(field): str(value) for field, value in mapping.items()})
+
+    def redis_delete(self, key):
+        return int(self.redis_hashes.pop(key, None) is not None)
+
+    def redis_eval(self, _script, numkeys, *args):
+        data = json.loads(args[numkeys])
+        self.redis_hashes.setdefault(args[0], {}).update(
+            {str(field): str(value) for field, value in data.items()})
+        return [1]
+
+    def admin(self, method, path, payload=None):
+        if method == 'GET' and path.startswith('/routes/'):
+            return self.expected_route
+        if path.startswith('/consumers/'):
+            name = path.rsplit('/', 1)[-1]
+            if method == 'PUT':
+                if not isinstance(payload, dict) or payload.get('username') != name:
+                    raise AssertionError((method, path, payload))
+                self.apisix_consumers[name] = json.loads(json.dumps(payload))
+                return {'node': {'value': self.apisix_consumers[name]}}
+            if method == 'GET':
+                return {'node': {'value': self.apisix_consumers[name]}}
+            if method == 'DELETE':
+                self.apisix_consumers.pop(name, None)
+                return {'node': {'value': {'username': name}}}
+        raise AssertionError((method, path, payload))
 
     def purchase(self, months=1):
         m = self.m
@@ -55,11 +110,9 @@ class SubscriptionGatewayTests(unittest.TestCase):
         self.request("POST", f"/api/orders/{oid}/transition", json={"action": "confirm_payment"})
         with self.m.SessionLocal() as db:
             tid = db.scalar(self.select(self.m.DeliveryTask.id).where(self.m.DeliveryTask.order_id == oid))
-        def admin(method, path, payload=None):
-            return self.expected_route
         with patch.dict(self.m.subscription_gateway, {"verify_delivery": lambda *args: True}), \
                 patch.object(self.m, 'apisix_enabled', return_value=True), \
-                patch.object(self.m, 'apisix_admin_request', side_effect=admin):
+                patch.object(self.m, 'apisix_admin_request', side_effect=self.admin):
             return self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="platform", json={"success": True})
 
     def test_paid_not_delivered_has_no_entitlement_or_credentials(self):

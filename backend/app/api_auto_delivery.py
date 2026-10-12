@@ -107,7 +107,8 @@ def install(ns):
         tracked = db.info.setdefault(compensation_key, {})
         state = tracked.get(key)
         if state is None:
-            state = {'redis': redis, 'policies': {}, 'committed': False}
+            state = {'redis': redis, 'policies': {}, 'consumers': set(),
+                     'failed_consumers': set(), 'committed': False}
             tracked[key] = state
 
             def committed(session):
@@ -120,18 +121,24 @@ def install(ns):
                 if transaction is not root:
                     return
                 tracked.pop(key, None)
-                if not state['committed'] and not state.get('restored'):
+                if state['committed']:
+                    failed = compensate_new_consumers(state, state['failed_consumers'])
+                elif not state.get('restored'):
                     failed = restore_policies(state['redis'], state['policies'])
+                    failed.extend(remove_consumers(state['consumers']))
                     state['restored'] = True
-                    if failed:
-                        logger.critical('API delivery transaction rollback could not restore or disable Redis policies for %d consumers',
-                            len(failed))
-                        raise RuntimeError('API delivery cache rollback compensation failed')
+                else:
+                    failed = []
+                if failed:
+                    logger.critical('API delivery transaction compensation failed for %d consumers',
+                        len(failed))
+                    raise RuntimeError('API delivery cache rollback compensation failed')
 
             def rolled_back(session, transaction):
                 if transaction is not root or state.get('restored'):
                     return
                 failed = restore_policies(state['redis'], state['policies'])
+                failed.extend(remove_consumers(state['consumers']))
                 state['restored'] = True
                 tracked.pop(key, None)
                 if failed:
@@ -145,6 +152,72 @@ def install(ns):
         for name, values in policies.items():
             state['policies'].setdefault(name, dict(values))
         return state
+
+    def remove_consumers(consumers):
+        failed = []
+        for consumer in consumers:
+            try:
+                delete_consumer(consumer)
+            except Exception:
+                failed.append(consumer)
+        return failed
+
+    def compensate_new_consumers(state, consumers):
+        failed = []
+        for consumer in consumers:
+            try:
+                state['redis'].delete('market:apisix:credential:' + consumer)
+            except Exception:
+                failed.append(consumer)
+            try:
+                delete_consumer(consumer)
+            except Exception:
+                failed.append(consumer)
+        return failed
+
+    def delete_consumer(consumer):
+        try:
+            return ns['apisix_admin_request']('DELETE', f'/consumers/{consumer}')
+        except Exception as exc:
+            response = getattr(exc, 'response', None)
+            if response is None:
+                response = getattr(getattr(exc, '__cause__', None), 'response', None)
+            if (getattr(exc, 'status_code', None) == 404
+                    or getattr(response, 'status_code', None) == 404):
+                return None
+            raise
+
+    def register_consumer_compensation(db, consumer):
+        redis = ns['apisix_policy_redis']()
+        state = track_root_transaction(db, redis, {consumer: {}})
+        state['consumers'].add(consumer)
+
+    def cleanup_consumer_compensation(db, consumer):
+        root = db.get_transaction()
+        state = db.info.get(compensation_key, {}).get(id(root)) if root else None
+        redis = state['redis'] if state else ns['apisix_policy_redis']()
+        if state:
+            state['failed_consumers'].add(consumer)
+        errors = []
+        try:
+            redis.delete('market:apisix:credential:' + consumer)
+        except Exception:
+            errors.append('redis')
+        try:
+            delete_consumer(consumer)
+        except Exception:
+            errors.append('apisix')
+        if not errors and state:
+            state['consumers'].discard(consumer)
+            state['failed_consumers'].discard(consumer)
+            state['policies'].pop(consumer, None)
+        if errors:
+            logger.critical('API credential eager compensation failed for external systems: %s',
+                ','.join(errors))
+            raise RuntimeError('API credential external compensation failed')
+
+    ns['_track_api_consumer_compensation'] = register_consumer_compensation
+    ns['_cleanup_api_consumer_compensation'] = cleanup_consumer_compensation
 
     def process(db, order, task, user):
         economic = ns['order_economics']['economic_snapshot'](order)
@@ -237,6 +310,8 @@ def install(ns):
             term = ns['subscription_terms']['on_delivery_success'](db, order, user)
             if not term:
                 fail()
+            if method in {'api', 'model_api'}:
+                ns['initial_api_credentials']['ensure_initial'](db, order, route, user)
             if credentials:
                 ns['subscription_gateway']['refresh'](db, order.buyer_enterprise_id, route)
                 for credential in credentials:
@@ -252,6 +327,8 @@ def install(ns):
             order.delivery_status, order.main_status = prior
             if redis is not None:
                 failed = restore_policies(redis, old_policies)
+                failed.extend(remove_consumers(
+                    db.info.get(compensation_key, {}).get(id(db.get_transaction()), {}).get('consumers', set())))
                 if failed:
                     logger.critical('API delivery attempt could not restore or disable %d Redis policies', len(failed))
                     raise RuntimeError('API delivery cache rollback compensation failed') from None

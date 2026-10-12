@@ -42,4 +42,11 @@ Keep ORD-261012005144E1B3 and its temporary product dependencies. Runtime script
 require private ownership manifests and precise FK/external-key cleanup.
 Never bulk-delete production tasks, Redis counters or test-looking orders.
 Initial API caller credentials are generated on demand in the order UI, not
-automatically stored as a recoverable secret by the fulfillment worker.
+automatically stored as a recoverable secret by the previous deployed worker.
+The next release adds automatic initial issuance, encrypted storage and a
+buyer-only order download. It requires the persistent market-api-credentials
+Secret/API_CREDENTIAL_ENCRYPTION_KEY; never rotate it on deployment. Preserve
+revoked and legacy hash-only keys rather than silently issuing replacements.
+Version-change adjustment ledger code is internal groundwork only, not a
+completed Saga, refund flow or monthly settlement integration. See
+docs/初始调用凭据与升降级清算补偿设计-20261012.md for boundaries and tests.
