@@ -20,6 +20,7 @@ import { canRenewSubscription, createSubscriptionSession, subscriptionDisplaySta
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
+import VersionChangeExecution from "./VersionChangeExecution.vue";
 import {
   Activity,
   ArrowUpRight,
@@ -243,12 +244,32 @@ watch(() => JSON.stringify(currentDeliveryOrder.value), (value, previous) => {
 watch(selectedOrder, closeDeliveryAccess, { flush: "sync" });
 let orderDetailRequest = 0;
 const subscriptionState = ref({ orderId: "", item: null, loading: false, error: "", modal: null });
+const versionChangeCapability = ref({ orderId: "", allowed: false });
 const renewalProcessing = ref(false);
 const subscriptionEnterprise = computed(() => buyerEnterprises.value.find(
   item => item.id === selectedOrder.value?.order.buyer_enterprise_id && item.eligible === true) ||
   (enterprise.value?.id === selectedOrder.value?.order.buyer_enterprise_id ? enterprise.value : null));
+const versionChangeSubscription = computed(() => subscriptionState.value.item ? {
+  ...subscriptionState.value.item,
+  can_version_change: versionChangeCapability.value.orderId === selectedOrder.value?.order.id && versionChangeCapability.value.allowed,
+} : null);
+const subscriptionApi = {
+  ...api,
+  get(...args) {
+    const order = selectedOrder.value?.order;
+    const context = [order?.id, user.value?.id, enterprise.value?.id, token.value].join(":");
+    const expectedPath = order?.id ? `/orders/${encodeURIComponent(order.id)}/subscription` : "";
+    return api.get(...args).then(response => {
+      const current = [selectedOrder.value?.order.id, user.value?.id, enterprise.value?.id, token.value].join(":");
+      if (args[0] === expectedPath && context === current) {
+        versionChangeCapability.value = { orderId: order.id, allowed: response.data?.item?.can_version_change === true };
+      }
+      return response;
+    });
+  },
+};
 const subscriptionSession = createSubscriptionSession({
-  api,
+  api: subscriptionApi,
   getContext: () => ({ order: selectedOrder.value?.order, user: user.value, enterprise: subscriptionEnterprise.value, token: token.value }),
   onChange: state => { subscriptionState.value = state; },
 });
@@ -261,7 +282,8 @@ const versionChangeState = ref({ open: false, options: null, targetId: "", confi
 const versionChangeClock = ref(Date.now());
 let versionChangeTimer = null;
 function versionChangeContext() {
-  return { order: selectedOrder.value?.order, subscription: subscriptionState.value.item,
+  return { order: selectedOrder.value?.order, subscription: typeof versionChangeSubscription !== "undefined"
+    ? versionChangeSubscription.value : subscriptionState.value.item,
     user: user.value, buyerEnterprise: deliveryBuyerEnterprise(selectedOrder.value?.order),
     token: token.value, enterpriseId: enterprise.value?.id, subscriptionLoading: subscriptionState.value.loading };
 }
@@ -270,7 +292,8 @@ const versionChangeSession = createVersionChangeSession({
 });
 const versionChangeAllowed = computed(() => !subscriptionState.value.loading && !subscriptionState.value.error &&
   subscriptionState.value.orderId === selectedOrder.value?.order.id &&
-  canPreviewVersionChange(selectedOrder.value?.order, subscriptionState.value.item, user.value,
+  canPreviewVersionChange(selectedOrder.value?.order, typeof versionChangeSubscription !== "undefined"
+    ? versionChangeSubscription.value : subscriptionState.value.item, user.value,
     deliveryBuyerEnterprise(selectedOrder.value?.order), versionChangeClock.value));
 const versionChangeModal = computed(() => versionChangeAllowed.value && versionChangeState.value.open ? versionChangeState.value : null);
 const versionChangeVersions = computed(() => versionChangeState.value.options?.versions.filter(
@@ -309,7 +332,14 @@ async function submitRenewal() {
 function closeOrder() {
   orderDetailRequest++;
   selectedOrder.value = null;
+  if (typeof versionChangeCapability !== "undefined") versionChangeCapability.value = { orderId: "", allowed: false };
   subscriptionSession.reset();
+}
+async function refreshVersionChangeContext() {
+  const order = selectedOrder.value?.order;
+  versionChangeSession.reset();
+  if (order) await openOrder(order);
+  await refreshData();
 }
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
@@ -1430,6 +1460,7 @@ async function openOrder(order) {
   const request = ++orderDetailRequest;
   const context = [user.value?.id, enterprise.value?.id, token.value].join(":");
   subscriptionSession.reset();
+  if (typeof versionChangeCapability !== "undefined") versionChangeCapability.value = { orderId: "", allowed: false };
   selectedOrder.value = null;
   const { data } = await api.get(`/orders/${order.id}`);
   const current = () => request === orderDetailRequest && context === [user.value?.id, enterprise.value?.id, token.value].join(":");
@@ -4336,6 +4367,21 @@ onUnmounted(() => {
           </template>
           <p v-else class="muted">此订单暂无订阅权益</p>
         </section>
+        <VersionChangeExecution
+          :api="api"
+          :order="selectedOrder.order"
+          :user="user"
+          :enterprise="deliveryBuyerEnterprise(selectedOrder.order)"
+          :quote-session="versionChangeSession"
+          :quote="versionChangeState.quote"
+          :validated="versionChangeState.validated"
+          :can-request="versionChangeAllowed"
+          :drawer-open="Boolean(selectedOrder)"
+          :tenant-id="enterprise?.id || ''"
+          :session-token="token"
+          :combination-id="subscriptionState.item?.id || ''"
+          @refresh="refreshVersionChangeContext"
+        />
         <div class="state-grid">
           <div>
             <small>主状态</small
@@ -5354,6 +5400,15 @@ onUnmounted(() => {
       <aside class="modal-card settlement-detail-modal" @click.stop>
         <div class="drawer-head"><div><span class="eyebrow">SETTLEMENT DETAIL</span><h2>{{ settlementDetail.settlement_no }}</h2><p class="muted">清算单完整关联信息和状态生命周期</p></div><button class="icon-btn" @click="closeSettlementDetail"><X :size="19" /></button></div>
         <div class="drawer-section"><div class="drawer-section-title">清算批次与订单</div><div class="state-grid settlement-context-grid"><div><small>清算批次</small><strong>{{ settlementDetail.batch?.batch_no || '-' }}</strong></div><div><small>批次 ID</small><strong>{{ settlementDetail.batch?.id || '-' }}</strong></div><div><small>批次状态</small><strong>{{ settlementDetail.batch?.status || '-' }}</strong></div><div><small>清算单 ID</small><strong>{{ settlementDetail.id }}</strong></div><div><small>订单号</small><strong>{{ settlementDetail.order?.order_no || '-' }}</strong></div><div><small>订单 ID</small><strong>{{ settlementDetail.order?.id || '-' }}</strong></div><div><small>购买方</small><strong>{{ settlementDetail.order?.buyer_name || '-' }}</strong></div><div><small>当前状态</small><strong>{{ settlementStatusLabel(settlementDetail.status) }}</strong></div></div></div>
+        <div v-if="settlementDetail.version_change" class="settlement-version-change">
+          <div class="settlement-version-change-title">版本变更关联</div>
+          <div class="settlement-version-change-grid">
+            <div><small>类型</small><strong>{{ settlementDetail.version_change.side === 'old' ? '原版本冲回' : settlementDetail.version_change.side === 'target' ? '目标版本计入' : '版本变更' }}</strong></div>
+            <div><small>变更号</small><strong>{{ settlementDetail.version_change.change_no || '-' }}</strong></div>
+            <div><small>冻结规则</small><strong>{{ settlementDetail.version_change.rule_version || '-' }}</strong></div>
+            <div><small>入账时间</small><strong>{{ settlementDetail.version_change.posted_at ? fmtDate(settlementDetail.version_change.posted_at) : '-' }}</strong></div>
+          </div>
+        </div>
         <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>

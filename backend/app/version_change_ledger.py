@@ -241,9 +241,10 @@ def install(ns):
                 fail('版本变更期限与来源订单不匹配')
             try:
                 ratio = remaining_ratio(term.starts_at, term.ends_at, effective_at)
-                old_snapshot = ns['order_economics']['economic_snapshot'](order)
-                expected_old_revenue = money(order.amount * ratio)
-                expected_old_cost = money(order.total_cost_snapshot * ratio)
+                effective = ns['subscription_terms']['effective_snapshot'](db, order, term)
+                old_snapshot = effective['economic']
+                expected_old_revenue = money(effective['amount'] * ratio)
+                expected_old_cost = money(effective['cost'] * ratio)
                 unit_price = money(
                     target_version.monthly_price if version_model is ns['SaaSProductVersion'] else target_version.price)
                 unit_cost = money(target_version.cost)
@@ -254,7 +255,7 @@ def install(ns):
                 fail('版本变更金额无法根据原订单和期限复核')
             old_entry, target_entry = segment['old'], segment['target']
             if (ratio != public_ratio or old_snapshot['currency'] != currency
-                    or old_entry['version_id'] != order.product_version_id
+                    or old_entry['version_id'] != effective['version_id']
                     or old_entry['rule'] != old_snapshot['settlement_rule']
                     or target_entry['rule'] != expected_target_rule
                     or amount(old_entry['revenue']) != -expected_old_revenue
