@@ -9,8 +9,9 @@ API/SaaS integration, settlement, auditing and platform support.
 
 ## Current status
 2026-10-12: SaaS provider OAuth2/OIDC combined download and browser SSO are
-deployed. API/model API automatic fulfillment is being added to the existing
-online delivery worker. Runtime acceptance uses exact disposable fixtures;
+deployed. API/model API automatic fulfillment is deployed as
+20261012130931-e335854 in the existing online delivery worker, including its
+APISIX Admin Secret reference. Runtime acceptance uses exact disposable fixtures;
 review approval is a fixture precondition and payments are simulated. Do not
 close TRD-BE-012 or full-flow QA solely on these narrower adapter checks.
 

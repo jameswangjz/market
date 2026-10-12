@@ -375,7 +375,16 @@ def admin(m, method, path, payload=None, absent=False):
         headers={'X-API-KEY': os.environ['APISIX_ADMIN_KEY']}, json=payload, timeout=15)
     if absent and response.status_code == 404:
         return None
-    check(response.status_code in {200, 201, 204}, 'APISIX administration failed')
+    if response.status_code not in {200, 201, 204}:
+        # Report a schema field, never echo the upstream body or supplied secrets.
+        field = ''
+        try:
+            detail = response.json().get('error_msg', '')
+            match = re.search(r'property ["\']([a-z_]+)["\']', detail)
+            field = '; schema field=' + match[1] if match else ''
+        except (ValueError, TypeError, AttributeError):
+            pass
+        check(False, f'APISIX administration failed: {method}, HTTP {response.status_code}' + field)
     return unwrap(response.json()) if response.content else {}
 
 
@@ -619,6 +628,8 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60):
                 config = db.scalar(select(Config).where(Config.version_id == saved['versions'][index]))
                 check(config.revision_id and config.publish_record_id, 'Publish evidence missing')
                 route_id = config.route_id
+                approved_payload = m.apisix_route_payload(db.get(m.ApiGatewayRoute, route_id),
+                    db.get(m.Product, saved['products'][index]), db)
             live = admin(m, 'GET', '/routes/' + saved['routes'][index])
             check(live.get('labels', {}).get('market_product_id') == saved['products'][index],
                   'Published route labels mismatch')
@@ -644,12 +655,14 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60):
                     db.commit()
 
             # Tamper only the exact owned live route; restore even when assertion fails.
-            changed = dict(live, methods=['POST'])
+            # GET includes read-only id/create_time/update_time metadata which is
+            # not an accepted Admin PUT body. Mutate the approved writable payload.
+            changed = dict(approved_payload, methods=['POST'])
             admin(m, 'PUT', '/routes/' + saved['routes'][index], changed)
             try:
                 process(oid, success=False)
             finally:
-                admin(m, 'PUT', '/routes/' + saved['routes'][index], live)
+                admin(m, 'PUT', '/routes/' + saved['routes'][index], approved_payload)
             process(oid)
             with m.SessionLocal() as db:
                 Term = m.subscription_terms['Term']
