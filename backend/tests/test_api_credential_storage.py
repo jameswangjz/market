@@ -44,6 +44,39 @@ class ApiCredentialStorageTests(unittest.TestCase):
         self.assertNotIn('api_key', listed)
         self.assertNotIn('encrypted-fixture-only', str(result))
 
+    def test_platform_and_non_admins_cannot_manage_order_credentials(self):
+        oid, _ = self.prepare(future=False)
+        with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, oid)
+            route = self.m.ApiGatewayRoute(product_id=order.product_id,
+                route_key='credential-storage-route', upstream_url='https://upstream.invalid',
+                version=order.product_version_code, status='active')
+            db.add(route)
+            db.flush()
+            credential = self.m.ApiCredential(route_id=route.id,
+                enterprise_id=order.buyer_enterprise_id, order_id='',
+                key_hash='credential-storage-hash', secret_encrypted='encrypted-fixture-only',
+                apisix_consumer_name='fixture-consumer', status='active')
+            db.add(credential)
+            db.commit()
+            credential_id = credential.id
+
+        routes = [
+            ('GET', f'/api/orders/{oid}/api-credentials', None),
+            ('POST', f'/api/orders/{oid}/api-credentials', {'name': 'test'}),
+            ('POST', f'/api/orders/{oid}/api-credentials/{credential_id}/regenerate', None),
+            ('POST', f'/api/orders/{oid}/api-credentials/{credential_id}/revoke', None),
+            ('GET', f'/api/orders/{oid}/api-credentials/{credential_id}/download', None),
+        ]
+        for method, path, body in routes:
+            self.request(method, path, actor='platform', expected=403,
+                **({'json': body} if body is not None else {}))
+
+        for actor in ('member', 'provider'):
+            for method, path, body in routes:
+                self.request(method, path, actor=actor, expected=403,
+                    **({'json': body} if body is not None else {}))
+
 
 if __name__ == '__main__':
     unittest.main()

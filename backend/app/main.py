@@ -4545,10 +4545,9 @@ def api_order_context(order_id: str, user: User, db: Session) -> tuple[Order, Pr
         raise HTTPException(404, "订单不存在")
     if order.payment_status != "paid":
         raise HTTPException(409, "订单支付完成后才可以管理 API 凭据")
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        if user.verified_status != "verified":
-            raise HTTPException(403, "完成个人实名认证后才可以管理 API 凭据")
-        require_enterprise_admin(db, user, order.buyer_enterprise_id)
+    if user.platform_role:
+        raise HTTPException(403, "平台账号不能管理买方 API 凭据")
+    trading_policy["require_buyer"](db, user, order.buyer_enterprise_id)
     entitlement = None
     if order.snapshot_version == 1:
         entitlement = subscription_terms["current_entitlement"](db, order.buyer_enterprise_id, order.product_id)

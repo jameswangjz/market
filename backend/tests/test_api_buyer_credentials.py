@@ -154,8 +154,12 @@ class BuyerCredentialTests(unittest.TestCase):
         redis.hset.side_effect = lambda key, mapping: values.setdefault(key, {}).update(mapping)
         redis.delete.side_effect = lambda key: values.pop(key, None)
         self.redis = redis
+        # Use fresh external-service mocks here; other tests in this class mutate
+        # the setup mocks' side effects to exercise failed verification paths.
+        admin = Mock(side_effect=self.admin_request)
+        self.admin = admin
         adapter_ns = {'ApiCredential': TestCredential, 'ApiGatewayRoute': object,
-            'apisix_policy_redis': lambda: redis, 'apisix_admin_request': self.admin}
+            'apisix_policy_redis': lambda: redis, 'apisix_admin_request': admin}
         install_auto_delivery(adapter_ns)
         self.ns.update(adapter_ns)
         self.ns['_track_api_consumer_compensation'] = adapter_ns['_track_api_consumer_compensation']
