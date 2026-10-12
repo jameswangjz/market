@@ -17,7 +17,7 @@ import { explicitOrderPayload } from "./orderClient.js";
 import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
-import { isNewFileOrder, canAccessBuyerDelivery, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession } from "./deliveryAccess.js";
+import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
 import {
   Activity,
@@ -120,12 +120,69 @@ const orders = ref([]);
 const selectedOrder = ref(null);
 const deliveryAccessOrder = ref(null);
 const deliveryAccessState = ref({ orderId: "", ready: false, files: [], loading: false, error: "", downloadError: "", downloading: "", reason: "" });
+const saasListAccess = ref({});
+const saasListSessions = new Map();
+let ordersPollTimer = 0;
+let ordersPollLoading = false;
+let ordersListRequest = 0;
+let ordersListPromise = null;
+let ordersListContext = null;
 function deliveryBuyerEnterprise(order) {
   return buyerEnterprises.value.find(item => item.id === order?.buyer_enterprise_id) ||
     (enterprise.value?.id === order?.buyer_enterprise_id ? enterprise.value : null);
 }
 function canOpenDeliveryAccess(order) {
   return canAccessBuyerDelivery(order, user.value, deliveryBuyerEnterprise(order));
+}
+function clearSaasListSessions() {
+  for (const { session } of saasListSessions.values()) session.dispose();
+  saasListSessions.clear();
+  saasListAccess.value = {};
+}
+function loadSaasListAccess(items) {
+  const eligibleOrders = items.filter(order => deliveryMethod(order) === "saas" && canOpenDeliveryAccess(order));
+  for (const [id, entry] of saasListSessions) {
+    const order = eligibleOrders.find(item => item.id === id);
+    if (!order || entry.fingerprint !== JSON.stringify(order)) {
+      entry.session.dispose();
+      saasListSessions.delete(id);
+      const next = { ...saasListAccess.value };
+      delete next[id];
+      saasListAccess.value = next;
+    }
+  }
+  for (const order of eligibleOrders) {
+    const fingerprint = JSON.stringify(order);
+    if (saasListSessions.has(order.id)) continue;
+    const session = createSaasListAccessSession({ api, order,
+      getContext: () => ({ order: orders.value.find(item => item.id === order.id), user: user.value,
+        buyerEnterprise: deliveryBuyerEnterprise(orders.value.find(item => item.id === order.id)), token: token.value, enterpriseId: enterprise.value?.id }),
+      onChange: state => { saasListAccess.value = { ...saasListAccess.value, [order.id]: state }; },
+      onNavigate: value => { window.location.assign(value); },
+    });
+    saasListSessions.set(order.id, { session, fingerprint });
+    session.load();
+  }
+}
+function hasPendingOnlineDelivery() {
+  return orders.value.some(order => ["file", "api", "model_api", "saas"].includes(deliveryMethod(order)) && order.payment_status === "paid" &&
+    ["awaiting_start", "in_delivery", "retrying", "rectifying", "exception"].includes(order.delivery_status));
+}
+function startOrdersPolling() {
+  window.clearInterval(ordersPollTimer);
+  ordersPollTimer = 0;
+  if (token.value && activeView.value === "orders" && hasPendingOnlineDelivery()) {
+    ordersPollTimer = window.setInterval(async () => {
+      if (ordersPollLoading || !token.value || activeView.value !== "orders") return;
+      ordersPollLoading = true;
+      try { await loadViewData("orders"); }
+      catch { /* The next poll retries temporary order-list failures. */ }
+      finally { ordersPollLoading = false; }
+    }, 5000);
+  }
+}
+async function launchSaasFromList(order) {
+  await saasListSessions.get(order.id)?.session.launch();
 }
 const currentDeliveryOrder = computed(() => {
   const id = deliveryAccessOrder.value?.id;
@@ -143,6 +200,12 @@ function closeDeliveryAccess() {
   deliveryAccessOrder.value = null;
   deliveryAccessSession.reset();
 }
+watch([activeView, user, enterprise, token, buyerEnterprises], () => {
+  window.clearInterval(ordersPollTimer);
+  ordersPollTimer = 0;
+  ordersListRequest++;
+  clearSaasListSessions();
+}, { deep: true, flush: "sync" });
 function openDeliveryAccess(order) {
   if (!canOpenDeliveryAccess(order)) return;
   closeDeliveryAccess();
@@ -761,6 +824,7 @@ async function loadViewData(view) {
     dashboard.value = d.data;
     products.value = p.data.items;
     orders.value = o.data.items;
+    loadSaasListAccess(orders.value);
   }
   if (view === "development" || view === "overview") {
     const { data } = await api.get("/development/tasks");
@@ -779,8 +843,31 @@ async function loadViewData(view) {
       productForm.value.catalog_name = productDirectories.value[0].value;
   }
   if (view === "orders") {
-    const { data } = await api.get("/orders");
-    orders.value = data.items;
+    if (ordersListPromise) {
+      const pending = ordersListPromise;
+      const pendingContext = ordersListContext;
+      await pending;
+      if (activeView.value === "orders" && token.value && (pendingContext?.request !== ordersListRequest || pendingContext?.token !== token.value || pendingContext?.userId !== user.value?.id ||
+          pendingContext?.enterpriseId !== enterprise.value?.id || pendingContext?.view !== activeView.value)) return loadViewData("orders");
+      return;
+    }
+    {
+      const request = ++ordersListRequest;
+      const context = { request, token: token.value, userId: user.value?.id, enterpriseId: enterprise.value?.id, view: activeView.value };
+      ordersListContext = context;
+      const current = () => request === ordersListRequest && context.token === token.value && context.userId === user.value?.id &&
+        context.enterpriseId === enterprise.value?.id && context.view === activeView.value && activeView.value === "orders";
+      const promise = api.get("/orders").then(({ data }) => {
+        if (!current()) return;
+        orders.value = data.items;
+        loadSaasListAccess(orders.value);
+        startOrdersPolling();
+      }).finally(() => {
+        if (ordersListPromise === promise) { ordersListPromise = null; ordersListContext = null; }
+      });
+      ordersListPromise = promise;
+    }
+    await ordersListPromise;
   }
   if (view === "delivery") {
     const [delivery, afterSales] = await Promise.all([
@@ -2449,6 +2536,8 @@ onUnmounted(() => {
   versionChangeSession.dispose();
   window.clearInterval(versionChangeTimer);
   deliveryAccessSession.dispose();
+  clearSaasListSessions();
+  window.clearInterval(ordersPollTimer);
   subscriptionSession.dispose();
   orderDetailRequest++;
   dialogs.dispose();
@@ -3246,7 +3335,12 @@ onUnmounted(() => {
                       ><small>{{ fmtDate(order.created_at) }}</small>
                     </td>
                     <td>
-                      <button v-if="canOpenDeliveryAccess(order)" class="text-btn" @click="openDeliveryAccess(order)"><Download v-if="deliveryMethod(order) === 'file'" :size="15" /><ExternalLink v-else :size="15" />{{ deliveryActionLabel(order) }}</button>
+                      <template v-if="deliveryMethod(order) === 'saas' && canOpenDeliveryAccess(order)">
+                        <button v-if="saasListAccess[order.id]?.ready" class="text-btn delivery-application-link" :disabled="saasListAccess[order.id]?.loading" :title="saasListAccess[order.id].applicationUrl" @click="launchSaasFromList(order)"><ExternalLink :size="15" />{{ saasListAccess[order.id].applicationUrl }}</button>
+                        <span v-if="saasListAccess[order.id]?.error" class="danger-text" role="alert">{{ saasListAccess[order.id].error }}</span>
+                        <span v-else-if="!saasListAccess[order.id]?.ready" class="muted" role="status">{{ saasListAccess[order.id]?.loading ? '正在加载应用地址' : saasListAccess[order.id]?.reason || '应用暂不可用' }}</span>
+                      </template>
+                      <button v-else-if="canOpenDeliveryAccess(order)" class="text-btn" @click="openDeliveryAccess(order)"><Download v-if="deliveryMethod(order) === 'file'" :size="15" /><ExternalLink v-else :size="15" />{{ deliveryActionLabel(order) }}</button>
                       <span v-else class="muted">{{ deliveryAccessPlaceholder(order) }}</span>
                     </td>
                     <td>
@@ -5193,6 +5287,7 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .provider-review-modal input, .provider-review-modal textarea { min-width: 0; width: 100%; }
 .provider-review-modal .modal-actions { flex-wrap: wrap; }
 .delivery-access-table { min-width: 560px; width: 100%; }
+.delivery-application-link { max-width: 280px; overflow-wrap: anywhere; text-align: left; }
 .delivery-api-summary { min-width: 0; }
 .delivery-gateway-value { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .delivery-gateway-value code { min-width: 0; overflow-wrap: anywhere; }

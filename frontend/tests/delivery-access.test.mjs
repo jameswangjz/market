@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { canAccessDeliveryFiles, canAccessBuyerDelivery, deliveryAccessPlaceholder, protectedDeliveryUrl, canDownloadDeliveryFile, createDeliveryAccessSession } from "../src/deliveryAccess.js";
+import { canAccessDeliveryFiles, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryAccessPlaceholder, protectedDeliveryUrl, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "../src/deliveryAccess.js";
 
 const order = { id: "order-1", buyer_enterprise_id: "buyer", snapshot_version: 1, delivery_method: "file", payment_status: "paid", main_status: "completed", delivery_status: "accepted" };
 const user = { id: "user-1", verified_status: "verified", enterprise_role: "member", enterprise_memberships: [
@@ -61,6 +61,104 @@ test("only new paid completed and accepted file orders pass all state gates", ()
   assert.equal(deliveryAccessPlaceholder({ delivery_method: "tenant_access" }), "访问应用");
   assert.equal(deliveryAccessPlaceholder({ delivery_method: "file" }), "下载文件");
   for (const delivery_method of ["training", "consulting", "custom", ""]) assert.equal(deliveryAccessPlaceholder({ delivery_method }), "-");
+});
+
+test("paid in-delivery SaaS list access retains buyer security gates", () => {
+  const saasOrder = { ...order, delivery_method: "saas", main_status: "fulfilling", delivery_status: "in_delivery" };
+  assert.equal(canAccessBuyerSaas(saasOrder, user, buyerEnterprise), false);
+  assert.equal(canAccessBuyerSaas({ ...saasOrder, main_status: "completed", delivery_status: "accepted" }, user, buyerEnterprise), true);
+  assert.equal(canAccessBuyerDelivery(saasOrder, user, buyerEnterprise), false);
+  for (const changes of [{ payment_status: "unpaid" }, { refunded_amount: 1 }, { delivery_status: "pending_acceptance" }, { snapshot_version: 0 }]) {
+    assert.equal(canAccessBuyerSaas({ ...saasOrder, ...changes }, user, buyerEnterprise), false);
+  }
+  assert.equal(canAccessBuyerSaas(saasOrder, { ...user, platform_role: "delivery_monitor" }, buyerEnterprise), false);
+  assert.equal(deliveryAccessPlaceholder({ ...saasOrder, payment_status: "unpaid" }), "未支付");
+  assert.equal(deliveryAccessPlaceholder(saasOrder), "交付中");
+  assert.equal(deliveryAccessPlaceholder({ ...saasOrder, delivery_status: "retrying" }), "等待重试");
+  assert.equal(deliveryAccessPlaceholder({ ...saasOrder, payment_status: "refunded" }), "已退款");
+  assert.equal(deliveryAccessPlaceholder({ ...saasOrder, delivery_method: "file", delivery_status: "exception" }), "交付异常");
+  assert.equal(deliveryAccessPlaceholder({ ...saasOrder, delivery_method: "consulting", delivery_status: "in_delivery" }), "-");
+  assert.equal(deliveryAccessPlaceholder({ delivery_method: "consulting", payment_status: "unpaid" }), "-");
+});
+
+test("SaaS list shows validated application URL and launches only through authenticated POST", async () => {
+  const saasOrder = { ...order, delivery_method: "saas" };
+  const context = { order: saasOrder, user, buyerEnterprise };
+  const calls = [], navigations = [];
+  const api = {
+    get: async path => { calls.push(["get", path]); return { data: { order_id: order.id, method: "tenant_access", ready: true, files: [], saas: {
+      subscription_id: "sub-1", launch_path: "/api/orders/order-1/delivery-launch", expires_at: "2030-01-01T00:00:00Z", application_url: "https://app.example.test/tenant",
+    } } }; },
+    post: async path => { calls.push(["post", path]); return { data: { order_id: order.id, launch_url: "https://session.example.test/start" } }; },
+  };
+  const states = [];
+  const session = createSaasListAccessSession({ api, order: saasOrder, getContext: () => context,
+    onChange: value => states.push(value), onNavigate: value => navigations.push(value) });
+  await session.load();
+  assert.equal(states.at(-1).applicationUrl, "https://app.example.test/tenant");
+  await session.launch();
+  assert.deepEqual(calls, [["get", "/orders/order-1/delivery-access"], ["post", "/orders/order-1/delivery-launch"]]);
+  assert.deepEqual(navigations, ["https://session.example.test/start"]);
+  session.dispose();
+
+  api.post = async () => ({ data: { order_id: "other-order", launch_url: "https://session.example.test/start" } });
+  const wrongOrder = createSaasListAccessSession({ api, order: saasOrder, getContext: () => context,
+    onChange: value => states.push(value), onNavigate: value => navigations.push(value) });
+  await wrongOrder.load();
+  await wrongOrder.launch();
+  assert.match(states.at(-1).error, /订单不匹配/);
+  assert.equal(states.at(-1).ready, true);
+  assert.equal(navigations.length, 1);
+  wrongOrder.dispose();
+
+  const pendingLaunch = deferred();
+  let postCount = 0;
+  api.post = () => { postCount++; return pendingLaunch.promise; };
+  const duplicate = createSaasListAccessSession({ api, order: saasOrder, getContext: () => context,
+    onChange: value => states.push(value), onNavigate: value => navigations.push(value) });
+  await duplicate.load();
+  const firstLaunch = duplicate.launch();
+  await duplicate.launch();
+  assert.equal(postCount, 1);
+  pendingLaunch.resolve({ data: { order_id: order.id, launch_url: "https://session.example.test/once" } });
+  await firstLaunch;
+  duplicate.dispose();
+
+  const staleLaunch = deferred();
+  api.post = () => staleLaunch.promise;
+  const stale = createSaasListAccessSession({ api, order: saasOrder, getContext: () => context,
+    onChange: value => states.push(value), onNavigate: value => navigations.push(value) });
+  await stale.load();
+  const launching = stale.launch();
+  context.order = { ...context.order, refunded_amount: 1 };
+  staleLaunch.resolve({ data: { order_id: order.id, launch_url: "https://session.example.test/stale" } });
+  await launching;
+  assert.equal(navigations.length, 2);
+  stale.dispose();
+  context.order = saasOrder;
+
+  api.get = async () => ({ data: { order_id: order.id, method: "tenant_access", ready: false, files: [], reason: "租户尚未开通" } });
+  const pendingAccess = createSaasListAccessSession({ api, order: saasOrder, getContext: () => context, onChange: value => states.push(value) });
+  await pendingAccess.load();
+  assert.equal(states.at(-1).ready, false);
+  assert.equal(states.at(-1).reason, "租户尚未开通");
+  pendingAccess.dispose();
+
+  api.get = async () => ({ data: { order_id: order.id, method: "tenant_access", ready: true, files: [], saas: {
+    subscription_id: "sub-1", launch_path: "/api/orders/order-1/delivery-launch", expires_at: "2030-01-01T00:00:00Z", application_url: "javascript:alert(1)",
+  } } });
+  const invalid = createSaasListAccessSession({ api, order: saasOrder, getContext: () => context, onChange: value => states.push(value) });
+  await invalid.load();
+  assert.equal(states.at(-1).ready, false);
+  assert.match(states.at(-1).error, /访问地址无效/);
+  invalid.dispose();
+});
+
+test("orders view polls paid pending file and online delivery methods with stale response guards", async () => {
+  const source = await readFile(fileURLToPath(new URL("../src/ConsoleApp.vue", import.meta.url)), "utf8");
+  assert.match(source, /\["file", "api", "model_api", "saas"\]\.includes\(deliveryMethod\(order\)\)[\s\S]*?\["awaiting_start", "in_delivery", "retrying", "rectifying", "exception"\]/);
+  assert.match(source, /ordersListRequest[\s\S]*?context\.token === token\.value[\s\S]*?context\.userId === user\.value\?\.id[\s\S]*?context\.enterpriseId === enterprise\.value\?\.id[\s\S]*?activeView\.value === "orders"/);
+  assert.match(source, /saasListAccess\[order\.id\]\?\.reason/);
 });
 
 test("download URLs must reference the exact protected file and order", () => {

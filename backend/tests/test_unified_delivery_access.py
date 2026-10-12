@@ -144,6 +144,9 @@ class UnifiedSaaSDeliveryAccessTests(sso_fixture.BrowserSSOTests):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
         self.assertTrue(response.json()['ready'], response.json()['reason'])
+        self.assertEqual(response.json()['saas']['application_url'], 'https://saas.example.invalid/app')
+        for secret in ('client_secret', 'access_token', 'upstream_url'):
+            self.assertNotIn(secret, response.text)
         launch = self.client.post(f'/api/orders/{self.oid}/delivery-launch',
             headers={'Authorization': 'Bearer '+self.tokens['buyer']})
         self.assertEqual(launch.status_code, 200, launch.text)
@@ -201,10 +204,26 @@ class UnifiedSaaSDeliveryAccessTests(sso_fixture.BrowserSSOTests):
                 response = self.client.get(f'/api/orders/{self.oid}/delivery-access',
                     headers={'Authorization': 'Bearer '+self.tokens['buyer']})
                 self.assertFalse(response.json()['ready'])
+                self.assertIsNone(response.json()['saas'])
                 self.assertEqual(response.json()['reason'], '应用访问地址无效')
                 launch = self.client.post(f'/api/orders/{self.oid}/delivery-launch',
                     headers={'Authorization': 'Bearer '+self.tokens['buyer']})
                 self.assertEqual(launch.status_code, 409)
+
+    def test_pending_delivery_does_not_expose_a_launchable_application(self):
+        with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, self.oid)
+            order.main_status, order.delivery_status = 'fulfilling', 'in_delivery'
+            db.get(self.m.Product, 'product').application_url = 'https://saas.example.invalid/app'
+            db.commit()
+        response = self.client.get(f'/api/orders/{self.oid}/delivery-access',
+            headers={'Authorization': 'Bearer '+self.tokens['buyer']})
+        self.assertFalse(response.json()['ready'])
+        self.assertIsNone(response.json()['saas'])
+        self.assertNotIn('https://saas.example.invalid/app', response.text)
+        launch = self.client.post(f'/api/orders/{self.oid}/delivery-launch',
+            headers={'Authorization': 'Bearer '+self.tokens['buyer']})
+        self.assertEqual(launch.status_code, 409)
 
 
 if __name__ == '__main__':
