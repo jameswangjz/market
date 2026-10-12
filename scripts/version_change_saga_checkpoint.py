@@ -7,10 +7,19 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'verified'), required=True)
+    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'browser-regression', 'verified'), required=True)
     parser.add_argument('--proof')
     parser.add_argument('--runtime-tag', default='development')
     args = parser.parse_args()
+    if args.phase == 'browser-regression':
+        proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
+        if (proof.get('status') != 'passed' or
+                proof.get('scope') != 'real Chrome API upgrade and downgrade to isolated monthly settlement' or
+                proof.get('cleanup') != 'exact owned rows and external identities removed; private schema dropped; protected order unchanged' or
+                any(proof.get(key) != 'completed' for key in ('desktop_upgrade', 'mobile_downgrade', 'downgrade_refund')) or
+                proof.get('blocked_requests') != 0 or proof.get('unexpected_requests') != 0 or
+                proof.get('monthly_posted_adjustments') != 4):
+            raise ValueError('Reviewed browser transaction, monthly and precise cleanup proof required')
     if args.phase == 'runtime-regression':
         proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
         if (proof.get('status') != 'passed' or
@@ -83,6 +92,10 @@ def main():
             'TRD-BE-018': (95, '本轮真实API/模型API交易及8条已入账调整在隔离PG中完成月度清算、五方守恒、排重、重建及锁定验证；跨月矩阵仍待验证。'),
             'TRD-OPS-002': (90, '实际Worker持久化计划后重启及故障恢复通过，临时batch配置已恢复；生产高可用及全部断点仍待验证。'),
             'TRD-QA-005': (85, '重启、真实路由故障补偿和交易到月度清算通过；浏览器与跨月完整矩阵继续验证。'),
+        },
+        'browser-regression': {
+            'TRD-FE-009': (95, '真实Chrome桌面升级模拟支付、移动端降级及退款完成通过；修复报价弹框提交入口。API预置原订单及QA令牌不计密码登录/浏览器首购覆盖。'),
+            'TRD-QA-005': (90, '同一浏览器变更订单的4条真实调整进入隔离月度清算通过，精确清理完成；跨月、SaaS/模型浏览器及全部故障矩阵继续验证。'),
         },
         'verified': {
             'TRD-BE-017': (95, '本批实际资源和模拟资金验收通过；真实资金渠道仍未接入。'),

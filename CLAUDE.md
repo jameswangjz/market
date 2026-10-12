@@ -24,8 +24,11 @@ Actual worker restart and owned target-route fault compensation passed, as did
 actual API/model worker ledger snapshots through isolated monthly HTTP settlement.
 All corresponding live fixtures and private schemas were precisely removed;
 the protected order/product were unchanged and worker batch was restored to 10.
-Browser Saga is still being verified separately. Cross-month and all-resource
-fault matrices remain open; do not treat this narrower regression as completion.
+Web quote submission usability fix deployed as 20261012231851-52fb6ea. Real
+Chrome desktop upgrade payment and mobile downgrade/refund completed. Browser
+initial orders are API-prepared; authentication uses a directly issued QA token,
+not password login. Cross-month and all-resource fault matrices remain open;
+do not treat this narrower regression as full browser trading completion.
 Real payment/bank reconciliation needs external test data.
 
 ## Owner

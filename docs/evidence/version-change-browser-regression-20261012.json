@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "scope": "real Chrome API upgrade and downgrade to isolated monthly settlement",
+  "web_tag": "20261012231851-52fb6ea",
+  "api_tag": "20261012165357-a27e25a",
+  "order_no": "ORD-26101223204691C3",
+  "changes": ["075609793d773584d9d8304f1b9b10ad", "3bb9bc62e4a4716a709f48c54795af33"],
+  "desktop_upgrade": "completed",
+  "mobile_downgrade": "completed",
+  "downgrade_refund": "completed",
+  "allowed_posts": 8,
+  "blocked_requests": 0,
+  "unexpected_requests": 0,
+  "monthly_posted_adjustments": 4,
+  "monthly_original_paid": "60.00",
+  "monthly_adjustment_net": "0.00",
+  "monthly_settled_gross": "60.00",
+  "cleanup": "exact owned rows and external identities removed; private schema dropped; protected order unchanged",
+  "not_tested": ["password login", "browser initial purchase", "browser settlement interface", "SaaS/model browser version changes", "cross-month adjustments", "real banks"]
+}

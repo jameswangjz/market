@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$true)][string]$FixtureFile,
     [string]$OutputDir = "$env:TEMP\market-version-change-transaction",
     [string]$BaseUrl,
@@ -87,7 +87,7 @@ function Cdp([string]$method,$parameters) {
                     if($path -match '^/api/[A-Za-z0-9/_-]+$'){$script:deniedPaths+=($req.method+' '+$path)}
                     Send-Raw 'Fetch.failRequest' @{requestId=$msg.params.requestId;errorReason='BlockedByClient'}
                 }
-                else {$script:posts++;Send-Raw 'Fetch.continueRequest' @{requestId=$msg.params.requestId}}
+                else {if($req.method -eq 'POST'){$script:posts++};Send-Raw 'Fetch.continueRequest' @{requestId=$msg.params.requestId}}
             } elseif($msg.method -eq 'Network.requestWillBeSent') {
                 # Fetch interception is the enforcing network gate. This event is
                 # informational only because the same request was already gated.
@@ -168,15 +168,15 @@ function Run-Change([string]$kind,[string]$targetId,[string]$targetCode,[string]
     Click-ExactText '.vce-confirm-actions button' '确认提交'
     $currentCode=if($kind -eq 'upgrade'){'source'}else{'target'}
     $article="[...document.querySelectorAll('.vce-request')].find(e=>e.querySelector('.vce-request-head strong')?.textContent.includes('$currentCode → $targetCode'))"
-    WaitJs "!!($article)&&!!($article).querySelector('.vce-status')"
+    WaitJs "!!($article)&&!!($article)?.querySelector('.vce-status')"
     WaitJs '!!window.__vct.changeId'
     $observedId=[string](Js 'window.__vct.changeId')
     if(-not $observedId -or $observedId.Length -gt 128){throw 'UI submission did not return one valid change ID'}
     $script:changeId=$observedId
     if($kind -eq 'upgrade') {
-        WaitJs "($article).querySelector('.vce-status')?.textContent.trim()==='待支付'"
+        WaitJs "($article)?.querySelector('.vce-status')?.textContent.trim()==='待支付'"
         Click-ExactText '.vce-request .vce-actions button' '发起模拟支付'
-        WaitJs "($article).querySelector('.vce-actions')?.innerText.includes('确认人工支付')"
+        WaitJs "($article)?.querySelector('.vce-actions')?.innerText.includes('确认人工支付')"
         Click-ExactText '.vce-request .vce-actions button' '确认人工支付'
         WaitJs '!!document.querySelector("#vce-confirm-title")&&!!document.querySelector(".vce-confirm textarea")'
         $reason="qa-vcs browser $kind simulated payment"
@@ -186,10 +186,10 @@ function Run-Change([string]$kind,[string]$targetId,[string]$targetCode,[string]
         Js 'document.querySelector(".vce-confirm-actions button[type=submit]").click();true'|Out-Null
         WaitJs '!document.querySelector("#vce-confirm-title")'
     } else {
-        WaitJs "($article).querySelector('.vce-status')?.textContent.includes('退款')||($article).querySelector('.vce-status.done')"
+        WaitJs "($article)?.querySelector('.vce-status')?.textContent.includes('退款')||($article)?.querySelector('.vce-status.done')"
     }
     $script:stage="$kind poll rendered completed state"
-    WaitJs "($article).querySelector('.vce-status.done')?.textContent.trim()==='已完成'" 150
+    WaitJs "($article)?.querySelector('.vce-status.done')?.textContent.trim()==='已完成'" 150
     WaitJs "window.__vct.change?.id===window.__vct.changeId&&window.__vct.change.status==='completed'" 20
     if($kind -eq 'downgrade') {
         if((Js "window.__vct.change.refund_status==='completed'") -ne $true){throw 'Downgrade refund is not completed in the returned change record'}
@@ -232,7 +232,7 @@ try {
     $page=$null;for($i=0;$i -lt 60;$i++){try{$page=(Invoke-RestMethod "http://127.0.0.1:$port/json/list")|Where-Object {$_.type -eq 'page'}|Select-Object -First 1;if($page){break}}catch{};Start-Sleep -Milliseconds 500}
     if(-not $page){throw 'Chrome startup timed out'}
     $script:stage='Chrome CDP connection'
-    $socket=[Net.WebSockets.ClientWebSocket]::new();$connect=[Threading.CancellationTokenSource]::new(30000);try{$socket.ConnectAsync([Uri]$page.webSocketDebuggerUrl,$connect.Token).GetAwaiter().GetResult()}finally{$connect.Dispose()}
+    $socket=[Net.WebSockets.ClientWebSocket]::new();$connect=[Threading.CancellationTokenSource]::new(30000);try{$null=$socket.ConnectAsync([Uri]$page.webSocketDebuggerUrl,$connect.Token).GetAwaiter().GetResult()}finally{$connect.Dispose()}
     Cdp 'Page.enable' @{}|Out-Null;Cdp 'Network.enable' @{}|Out-Null;Cdp 'Network.setCacheDisabled' @{cacheDisabled=$true}|Out-Null;Cdp 'Network.setBypassServiceWorker' @{bypass=$true}|Out-Null
     Cdp 'Fetch.enable' @{patterns=@(@{urlPattern='*';requestStage='Request'})}|Out-Null;Cdp 'Browser.setDownloadBehavior' @{behavior='deny'}|Out-Null
     $observer=@'
