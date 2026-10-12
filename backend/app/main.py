@@ -1435,6 +1435,7 @@ class UserOut(BaseModel):
     phone: str | None
     name: str
     verified_status: str
+    is_active: bool
     activation_status: str = "active"
     platform_role: str = ""
     phone_verified: bool = False

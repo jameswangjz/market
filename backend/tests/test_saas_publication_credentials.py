@@ -124,6 +124,8 @@ class SaaSPublicationCredentialTests(unittest.TestCase):
         listed = self.request('GET', '/api/products', 'provider')
         self.assertEqual(next(row for row in listed['items'] if row['id'] == 'product')['enterprise_id'],
             'provider_tenant')
+        me = self.request('GET', '/api/auth/me', 'provider')
+        self.assertIs(me['user']['is_active'], True)
         response = self.download(endpoint='saas-integration-credentials-download')
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers['cache-control'], 'no-store')
