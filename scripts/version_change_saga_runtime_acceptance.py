@@ -53,6 +53,39 @@ def check(condition, message):
         raise AcceptanceFailure(message)
 
 
+def safe_identifier(value):
+    return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', value) else None
+
+
+def safe_http_detail(response):
+    try:
+        detail = response.json().get('detail')
+    except (ValueError, AttributeError, TypeError):
+        return ''
+    if not isinstance(detail, str):
+        return ''
+    if len(detail) > 240 or re.search(r'(?i)\b(mk_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)', detail):
+        return '[redacted]'
+    detail = re.sub(r'(?i)(api[_ -]?key|client[_ -]?secret|authorization|bearer|password|token)\s*[:=]\s*[^\s,;]+',
+                    r'\1=[redacted]', detail)
+    return detail
+
+
+def safe_exception_metadata(exc):
+    metadata = {'stage': STAGE, 'error_type': type(exc).__name__}
+    if type(exc).__name__ == 'IntegrityError':
+        original = getattr(exc, 'orig', None)
+        diagnostic = getattr(original, 'diag', None)
+        state = getattr(original, 'sqlstate', None) or getattr(original, 'pgcode', None)
+        if isinstance(state, str) and re.fullmatch(r'[0-9A-Z]{5}', state):
+            metadata['sqlstate'] = state
+        for field in ('constraint_name', 'table_name'):
+            value = safe_identifier(getattr(diagnostic, field, None)) if diagnostic else None
+            if value:
+                metadata[field] = value
+    return metadata
+
+
 def fixture_ids(run_id=None):
     run_id = run_id or 'qa-vcs-' + secrets.token_hex(6)
     ids = {
@@ -252,8 +285,12 @@ def apisix_admin(m, method, path, payload=None, absent=False):
 def request(client, token, method, path, *, expected=200, body=None):
     response = client.request(method, '/api' + path,
         headers={'Authorization': 'Bearer ' + token}, json=body)
-    check(response.status_code == expected,
-          f'{method} endpoint returned HTTP {response.status_code}; expected {expected}')
+    if response.status_code != expected:
+        endpoint = path.split('?', 1)[0]
+        detail = safe_http_detail(response)
+        suffix = f'; detail={detail}' if detail else ''
+        raise AcceptanceFailure(
+            f'{method} {endpoint} returned HTTP {response.status_code}; expected {expected}{suffix}')
     return response.json() if response.content else {}
 
 
@@ -290,6 +327,7 @@ def prepare(m, ids):
                 settlement_rule_json=json.dumps({'platform_rate': 10, 'provider_rate': 90,
                     'service_rate': 0, 'expert_rate': 0, 'channel_rate': 0}))
             db.add(product)
+            db.flush()
             db.add(m.OAuthClient(product_id=product.id, client_id=ids['run_id'] + '-oauth-' + kind,
                 client_secret=secrets.token_urlsafe(32), scope='resource.invoke', status='active'))
             db.add_all([
@@ -472,6 +510,9 @@ def exercise(m, ids, path, manifest, client, tokens):
         change = request(client, tokens['buyer'], 'POST', f'/orders/{oid}/version-changes', body={
             'quote_token': quote['quote_token'], 'idempotency_key': manifest['run_id'] + '-' + kind})
         change_id = change['id']
+        replay = request(client, tokens['buyer'], 'POST', f'/orders/{oid}/version-changes', body={
+            'quote_token': quote['quote_token'], 'idempotency_key': manifest['run_id'] + '-' + kind})
+        check(replay['id'] == change_id, 'Upgrade request replay did not preserve identity')
         request(client, tokens['buyer'], 'POST', f'/version-changes/{change_id}/start-payment', body={})
         request(client, tokens['buyer'], 'POST', f'/version-changes/{change_id}/confirm-payment', body={})
         manifest['database_ids'].setdefault('changes', {})[kind] = change_id
@@ -504,10 +545,50 @@ def exercise(m, ids, path, manifest, client, tokens):
             check(combination is not None and combination.version_id == ids['versions'][kind]['target'],
                   'Subscription did not migrate to target version')
             check(order.id == oid, 'Source order identity changed')
+
+        downgrade_quote = request(client, tokens['buyer'], 'POST', f'/orders/{oid}/version-change-quote', body={
+            'target_version_id': ids['versions'][kind]['source'], 'compatibility_confirmed': True})
+        downgrade = request(client, tokens['buyer'], 'POST', f'/orders/{oid}/version-changes', body={
+            'quote_token': downgrade_quote['quote_token'],
+            'idempotency_key': manifest['run_id'] + '-' + kind + '-downgrade'})
+        manifest['database_ids'].setdefault('downgrades', {})[kind] = downgrade['id']
+        write_manifest(path, manifest)
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline:
+            downgraded = request(client, tokens['buyer'], 'GET', f'/version-changes/{downgrade["id"]}')
+            if downgraded['status'] == 'completed':
+                break
+            if downgraded['status'] in {'exception', 'compensated', 'cancelled'}:
+                raise AcceptanceFailure('Downgrade worker entered terminal failure state')
+            time.sleep(1)
+        check(downgraded['status'] == 'completed' and downgraded['refund_status'] == 'completed',
+              'Downgrade resource and associated refund did not both complete')
+        journal_counter(m, path, manifest, redis, scope, period, scope, kind)
+        restored = httpx.get(url, headers={'X-API-Key': raw_key}, timeout=15)
+        blocked_target = httpx.get(target_url, headers={'X-API-Key': raw_key}, timeout=15)
+        check(restored.status_code == 200 and restored.json().get('data', {}).get('provider') == 'mock-api',
+              'Original shared key did not reach the downgraded source route')
+        check(blocked_target.status_code in {401, 403}, 'Higher-version route remained authorized after downgrade')
+        check(redis.get(month_key) == '3', 'Downgrade reset or replaced the existing monthly quota counter')
+        with m.SessionLocal() as db:
+            combination = db.get(m.subscription_terms['Combination'], scope)
+            check(combination.version_id == ids['versions'][kind]['source'],
+                  'Downgrade did not update the effective subscription version')
+            funds = db.scalars(select(m.VersionChangeFund).where(
+                m.VersionChangeFund.change_id == downgrade['id'], m.VersionChangeFund.kind == 'refund')).all()
+            check(bool(funds) and all(fund.refund_id and
+                  db.get(m.Refund, fund.refund_id).status == 'completed' and
+                  db.get(m.Refund, fund.refund_id).payment_id == fund.payment_id and
+                  db.get(m.Refund, fund.refund_id).amount == fund.amount for fund in funds),
+                  'Downgrade refund source or amount is not exactly linked')
         orders[kind] = {'change_id': change_id, 'status': current['status'],
                         'api_status_before_after': [first.status_code, after.status_code],
                         'old_route_after_migration': old_route.status_code,
-                        'redis_month_counter_before_after': ['1', '2']}
+                        'redis_month_counter_before_after': ['1', '2', '3'],
+                        'downgrade_status': downgraded['status'],
+                        'downgrade_refund_status': downgraded['refund_status'],
+                        'downgraded_route_status': restored.status_code,
+                        'higher_route_after_downgrade': blocked_target.status_code}
     finally:
         event.remove(m.SessionLocal.class_, 'after_flush', journal)
         event.remove(m.SessionLocal.class_, 'before_flush', hold_delivery)
@@ -521,8 +602,10 @@ def owned_rows(m, manifest):
     import version_change_quote_acceptance as guarded
     scope = {'run_id': ids['run_id'], 'users': ids['users'],
         'enterprises': list(ids['enterprises'].values()),
-        'products': list(ids['products'].values()),
-        'versions': {index: ids['versions'][kind] for index, kind in enumerate(('api', 'model'))},
+        'products': {index: ids['products'][kind]
+                     for index, kind in enumerate(('api', 'model'))},
+        'versions': {index: ids['versions'][kind]
+                     for index, kind in enumerate(('api', 'model'))},
         'request_ids': [ids['request_id']]}
     with m.SessionLocal() as db:
         owned = guarded.owned_rows(m, db, scope)
@@ -579,10 +662,18 @@ def owned_rows(m, manifest):
                   'Legacy notification is not linked to an owned order or task')
         for audit in db.scalars(select(m.AuditLog).where(
                 m.AuditLog.target_id.in_(target_ids))):
+            def owned_ids(model):
+                return {row[0] for row in owned.get(model.__tablename__, set())}
+
             typed_targets = {
                 'product': set(ids['products'].values()),
                 'order': order_ids,
                 'delivery_task': task_ids,
+                'api_gateway_route': owned_ids(m.ApiGatewayRoute),
+                'gateway_config_revision': owned_ids(m.GatewayConfigRevision),
+                'oauth_client': owned_ids(m.OAuthClient),
+                'api_credential': owned_ids(m.ApiCredential),
+                'subscription_term': owned_ids(m.subscription_terms['Term']),
                 'version_change': {row[0] for row in owned.get(
                     m.version_change_saga['VersionChangeRequest'].__tablename__, set())},
                 'payment': {row[0] for row in owned.get(m.Payment.__tablename__, set())},
@@ -590,7 +681,10 @@ def owned_rows(m, manifest):
             check(audit.target_type in typed_targets and
                   audit.target_id in typed_targets[audit.target_type] and
                   (not audit.order_id or audit.order_id in order_ids),
-                  'Audit row references an unowned polymorphic target/order')
+                  'Audit ownership mismatch: action=' + str(audit.action) +
+                  ' target_type=' + str(audit.target_type) +
+                  ' target_id=' + str(audit.target_id) +
+                  ' order_id=' + str(audit.order_id or ''))
         roots = {
             m.User.__tablename__: set(ids['users'].values()),
             m.Enterprise.__tablename__: set(ids['enterprises'].values()),
@@ -779,7 +873,7 @@ def run(manifest_path=None):
         cleanup(m, manifest, path)
         return {'status': 'passed', 'scope': 'API/model-API migration runtime only',
                 'migrations': result,
-                'not_tested': ['2091-03 monthly settlement and rebuild', 'downgrade/refund',
+                'not_tested': ['2091-03 monthly settlement and rebuild',
                                'future-term renewal behavior'],
                 'manifest': str(path), 'manifest_mode': '0600',
                 'worker': 'deployed durable worker observed via HTTP status polling',
@@ -822,7 +916,6 @@ if __name__ == '__main__':
         print(json.dumps({'status': 'failed', 'check': str(exc)}, sort_keys=True))
         raise SystemExit(1)
     except Exception as exc:
-        # Never serialize exception strings, HTTP bodies, environment, or tokens.
-        print(json.dumps({'status': 'failed', 'stage': STAGE,
-                          'error_type': type(exc).__name__}, sort_keys=True))
+        # Never serialize exception strings, SQL, parameters, HTTP bodies, or tokens.
+        print(json.dumps({'status': 'failed'} | safe_exception_metadata(exc), sort_keys=True))
         raise SystemExit(1)
