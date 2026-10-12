@@ -234,11 +234,12 @@ def install(ns):
         if (not subscription or subscription.enterprise_id != order.buyer_enterprise_id
                 or subscription.product_id != order.product_id):
             raise HTTPException(409, '订单未关联有效的买方SaaS订阅')
-        ns['applications_access'](db, user, subscription.id,
+        _, product = ns['applications_access'](db, user, subscription.id,
             enterprise_id=order.buyer_enterprise_id, product_id=order.product_id)
         return {'ready': True, 'reason': '', 'saas': {
             'subscription_id': subscription.id,
             'launch_path': f'/api/orders/{order.id}/delivery-launch',
+            'application_url': product.application_url,
             'expires_at': subscription.expires_at.isoformat() if subscription.expires_at else None,
         }}
 

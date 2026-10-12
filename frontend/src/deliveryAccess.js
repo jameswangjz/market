@@ -22,6 +22,10 @@ export function canAccessBuyerDelivery(order, user, buyerEnterprise) {
   return ["super_admin", "enterprise_admin", "admin"].includes(member?.role);
 }
 
+export function canAccessBuyerSaas(order, user, buyerEnterprise) {
+  return deliveryMethod(order) === "saas" && canAccessBuyerDelivery(order, user, buyerEnterprise);
+}
+
 export function canAccessDeliveryFiles(order, user, buyerEnterprise) {
   if (!isNewFileOrder(order) || order.payment_status !== "paid" ||
       order.main_status !== "completed" || order.delivery_status !== "accepted" ||
@@ -37,7 +41,65 @@ export function canAccessDeliveryFiles(order, user, buyerEnterprise) {
 
 export function deliveryAccessPlaceholder(order) {
   const method = deliveryMethod(order);
+  if (!["file", "api", "model_api", "saas"].includes(method)) return "-";
+  if (order?.after_sales_status === "refunded" || Number(order?.refunded_amount || 0) > 0 || order?.payment_status === "refunded") return "已退款";
+  if (order?.after_sales_status === "revoked" || order?.delivery_status === "revoked") return "已撤销";
+  if (["cancelled", "closed", "rejected"].includes(order?.main_status)) return "已取消";
+  if (order?.payment_status && order.payment_status !== "paid") return "未支付";
+  if (["retrying", "rectifying"].includes(order?.delivery_status)) return "等待重试";
+  if (order?.delivery_status === "exception") return "交付异常";
+  if (["awaiting_start", "in_delivery"].includes(order?.delivery_status)) return "交付中";
+  if (order?.delivery_status === "pending_acceptance") return "待验收";
   return method === "file" ? "下载文件" : ["api", "model_api"].includes(method) ? "查看接入信息" : method === "saas" ? "访问应用" : "-";
+}
+
+export function createSaasListAccessSession({ api, order, getContext, onChange = () => {}, onNavigate = () => {} }) {
+  let state = { loading: false, ready: false, applicationUrl: "", reason: "", error: "" };
+  let generation = 0, disposed = false, loading = false;
+  const emit = () => { if (!disposed) onChange({ ...state }); };
+  const eligible = () => {
+    const context = getContext();
+    return context.order?.id === order.id && canAccessBuyerSaas(context.order, context.user, context.buyerEnterprise);
+  };
+  async function load() {
+    if (disposed || loading || !eligible()) return;
+    loading = true;
+    const request = ++generation, context = JSON.stringify(getContext());
+    const current = () => !disposed && request === generation && context === JSON.stringify(getContext()) && eligible();
+    state = { loading: true, ready: false, applicationUrl: "", reason: "", error: "" };
+    emit();
+    try {
+      const { data } = await api.get(`/orders/${encodeURIComponent(order.id)}/delivery-access`);
+      const clean = sanitizeDelivery(data, order.id, "saas");
+      const url = clean.ready ? safeApplicationUrl(data.saas?.application_url) : "";
+      if (current()) state = { loading: false, ready: clean.ready && Boolean(url), applicationUrl: url, reason: clean.reason, error: "" };
+    } catch (error) {
+      if (current()) state = { loading: false, ready: false, applicationUrl: "", reason: "", error: deliveryAccessError(error) };
+    } finally {
+      loading = false;
+      if (current()) emit();
+    }
+  }
+  async function launch() {
+    const request = generation, context = JSON.stringify(getContext());
+    const current = () => !disposed && request === generation && context === JSON.stringify(getContext()) && eligible();
+    if (!current() || state.loading || !state.ready || !state.applicationUrl) return;
+    state = { ...state, loading: true, error: "" };
+    emit();
+    try {
+      const path = `/api/orders/${encodeURIComponent(order.id)}/delivery-launch`;
+      const { data } = await api.post(path.slice(4));
+      if (current()) {
+        if (data?.order_id !== order.id) throw new Error("应用启动订单不匹配");
+        onNavigate(safeApplicationUrl(data?.launch_url));
+      }
+    } catch (error) {
+      if (current()) state = { ...state, error: deliveryAccessError(error) };
+    } finally {
+      if (current()) { state = { ...state, loading: false }; emit(); }
+    }
+  }
+  return { load, launch, dispose() { generation++; disposed = true; } };
 }
 
 function sanitizeDelivery(data, orderId, method) {
@@ -74,7 +136,8 @@ function sanitizeDelivery(data, orderId, method) {
   if (method === "saas" || data.method === "saas") {
     const saas = data.saas;
     if (!saas || typeof saas.subscription_id !== "string" || saas.launch_path !== `/api/orders/${encodeURIComponent(orderId)}/delivery-launch` || !validDate(saas.expires_at)) throw new Error("应用访问信息无效");
-    return { ...result, saas: { subscription_id: saas.subscription_id, launch_path: saas.launch_path, expires_at: saas.expires_at } };
+    const applicationUrl = saas.application_url === undefined ? "" : safeApplicationUrl(saas.application_url);
+    return { ...result, saas: { subscription_id: saas.subscription_id, launch_path: saas.launch_path, expires_at: saas.expires_at, application_url: applicationUrl } };
   }
   throw new Error("交付方式不受支持");
 }
