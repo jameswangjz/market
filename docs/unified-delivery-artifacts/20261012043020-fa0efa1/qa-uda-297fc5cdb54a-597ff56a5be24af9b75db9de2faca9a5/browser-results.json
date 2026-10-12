@@ -1,0 +1,33 @@
+﻿{
+    "status":  "failed",
+    "checks":  [
+
+               ],
+    "screenshots":  [
+
+                    ],
+    "samples":  [
+
+                ],
+    "failures":  [
+                     {
+                         "stage":  "owned Chrome startup",
+                         "reason":  "Acceptance failed; private exception details suppressed"
+                     }
+                 ],
+    "managementNative":  "not tested; api-credentials GET explicitly denied",
+    "databaseReadonly":  "not measured by browser; separate PG acceptance required",
+    "positiveSSO":  "not tested",
+    "deploymentProvenance":  "supplied tag, not server image verification",
+    "limits":  [
+                   "Synthetic fixtures only; no APISIX, payment, scan, storage or positive SSO proof",
+                   "GET-only scoped network; no management click, entitlement write, POST launch or download",
+                   "SaaS negative only; malformed URL isolation and missing-config/error UI deferred"
+               ],
+    "deploymentTag":  "20261012043020-fa0efa1",
+    "artifactDirectory":  "C:\\Users\\james\\market\\docs\\unified-delivery-artifacts\\20261012043020-fa0efa1\\qa-uda-297fc5cdb54a-597ff56a5be24af9b75db9de2faca9a5",
+    "chromeProfileDeleted":  true,
+    "blockedRequests":  0,
+    "managementRequestsAttempted":  0,
+    "nativeDialogs":  0
+}

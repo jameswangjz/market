@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "mode": "cleanup",
+  "manifest": "/tmp/qa-uda-browser-qde129f9/qa-uda-6b29cebfcd7f.json",
+  "manifest_mode": "0600",
+  "evidence": "real PostgreSQL + network HTTP contract; all fixtures synthetic",
+  "limits": [
+    "no APISIX/model upstream proof",
+    "no payment/provisioning proof",
+    "no file storage/download/scan proof",
+    "SaaS negative only; no OIDC positive or launch audit proof"
+  ],
+  "cleanup_verified": true,
+  "four_delivery_e2e": false,
+  "snapshot_excluded_tables": [
+    "notification_deliveries",
+    "notification_delivery_attempts",
+    "notification_recipients"
+  ],
+  "asynchronous_notification_rows": "not measured by snapshots; ownership and exact FK cleanup still include them",
+  "cleanup": "verified exact owned rows and FK children absent; private manifest retained"
+}

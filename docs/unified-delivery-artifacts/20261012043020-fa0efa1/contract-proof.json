@@ -1,0 +1,859 @@
+{
+  "status": "passed",
+  "mode": "test",
+  "manifest": "/tmp/uda-luna-contract.json",
+  "manifest_mode": "0600",
+  "evidence": "real PostgreSQL + network HTTP contract; all fixtures synthetic",
+  "limits": [
+    "no APISIX/model upstream proof",
+    "no payment/provisioning proof",
+    "no file storage/download/scan proof",
+    "SaaS negative only; no OIDC positive or launch audit proof"
+  ],
+  "cleanup_verified": false,
+  "four_delivery_e2e": false,
+  "snapshot_excluded_tables": [
+    "notification_deliveries",
+    "notification_delivery_attempts",
+    "notification_recipients"
+  ],
+  "asynchronous_notification_rows": "not measured by snapshots; ownership and exact FK cleanup still include them",
+  "cleanup": "deferred; retained private ownership manifest",
+  "cases": [
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": true
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "file",
+      "role": "admin",
+      "http": 200,
+      "ready": true
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "file",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "file",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "file",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "file",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "file",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "file",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "file",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "file",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:orders:payment_status",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:paid_amount",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:delivery_status",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:refunded_amount",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:main_status",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:snapshot_version",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:status",
+      "method": "GET",
+      "delivery": "file",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": true
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "api",
+      "role": "admin",
+      "http": 200,
+      "ready": true
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "api",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "api",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "api",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "api",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "api",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "api",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "api",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "api",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:orders:payment_status",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:paid_amount",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:delivery_status",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:refunded_amount",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:main_status",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:snapshot_version",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:status",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:status",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:expires_at",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:order_id",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:apisix_consumer_name",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:status",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:route_key",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:route_key",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:route_key",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:subscription_terms:starts_at,ends_at",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:subscription_terms:starts_at,ends_at",
+      "method": "GET",
+      "delivery": "api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": true
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "admin",
+      "http": 200,
+      "ready": true
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "model_api",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "model_api",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "model_api",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "model_api",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:orders:payment_status",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:paid_amount",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:delivery_status",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:refunded_amount",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:main_status",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:snapshot_version",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:status",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:status",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:expires_at",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:order_id",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_credentials:apisix_consumer_name",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:status",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:route_key",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:route_key",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:api_gateway_routes:route_key",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:subscription_terms:starts_at,ends_at",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:subscription_terms:starts_at,ends_at",
+      "method": "GET",
+      "delivery": "model_api",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "admin",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "member",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "other",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "provider",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "platform",
+      "http": 403,
+      "ready": null
+    },
+    {
+      "scenario": "baseline",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:orders:payment_status",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:paid_amount",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:delivery_status",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:refunded_amount",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:main_status",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:orders:snapshot_version",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:status",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:saas_subscriptions:enterprise_id",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:saas_subscriptions:enterprise_id",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:saas_subscriptions:product_id",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:saas_subscriptions:product_id",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "GET",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 200,
+      "ready": false
+    },
+    {
+      "scenario": "fixture_change:products:application_url",
+      "method": "POST",
+      "delivery": "tenant_access",
+      "role": "buyer",
+      "http": 409,
+      "ready": null
+    }
+  ],
+  "scheduler_isolation": "Periodic scan transaction lease held during test; delivery queue remained running; released on session close",
+  "readonly_business_rows": true,
+  "readonly_audit_and_business_events": true
+}

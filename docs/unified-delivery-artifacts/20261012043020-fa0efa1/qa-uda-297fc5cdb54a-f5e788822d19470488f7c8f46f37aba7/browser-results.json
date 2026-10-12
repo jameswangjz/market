@@ -1,0 +1,232 @@
+﻿{
+    "status":  "passed",
+    "mode":  "browser acceptance",
+    "checks":  [
+                   "desktop second-column labels; actual GET DTO; API 30082/zero quotas; model missing consumer management control; file metadata; SaaS negative; no overflow",
+                   "mobile second-column labels; actual GET DTO; API 30082/zero quotas; model missing consumer management control; file metadata; SaaS negative; no overflow"
+               ],
+    "screenshots":  [
+                        "unified-delivery-orders-desktop.png",
+                        "unified-delivery-api-desktop.png",
+                        "unified-delivery-model_api-desktop.png",
+                        "unified-delivery-orders-mobile.png",
+                        "unified-delivery-api-mobile.png",
+                        "unified-delivery-model_api-mobile.png"
+                    ],
+    "samples":  [
+                    {
+                        "method":  "api",
+                        "viewport":  "desktop",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  true,
+                                         "gatewayUrl":  "http://192.168.10.10:30082/gateway/qa-uda-297fc5cdb54a-v1-current",
+                                         "version":  "current",
+                                         "limits":  {
+                                                        "rate_limit_per_minute":  17,
+                                                        "daily_quota":  0,
+                                                        "monthly_quota":  0,
+                                                        "quota_amount":  0
+                                                    },
+                                         "managementControl":  true,
+                                         "bounds":  {
+                                                        "left":  352.5,
+                                                        "right":  1072.5,
+                                                        "top":  196.5,
+                                                        "bottom":  703.5
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "model_api",
+                        "viewport":  "desktop",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  false,
+                                         "gatewayUrl":  "http://192.168.10.10:30082/gateway/qa-uda-297fc5cdb54a-v2-current",
+                                         "version":  "current",
+                                         "limits":  {
+                                                        "rate_limit_per_minute":  17,
+                                                        "daily_quota":  123,
+                                                        "monthly_quota":  456,
+                                                        "quota_amount":  789
+                                                    },
+                                         "managementControl":  true,
+                                         "bounds":  {
+                                                        "left":  352.5,
+                                                        "right":  1072.5,
+                                                        "top":  183,
+                                                        "bottom":  717
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "file",
+                        "viewport":  "desktop",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  true,
+                                         "gatewayUrl":  null,
+                                         "version":  null,
+                                         "limits":  null,
+                                         "managementControl":  false,
+                                         "bounds":  {
+                                                        "left":  352.5,
+                                                        "right":  1072.5,
+                                                        "top":  270.5,
+                                                        "bottom":  629.5
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "tenant_access",
+                        "viewport":  "desktop",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  false,
+                                         "gatewayUrl":  null,
+                                         "version":  null,
+                                         "limits":  null,
+                                         "managementControl":  false,
+                                         "bounds":  {
+                                                        "left":  352.5,
+                                                        "right":  1072.5,
+                                                        "top":  312.5,
+                                                        "bottom":  587.5
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "api",
+                        "viewport":  "mobile",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  true,
+                                         "gatewayUrl":  "http://192.168.10.10:30082/gateway/qa-uda-297fc5cdb54a-v1-current",
+                                         "version":  "current",
+                                         "limits":  {
+                                                        "rate_limit_per_minute":  17,
+                                                        "daily_quota":  0,
+                                                        "monthly_quota":  0,
+                                                        "quota_amount":  0
+                                                    },
+                                         "managementControl":  true,
+                                         "bounds":  {
+                                                        "left":  16,
+                                                        "right":  374,
+                                                        "top":  64.5,
+                                                        "bottom":  779.5
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "model_api",
+                        "viewport":  "mobile",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  false,
+                                         "gatewayUrl":  "http://192.168.10.10:30082/gateway/qa-uda-297fc5cdb54a-v2-current",
+                                         "version":  "current",
+                                         "limits":  {
+                                                        "rate_limit_per_minute":  17,
+                                                        "daily_quota":  123,
+                                                        "monthly_quota":  456,
+                                                        "quota_amount":  789
+                                                    },
+                                         "managementControl":  true,
+                                         "bounds":  {
+                                                        "left":  16,
+                                                        "right":  374,
+                                                        "top":  51,
+                                                        "bottom":  793
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "file",
+                        "viewport":  "mobile",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  true,
+                                         "gatewayUrl":  null,
+                                         "version":  null,
+                                         "limits":  null,
+                                         "managementControl":  false,
+                                         "bounds":  {
+                                                        "left":  16,
+                                                        "right":  374,
+                                                        "top":  232.5,
+                                                        "bottom":  611.5
+                                                    }
+                                     }
+                    },
+                    {
+                        "method":  "tenant_access",
+                        "viewport":  "mobile",
+                        "status":  "passed",
+                        "metadata":  {
+                                         "http":  200,
+                                         "noStore":  true,
+                                         "ready":  false,
+                                         "gatewayUrl":  null,
+                                         "version":  null,
+                                         "limits":  null,
+                                         "managementControl":  false,
+                                         "bounds":  {
+                                                        "left":  16,
+                                                        "right":  374,
+                                                        "top":  274.5,
+                                                        "bottom":  569.5
+                                                    }
+                                     }
+                    }
+                ],
+    "failures":  [
+
+                 ],
+    "startupDiagnostics":  {
+                               "executableFound":  true,
+                               "processStarted":  true,
+                               "portFileFound":  true,
+                               "portFileValid":  true,
+                               "pageTargetCount":  1,
+                               "targetType":  "PSCustomObject",
+                               "websocketLoopback":  true,
+                               "socketConnected":  true,
+                               "cdpReady":  true
+                           },
+    "managementNative":  "not tested; api-credentials GET explicitly denied",
+    "databaseReadonly":  "not measured by browser; separate PG acceptance required",
+    "positiveSSO":  "not tested",
+    "deploymentProvenance":  "supplied tag, not server image verification",
+    "backgroundNotifications":  "stream and sender-context GET intentionally rejected locally; no native SSE/Redis/sender-context proof",
+    "limits":  [
+                   "Synthetic fixtures only; no APISIX, payment, scan, storage or positive SSO proof",
+                   "GET-only scoped network; no management click, entitlement write, POST launch or download",
+                   "SaaS negative only; malformed URL isolation and missing-config/error UI deferred"
+               ],
+    "deploymentTag":  "20261012043020-fa0efa1",
+    "artifactDirectory":  "C:\\Users\\james\\market\\docs\\unified-delivery-artifacts\\20261012043020-fa0efa1\\qa-uda-297fc5cdb54a-f5e788822d19470488f7c8f46f37aba7",
+    "suppressedBackground":  {
+                                 "stream":  4,
+                                 "senderContext":  2
+                             },
+    "chromeProfileDeleted":  true,
+    "blockedRequests":  0,
+    "managementRequestsAttempted":  0,
+    "nativeDialogs":  0
+}
