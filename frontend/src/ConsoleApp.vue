@@ -20,6 +20,7 @@ import { canRenewSubscription, createSubscriptionSession, subscriptionDisplaySta
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
+import { canReadVersionChangeHistory } from "./versionChangeExecution.js";
 import VersionChangeExecution from "./VersionChangeExecution.vue";
 import {
   Activity,
@@ -253,6 +254,10 @@ const versionChangeSubscription = computed(() => subscriptionState.value.item ? 
   ...subscriptionState.value.item,
   can_version_change: versionChangeCapability.value.orderId === selectedOrder.value?.order.id && versionChangeCapability.value.allowed,
 } : null);
+const versionChangeHistoryAllowed = computed(() => {
+  const order = selectedOrder.value?.order;
+  return Boolean(order && canReadVersionChangeHistory(order, user.value, deliveryBuyerEnterprise(order)));
+});
 const subscriptionApi = {
   ...api,
   get(...args) {
@@ -4368,6 +4373,7 @@ onUnmounted(() => {
           <p v-else class="muted">此订单暂无订阅权益</p>
         </section>
         <VersionChangeExecution
+          v-if="versionChangeHistoryAllowed"
           :api="api"
           :order="selectedOrder.order"
           :user="user"

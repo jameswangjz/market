@@ -5,6 +5,13 @@ const date = value => typeof value === "string" && Number.isFinite(Date.parse(va
 const amount = value => typeof value === "number" && Number.isFinite(value) ? value : null;
 const moneyStatuses = { unpaid: "未支付", paying: "支付处理中", paid: "已支付", refunding: "退款处理中", refunded: "已退款", completed: "已退款", pending: "处理中", not_required: "无需处理", failed: "失败" };
 export const versionChangeRefundStatusLabel = value => moneyStatuses[value] || (value ? "处理中" : "无");
+export function canReadVersionChangeHistory(order, user, enterprise = null) {
+  if (!order || order.snapshot_version !== 1 || !["api", "model_api", "tenant_access", "saas"].includes(order.delivery_method || order.delivery_method_snapshot)) return false;
+  const activeVerifiedPlatform = ["super_admin", "finance_settlement"].includes(user?.platform_role) &&
+    user?.is_active === true && user?.verified_status === "verified" &&
+    (!user.activation_status || user.activation_status === "active");
+  return activeVerifiedPlatform || versionChangeExecutionPermissions(user, order, null, enterprise).request;
+}
 export function versionChangeReachedTerminal(previousItems, nextItems) {
   const previous = new Map((previousItems || []).map(item => [item.id, item.status]));
   return (nextItems || []).some(item => pendingStatuses.has(previous.get(item.id)) && ["completed", "compensated"].includes(item.status));

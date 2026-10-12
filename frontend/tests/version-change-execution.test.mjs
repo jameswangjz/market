@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createVersionChangeExecution, sanitizeVersionChangeExecution, versionChangeExecutionPermissions, versionChangeReachedTerminal, versionChangeRefundStatusLabel } from "../src/versionChangeExecution.js";
+import { canReadVersionChangeHistory, createVersionChangeExecution, sanitizeVersionChangeExecution, versionChangeExecutionPermissions, versionChangeReachedTerminal, versionChangeRefundStatusLabel } from "../src/versionChangeExecution.js";
 import { canPreviewVersionChange } from "../src/versionChangeQuote.js";
 
 const order = { id: "ord-1", buyer_enterprise_id: "buyer" };
@@ -46,6 +46,29 @@ test("request visibility is buyer-admin only; payment and confirmation roles are
   assert.equal(versionChangeExecutionPermissions({ platform_role: "finance_settlement", is_active: false }, order, { ...item, payment_status: "paying" }).confirmPayment, false);
   assert.equal(versionChangeExecutionPermissions({ platform_role: "finance_settlement", is_active: false }, order, { ...item, status: "exception" }).retry, false);
   assert.equal(versionChangeExecutionPermissions({ platform_role: "platform_operator", is_active: true }, order, { ...item, payment_status: "paying" }).confirmPayment, false);
+});
+
+test("history visibility is limited to API/SaaS orders and authorized active verified users", () => {
+  for (const delivery_method of ["api", "model_api", "tenant_access", "saas"]) {
+    assert.equal(canReadVersionChangeHistory({ ...order, snapshot_version: 1, delivery_method }, buyerAdmin, buyerEnterprise), true);
+    assert.equal(canReadVersionChangeHistory({ ...order, snapshot_version: 1, delivery_method }, {
+      platform_role: "super_admin", is_active: true, verified_status: "verified",
+    }), true);
+    assert.equal(canReadVersionChangeHistory({ ...order, snapshot_version: 1, delivery_method }, {
+      platform_role: "finance_settlement", is_active: true, verified_status: "verified",
+    }), true);
+  }
+  for (const delivery_method of ["file", "offline", "unknown"]) {
+    assert.equal(canReadVersionChangeHistory({ ...order, snapshot_version: 1, delivery_method }, buyerAdmin, buyerEnterprise), false);
+  }
+  const snapshotOrder = { ...order, snapshot_version: 1, delivery_method_snapshot: "tenant_access" };
+  assert.equal(canReadVersionChangeHistory(snapshotOrder, buyerAdmin, buyerEnterprise), true);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "file" }, buyerAdmin, buyerEnterprise), false);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, snapshot_version: 0 }, buyerAdmin, buyerEnterprise), false);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, snapshot_version: undefined }, buyerAdmin, buyerEnterprise), false);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "platform_operator", is_active: true, verified_status: "verified" }), false);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "finance_settlement", is_active: false, verified_status: "verified" }), false);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "finance_settlement", is_active: true, verified_status: "pending" }), false);
 });
 
 test("immutable legacy source can preview when the subscription explicitly allows version changes", () => {
