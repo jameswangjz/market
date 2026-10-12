@@ -7,10 +7,30 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'verified'), required=True)
+    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'browser-regression', 'verified'), required=True)
     parser.add_argument('--proof')
     parser.add_argument('--runtime-tag', default='development')
     args = parser.parse_args()
+    if args.phase == 'browser-regression':
+        proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
+        if (proof.get('status') != 'passed' or
+                proof.get('scope') != 'real Chrome API upgrade and downgrade to isolated monthly settlement' or
+                proof.get('cleanup') != 'exact owned rows and external identities removed; private schema dropped; protected order unchanged' or
+                any(proof.get(key) != 'completed' for key in ('desktop_upgrade', 'mobile_downgrade', 'downgrade_refund')) or
+                proof.get('blocked_requests') != 0 or proof.get('unexpected_requests') != 0 or
+                proof.get('monthly_posted_adjustments') != 4):
+            raise ValueError('Reviewed browser transaction, monthly and precise cleanup proof required')
+    if args.phase == 'runtime-regression':
+        proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
+        if (proof.get('status') != 'passed' or
+                proof.get('scope') != 'actual worker restart, owned route fault, and actual trade monthly snapshot' or
+                proof.get('cleanup') != 'exact owned live fixtures removed; private schema dropped; protected order and product unchanged' or
+                proof.get('restart', {}).get('status') != 'completed' or
+                proof.get('fault', {}).get('status') != 'compensated' or
+                proof.get('fault', {}).get('attempts') != 3 or
+                proof.get('monthly', {}).get('isolated_schema_removed') is not True or
+                proof.get('worker_batch_restored') != 10):
+            raise ValueError('Reviewed restart, fault, monthly and cleanup evidence required')
     if args.phase in {'api-runtime', 'saas-runtime', 'financial-reviewed'}:
         proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
         expected = {'api-runtime': 'API/model-API migration runtime only',
@@ -66,6 +86,16 @@ def main():
             'TRD-BE-017': (90, '模拟SaaS实际Worker升级、降级退款、当前及未来续费段变更通过；完整故障矩阵继续验证。'),
             'TRD-OPS-002': (80, '三类资源实际Worker处理通过；实际重启和故障恢复覆盖继续验证。'),
             'TRD-QA-005': (75, 'API/模型API及模拟SaaS真实组件联调通过；浏览器、故障恢复及交易到清算完整矩阵未关闭。'),
+        },
+        'runtime-regression': {
+            'TRD-BE-017': (95, '实际Worker重启、目标路由故障三次重试、原资源恢复与模拟差价资金补偿通过；其它资源故障断点未据此关闭。'),
+            'TRD-BE-018': (95, '本轮真实API/模型API交易及8条已入账调整在隔离PG中完成月度清算、五方守恒、排重、重建及锁定验证；跨月矩阵仍待验证。'),
+            'TRD-OPS-002': (90, '实际Worker持久化计划后重启及故障恢复通过，临时batch配置已恢复；生产高可用及全部断点仍待验证。'),
+            'TRD-QA-005': (85, '重启、真实路由故障补偿和交易到月度清算通过；浏览器与跨月完整矩阵继续验证。'),
+        },
+        'browser-regression': {
+            'TRD-FE-009': (95, '真实Chrome桌面升级模拟支付、移动端降级及退款完成通过；修复报价弹框提交入口。API预置原订单及QA令牌不计密码登录/浏览器首购覆盖。'),
+            'TRD-QA-005': (90, '同一浏览器变更订单的4条真实调整进入隔离月度清算通过，精确清理完成；跨月、SaaS/模型浏览器及全部故障矩阵继续验证。'),
         },
         'verified': {
             'TRD-BE-017': (95, '本批实际资源和模拟资金验收通过；真实资金渠道仍未接入。'),
