@@ -36,6 +36,24 @@ test("an empty selected action never turns into an all action", () => {
   assert.throws(() => syncActionPayload("remove", "users"), /请选择/);
 });
 
+test("SaaS tree row styles override inherited modal form layout and keep compact checkboxes", () => {
+  const source = readFileSync(new URL("../src/SaaSSyncManagement.vue", import.meta.url), "utf8");
+  const row = source.match(/\.saas-sync-management \.saas-sync-row \{([^}]+)\}/)?.[1];
+  const checkbox = source.match(/\.saas-sync-management \.saas-sync-row input \{([^}]+)\}/)?.[1];
+  const name = source.match(/\.saas-sync-management \.saas-sync-row span \{([^}]+)\}/)?.[1];
+  const detail = source.match(/\.saas-sync-management \.saas-sync-row small \{([^}]+)\}/)?.[1];
+  assert.ok(row && checkbox && name && detail);
+  for (const contract of [/display:\s*flex;/, /flex-direction:\s*row;/, /align-items:\s*center;/,
+    /margin:\s*0;/, /min-height:\s*34px;/, /line-height:\s*1\.4;/, /padding-left:\s*calc\(9px \+ var\(--tree-depth\) \* 16px\);/]) assert.match(row, contract);
+  for (const contract of [/flex:\s*0 0 14px;/, /width:\s*14px;/, /height:\s*14px;/,
+    /padding:\s*0;/, /margin:\s*0;/, /align-self:\s*center;/]) assert.match(checkbox, contract);
+  assert.match(name, /min-width:\s*0;/);
+  assert.match(name, /overflow-wrap:\s*anywhere;/);
+  assert.match(detail, /min-width:\s*0;/);
+  assert.match(detail, /max-width:\s*45%;/);
+  assert.match(detail, /overflow-wrap:\s*anywhere;/);
+});
+
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 function component(api) {
   const source = readFileSync(new URL("../src/SaaSSyncManagement.vue", import.meta.url), "utf8")

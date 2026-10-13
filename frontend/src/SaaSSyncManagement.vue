@@ -191,10 +191,10 @@ onBeforeUnmount(() => { closed = true; invalidateScope(); });
 .saas-sync-columns { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: stretch; }
 .saas-sync-tree { min-width: 0; max-height: 340px; overflow: auto; border: 1px solid #e1e5e9; border-radius: 6px; }
 .saas-sync-tree header { position: sticky; top: 0; display: flex; justify-content: space-between; padding: 9px 10px; border-bottom: 1px solid #e1e5e9; background: #f7f9fa; font-size: 12px; }
-.saas-sync-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 5px 9px; padding-left: calc(9px + var(--tree-depth) * 16px); border-bottom: 1px solid #f0f1f3; }
-.saas-sync-row input { flex: 0 0 15px; accent-color: #176b57; }
-.saas-sync-row span { min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
-.saas-sync-row small { margin-left: auto; color: #77818c; overflow-wrap: anywhere; font-size: 11px; }
+.saas-sync-management .saas-sync-row { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 0; min-height: 34px; line-height: 1.4; padding: 5px 9px; padding-left: calc(9px + var(--tree-depth) * 16px); border-bottom: 1px solid #f0f1f3; }
+.saas-sync-management .saas-sync-row input { flex: 0 0 14px; width: 14px; height: 14px; min-width: 14px; min-height: 14px; padding: 0; margin: 0; align-self: center; accent-color: #176b57; }
+.saas-sync-management .saas-sync-row span { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.saas-sync-management .saas-sync-row small { min-width: 0; max-width: 45%; margin-left: auto; color: #77818c; overflow-wrap: anywhere; font-size: 11px; }
 .saas-sync-group { min-height: 30px; background: #f6f8f8; font-weight: 600; }
 .saas-sync-arrows { display: flex; flex-direction: column; justify-content: center; gap: 6px; }
 .saas-sync-tree > p { padding: 0 10px; }

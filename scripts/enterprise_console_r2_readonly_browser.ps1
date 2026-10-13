@@ -45,6 +45,7 @@ try {
     Js '[...document.querySelectorAll(".order-drawer button")].find(b=>b.textContent.trim()==="\u7528\u6237\u7ba1\u7406").click();true'|Out-Null
     WaitJs '!!document.querySelector(".saas-sync-management .saas-sync-columns")&&document.querySelectorAll(".saas-sync-tree").length===2&&!document.querySelector(".saas-sync-management [aria-busy=true]")'
     Assert-Browser '(()=>{const e=document.querySelector(".saas-sync-modal-card");const r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+40))})()' 'SaaS dialog must be in front of the order drawer'
+    Assert-Browser '[...document.querySelectorAll(".saas-sync-row")].every(r=>{const c=getComputedStyle(r);return c.flexDirection==="row"&&c.marginTop==="0px"&&c.marginBottom==="0px"})' 'Tree rows must remain compact and horizontal inside a modal'
     Shot 'saas-sync-desktop'
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=390;height=844;deviceScaleFactor=1;mobile=$true}|Out-Null
     Shot 'saas-sync-mobile'
