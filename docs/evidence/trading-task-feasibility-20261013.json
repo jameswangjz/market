@@ -60,6 +60,20 @@
     "artifact": "D:/HXYL/01 天地奔牛/05 部署相关/05 market/OIDC浏览器验收-20261013-5/browser-results.json",
     "limits": ["paid and delivered terms are synthetic scoped fixtures", "no real bank payment or external SaaS provider verification"]
   },
+  "business_event_subscription_regression": {
+    "status": "passed",
+    "tests": 67,
+    "command": "python -m unittest -q test_message_business_events.py test_subscription_terms.py",
+    "coverage": [
+      "payment, delivery, refund and settlement business-event audit/messages",
+      "tenant recipient isolation and sensitive-field filtering",
+      "Outbox rollback and notification failure transaction boundaries",
+      "SaaS expiry restart, renewal, future terms, permission recheck and idempotency",
+      "shared authorization revocation and restoration"
+    ],
+    "runtime": "deployed API image in isolated SQLite test database",
+    "limits": ["real bank/payment provider and external SaaS are not covered"]
+  },
   "qa001_follow_up": {
     "status": "passed",
     "progress_target": 100,
