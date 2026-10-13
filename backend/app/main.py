@@ -386,6 +386,14 @@ class OAuthClient(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class OAuthRevokedToken(Base):
+    __tablename__ = "oauth_revoked_tokens"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    client_id: Mapped[str] = mapped_column(ForeignKey("oauth_clients.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class SaaSSubscription(Base):
     __tablename__ = "saas_subscriptions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -3599,12 +3607,12 @@ async def platform_oauth_token(request: Request, db: Session = Depends(db_sessio
         raise HTTPException(400, "invalid_scope")
     issued = int(now().timestamp())
     expires = issued + 3600
-    token = jwt.encode({"iss": platform_oauth_issuer(), "sub": client.client_id, "client_id": client.client_id, "product_id": client.product_id, "scope": " ".join(scopes), "aud": "market-resource", "iat": issued, "exp": expires}, JWT_SECRET, algorithm="HS256")
+    token = jwt.encode({"iss": platform_oauth_issuer(), "sub": client.client_id, "client_id": client.client_id, "product_id": client.product_id, "scope": " ".join(scopes), "aud": "market-resource", "iat": issued, "exp": expires, "jti": secrets.token_hex(16)}, JWT_SECRET, algorithm="HS256")
     return {"access_token": token, "token_type": "Bearer", "expires_in": 3600, "scope": " ".join(scopes)}
 
 
 @app.post("/oauth/introspect")
-async def platform_oauth_introspect(request: Request):
+async def platform_oauth_introspect(request: Request, db: Session = Depends(db_session)):
     raw = (await request.body()).decode("utf-8")
     parsed = parse_qs(raw, keep_blank_values=True)
     token = (parsed.get("token", [""])[-1] if parsed else "") or request.query_params.get("token", "")
@@ -3612,9 +3620,56 @@ async def platform_oauth_introspect(request: Request):
         return {"active": False}
     try:
         claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"], audience="market-resource", issuer=platform_oauth_issuer())
+        client = db.scalar(select(OAuthClient).where(
+            OAuthClient.client_id == claims.get("client_id"), OAuthClient.status == "active"))
+        if (not client or claims.get("sub") != client.client_id or
+                claims.get("product_id") != client.product_id or
+                not isinstance(claims.get("scope"), str) or
+                not set(claims["scope"].split()).issubset(set(client.scope.split())) or
+                db.get(OAuthRevokedToken, hashlib.sha256(token.encode()).hexdigest())):
+            return {"active": False}
         return {"active": True, **claims}
     except jwt.PyJWTError:
         return {"active": False}
+
+
+@app.post("/oauth/revoke")
+async def platform_oauth_revoke(request: Request, db: Session = Depends(db_session)):
+    form = {key: values[-1] for key, values in parse_qs(
+        (await request.body()).decode("utf-8"), keep_blank_values=True).items()}
+    client_id, client_secret = form.get("client_id", ""), form.get("client_secret", "")
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("basic "):
+        try:
+            import base64
+            client_id, client_secret = base64.b64decode(authorization[6:]).decode().split(":", 1)
+        except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+            raise HTTPException(401, "invalid_client") from None
+    client = db.scalar(select(OAuthClient).where(
+        OAuthClient.client_id == client_id, OAuthClient.status == "active"))
+    if not client or not hmac.compare_digest(client.client_secret, client_secret):
+        raise HTTPException(401, "invalid_client")
+    token = form.get("token", "")
+    if not token:
+        raise HTTPException(400, "token is required")
+    try:
+        claims = jwt.decode(token, JWT_SECRET, algorithms=["HS256"],
+            audience="market-resource", issuer=platform_oauth_issuer())
+    except jwt.PyJWTError:
+        return Response(status_code=200, headers={"Cache-Control": "no-store"})
+    # Unknown or foreign tokens have the same response, without disclosing ownership.
+    if claims.get("client_id") == client.client_id and claims.get("product_id") == client.product_id:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+        insert = pg_insert if db.bind.dialect.name == "postgresql" else sqlite_insert
+        db.execute(insert(OAuthRevokedToken).values(token_hash=token_hash, client_id=client.id,
+            expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc), created_at=now())
+            .on_conflict_do_nothing(index_elements=["token_hash"]))
+        audit(db, client.client_id, "revoke_oauth_token", "oauth_client", client.id,
+              "access token revoked")
+        db.commit()
+    return Response(status_code=200, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/products/{product_id}/review")

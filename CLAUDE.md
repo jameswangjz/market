@@ -46,6 +46,14 @@ matrix for scope. Full resource network/token failure timing and real cross-mont
 subscription activation remain open; real bank payments are user-deferred.
 
 ## Owner
+Machine OAuth revocation hardening: introspection now checks the live active
+client, product/scope binding and a durable hash-only token revocation record.
+Token issuance includes a unique jti; POST /oauth/revoke supports authenticated,
+idempotent revocation without exposing foreign token ownership. Manual product
+withdrawal still preserves sold access. Local backend regression: 750 tests,
+44 skipped. Deployment and live mock-SaaS verification pending; do not mark the
+resource/cache failure matrix complete from these unit tests.
+
 wangjizhong, biru (reviews and merges PRs)
 
 ## How to build / run / test
