@@ -58,6 +58,10 @@ Open finding OAUTH-CACHE-401: neither SaaS cache nor native OAuth cache evicts
 on resource 401; failed credentials reject safely but recovery needs expiry or
 targeted eviction. Do not mark auto recovery complete. See
 docs/evidence/version-change-available-fault-matrix-20261013.json.
+Isolated PG fixture startup also exposed missing buyer_user_id on the seeded
+demo order when no admin exists, violating orders_buyer_user_id_fkey. Track as
+FLT-BE-002; existing development admin avoids that branch. It is not counted
+among the 66 resource/Saga checks and has not been fixed by this test-only work.
 
 Machine OAuth revocation hardening: introspection now checks the live active
 client, product/scope binding and a durable hash-only token revocation record.

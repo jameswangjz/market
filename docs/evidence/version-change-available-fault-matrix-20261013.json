@@ -68,6 +68,12 @@
     "status": "open",
     "description": "SaaS in-process token cache and native APISIX Redis token cache do not automatically evict on resource HTTP 401; rejected tokens fail closed, but recovery needs cache expiry or targeted eviction",
     "follow_up_task": "FLT-BE-001"
+  }, {
+    "code": "INIT-ORDER-BUYER",
+    "status": "open",
+    "description": "During isolated PG fixture setup, entering application startup without an admin account triggered demo order insertion without buyer_user_id and failed orders_buyer_user_id_fkey; startup seed code confirms missing association. Existing deployed environment already has admin and was not affected",
+    "follow_up_task": "FLT-BE-002",
+    "scope": "initialization finding outside the 66 Saga/resource checks"
   }],
   "deferred": [
     {"code": "FLT-QA-002", "reason": "real online payment channel and bank/provider reconciliation data are not integrated; user deferred bank payment testing"},
