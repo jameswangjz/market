@@ -51,8 +51,14 @@ client, product/scope binding and a durable hash-only token revocation record.
 Token issuance includes a unique jti; POST /oauth/revoke supports authenticated,
 idempotent revocation without exposing foreign token ownership. Manual product
 withdrawal still preserves sold access. Local backend regression: 750 tests,
-44 skipped. Deployment and live mock-SaaS verification pending; do not mark the
-resource/cache failure matrix complete from these unit tests.
+44 skipped. API and all three backend workers deployed as
+20261013001410-3626b03, with PG backup and credential Secret unchanged. Live
+OAuth revoke/introspect plus mock-SaaS protected STATUS passed: individual
+revocation preserves sibling tokens; client deactivation rejects all tokens
+and new issuance. Exact generated fixture/audit cleanup passed. STATUS used an
+absent tenant (authenticated 404 before revoke, 401 after), not fulfillment.
+APISIX/cache paths and full Saga token-failure matrix remain open. Evidence:
+docs/evidence/oauth-revocation-runtime-20261013.json.
 
 wangjizhong, biru (reviews and merges PRs)
 

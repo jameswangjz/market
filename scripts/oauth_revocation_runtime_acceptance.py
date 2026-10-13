@@ -41,7 +41,7 @@ def fixture_ids(run_id=None):
     run_id = run_id or 'qa-oauth-revoke-' + secrets.token_hex(6)
     return {
         'run_id': run_id,
-        'enterprise_id': run_id + '-enterprise',
+        'enterprise_id': run_id + '-ent',
         'product_id': run_id + '-product',
         'client_id': run_id + '-client',
         'client_row_id': hashlib.sha256((run_id + '-oauth-row').encode()).hexdigest()[:32],
