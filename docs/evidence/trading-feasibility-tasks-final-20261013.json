@@ -2,13 +2,13 @@
   "total": 168,
   "counts": {
     "todo": 6,
-    "in_progress": 10,
-    "review": 8,
+    "in_progress": 9,
+    "review": 9,
     "blocked": 5,
     "done": 139
   },
   "completion_rate": 82.7,
-  "updated_at": "2026-10-13 06:13:16.777117+00:00",
+  "updated_at": "2026-10-13 06:42:04.412706+00:00",
   "items": [
     {
       "id": "bb20269be8d63df790904cdf7168e797",
@@ -1974,19 +1974,6 @@
       "updated_at": "2026-10-12 23:46:09.695077+00:00"
     },
     {
-      "id": "ddc5dc5d417f787a70ff410f3fdb8ed8",
-      "code": "TRD-QA-001",
-      "owner": "部署测试Agent",
-      "title": "匿名、企业多角色及敏感字段隔离验证",
-      "area": "权限验收",
-      "priority": "P0",
-      "status": "in_progress",
-      "dependencies": "TRD-BE-004,TRD-BE-007,TRD-BE-002,TRD-FE-003,TRD-FE-008",
-      "acceptance": "匿名不可读成本凭据；选企业隔离、降权/禁用即时生效；super支付admin验收finance确认、普通成员SSO不获文件/API权限；接口与导出双重验证。",
-      "progress": 10,
-      "updated_at": "2026-10-13 05:51:20.545385+00:00"
-    },
-    {
       "id": "f7e52fc3be902f33541dd4bacc6f2715",
       "code": "TRD-QA-003",
       "owner": "部署测试Agent",
@@ -2102,6 +2089,19 @@
       "acceptance": "管理员管理获授权成员，普通成员仅见自己的SaaS访问入口，SSO回跳和错误可理解，无Token/Secret写入查询参数或localStorage。",
       "progress": 100,
       "updated_at": "2026-10-12 03:25:27.801141+00:00"
+    },
+    {
+      "id": "ddc5dc5d417f787a70ff410f3fdb8ed8",
+      "code": "TRD-QA-001",
+      "owner": "部署测试Agent",
+      "title": "匿名、企业多角色及敏感字段隔离验证",
+      "area": "权限验收",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-BE-004,TRD-BE-007,TRD-BE-002,TRD-FE-003,TRD-FE-008",
+      "acceptance": "匿名不可读成本凭据；选企业隔离、降权/禁用即时生效；super支付admin验收finance确认、普通成员SSO不获文件/API权限；接口与导出双重验证。",
+      "progress": 100,
+      "updated_at": "2026-10-13 06:42:04.396943+00:00"
     },
     {
       "id": "00842da1517427ba7b262b8f424bc2ca",

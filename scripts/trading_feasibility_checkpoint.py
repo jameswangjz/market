@@ -15,7 +15,7 @@ NOTES = {
     'TRD-OPS-002': '真实Worker已验证文件重试/人工恢复；整体迁移回退及交易消息隔离依赖OPS-001/BE-020，不标记完成。',
     'TRD-QA-003': '本轮真实文件Worker/MinIO/下载额度验证通过，3次失败后转人工，实际重试间隔约12秒；其余交付及完整上架扫描闭环需联合验证。',
     'TRD-QA-005': '实际模拟环境可继续资金资源故障验证；测试专属队列/故障代理及普通退款前置依赖尚未齐备。',
-    'TRD-QA-001': '真实私有PG权限验收通过：匿名、多企业订单绑定、付款权限、敏感字段、文件/API凭据隔离及同Token角色降级均通过；OIDC浏览器链路因模拟SaaS客户端回调配置返回400暂未完成，需修正模拟服务公开回调配置后补测。',
+    'TRD-QA-001': '真实私有PG权限验收通过：匿名、多企业订单绑定、付款权限、敏感字段、文件/API凭据隔离及同Token角色降级均通过；已修正模拟SaaS公开回调地址并完成桌面/移动端OIDC浏览器验收、拒绝授权、跨企业隔离、应用访问及授权回收验证。真实银行支付、外部真实SaaS和生产环境HA仍不在本轮范围。',
 }
 
 
@@ -45,10 +45,11 @@ def main():
                 raise ValueError('Task missing: ' + code)
             if task.status in {'done', 'review'}:
                 continue
-            target_progress = {'TRD-FE-005': 95, 'TRD-QA-003': 50, 'TRD-BE-012': 70, 'TRD-QA-001': 85}.get(code)
-            progress = max(task.progress, target_progress) if target_progress else (max(task.progress, 10) if code == 'TRD-QA-001' else task.progress)
+            target_progress = {'TRD-FE-005': 95, 'TRD-QA-003': 50, 'TRD-BE-012': 70, 'TRD-QA-001': 100}.get(code)
+            progress = max(task.progress, target_progress) if target_progress else task.progress
+            task_status = 'review' if code == 'TRD-QA-001' else 'in_progress'
             m.update_development_task(code, m.DevelopmentTaskUpdate(
-                status='in_progress', progress=progress,
+                status=task_status, progress=progress,
                 note='20261013可开发性复核：' + note), actor, db)
         snapshot = m.development_tasks(actor, db)
     Path(args.output).write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str), encoding='utf-8')

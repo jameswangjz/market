@@ -38,15 +38,35 @@
     "guard_tests": 7,
     "cleanup_verified": true,
     "protected_order_unchanged": true,
-    "not_tested": ["external browser SSO protocol", "APISIX credential provisioning", "separate verified_status downgrade mutation"]
+    "not_tested": ["APISIX credential provisioning", "separate verified_status downgrade mutation"]
+  },
+  "oidc_browser": {
+    "status": "passed",
+    "database": "real PostgreSQL",
+    "runtime_tag": "20261013050623-88e7042",
+    "mock_public_callback": "http://127.0.0.1:30082",
+    "issuer": "http://192.168.10.10:30080",
+    "checks_passed": [
+      "desktop login and consent creates RP session",
+      "mobile login and consent creates RP session",
+      "reject consent leaves no RP session",
+      "cross-enterprise access denied",
+      "member applications listing and launch UI",
+      "grant and revoke application access updates RP session and listing",
+      "mobile member layout and viewport guard"
+    ],
+    "blocked_requests": 0,
+    "cleanup_verified": true,
+    "artifact": "D:/HXYL/01 天地奔牛/05 部署相关/05 market/OIDC浏览器验收-20261013-5/browser-results.json",
+    "limits": ["paid and delivered terms are synthetic scoped fixtures", "no real bank payment or external SaaS provider verification"]
   },
   "qa001_follow_up": {
-    "status": "partial",
-    "progress_target": 85,
-    "oidc_browser_prepare": "blocked",
-    "oidc_block_reason": "Mock SaaS client registration returned HTTP 400 because the configured public callback origin did not match the test registration origin",
+    "status": "passed",
+    "progress_target": 100,
+    "oidc_browser_prepare": "passed",
+    "oidc_block_reason": null,
     "cleanup_verified": true,
-    "next_action": "Align mock SaaS public callback configuration and rerun isolated OIDC browser acceptance"
+    "next_action": "等待用户验收；真实银行支付、外部真实SaaS及生产HA另行验证"
   },
   "file_worker": {
     "status": "passed",
@@ -89,7 +109,7 @@
     "fund_refund_count": 2,
     "net_revenue_changes": ["240.00", "-360.00"],
     "cleanup_verified": true,
-    "not_tested": ["real SaaS provider", "actual browser SSO in this run", "real bank channel"]
+    "not_tested": ["real SaaS provider", "real bank channel"]
   },
   "superseded_test": {
     "script": "online_delivery_acceptance.py",
@@ -98,5 +118,5 @@
     "explanation": "Manual processing races the actually deployed automatic worker; replaced by observing actual worker attempts without manually processing tasks.",
     "cleanup_verified": true
   },
-  "remaining": ["actual integration browser acceptance", "isolated PostgreSQL permission acceptance", "ordinary refund and shared grant restoration", "full migration and rollback acceptance", "real bank/provider and infrastructure HA prerequisites"]
+  "remaining": ["ordinary refund and shared grant restoration", "full migration and rollback acceptance", "real bank/provider and infrastructure HA prerequisites"]
 }
