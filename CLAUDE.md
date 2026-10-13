@@ -46,6 +46,19 @@ matrix for scope. Full resource network/token failure timing and real cross-mont
 subscription activation remain open; real bank payments are user-deferred.
 
 ## Owner
+Available fault matrix follow-up: 66 bounded checks completed against deployed
+PG/APISIX/Redis/mock SaaS. PG statement-error rollback, proof rejection, finance
+HTTP retry audit, concurrency and real 61s lease crash recovery passed. API/model
+adapter credential drift, partial writes and four-request counter continuity
+passed. Native APISIX 401/502/500/504 and TTL recovery verified. SaaS auth and
+nine locally corrupted post-CHANGE STATUS responses rejected and restored.
+Distinguish actual component HTTP from in-process wrappers and controlled HTTP
+external adapters; full daemon Saga timing and production HA are not closed.
+Open finding OAUTH-CACHE-401: neither SaaS cache nor native OAuth cache evicts
+on resource 401; failed credentials reject safely but recovery needs expiry or
+targeted eviction. Do not mark auto recovery complete. See
+docs/evidence/version-change-available-fault-matrix-20261013.json.
+
 Machine OAuth revocation hardening: introspection now checks the live active
 client, product/scope binding and a durable hash-only token revocation record.
 Token issuance includes a unique jti; POST /oauth/revoke supports authenticated,

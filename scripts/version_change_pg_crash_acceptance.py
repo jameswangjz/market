@@ -83,6 +83,10 @@ def install_adapter(m):
             headers={'Content-Type': 'application/json'}, method='POST')
         with urllib.request.urlopen(request, timeout=10) as response:
             proof = json.loads(response.read())
+        if CONTROL.get('wrong_proof_id') == row.id:
+            proof = dict(proof, request_change_id='foreign-change')
+        if CONTROL.get('fail_restore_id') == row.id and direction == 'original':
+            raise RuntimeError('owned restore boundary fault')
         if CONTROL.get('barrier_id') == row.id:
             CONTROL['reached'].set()
             CONTROL['release'].wait()
@@ -253,6 +257,136 @@ def phase_crash(m, ctx, url, run):
             'ledger_rows_posted': 2, 'term_revision_count': 1}
 
 
+def wait_retry(m, change_id):
+    with m.SessionLocal() as db:
+        retry = db.get(m.VersionChangeRequest, change_id).next_retry_at
+    check(retry is not None, 'Expected durable retry time')
+    time.sleep(max(0, (retry - datetime.now(timezone.utc)).total_seconds()) + .2)
+
+
+def phase_transaction_boundaries(m, run):
+    from app import version_change_worker as worker
+    from sqlalchemy import event
+    results = {}
+    change_id = run + '-plan'
+    make_fixture(m, change_id, now=datetime.now(timezone.utc))
+    with m.SessionLocal() as db:
+        db.get(m.VersionChangeRequest, change_id).resource_plan_json = '{}'
+        db.commit()
+    check(worker.process_once(worker_id=run + '-plan'), 'Plan worker did not claim request')
+    with EXTERNAL_LOCK:
+        check(not any(key.startswith(change_id + ':') for key in EXTERNAL_REQUESTS),
+              'External request preceded durable plan commit')
+    with m.SessionLocal() as db:
+        check(db.get(m.VersionChangeRequest, change_id).resource_plan_json != '{}',
+              'Prepared descriptor was not committed')
+    check(worker.process_once(worker_id=run + '-plan-apply'), 'Plan application did not run')
+    check(state(m, change_id)['status'] == 'completed', 'Durable plan did not complete')
+    results['durable_plan_before_external_request'] = 'passed'
+
+    change_id = run + '-commit'
+    make_fixture(m, change_id, now=datetime.now(timezone.utc))
+    injected = {'done': False}
+    def fail_application_commit(session):
+        if (not injected['done'] and any(isinstance(row, m.VersionChangeRequest)
+                and row.id == change_id and row.status == 'completed'
+                for row in session.identity_map.values())):
+            injected['done'] = True
+            session.execute(text('SELECT 1 / 0'))
+    event.listen(m.SessionLocal, 'before_commit', fail_application_commit)
+    try:
+        check(worker.process_once(worker_id=run + '-commit'), 'Commit-fault worker did not run')
+    finally:
+        event.remove(m.SessionLocal, 'before_commit', fail_application_commit)
+    first = state(m, change_id)
+    check(injected['done'] and first['status'] == 'retrying' and first['revisions'] == 0
+          and first['ledger'] == ['pending', 'pending'] and first['combination_version'] == 'old',
+          'PostgreSQL failure left partial accounting or local version activation')
+    wait_retry(m, change_id)
+    check(worker.process_once(worker_id=run + '-commit-replay'), 'Commit replay did not run')
+    final = state(m, change_id)
+    check(final['status'] == 'completed' and final['revisions'] == 1
+          and final['ledger'] == ['posted', 'posted'], 'Commit replay duplicated or lost accounting')
+    with EXTERNAL_LOCK:
+        check(sum(key.startswith(change_id + ':') for key in EXTERNAL_REQUESTS) == 2
+              and sum(key.startswith(change_id + ':') for key in EXTERNAL) == 1,
+              'Commit failure did not replay one idempotent external effect')
+    results['postgresql_statement_failure_before_commit'] = {
+        'status': 'passed', 'server_error': 'division_by_zero',
+        'http_requests': 2, 'unique_external_effects': 1, 'posted_ledger_rows': 2, 'revisions': 1}
+
+    change_id = run + '-proof'
+    make_fixture(m, change_id, now=datetime.now(timezone.utc))
+    CONTROL['wrong_proof_id'] = change_id
+    try:
+        check(worker.process_once(worker_id=run + '-proof'), 'Proof-fault worker did not run')
+    finally:
+        CONTROL.pop('wrong_proof_id', None)
+    first = state(m, change_id)
+    check(first['status'] == 'retrying' and first['revisions'] == 0
+          and first['ledger'] == ['pending', 'pending'], 'Foreign proof activated accounting')
+    wait_retry(m, change_id)
+    check(worker.process_once(worker_id=run + '-proof-replay'), 'Proof recovery did not run')
+    check(state(m, change_id)['status'] == 'completed', 'Proof recovery did not finalize')
+    results['foreign_resource_proof_rejected'] = 'passed'
+
+    change_id = run + '-restore'
+    make_fixture(m, change_id, now=datetime.now(timezone.utc))
+    with m.SessionLocal() as db:
+        row = db.get(m.VersionChangeRequest, change_id)
+        row.status = 'compensating'
+        row.kind = 'downgrade'
+        row.compensation_started = True
+        db.commit()
+    CONTROL['fail_restore_id'] = change_id
+    try:
+        for attempt in range(3):
+            check(worker.process_once(worker_id=run + '-restore'), 'Restore worker did not run')
+            if attempt < 2:
+                wait_retry(m, change_id)
+    finally:
+        CONTROL.pop('fail_restore_id', None)
+    first = state(m, change_id)
+    check(first['status'] == 'exception' and first['revisions'] == 0
+          and first['ledger'] == ['pending', 'pending'], 'Failed restore posted accounting')
+    with m.SessionLocal() as db:
+        check(db.get(m.VersionChangeRequest, change_id).compensation_retries == 3,
+              'Restore did not exhaust exactly three retries')
+        buyer = db.get(m.User, 'user-' + change_id)
+        buyer.verified_status = 'verified'
+        finance = m.User(id='fin-' + change_id, name='owned finance', email='fin-' + change_id + '@invalid',
+            password_hash='fixture', platform_role='finance_settlement', verified_status='verified')
+        db.add(finance)
+        db.commit()
+        buyer_token, finance_token = m.issue_token(buyer), m.issue_token(finance)
+    from fastapi.testclient import TestClient
+    client = TestClient(m.app)
+    try:
+        endpoint = '/api/version-changes/' + change_id + '/retry'
+        response = client.post(endpoint, json={'reason': 'owned PG compensation recovery'},
+                               headers={'Authorization': 'Bearer ' + buyer_token})
+        check(response.status_code == 403, 'Buyer was permitted to trigger operator recovery')
+        response = client.post(endpoint, json={'reason': 'owned PG compensation recovery'},
+                               headers={'Authorization': 'Bearer ' + finance_token})
+        check(response.status_code == 200, 'Verified finance operator could not retry compensation')
+    finally:
+        client.close()
+    check(worker.process_once(worker_id=run + '-restore-recovery'), 'Restore recovery did not run')
+    final = state(m, change_id)
+    check(final['status'] == 'compensated' and final['ledger'] == ['void', 'void']
+          and final['revisions'] == 0, 'Restore recovery failed to void pending accounting')
+    with m.SessionLocal() as db:
+        audit_row = db.scalar(select(m.AuditLog).where(m.AuditLog.action == 'retry_version_change',
+            m.AuditLog.target_id == change_id, m.AuditLog.actor == 'fin-' + change_id + '@invalid'))
+        check(audit_row is not None and audit_row.order_id == 'o-' + change_id,
+              'Finance retry audit lost actor or source order identity')
+    results['restore_three_failures_and_recovery'] = {
+        'status': 'passed', 'retries': 3, 'recovery': 'production HTTP handler in private PG schema',
+        'buyer_retry_status': 403, 'finance_retry_status': 200, 'operator_audit_verified': True,
+        'funding': 'no funding order in this controlled fixture; not a payment test'}
+    return results
+
+
 def run():
     check('DATABASE_URL' in os.environ, 'Set DATABASE_URL to the dedicated PostgreSQL database')
     original_url = os.environ['DATABASE_URL']
@@ -286,7 +420,8 @@ def run():
         install_adapter(m)
         ctx = multiprocessing.get_context('fork')
         run_id = secrets.token_hex(6)
-        results = {'concurrent': phase_concurrent(m, ctx, CONTROL['url'], run_id),
+        results = {'transaction_boundaries': phase_transaction_boundaries(m, run_id),
+                   'concurrent': phase_concurrent(m, ctx, CONTROL['url'], run_id),
                    'crash_recovery': phase_crash(m, ctx, CONTROL['url'], run_id)}
         return {'status': 'passed', 'scope': 'actual production version_change_worker.process_once + PostgreSQL; controlled local HTTP external adapter',
             'resource_fault_coverage': False, 'phases': results,
@@ -327,6 +462,12 @@ if __name__ == '__main__':
                           'detail': str(exc)}, sort_keys=True), flush=True)
         raise SystemExit(1) from None
     except Exception as exc:
-        print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__},
+        diagnostic = getattr(getattr(exc, 'orig', None), 'diag', None)
+        import traceback
+        frame = traceback.extract_tb(exc.__traceback__)[-1]
+        print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__,
+            'table': getattr(diagnostic, 'table_name', None),
+            'constraint': getattr(diagnostic, 'constraint_name', None),
+            'file': Path(frame.filename).name, 'line': frame.lineno},
                          sort_keys=True), flush=True)
         raise SystemExit(1) from None
