@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
 import time
+import traceback
 from types import SimpleNamespace
 
 import httpx
@@ -165,5 +166,8 @@ if __name__ == '__main__':
         print(json.dumps({'status': 'failed', 'check': str(exc)}), flush=True)
         raise SystemExit(1)
     except Exception as exc:
-        print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__}), flush=True)
+        frame = traceback.extract_tb(exc.__traceback__)[-1]
+        print(json.dumps({'status': 'failed', 'error_type': type(exc).__name__,
+            'file': Path(frame.filename).name, 'line': frame.lineno,
+            'missing_module': exc.name if isinstance(exc, ModuleNotFoundError) else None}), flush=True)
         raise SystemExit(1)

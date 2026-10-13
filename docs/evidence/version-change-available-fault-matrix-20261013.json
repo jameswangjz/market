@@ -1,0 +1,85 @@
+{
+  "status": "passed_with_findings",
+  "scope": "available bounded development-environment fault checks",
+  "environment": "192.168.10.10 / market",
+  "runtime_tag": "20261013001410-3626b03",
+  "executed_check_count": 66,
+  "groups": {
+    "postgresql_worker": {
+      "status": "passed", "count": 6,
+      "cases": ["durable_plan_before_external_request", "postgresql_statement_failure_before_commit", "foreign_resource_proof", "restore_three_failures_and_finance_http_recovery", "concurrent_claim", "sigkill_after_external_write"],
+      "scope": "production process_once and real private PostgreSQL schema; controlled local HTTP external adapter",
+      "commit_failure": {"http_requests": 2, "unique_effects": 1, "posted_ledger_rows": 2, "revisions": 1},
+      "concurrency": {"http_requests": 1, "unique_effects": 1, "revisions": 1},
+      "crash": {"lease_wait_seconds": 61, "active_lease_skip": true, "http_requests": 2, "unique_effects": 1},
+      "operator_retry": {"buyer": 403, "finance": 200, "audit_verified": true},
+      "isolated_schema_removed": true
+    },
+    "api_model_adapter": {
+      "status": "passed", "count": 22, "kinds": ["api", "model"],
+      "cases_per_kind": ["credential_revoked", "credential_hash_drift", "consumer_key_mismatch", "quota_plugin_disabled", "missing_key_and_invalid_ciphertext", "credential_deleted_inside_rolled_back_transaction", "consumer_put_lost_ack", "concurrent_quota_traffic", "consumer_written_redis_write_failed", "redis_written_ack_lost", "consumer_readback_mismatch"],
+      "scope": "production adapter against actual APISIX/Redis/PG; scoped in-process boundary injections, not daemon fault injection",
+      "baseline": "deployed worker upgrade and downgrade with linked simulated payment/refund",
+      "concurrent_gateway_requests_per_kind": 4,
+      "counter_continuity": true,
+      "baseline_change_ids": {"api": "ae8ae4aec5c427854e0da6e331fd495b", "model": "7bd65ef06696a11bb0d85782880c9a20"}
+    },
+    "native_gateway": {
+      "status": "passed", "count": 20, "kinds": ["api", "model"],
+      "expected_http_per_kind": {
+        "inactive_client_warm_cache": 401, "inactive_client_cold_cache": 502,
+        "revoked_token_warm_cache": 401, "revoked_token_next_call_before_cache_eviction": 401,
+        "recovery_after_owned_cache_eviction": 200, "expired_token_injected_in_owned_cache": 401,
+        "redis_token_ttl_expiry_reacquisition": 200, "upstream_server_error": 500,
+        "native_gateway_upstream_read_timeout": 504, "access_after_upstream_failure": 200
+      },
+      "scope": "actual native APISIX HTTP -> platform OAuth -> mock API resource service",
+      "expired_token_condition": "signed expired JWT injected into an owned Redis key; not an hour-long natural expiry run"
+    },
+    "saas_auth": {
+      "status": "passed", "count": 7,
+      "cases": ["inactive_client_warm_token", "individually_revoked_warm_token", "expired_signed_warm_token", "insufficient_scope", "bad_secret_cold_token", "inactive_oidc", "admin_mapping_mismatch"],
+      "scope": "production resource adapter with actual mock SaaS HTTP; not deployed daemon worker fault timing",
+      "rejections": {"auth_failures": 502, "oidc_mapping_preflight": 409},
+      "target_and_original_identity_proofs": true,
+      "baseline_change_ids": ["2c2de6582cbef31928cf132e1ef677b7", "45433b941a0d42438c6bc2357323f46d"]
+    },
+    "saas_status": {
+      "status": "passed", "count": 9,
+      "cases": ["wrong_tenant", "wrong_product", "wrong_enterprise", "wrong_subscription", "wrong_version", "admin_inactive", "application_not_ready", "wrong_oidc", "wrong_expiry"],
+      "scope": "real remote CHANGE/STATUS; response fields corrupted only in acceptance process",
+      "rejection": 409, "remote_target_observed": true, "local_version_not_advanced": true,
+      "original_restored": true, "ledger_revision_not_duplicated": true
+    },
+    "saas_network": {
+      "status": "passed", "count": 2,
+      "cases": ["timeout_before_dispatch", "timeout_after_remote_commit"],
+      "scope": "production HTTP client with owned loopback timeout proxy and real mock tenant",
+      "retry_driver": "acceptance script, not daemon worker", "retry_interval_seconds": 10,
+      "lost_ack_attempts": 3, "replay_and_original_restoration": true
+    }
+  },
+  "cleanup_verified": true,
+  "protected_order": "ORD-261012005144E1B3 and dependent product unchanged",
+  "shared_services_stopped": false,
+  "worker_batch_changed": false,
+  "findings": [{
+    "code": "OAUTH-CACHE-401",
+    "status": "open",
+    "description": "SaaS in-process token cache and native APISIX Redis token cache do not automatically evict on resource HTTP 401; rejected tokens fail closed, but recovery needs cache expiry or targeted eviction",
+    "follow_up_task": "FLT-BE-001"
+  }, {
+    "code": "INIT-ORDER-BUYER",
+    "status": "open",
+    "description": "During isolated PG fixture setup, entering application startup without an admin account triggered demo order insertion without buyer_user_id and failed orders_buyer_user_id_fkey; startup seed code confirms missing association. Existing deployed environment already has admin and was not affected",
+    "follow_up_task": "FLT-BE-002",
+    "scope": "initialization finding outside the 66 Saga/resource checks"
+  }],
+  "deferred": [
+    {"code": "FLT-QA-002", "reason": "real online payment channel and bank/provider reconciliation data are not integrated; user deferred bank payment testing"},
+    {"code": "FLT-QA-003", "reason": "no actual vendor SaaS/API test endpoint, credentials or idempotency contract; local mock behavior cannot prove vendor behavior"},
+    {"code": "FLT-OPS-001", "reason": "no isolated multi-node HA/storage/network recovery test environment; shared development service shutdown is not a safe substitute"},
+    {"code": "FLT-OPS-002", "reason": "deployed worker lacks per-fixture fault interception and queue isolation; direct adapter injection proves narrower boundaries, not all daemon Saga timing combinations"}
+  ],
+  "local_regression": {"version_change_tests": 93, "script_guard_tests": 11, "status": "passed"}
+}
