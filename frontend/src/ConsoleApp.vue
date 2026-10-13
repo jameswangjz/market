@@ -1011,7 +1011,7 @@ async function loadViewData(view) {
   if (view === "products") {
     const [productData, directoryData, ruleData] = await Promise.all([
       api.get("/products"),
-      api.get("/admin/product-categories"),
+      api.get("/product-categories").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
     ]);
     if (!contextCurrent()) return;

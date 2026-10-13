@@ -97,3 +97,77 @@ test("checkout redirect initializes buyer orders before loading for either activ
     assert.equal(loads, 1);
   }
 });
+
+function providerProducts(api) {
+  const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+  const state = vm.createContext({
+    api, visibleNav: { value: [{ key: "products" }] }, businessContextEpoch: 1,
+    user: { value: { id: "provider-admin", platform_role: "", enterprise_role: "enterprise_admin" } },
+    enterprise: { value: { id: "provider" } }, token: { value: "provider-token" }, businessView: { value: "provider" },
+    products: { value: [] }, productDirectories: { value: [] }, settlementRules: { value: [] }, productForm: { value: { category_id: "" } },
+  });
+  vm.runInContext(source.slice(source.indexOf("async function loadViewData(view)"), source.indexOf("async function createSlaProfile()")), state);
+  return state;
+}
+
+test("provider product view uses authenticated read-only categories and retains the real category DTO", async () => {
+  const calls = [];
+  const product = { id: "provider-product", name: "Provider SaaS", category_id: "category-child" };
+  const categories = [{ id: "category-parent", name: "Software", children: [
+    { id: "category-child", parent_id: "category-parent", name: "SaaS", delivery_method: "tenant_access", status: "active" },
+  ] }];
+  const state = providerProducts({ get: async path => {
+    calls.push(path);
+    if (path.startsWith("/admin/")) throw { response: { status: 403 } };
+    if (path === "/products") return { data: { items: [product] } };
+    if (path === "/product-categories") return { data: { items: categories } };
+    if (path === "/settlement-rules") return { data: { items: [] } };
+    assert.fail(`Unexpected request: ${path}`);
+  } });
+  await state.loadViewData("products");
+  assert.deepEqual(calls, ["/products", "/product-categories", "/settlement-rules"]);
+  assert.equal(state.products.value[0], product);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.productDirectories.value)), [
+    { value: "category-child", label: "Software · SaaS", catalog_name: "Software/SaaS" },
+  ]);
+  assert.equal(state.productForm.value.category_id, "category-child");
+  const settingsSource = readFileSync(new URL("../src/ProductCategoriesSettings.vue", import.meta.url), "utf8");
+  assert.match(settingsSource, /api\.get\("\/admin\/product-categories"\)/);
+});
+
+test("optional directory/rule permission and transport failures do not discard provider products", async () => {
+  for (const error of [{ response: { status: 403, data: { detail: "Forbidden" } } }, new Error("network unavailable")]) {
+    const product = { id: "provider-product" };
+    const state = providerProducts({ get: async path => {
+      if (path === "/products") return { data: { items: [product] } };
+      throw error;
+    } });
+    await state.loadViewData("products");
+    assert.equal(state.products.value[0], product);
+    assert.equal(state.productDirectories.value.length, 0);
+    assert.equal(state.settlementRules.value.length, 0);
+    assert.equal(state.productForm.value.category_id, "");
+  }
+  const required = providerProducts({ get: async path => {
+    if (path === "/products") throw new Error("product permission denied");
+    return { data: { items: [] } };
+  } });
+  await assert.rejects(required.loadViewData("products"), /product permission denied/);
+});
+
+test("provider directory load cannot overwrite another enterprise after optional request failure", async () => {
+  let resolveProducts;
+  const pending = new Promise(resolve => { resolveProducts = resolve; });
+  const state = providerProducts({ get: async path => {
+    if (path === "/products") return pending;
+    throw { response: { status: 403 } };
+  } });
+  const loading = state.loadViewData("products");
+  state.enterprise.value = { id: "new-provider" };
+  state.products.value = [{ id: "new-product" }];
+  state.productDirectories.value = [{ value: "new-category" }];
+  resolveProducts({ data: { items: [{ id: "old-product" }] } });
+  await loading;
+  assert.equal(state.products.value[0].id, "new-product");
+  assert.equal(state.productDirectories.value[0].value, "new-category");
+});
