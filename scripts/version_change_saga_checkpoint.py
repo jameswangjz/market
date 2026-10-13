@@ -7,10 +7,30 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'browser-regression', 'verified'), required=True)
+    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'browser-regression', 'extended-regression', 'verified'), required=True)
     parser.add_argument('--proof')
     parser.add_argument('--runtime-tag', default='development')
     args = parser.parse_args()
+    if args.phase == 'extended-regression':
+        proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
+        if (proof.get('status') != 'passed' or
+                proof.get('scope') != 'password first purchase, isolated cross-month accounting and bounded resource faults' or
+                proof.get('browser', {}).get('status') != 'passed' or
+                proof.get('browser', {}).get('token_injected') is not False or
+                proof.get('browser', {}).get('fixture_orders_before_browser') != 0 or
+                proof.get('browser', {}).get('blocked_requests') != 0 or
+                proof.get('cross_month', {}).get('status') != 'passed' or
+                proof.get('cross_month', {}).get('synthetic_dates') is not True or
+                proof.get('model_fault', {}).get('status') != 'compensated' or
+                proof.get('model_fault', {}).get('attempts') != 3 or
+                proof.get('saas_fault', {}).get('status') != 'compensated' or
+                proof.get('saas_fault', {}).get('target_failures') != 3 or
+                proof.get('saas_fault', {}).get('compensation_failures_before_operator_retry') != 3 or
+                proof.get('saas_fault', {}).get('buyer_retry_status') != 403 or
+                proof.get('saas_fault', {}).get('finance_retry_status') != 200 or
+                proof.get('cleanup_verified') is not True or
+                proof.get('worker_batch_restored') != 10):
+            raise ValueError('Reviewed first-purchase, cross-month, bounded fault and cleanup evidence required')
     if args.phase == 'browser-regression':
         proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
         if (proof.get('status') != 'passed' or
@@ -96,6 +116,13 @@ def main():
         'browser-regression': {
             'TRD-FE-009': (95, '真实Chrome桌面升级模拟支付、移动端降级及退款完成通过；修复报价弹框提交入口。API预置原订单及QA令牌不计密码登录/浏览器首购覆盖。'),
             'TRD-QA-005': (90, '同一浏览器变更订单的4条真实调整进入隔离月度清算通过，精确清理完成；跨月、SaaS/模型浏览器及全部故障矩阵继续验证。'),
+        },
+        'extended-regression': {
+            'TRD-BE-017': (95, '实际模型API及模拟SaaS故障恢复与模拟差价退款通过；SaaS目标/补偿各三次失败、财务重试权限及审计已校验，其它断点继续验证。'),
+            'TRD-FE-009': (95, '真实Chrome密码登录、商城首购、模拟支付及在线Worker交付通过；桌面/移动截图和买方凭据摘要已校验。'),
+            'TRD-BE-018': (95, '隔离PG受控跨月日期验证通过：原订单、升级与降级调整分月入账、五方金额、报表排重、重建和锁定；不等同实际跨月运行。'),
+            'TRD-OPS-002': (95, '实际模型API目标路由故障三次重试、恢复、模拟退款与计数连续性通过；全部资源故障矩阵仍保持进行中。'),
+            'TRD-QA-005': (95, '密码登录首购与跨月清算组合通过；本地事务断点与K8S实测分开记录，未测故障不标完成。'),
         },
         'verified': {
             'TRD-BE-017': (95, '本批实际资源和模拟资金验收通过；真实资金渠道仍未接入。'),

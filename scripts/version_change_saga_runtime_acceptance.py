@@ -666,6 +666,7 @@ def owned_rows(m, manifest):
                 return {row[0] for row in owned.get(model.__tablename__, set())}
 
             typed_targets = {
+                'user': set(ids['users'].values()),
                 'product': set(ids['products'].values()),
                 'order': order_ids,
                 'delivery_task': task_ids,

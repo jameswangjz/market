@@ -1,0 +1,60 @@
+{
+  "status": "passed",
+  "scope": "password first purchase, isolated cross-month accounting and bounded resource faults",
+  "environment": "192.168.10.10 / market",
+  "browser": {
+    "status": "passed",
+    "order_no": "ORD-261012234058C76A",
+    "token_injected": false,
+    "fixture_orders_before_browser": 0,
+    "payment": "UI simulated payment",
+    "delivery": "deployed online worker",
+    "credential_check": "buyer order summary; no raw secrets",
+    "blocked_requests": 0,
+    "public_product_authorization_headers": 0,
+    "native_dialogs": 0,
+    "screenshots": ["1440x1000 desktop", "390x844 mobile"],
+    "artifact_directory": "market-password-first-purchase/qa-vcs-863f9c598a94-16118bd39eb9400ebc4592dd60aa5ea6"
+  },
+  "cross_month": {
+    "status": "passed",
+    "synthetic_dates": true,
+    "database": "isolated PostgreSQL schema, production HTTP handlers",
+    "timezone": "Asia/Shanghai",
+    "months": {
+      "2091-02": {"amount": "60", "cost": "15", "profit": "45", "adjustments": 0},
+      "2091-03": {"amount": "15", "cost": "4.50", "profit": "10.50", "adjustments": 2},
+      "2091-04": {"amount": "-15", "cost": "-4.50", "profit": "-10.50", "adjustments": 2}
+    },
+    "checks": ["UTC boundary bucketing", "frozen rule five-party amounts", "funding/refund exclusion", "reports and exports", "replay/rebuild", "earlier batch unchanged", "confirmed batch immutable"],
+    "schema_removed": true
+  },
+  "model_fault": {
+    "change_id": "10034932f55b968bf216eb037aeffe7b",
+    "status": "compensated",
+    "attempts": 3,
+    "injection": "delete only owned target APISIX route after durable plan",
+    "checks": ["original version restored", "simulated funding refunded", "adjustments voided", "shared credential preserved", "quota counter continued", "target route restored before cleanup"]
+  },
+  "saas_fault": {
+    "change_id": "5a4ba3f743af77c1234e083b29122c39",
+    "status": "compensated",
+    "injection": "authenticated CLOSE of only owned mock SaaS tenant after durable plan",
+    "target_failures": 3,
+    "compensation_failures_before_operator_retry": 3,
+    "audit_retry_interval_checked": true,
+    "buyer_retry_status": 403,
+    "finance_retry_status": 200,
+    "checks": ["same tenant identity restored", "source admin/OIDC ready", "finance actor/order retry audit", "simulated funding refund completed", "adjustments voided"],
+    "cleanup": "exact owned DB fixture removed; tenant closed; mock OIDC client removed"
+  },
+  "local_worker_fault_tests": {"passed": 5, "scope": "SQLite and stateful adapter test double"},
+  "version_change_tests": {"passed": 93},
+  "acceptance_manifest_tests": {"passed": 6},
+  "private_browser_fixture_tests": {"passed": 3},
+  "cleanup_verified": true,
+  "protected_order": "ORD-261012005144E1B3 unchanged with dependent product",
+  "worker_batch_restored": 10,
+  "remaining": ["actual cross-month subscription activation", "all API/model/SaaS network, token and credential failure timings", "PostgreSQL multi-worker concurrency and crash after remote write", "full SaaS/model browser first-purchase and version-change matrix"],
+  "deferred": ["real bank payment until online payment integration"]
+}

@@ -16,6 +16,9 @@ run the matching check phase. Use separate manifests for the two scenarios:
   python scripts/version_change_fault_runtime_acceptance.py fault-check --manifest /tmp/vcf-route.json
   python scripts/version_change_fault_runtime_acceptance.py cleanup --manifest /tmp/vcf-route.json
 
+Pass `--resource-kind model` for the model-API resource. The default remains
+`api`, including manifests created before `resource_kind` was recorded.
+
 The deployed worker is configured with interval 2 and batch 10 in
 k8s/version-change.yaml. Before each `prepare`, temporarily set its batch to 1
 (leave interval 2) in the deployment and manifest, then apply/restart the worker.
@@ -90,8 +93,10 @@ def load(path):
                 'Manifest must be a regular 0600 file')
         value = json.load(stream)
     require(set(value) <= {'base', 'fault', 'phase', 'target_route_original',
-                           'fault_route_key'} and
+                           'fault_route_key', 'resource_kind'} and
             {'base', 'fault', 'phase'} <= set(value), 'Unexpected manifest fields')
+    kind = value.get('resource_kind', 'api')
+    require(kind in {'api', 'model'}, 'Invalid resource kind in manifest')
     checked = base.fixture_ids(value['base']['run_id'])
     require(re.fullmatch(r'qa-vcs-[0-9a-f]{12}', value['base']['run_id']) is not None,
             'Invalid fixture run identity')
@@ -101,25 +106,32 @@ def load(path):
             'Manifest ownership roots or fields changed')
     require(value['fault'] in {'restart', 'route'}, 'Invalid fault selector')
     if 'fault_route_key' in value:
-        require(value['fault_route_key'] == checked['routes']['api']['target'] and
-                isinstance(value.get('target_route_original'), dict),
+        require(value['fault_route_key'] == checked['routes'][kind]['target'] and
+                isinstance(value.get('target_route_original'), dict) and
+                value['target_route_original'].get('labels', {}).get('market_product_id') ==
+                checked['products'][kind],
                 'Invalid route restoration journal')
     database_ids = value['base']['database_ids']
     fault_order = database_ids.get('fault_order')
     changes = database_ids.get('changes', {})
     orders = database_ids.get('orders', {})
-    combinations = database_ids.get('combinations', {}).get('api', {})
-    require(isinstance(fault_order, str) and orders.get('api') == fault_order and
-            re.fullmatch(r'[0-9a-f]{32}', changes.get('api', '')) is not None and
+    combinations = database_ids.get('combinations', {}).get(kind, {})
+    require(set(changes) == {kind} and set(orders) == {kind} and
+            set(database_ids.get('combinations', {})) == {kind} and
+            isinstance(fault_order, str) and orders.get(kind) == fault_order and
+            re.fullmatch(r'[0-9a-f]{32}', changes.get(kind, '')) is not None and
             combinations == {'id': combinations.get('id'),
-                'product_id': checked['products']['api'],
+                'product_id': checked['products'][kind],
                 'enterprise_id': checked['enterprises']['buyer']} and
             isinstance(combinations.get('id'), str),
             'Manifest request, order, or combination ownership mismatch')
-    expected_routes = set(checked['routes']['api'].values())
+    expected_routes = set(checked['routes'][kind].values())
+    require(set(value['base']['external']['route_keys']) <= expected_routes and
+            all(window.get('kind') == kind for window in value['base']['quota_windows']),
+            'Manifest external route or quota journal crosses resource ownership')
     require(len(value['base']['consumers']) == 1 and all(
             item.get('name') == 'market-consumer-' + item.get('id', '') and
-            item.get('route') == checked['routes']['api']['source'] and
+            item.get('route') == checked['routes'][kind]['source'] and
             set(item.get('allowed_routes', [])) == expected_routes
             for item in value['base']['consumers']),
             'Manifest consumer ownership mismatch')
@@ -185,18 +197,18 @@ def wait_for(m, change_id, order_id, predicate, timeout):
     raise AcceptanceFailure('Timed out waiting for the deployed worker state')
 
 
-def journal_current_quota(m, manifest, path):
+def journal_current_quota(m, manifest, path, kind):
     ids = manifest['base']
     redis = m.apisix_policy_redis()
     try:
         with m.SessionLocal() as db:
             combo = db.get(m.subscription_terms['Combination'],
-                           ids['database_ids']['combinations']['api']['id'])
-            require(combo is not None and combo.product_id == ids['products']['api'] and
+                           ids['database_ids']['combinations'][kind]['id'])
+            require(combo is not None and combo.product_id == ids['products'][kind] and
                     combo.enterprise_id == ids['enterprises']['buyer'],
                     'Quota combination ownership mismatch')
             name = next(item['name'] for item in ids['consumers']
-                        if item['route'] == ids['routes']['api']['source'])
+                        if item['route'] == ids['routes'][kind]['source'])
         policy = redis.hgetall('market:apisix:credential:' + name)
         now = int(redis.time()[0])
         active = [item for item in json.loads(policy['subscription_periods'])
@@ -204,15 +216,17 @@ def journal_current_quota(m, manifest, path):
         require(policy.get('quota_scope') == combo.id and len(active) == 1,
                 'Active subscription quota period is ambiguous')
         return base.journal_counter(m, path, ids, redis, combo.id,
-                                    active[0]['period_key'], combo.id, 'api')
+                                    active[0]['period_key'], combo.id, kind)
     finally:
         redis.close()
 
 
-def prepare(path, fault):
+def prepare(path, fault, resource_kind='api'):
     m = base.load_main()
     ids = base.fixture_ids()
-    manifest = {'base': ids, 'fault': fault, 'phase': 'preflight'}
+    require(resource_kind in {'api', 'model'}, 'Invalid resource kind')
+    manifest = {'base': ids, 'fault': fault, 'phase': 'preflight',
+                'resource_kind': resource_kind}
     helper_path = str(path) + '.base'
     ids['environment'] = base.environment_fingerprint(m)
     base.preflight(m, ids)
@@ -226,18 +240,18 @@ def prepare(path, fault):
         tokens = base.prepare(m, ids)
         # Reuse the established real API, APISIX publication, delivery, and
         # funding flow. The wrapper stops before allowing target application.
-        setup_fault_fixture(m, ids, helper_path, path, manifest, client, tokens)
+        setup_fault_fixture(m, ids, helper_path, path, manifest, client, tokens,
+                            resource_kind)
     finally:
         client.close()
 
 
-def setup_fault_fixture(m, ids, helper_path, path, manifest, client, tokens):
-    """Create the real API subscription and paid upgrade, then pause its exact request."""
+def setup_fault_fixture(m, ids, helper_path, path, manifest, client, tokens, kind):
+    """Create the selected API/model subscription and paid upgrade, then pause it."""
     from sqlalchemy import event
     from sqlalchemy import select
     from datetime import timedelta
     import httpx
-    kind = 'api'
     for side in ('source', 'target'):
         route_key = ids['routes'][kind][side]
         base.save_external(helper_path, manifest['base'], kind, side, route_key=route_key)
@@ -371,13 +385,14 @@ def fault_and_check(path):
     manifest = load(path)
     m = base.load_main()
     ids = manifest['base']
-    change_id = ids['database_ids']['changes']['api']
+    kind = manifest.get('resource_kind', 'api')
+    change_id = ids['database_ids']['changes'][kind]
     require(manifest['phase'] == 'handoff', 'Manifest is not at worker restart handoff')
     require(manifest['fault'] == 'route', 'This phase requires the route fault selector')
     target_key = manifest['fault_route_key']
     current = base.apisix_admin(m, 'GET', '/routes/' + target_key, absent=True)
     require(current is None or current.get('labels', {}).get('market_product_id') ==
-            ids['products']['api'], 'Target route ownership labels mismatch')
+            ids['products'][kind], 'Target route ownership labels mismatch')
     base.apisix_admin(m, 'DELETE', '/routes/' + target_key, absent=True)
     manifest['phase'] = 'fault-active'
     save(path, manifest)
@@ -397,9 +412,10 @@ def restart_and_check(path):
     manifest = load(path)
     m = base.load_main()
     ids = manifest['base']
+    kind = manifest.get('resource_kind', 'api')
     require(manifest['phase'] == 'handoff' and manifest['fault'] == 'restart',
             'Manifest is not a worker restart handoff')
-    change_id = ids['database_ids']['changes']['api']
+    change_id = ids['database_ids']['changes'][kind]
     with m.SessionLocal() as db:
         change = db.get(m.version_change_saga['VersionChangeRequest'], change_id)
         require(change is not None and change.resource_plan_json not in ('', '{}'),
@@ -419,20 +435,20 @@ def restart_and_check(path):
         order = db.get(m.Order, ids['database_ids']['fault_order'])
         combo = db.get(m.subscription_terms['Combination'], change.combination_id)
         require(order is not None and combo is not None and
-                combo.version_id == ids['versions']['api']['target'],
+                combo.version_id == ids['versions'][kind]['target'],
                 'Same request did not resume to the target subscription')
     gateway = os.getenv('QA_VCS_GATEWAY_URL', 'http://market-apisix:9080').rstrip('/')
     import httpx
-    quota_keys = journal_current_quota(m, manifest, str(path) + '.base')
+    quota_keys = journal_current_quota(m, manifest, str(path) + '.base', kind)
     save(path, manifest)
     source_consumer_name = next(x['name'] for x in ids['consumers']
-                                if x['route'] == ids['routes']['api']['source'])
+                                if x['route'] == ids['routes'][kind]['source'])
     consumer = base.apisix_admin(m, 'GET', '/consumers/' + source_consumer_name)
     key = consumer.get('plugins', {}).get('key-auth', {}).get('key')
     require(isinstance(key, str) and key.startswith('mk_'), 'Exact consumer key is unavailable for HTTP proof')
-    target = httpx.get(f"{gateway}/gateway/{ids['routes']['api']['target']}/v1/echo",
+    target = httpx.get(f"{gateway}/gateway/{ids['routes'][kind]['target']}/v1/echo",
                        headers={'X-API-Key': key}, timeout=15)
-    source = httpx.get(f"{gateway}/gateway/{ids['routes']['api']['source']}/v1/echo",
+    source = httpx.get(f"{gateway}/gateway/{ids['routes'][kind]['source']}/v1/echo",
                        headers={'X-API-Key': key}, timeout=15)
     require(target.status_code == 200 and source.status_code in {401, 403},
             'Post-restart version route authorization is incorrect')
@@ -450,22 +466,24 @@ def restart_and_check(path):
 
 
 def restore_route(m, manifest):
+    kind = manifest.get('resource_kind', 'api')
     key = manifest['fault_route_key']
     original = manifest['target_route_original']
     route = base.apisix_admin(m, 'GET', '/routes/' + key, absent=True)
     if route is not None:
-        require(route.get('labels', {}).get('market_product_id') == manifest['base']['products']['api'],
+        require(route.get('labels', {}).get('market_product_id') == manifest['base']['products'][kind],
                 'Refusing to replace unowned live target route')
     payload = {k: v for k, v in original.items() if k not in {'id', 'create_time', 'update_time'}}
     base.apisix_admin(m, 'PUT', '/routes/' + key, payload)
     restored = base.apisix_admin(m, 'GET', '/routes/' + key)
     require(restored.get('labels', {}).get('market_product_id') ==
-            manifest['base']['products']['api'], 'Original target route restoration failed')
+            manifest['base']['products'][kind], 'Original target route restoration failed')
 
 
 def verify_compensation(m, manifest, row, path):
     from sqlalchemy import select
     ids = manifest['base']
+    kind = manifest.get('resource_kind', 'api')
     oid = ids['database_ids']['fault_order']
     change_id = row['id']
     with m.SessionLocal() as db:
@@ -504,25 +522,26 @@ def verify_compensation(m, manifest, row, path):
                 order.order_no != 'ORD-261012005144E1B3', 'Protected order identity collision')
     gateway = os.getenv('QA_VCS_GATEWAY_URL', 'http://market-apisix:9080').rstrip('/')
     import httpx
-    quota_keys = journal_current_quota(m, manifest, str(path) + '.base')
+    quota_keys = journal_current_quota(m, manifest, str(path) + '.base', kind)
     save(path, manifest)
-    source_key = next(x['name'] for x in ids['consumers'] if x['route'].endswith('-source'))
+    source_key = next(x['name'] for x in ids['consumers']
+                      if x['route'] == ids['routes'][kind]['source'])
     consumer = base.apisix_admin(m, 'GET', '/consumers/' + source_key)
     require(consumer.get('username') == source_key and
             consumer.get('plugins', {}).get('market-gateway-quota', {}).get('route_key') ==
-            ids['routes']['api']['source'], 'Exact source consumer route binding was not preserved')
+            ids['routes'][kind]['source'], 'Exact source consumer route binding was not preserved')
     key = consumer.get('plugins', {}).get('key-auth', {}).get('key')
     require(isinstance(key, str) and key.startswith('mk_'),
             'Owned APISIX consumer does not expose its fixture key for HTTP proof')
-    source = httpx.get(f"{gateway}/gateway/{ids['routes']['api']['source']}/v1/echo",
+    source = httpx.get(f"{gateway}/gateway/{ids['routes'][kind]['source']}/v1/echo",
                        headers={'X-API-Key': key}, timeout=15)
-    higher = httpx.get(f"{gateway}/gateway/{ids['routes']['api']['target']}/v1/echo",
+    higher = httpx.get(f"{gateway}/gateway/{ids['routes'][kind]['target']}/v1/echo",
                        headers={'X-API-Key': key}, timeout=15)
     require(source.status_code == 200, 'Original source route stopped accepting the shared key')
     redis = m.apisix_policy_redis()
     try:
         month_key = next(key for key in ids['external']['redis_keys']
-                         if ':month:' in key and ids['database_ids']['combinations']['api']['id'] in key)
+                         if ':month:' in key and ids['database_ids']['combinations'][kind]['id'] in key)
         require(redis.get(month_key) == '2', 'Source quota counter reset or failed to continue')
     finally:
         redis.close()
@@ -542,9 +561,10 @@ def main():
     parser.add_argument('phase', choices=('prepare', 'restart-check', 'fault-check', 'cleanup'))
     parser.add_argument('--manifest', required=True)
     parser.add_argument('--fault', choices=('restart', 'route'), default='restart')
+    parser.add_argument('--resource-kind', choices=('api', 'model'), default='api')
     args = parser.parse_args()
     if args.phase == 'prepare':
-        prepare(args.manifest, args.fault)
+        prepare(args.manifest, args.fault, args.resource_kind)
         return
     if args.phase == 'fault-check':
         print(json.dumps(fault_and_check(args.manifest), sort_keys=True))
