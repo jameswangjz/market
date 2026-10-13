@@ -13,6 +13,43 @@ end
 
 local _M = {version = 0.1, priority = 1700, name = "market-gateway-oauth", schema = schema}
 
+local eviction_script = [[
+local token = redis.call("GET", KEYS[1])
+if token == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+]]
+
+local function evict_failed_token(premature, cache_key, token)
+    if premature then return end
+
+    local red = redis:new()
+    red:set_timeout(1000)
+    local ok, err = red:connect("market-redis", 6379)
+    if not ok then
+        ngx.log(ngx.ERR, "OAuth cache eviction Redis connection failed")
+        return
+    end
+    ok, err = red:select(0)
+    if not ok then
+        ngx.log(ngx.ERR, "OAuth cache eviction Redis database selection failed")
+        red:close()
+        return
+    end
+    local result
+    result, err = red:eval(eviction_script, 1, cache_key, token)
+    if result == nil or result == false then
+        ngx.log(ngx.ERR, "OAuth cache eviction Redis operation failed")
+        red:close()
+        return
+    end
+    local keepalive, keepalive_err = red:set_keepalive(60000, 100)
+    if not keepalive then
+        ngx.log(ngx.ERR, "OAuth cache eviction Redis keepalive failed")
+    end
+end
+
 function _M.check_schema(conf)
     return core.schema.check(schema, conf)
 end
@@ -25,11 +62,15 @@ function _M.access(conf, ctx)
     red:set_timeout(1000)
     local ok = red:connect("market-redis", 6379)
     if not ok then return reject(503, "API 网关 OAuth2 缓存不可用") end
-    red:select(0)
+    ok = red:select(0)
+    if not ok then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用") end
     local cache_key = "market:apisix:oauth:" .. (conf.product_id or "unknown")
     local cached = red:get(cache_key)
+    if cached == nil then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用") end
     if cached and cached ~= ngx.null then
         ngx.req.set_header("Authorization", "Bearer " .. cached)
+        ctx.market_oauth_cache_key = cache_key
+        ctx.market_oauth_token = cached
         red:set_keepalive(60000, 100)
         return
     end
@@ -47,9 +88,26 @@ function _M.access(conf, ctx)
     if not token then red:set_keepalive(60000, 100); return reject(502, "上游 OAuth2 响应缺少 access_token") end
     local ttl = tonumber(payload.expires_in or 3600) - 60
     if ttl < 60 then ttl = 60 end
-    red:setex(cache_key, ttl, token)
+    local stored = red:setex(cache_key, ttl, token)
+    if not stored then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用") end
     red:set_keepalive(60000, 100)
     ngx.req.set_header("Authorization", "Bearer " .. token)
+    ctx.market_oauth_cache_key = cache_key
+    ctx.market_oauth_token = token
+end
+
+function _M.log(conf, ctx)
+    if ngx.status ~= 401 or not ctx.market_oauth_cache_key or not ctx.market_oauth_token then
+        return
+    end
+    local upstream_status = ngx.var.upstream_status
+    if type(upstream_status) ~= "string" or upstream_status:match("(%d%d%d)%s*$") ~= "401" then
+        return
+    end
+    local ok, err = ngx.timer.at(0, evict_failed_token, ctx.market_oauth_cache_key, ctx.market_oauth_token)
+    if not ok then
+        ngx.log(ngx.ERR, "OAuth cache eviction timer scheduling failed")
+    end
 end
 
 return _M

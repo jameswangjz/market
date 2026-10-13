@@ -7,6 +7,8 @@ from datetime import timedelta
 import hashlib
 import json
 import os
+from pathlib import Path
+import re
 import time
 
 import httpx
@@ -77,9 +79,14 @@ def run_cases(m, ids, path, client, tokens, kind):
         base.check(response.status_code == 200, 'Owned native gateway token revocation failed')
         base.check(call().status_code == 401, 'Native cached revoked token reached mock upstream')
         outcomes['revoked_token_warm_cache'] = 401
-        # Current native plugin does not invalidate its token on upstream 401.
+        # Log-phase timers are asynchronous; observe exact-token eviction before retry.
+        deadline = time.monotonic() + 5
+        while redis.get(key) == token and time.monotonic() < deadline:
+            time.sleep(.05)
+        base.check(redis.get(key) != token, 'Native gateway retained the rejected token')
         repeated = call().status_code
-        outcomes['revoked_token_next_call_before_cache_eviction'] = repeated
+        base.check(repeated == 200, 'Next native gateway request did not recover automatically')
+        outcomes['revoked_token_next_call_after_auto_eviction'] = repeated
         redis.delete(key)
         base.check(call().status_code == 200, 'Explicit owned-cache eviction did not restore gateway access')
         outcomes['recovery_after_owned_cache_eviction'] = 200
@@ -100,9 +107,22 @@ def run_cases(m, ids, path, client, tokens, kind):
         outcomes['native_gateway_upstream_read_timeout'] = 504
         base.check(call().status_code == 200, 'Gateway remained unavailable after slow/error requests')
         outcomes['access_after_upstream_failure'] = 200
+        plugin = Path('/tmp/market-gateway-oauth.lua').read_text()
+        match = re.search(r'local eviction_script = \[\[(.*?)\]\]', plugin, re.S)
+        base.check(match is not None, 'Deployed plugin eviction script fixture is unavailable')
+        cas = match.group(1)
+        failed_token, replacement = redis.get(key), 'qa-concurrent-replacement-' + kind
+        redis.setex(key, 60, replacement)
+        base.check(redis.eval(cas, 1, key, failed_token) == 0 and redis.get(key) == replacement,
+                   'Atomic Redis eviction removed a concurrent replacement token')
+        base.check(redis.eval(cas, 1, key, replacement) == 1 and redis.get(key) is None,
+                   'Atomic Redis eviction could not remove the exact failed token')
+        outcomes['atomic_new_token_preserved'] = True
+        outcomes['atomic_exact_token_deleted'] = True
+        base.check(call().status_code == 200, 'Gateway did not recover after CAS primitive check')
         return {'status': 'passed', 'scope': 'native APISIX -> real OAuth -> mock API upstream',
                 'kind': kind, 'cases': outcomes,
-                'recovery_limit': 'upstream 401 requires cache expiry or exact cache eviction; no automatic eviction asserted'}
+                'recovery': 'resource 401 evicts matching token asynchronously; next request reacquires; no replay'}
     finally:
         restore_client()
         redis.delete(key)
