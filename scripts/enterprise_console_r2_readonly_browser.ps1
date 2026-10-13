@@ -22,6 +22,7 @@ function Set-Actor([string]$token) {
     $script:injectId=(Cdp 'Page.addScriptToEvaluateOnNewDocument' @{source="if(location.origin==='http://192.168.10.10:30080'){localStorage.setItem('market_token',$quoted)}"}).identifier
 }
 function Shot([string]$name) {
+    Js 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'|Out-Null
     Assert-Browser '!document.querySelector("input[type=password]")' 'Secret input must not be captured'
     $shot=Cdp 'Page.captureScreenshot' @{format='png';captureBeyondViewport=$false}
     [IO.File]::WriteAllBytes((Join-Path $OutputDir ($name+'.png')),[Convert]::FromBase64String($shot.data))
@@ -54,11 +55,15 @@ try {
     Set-Actor $fixture.adminToken
     $result.stage='category settings'
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=settings'}|Out-Null
+    WaitJs 'Number(document.querySelector(".sidebar .nav-badge")?.textContent)>0 && !document.querySelector(".loading-line")'
+    Start-Sleep -Milliseconds 1500
     WaitJs '[...document.querySelectorAll(".sidebar button")].some(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e")'
     Js '[...document.querySelectorAll(".sidebar button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e").click();true'|Out-Null
     WaitJs '[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="\u4ea7\u54c1\u76ee\u5f55")'
     Js '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="\u4ea7\u54c1\u76ee\u5f55").click();true'|Out-Null
     WaitJs '!!document.querySelector(".category-settings")'
+    Js 'new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))'|Out-Null
+    Assert-Browser '!!document.querySelector(".category-settings") && !document.querySelector(".metric-grid")' 'Category settings must remain visible after rendering'
     Shot 'categories-desktop'
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=390;height=844;deviceScaleFactor=1;mobile=$true}|Out-Null
     Shot 'categories-mobile'

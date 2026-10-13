@@ -1,0 +1,68 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "actor": "buyer",
+      "path": "/api/saas-subscriptions/611707aba7849894e33cb694f294d71e/sync-tree",
+      "status": 200
+    },
+    {
+      "actor": "buyer",
+      "path": "/api/orders/6f4147202bb25c449548a54d8ae3060d",
+      "status": 200
+    },
+    {
+      "actor": "buyer",
+      "path": "/api/orders/6f4147202bb25c449548a54d8ae3060d/subscription",
+      "status": 200
+    },
+    {
+      "actor": "provider",
+      "path": "/api/saas-subscriptions/611707aba7849894e33cb694f294d71e/sync-tree",
+      "status": 403
+    },
+    {
+      "actor": "admin",
+      "path": "/api/saas-subscriptions/611707aba7849894e33cb694f294d71e/sync-tree",
+      "status": 403
+    },
+    {
+      "actor": "provider",
+      "path": "/api/products/e101107c3f6414ab48b9ebc43de368e8/integration-readiness",
+      "status": 200
+    },
+    {
+      "actor": "admin",
+      "path": "/api/admin/product-categories",
+      "status": 200
+    },
+    {
+      "actor": "provider",
+      "path": "/api/admin/product-categories",
+      "status": 403
+    },
+    {
+      "actor": "provider",
+      "path": "/api/products",
+      "status": 200
+    },
+    {
+      "actor": "provider",
+      "path": "/api/products",
+      "status": 403
+    },
+    {
+      "actor": "provider",
+      "path": "/api/enterprise-settlements",
+      "status": 200
+    }
+  ],
+  "scope": "deployed HTTP readback; no resource mutations or synchronization performed",
+  "saas_tree_counts": {
+    "departments": 0,
+    "unassigned_users": 1,
+    "mapped_users": 1,
+    "mapped_departments": 0
+  },
+  "saas_visible": true
+}
