@@ -1,14 +1,14 @@
 {
   "total": 168,
   "counts": {
-    "todo": 6,
+    "todo": 4,
     "in_progress": 9,
-    "review": 9,
+    "review": 11,
     "blocked": 5,
     "done": 139
   },
   "completion_rate": 82.7,
-  "updated_at": "2026-10-13 06:42:04.412706+00:00",
+  "updated_at": "2026-10-13 06:54:32.773994+00:00",
   "items": [
     {
       "id": "bb20269be8d63df790904cdf7168e797",
@@ -2065,6 +2065,32 @@
       "updated_at": "2026-10-12 03:25:27.770464+00:00"
     },
     {
+      "id": "30a2771b4fe6168389d55064d35ad629",
+      "code": "TRD-BE-019",
+      "owner": "后端Agent",
+      "title": "到期退款回收及共享授权安全恢复",
+      "area": "授权回收",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-BE-011,TRD-BE-017",
+      "acceptance": "撤销对应时段权益而非所有共享凭据；其他有效订单不受误伤；禁用凭据不因续费被自动恢复，日月计数保留，补偿失败转人工与告警。",
+      "progress": 100,
+      "updated_at": "2026-10-13 06:54:32.743985+00:00"
+    },
+    {
+      "id": "f4820141d64d217676c89b908b1b6db3",
+      "code": "TRD-BE-020",
+      "owner": "后端Agent",
+      "title": "交易事件审计消息及买方敏感信息过滤",
+      "area": "审计通知",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-BE-006,TRD-BE-008,TRD-BE-018",
+      "acceptance": "登记审核发布、报价、支付履约、续费变更和清算调整均有操作者对象前后值及request_id；事务Outbox去重，买方通知审计视图不含成本/Secret。",
+      "progress": 100,
+      "updated_at": "2026-10-13 06:54:32.758815+00:00"
+    },
+    {
       "id": "83679fbda2cd28de0df40ce57f7f51ea",
       "code": "TRD-FE-006",
       "owner": "前端Agent",
@@ -2141,32 +2167,6 @@
       "acceptance": "测试和部署证据逐任务归档、全量计数准确；仅实际通过标记done，真实外部支付/第三方联调限制单列，不以模拟代替生产验收。",
       "progress": 0,
       "updated_at": "2026-10-09 11:13:14.674201+00:00"
-    },
-    {
-      "id": "30a2771b4fe6168389d55064d35ad629",
-      "code": "TRD-BE-019",
-      "owner": "后端Agent",
-      "title": "到期退款回收及共享授权安全恢复",
-      "area": "授权回收",
-      "priority": "P0",
-      "status": "todo",
-      "dependencies": "TRD-BE-011,TRD-BE-017",
-      "acceptance": "撤销对应时段权益而非所有共享凭据；其他有效订单不受误伤；禁用凭据不因续费被自动恢复，日月计数保留，补偿失败转人工与告警。",
-      "progress": 0,
-      "updated_at": "2026-10-09 11:13:14.674117+00:00"
-    },
-    {
-      "id": "f4820141d64d217676c89b908b1b6db3",
-      "code": "TRD-BE-020",
-      "owner": "后端Agent",
-      "title": "交易事件审计消息及买方敏感信息过滤",
-      "area": "审计通知",
-      "priority": "P0",
-      "status": "todo",
-      "dependencies": "TRD-BE-006,TRD-BE-008,TRD-BE-018",
-      "acceptance": "登记审核发布、报价、支付履约、续费变更和清算调整均有操作者对象前后值及request_id；事务Outbox去重，买方通知审计视图不含成本/Secret。",
-      "progress": 0,
-      "updated_at": "2026-10-09 11:13:14.674121+00:00"
     },
     {
       "id": "438cc9fc3fe9b12fade22139d6882c42",
