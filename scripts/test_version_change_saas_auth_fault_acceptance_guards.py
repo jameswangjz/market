@@ -33,7 +33,7 @@ class SaaSAuthFaultAcceptanceGuards(unittest.TestCase):
                          "rejected('expired_signed_warm_token'",
                          "rejected('insufficient_scope_for_change'",
                          'm.saas_access_token(config)',
-                         "result['expired_401_cache_auto_evicted'] = False"):
+                         "result['expired_401_cache_auto_evicted'] = True"):
             self.assertIn(fragment, source)
 
     def test_script_has_no_cluster_control_or_unscoped_delete_commands(self):

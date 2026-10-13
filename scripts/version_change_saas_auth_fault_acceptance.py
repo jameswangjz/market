@@ -243,9 +243,19 @@ def run(manifest=None):
                             ' rejected with unexpected production error status')
                         result[label] = code
                         if label == 'expired_signed_warm_token':
-                            base.check(cache.get(config_id, (None, None))[0] == expired_token,
-                                'Production SaaS token cache unexpectedly auto-evicted the 401 token')
-                            result['expired_401_cache_auto_evicted'] = False
+                            base.check(config_id not in cache,
+                                'Production SaaS token cache retained the resource-401 token')
+                            result['expired_401_cache_auto_evicted'] = True
+                        if label in {'individually_revoked_warm_token', 'expired_signed_warm_token'}:
+                            fresh = m.saas_access_token(db.get(m.SaaSIntegrationConfig, config_id))
+                            base.check(fresh != active_cached,
+                                'Next safe attempt reused the rejected token')
+                            response = direct_mock_request(fresh, {'type': 'STATUS', 'tenant_id': tenant,
+                                'product_id': ids['product'], 'enterprise_id': ids['enterprises']['buyer'],
+                                'subscription_id': sub_id})
+                            base.check(response.status_code == 200,
+                                'Fresh token did not restore resource access after 401')
+                            result[label + '_next_attempt_recovered'] = True
                     else:
                         raise base.AcceptanceFailure(label + ' unexpectedly applied')
                     finally:

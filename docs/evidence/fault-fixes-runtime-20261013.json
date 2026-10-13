@@ -1,0 +1,65 @@
+{
+  "status": "passed",
+  "scope": "OAuth cache 401 recovery and isolated PostgreSQL startup fixes",
+  "environment": "192.168.10.10 / market",
+  "runtime_tag": "20261013050623-88e7042",
+  "lua_harness": "passed",
+  "backend_regression": {"tests": 754, "skipped": 44, "status": "passed"},
+  "saas": {
+    "expired_401_cache_auto_evicted": true,
+    "expired_signed_warm_token_next_attempt_recovered": true,
+    "individually_revoked_warm_token_next_attempt_recovered": true,
+    "inactive_client_with_warm_token": 502,
+    "bad_client_secret_cold_token": 502,
+    "insufficient_scope_for_change": 502,
+    "restored_target_and_original_identity_proofs": true,
+    "baseline_change_ids": ["e5c74d5449e584a37ad1a8d430eb19a2", "cac697f4a60e0d2572bfa233da234d89"]
+  },
+  "native_gateway": {
+    "api": {
+      "revoked_token_warm_cache": 401,
+      "revoked_token_next_call_after_auto_eviction": 200,
+      "inactive_client_warm_cache": 401,
+      "inactive_client_cold_cache": 502,
+      "atomic_new_token_preserved": true,
+      "atomic_exact_token_deleted": true,
+      "native_gateway_upstream_read_timeout": 504,
+      "upstream_server_error": 500
+    },
+    "model": {
+      "revoked_token_warm_cache": 401,
+      "revoked_token_next_call_after_auto_eviction": 200,
+      "inactive_client_warm_cache": 401,
+      "inactive_client_cold_cache": 502,
+      "atomic_new_token_preserved": true,
+      "atomic_exact_token_deleted": true,
+      "native_gateway_upstream_read_timeout": 504,
+      "upstream_server_error": 500
+    }
+  },
+  "startup": {
+    "status": "passed",
+    "scope": "production startup twice in isolated real PostgreSQL schema",
+    "valid_buyer_foreign_key": true,
+    "repeat_core_rows_unchanged": true,
+    "platform_memberships": 0,
+    "counts": {"users": 8, "enterprises": 1, "products": 3, "orders": 1,
+               "payments": 1, "delivery_tasks": 1, "order_state_logs": 3},
+    "cleanup": "owned schema removed; protected public order and product unchanged"
+  },
+  "cleanup_verified": true,
+  "protected_order": "ORD-261012005144E1B3 and dependent product unchanged",
+  "deployment": {
+    "api_and_workers": "ready",
+    "apisix_replicas": 3,
+    "plugin_revision": "88e7042",
+    "credential_secret_unchanged": true,
+    "database_backup": "/root/market/backups/pre-oauth-revocation-20261013050623-88e7042.sql",
+    "plugin_backup": "/root/market/backups/pre-oauth-plugin-88e7042.json"
+  },
+  "boundaries": [
+    "No immediate replay of a failed business request; next call or existing scheduled worker retry obtains a token",
+    "SaaS concurrent replacement test uses synchronized local threads; native CAS primitive additionally checked against real Redis",
+    "Complete deployed daemon Saga fault timings, real provider behavior and real bank payments remain outside this defect closure"
+  ]
+}

@@ -16,6 +16,7 @@ import subprocess
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import zipfile
 from email.message import EmailMessage
@@ -2390,7 +2391,7 @@ def startup():
         db.flush()
         for product in products:
             product.status = "published"
-        order = Order(order_no="ORD-260930-0001", buyer_enterprise_id=enterprise.id, provider_enterprise_id=enterprise.id, product_id=products[0].id, main_status="fulfilling", payment_status="paid", delivery_status="in_delivery", after_sales_status="none", amount=68000, paid_amount=68000, buyer_name=enterprise.name, product_name=products[0].name)
+        order = Order(order_no="ORD-260930-0001", buyer_user_id=admin.id, buyer_enterprise_id=enterprise.id, provider_enterprise_id=enterprise.id, product_id=products[0].id, main_status="fulfilling", payment_status="paid", delivery_status="in_delivery", after_sales_status="none", amount=68000, paid_amount=68000, buyer_name=enterprise.name, product_name=products[0].name)
         db.add(order)
         db.flush()
         db.add(Payment(order_id=order.id, payment_no="PAY-260930-0001", status="paid", amount=68000, proof="人工确认：示范订单"))
@@ -4894,6 +4895,14 @@ def subscription_expiry(start: datetime, cycle: str) -> datetime | None:
     return None if months is None else add_calendar_months(start, months)
 SAAS_CYCLE_LABELS = {"monthly": "月付", "quarterly": "季付", "annual": "年付", "perpetual": "永久"}
 _saas_tokens: dict[str, tuple[str, datetime]] = {}
+_saas_tokens_lock = threading.RLock()
+
+
+def _evict_saas_token(config_id: str, request_token: str) -> None:
+    with _saas_tokens_lock:
+        cached = _saas_tokens.get(config_id)
+        if cached and cached[0] == request_token:
+            _saas_tokens.pop(config_id, None)
 
 
 def saas_version_out(item: SaaSProductVersion) -> dict[str, Any]:
@@ -4926,7 +4935,8 @@ def saas_integration_out(config: SaaSIntegrationConfig | None) -> dict[str, Any]
 
 
 def saas_access_token(config: SaaSIntegrationConfig) -> str:
-    cached = _saas_tokens.get(config.id)
+    with _saas_tokens_lock:
+        cached = _saas_tokens.get(config.id)
     if cached and cached[1] > now() + timedelta(seconds=30):
         return cached[0]
     if not config.client_id or not config.client_secret:
@@ -4941,15 +4951,18 @@ def saas_access_token(config: SaaSIntegrationConfig) -> str:
     if not token:
         raise HTTPException(502, "SaaS OAuth2 响应缺少 access_token")
     expires_in = int(payload.get("expires_in", 3600))
-    _saas_tokens[config.id] = (token, now() + timedelta(seconds=max(60, expires_in)))
+    with _saas_tokens_lock:
+        _saas_tokens[config.id] = (token, now() + timedelta(seconds=max(60, expires_in)))
     return token
 
 
 def saas_call(config: SaaSIntegrationConfig, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
     body = {"type": operation, **payload}
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    request_token = None
     if config.auth_mode == "oauth2":
-        headers["Authorization"] = f"Bearer {saas_access_token(config)}"
+        request_token = saas_access_token(config)
+        headers["Authorization"] = f"Bearer {request_token}"
     elif config.auth_mode == "hmac":
         path = urlparse(config.operation_path).path or "/isv.php"
         canonical = "POST\n" + path + "\n" + "&".join(f"{key}={value}" for key, value in sorted(body.items()))
@@ -4962,6 +4975,9 @@ def saas_call(config: SaaSIntegrationConfig, operation: str, payload: dict[str, 
         response.raise_for_status()
         result = response.json()
     except (httpx.HTTPError, ValueError) as exc:
+        if (request_token is not None and isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code == 401):
+            _evict_saas_token(config.id, request_token)
         raise HTTPException(502, f"SaaS 接口调用失败：{exc}") from exc
     if result.get("ret") not in (None, 0):
         raise HTTPException(502, result.get("msg", "SaaS 接口返回失败"))
@@ -5118,7 +5134,8 @@ def verify_saas_integration(product_id: str, user: User = Depends(current_user),
                 or app_url.username or app_url.password or app_url.fragment or app_url.port == 0):
             raise ValueError("invalid_application_url")
         application_address_policy["validate_url"](product.application_url, db=db)
-        _saas_tokens.pop(config.id, None)
+        with _saas_tokens_lock:
+            _saas_tokens.pop(config.id, None)
         token = saas_access_token(config)
         health_url = f"{application.scheme}://{application.netloc}/health"
         response = validated_http_request("GET", health_url, timeout=5, follow_redirects=False,
