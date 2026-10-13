@@ -5612,7 +5612,6 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .version-change-amounts thead { background: #f7f8fa; }
 .version-change-modal .modal-actions { flex-wrap: wrap; }
 .saas-sync-launchers { display: flex; flex-wrap: wrap; gap: 8px; }
-.saas-sync-modal-scrim { z-index: 30; }
 .saas-sync-modal-card { width: min(980px, calc(100vw - 32px)); max-height: min(760px, calc(100dvh - 32px)); overflow: auto; }
 @media (max-width: 640px) { .saas-sync-modal-card { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); padding: 14px; } }
 </style>

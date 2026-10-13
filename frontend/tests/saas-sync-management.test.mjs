@@ -249,7 +249,22 @@ test("item failures survive refresh failures and invalid selection sends no requ
 });
 
 const consoleSource = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
-// Deployed order_out() omits product_id; readiness requires the backend contract fix.
+test("SaaS modal inherits the shared overlay layer and follows its sibling order drawer", () => {
+  const globalCss = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  const layers = (source, selector) => [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(match => match[1].trim().split(",").map(value => value.trim()).includes(selector))
+    .flatMap(match => [...match[2].matchAll(/z-index\s*:\s*(\d+)/g)].map(value => Number(value[1])));
+  const modalLayers = layers(consoleSource, ".saas-sync-modal-scrim");
+  const drawerLayers = layers(globalCss, ".drawer-scrim");
+  const sharedModalLayers = layers(globalCss, ".modal-scrim");
+  assert.equal(modalLayers.length, 0, "a scoped override must not lower the shared modal layer");
+  assert.ok(drawerLayers.length && sharedModalLayers.length);
+  assert.ok(sharedModalLayers.at(-1) >= drawerLayers.at(-1));
+  assert.match(globalCss, /\.drawer-scrim,\.modal-scrim\{position:fixed;inset:0/);
+  assert.match(consoleSource, /<\/aside>\s*<\/div>\s*<div[^>]*class="modal-scrim saas-sync-modal-scrim"/,
+    "at equal layer, the later sibling modal must paint above the order drawer");
+});
+// Historic order DTO omitted product_id; missing identity must fail closed.
 const syncOrder = { id: "order-sync", order_no: "ORD-SYNC", buyer_user_id: "admin", buyer_enterprise_id: "buyer",
   provider_enterprise_id: "provider", buyer_name: "Buyer", product_name: "SaaS", product_version_id: "version",
   product_version_code: "v1", product_version_name: "Version 1", billing_cycle: "monthly", subscription_months: 3,

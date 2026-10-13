@@ -44,6 +44,7 @@ try {
     Assert-Browser '![...document.querySelectorAll(".order-drawer button")].some(b=>/\u5173\u95ed\u79df\u6237|\u6062\u590d\u79df\u6237/.test(b.textContent))' 'Tenant lifecycle buttons must be absent'
     Js '[...document.querySelectorAll(".order-drawer button")].find(b=>b.textContent.trim()==="\u7528\u6237\u7ba1\u7406").click();true'|Out-Null
     WaitJs '!!document.querySelector(".saas-sync-management .saas-sync-columns")&&document.querySelectorAll(".saas-sync-tree").length===2&&!document.querySelector(".saas-sync-management [aria-busy=true]")'
+    Assert-Browser '(()=>{const e=document.querySelector(".saas-sync-modal-card");const r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+40))})()' 'SaaS dialog must be in front of the order drawer'
     Shot 'saas-sync-desktop'
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=390;height=844;deviceScaleFactor=1;mobile=$true}|Out-Null
     Shot 'saas-sync-mobile'
@@ -52,6 +53,8 @@ try {
     Set-Actor $fixture.adminToken
     $result.stage='category settings'
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=settings'}|Out-Null
+    WaitJs '[...document.querySelectorAll(".sidebar button")].some(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e")'
+    Js '[...document.querySelectorAll(".sidebar button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e").click();true'|Out-Null
     WaitJs '[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="\u4ea7\u54c1\u76ee\u5f55")'
     Js '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="\u4ea7\u54c1\u76ee\u5f55").click();true'|Out-Null
     WaitJs '!!document.querySelector(".category-settings")'
