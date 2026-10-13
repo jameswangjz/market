@@ -20,48 +20,68 @@ export function integrationStatus(item) {
 
 export function createIntegrationController({ state, api, product, changed }) {
   let epoch = 0;
+  let verification = 0;
   const path = (id, version) => `/products/${encodeURIComponent(id)}/versions/${encodeURIComponent(version)}/integration`;
   const message = (error, fallback) => typeof error?.response?.data?.detail === 'string' ? error.response.data.detail : fallback;
-  async function load() {
+  async function load(options = false) {
+    const preserveBusy = options === true;
+    if (!preserveBusy) {
+      verification++;
+      state.busy = '';
+    }
     const generation = ++epoch;
     const current = product();
     state.loading = true;
     state.rows = [];
-    const rows = await Promise.all((current.versions || []).filter(v => v.id).map(async version => {
+    const versions = (current.versions || []).filter(v => v.id);
+    const rows = await Promise.all(versions.map(async version => {
       try {
         const { data } = await api.get(path(current.id, version.id));
+        if ((data?.item?.version_id && data.item.version_id !== version.id)
+            || (data?.route?.version && data.route.version !== version.version_code)) {
+          return { version, item: null, route: null, error: '接入状态与当前版本不匹配' };
+        }
         return { version, ...data, error: '' };
       } catch (error) {
         return { version, item: null, route: null, error: message(error, '接入状态加载失败') };
       }
     }));
-    if (generation !== epoch || product().id !== current.id) return;
+    if (generation !== epoch || product().id !== current.id) return false;
     state.rows = rows;
     state.loading = false;
+    return true;
   }
   async function verify(row) {
     if (state.busy || state.loading) return;
     const current = product();
     if (!['pending_integration', 'published'].includes(current.status)) return;
+    const version = current.versions?.find(item => item.id === row?.version?.id);
+    if (!version || !state.rows.includes(row) || !row.item) return;
     state.busy = row.version.id;
+    const operation = ++verification;
     const generation = epoch;
     try {
       await api.post(path(current.id, row.version.id) + '/verify');
       if (generation === epoch && current.id === product().id) {
-        await load();
-        changed();
+        if (await load(true) && operation === verification && current.id === product().id) changed();
       }
     } catch (error) {
       if (generation === epoch && current.id === product().id) {
         // Failed verification persists its evidence before returning an error.
-        await load();
-        const refreshed = state.rows.find(v => v.version.id === row.version.id);
-        if (refreshed) refreshed.error = message(error, '接入验证失败');
+        if (await load(true) && operation === verification && current.id === product().id) {
+          const refreshed = state.rows.find(v => v.version.id === row.version.id);
+          if (refreshed) refreshed.error = message(error, '接入验证失败');
+        }
       }
     } finally {
-      state.busy = '';
+      if (operation === verification && current.id === product().id) state.busy = '';
     }
   }
-  function dispose() { epoch++; }
+  function dispose() {
+    epoch++;
+    verification++;
+    state.loading = false;
+    state.busy = '';
+  }
   return { load, verify, dispose };
 }

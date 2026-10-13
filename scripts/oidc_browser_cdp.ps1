@@ -52,7 +52,8 @@ function Allowed($request) {
                 $u.AbsolutePath -cin @('/api/auth/me','/api/enterprises','/api/applications','/api/storefront/buyer-enterprises',
                     '/api/notifications/summary','/api/notifications/stream','/api/notifications/sender-context',
                     '/api/dashboard','/api/products','/api/orders','/api/development/tasks') -or
-                $u.AbsolutePath -ceq ('/api/applications/' + $fixture.subscriptionId + '/members')
+                $u.AbsolutePath -ceq ('/api/applications/' + $fixture.subscriptionId + '/members') -or
+                $u.AbsolutePath -ceq '/api/settings/application-address-policy'
         }
         if ($method -cne 'POST' -or $authority -cne $fixture.baseUrl -or $u.Query) { return $false }
         if ($u.AbsolutePath -ceq '/api/auth/login') {
