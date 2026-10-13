@@ -66,10 +66,17 @@ class AuditAcceptanceTests(unittest.TestCase):
             exported = db.scalar(self.select(self.m.AuditLog).where(self.m.AuditLog.action == 'export_audit_logs'))
             self.assertTrue(exported.request_id)
 
-    def test_view_and_export_reject_ordinary_enterprise_and_review_roles(self):
+    def test_enterprise_view_is_redacted_and_platform_export_remains_forbidden(self):
         self.seed()
         for actor in ('buyer', 'provider', 'outsider', 'quality', 'reviewer'):
-            for path in ('/api/audit-logs', '/api/audit-logs/export', '/api/audit-logs/a1/timeline'):
+            if actor in ('buyer', 'provider', 'outsider'):
+                items = self.request('GET', '/api/audit-logs', actor=actor)['items']
+                self.assertEqual({row['id'] for row in items}, set() if actor == 'outsider' else {'a1', 'a2', 'other'})
+                for row in items:
+                    self.assertEqual(set(row), {'id', 'action', 'target_type', 'target_id', 'result', 'category', 'order_id', 'order_no', 'created_at'})
+            else:
+                self.request('GET', '/api/audit-logs', actor=actor, expected=403)
+            for path in ('/api/audit-logs/export', '/api/audit-logs/a1/timeline'):
                 self.request('GET', path, actor=actor, expected=403)
 
     def test_empty_and_invalid_date_filters(self):

@@ -10,6 +10,12 @@ class SaaSRegistrationVersionTests(unittest.TestCase):
     tearDown = fixtures.BusinessRoutesHTTPTests.tearDown
     request = fixtures.BusinessRoutesHTTPTests.request
 
+    def setUp(self):
+        fixtures.BusinessRoutesHTTPTests.setUp(self)
+        with self.m.SessionLocal() as db:
+            self.m.product_categories['seed'](db)
+            db.commit()
+
     def product(self, db):
         m = self.m
         product = m.Product(id="saas-product", enterprise_id="provider_tenant", name="SaaS",
@@ -146,6 +152,7 @@ class SaaSRegistrationVersionTests(unittest.TestCase):
         m = self.m
         created = self.request("POST", "/api/products", actor="provider", json={
             "name": "Registered SaaS", "product_type": "saas", "delivery_method": "tenant_access",
+            "catalog_name": "其他",
             "application_url": "https://app.example.invalid", "versions": [{
                 "version_code": "monthly", "description": "Monthly plan", "price": 75,
                 "cost": 20, "status": "active",

@@ -171,11 +171,14 @@ def install(ns):
             raise HTTPException(409, '存在已支付但尚未完成期限编排的订单，请等待交付完成')
         return rows
 
-    def compatibility(version):
+    def compatibility(version, delivery_method):
+        if delivery_method in {'api', 'model_api'}:
+            return {'mode': 'compatible', 'notes': '', 'confirmation_required': False}
         mode = version.compatibility_mode or 'compatible'
         if mode not in {'compatible', 'breaking'}:
             raise HTTPException(409, '目标版本兼容性配置无效')
-        return {'mode': mode, 'notes': version.compatibility_notes or '', 'confirmation_required': mode == 'breaking'}
+        return {'mode': mode, 'notes': version.compatibility_notes or '',
+                'confirmation_required': delivery_method == 'tenant_access' and mode == 'breaking'}
 
     def prepare(db, user, order_id, target_id, confirmed, at):
         source = db.scalar(select(Order).where(Order.id == order_id).execution_options(populate_existing=True))
@@ -205,7 +208,7 @@ def install(ns):
         rows = eligible_segments(db, order, combo, at)
         version = target['version']
         target_integration = integration_context(ns, db, target['product'], version)
-        compat = compatibility(version)
+        compat = compatibility(version, combo.delivery_method)
         if compat['confirmation_required'] and not confirmed:
             raise HTTPException(409, '目标版本存在不兼容变更，请明确确认兼容性后获取报价')
         segments, internal, state, snapshots_by_term = [], [], [], {}
@@ -325,8 +328,8 @@ def install(ns):
             'expires_at': iso(CalendarAnchor(combo.anchor_at).boundary(combo.total_months)),
             'versions': [{'id': version.id, 'version_code': version.version_code,
                 'monthly_price': float(money(version.monthly_price if product.product_type == 'saas' else version.price)),
-                'compatibility_mode': compatibility(version)['mode'],
-                'compatibility_notes': compatibility(version)['notes']} for version in versions
+                'compatibility_mode': compatibility(version, combo.delivery_method)['mode'],
+                'compatibility_notes': compatibility(version, combo.delivery_method)['notes']} for version in versions
                 if version.id in available and version.id != combo.version_id]}
 
     @ns['app'].post('/api/orders/{order_id}/version-change-quote')

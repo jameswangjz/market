@@ -47,12 +47,14 @@ export function sanitizeVersionChangeOptions(data, order, subscription, at = Dat
       !text(data.current_version_id) || !text(data.current_version_code) ||
       !date(data.expires_at) || Date.parse(data.expires_at) <= serverAt || !Array.isArray(data.versions)) invalid();
   const ids = new Set();
+  const apiDelivery = ["api", "model_api"].includes(data.delivery_method);
   const versions = data.versions.map(version => {
     if (!text(version?.id) || ids.has(version.id) || !text(version.version_code) || !price(version.monthly_price) ||
-        !modes.includes(version.compatibility_mode) || typeof version.compatibility_notes !== "string") invalid();
+        (!apiDelivery && (!modes.includes(version.compatibility_mode) || typeof version.compatibility_notes !== "string"))) invalid();
     ids.add(version.id);
     return { id: version.id, version_code: version.version_code, monthly_price: version.monthly_price,
-      compatibility_mode: version.compatibility_mode, compatibility_notes: version.compatibility_notes };
+      compatibility_mode: apiDelivery ? "compatible" : version.compatibility_mode,
+      compatibility_notes: apiDelivery ? "" : version.compatibility_notes };
   });
   return { order_id: data.order_id, combination_id: data.combination_id, delivery_method: data.delivery_method,
     current_version_id: data.current_version_id, current_version_code: data.current_version_code, expires_at: data.expires_at, versions, ...clock };
@@ -63,7 +65,8 @@ export function versionChangeQuotePayload(options, targetId, confirmed, at = Dat
   const target = options?.versions.find(version => version.id === targetId && version.id !== options.current_version_id);
   if (!target || !date(options.expires_at) || Date.parse(options.expires_at) <= at) throw new Error("请选择可用的目标版本，或刷新版本信息");
   if (typeof confirmed !== "boolean") throw new Error("请核对兼容性确认");
-  if (target.compatibility_mode === "breaking" && !confirmed) throw new Error("请先确认目标版本的不兼容变更");
+  if (!(["api", "model_api"].includes(options.delivery_method)) &&
+      target.compatibility_mode === "breaking" && !confirmed) throw new Error("请先确认目标版本的不兼容变更");
   return { target_version_id: target.id, compatibility_confirmed: confirmed };
 }
 

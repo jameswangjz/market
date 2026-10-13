@@ -130,10 +130,17 @@ def install(ns):
             return None
         # Explicit public whitelist; never reuse product_out or ORM serialization.
         provider = db.get(ns["Enterprise"], product.enterprise_id)
+        category = db.get(ns["ProductCategory"], product.category_id) if product.category_id else None
+        parent = db.get(ns["ProductCategory"], category.parent_id) if category and category.parent_id else None
         return {"id": product.id, "name": product.name,
                 "provider_name": provider.name if provider else "",
                 "description": product.description or "",
                 "delivery_method": product.delivery_method,
+                "category_id": product.category_id or "",
+                "category_parent_id": parent.id if parent else "",
+                "category_name": category.name if category else "未分类",
+                "category_parent_name": parent.name if parent else "",
+                "catalog_name": product.catalog_name or "未分类",
                 "product_type": product.product_type,
                 "logo_url": f"/api/storefront/products/{product.id}/logo" if thumbnail(db, product) else "",
                 "versions": versions, "minimum_price": min(v["price"] for v in versions),
@@ -152,6 +159,9 @@ def install(ns):
                  catalog: str = Query(default="", max_length=180),
                  product_type: str = Query(default="", max_length=50),
                  catalog_name: str = Query(default="", max_length=180),
+                 parent_id: str = Query(default="", max_length=36),
+                 category_id: str = Query(default="", max_length=36),
+                 delivery_method: str = Query(default="", max_length=80),
                  page: int = Query(default=1, ge=1),
                  page_size: int = Query(default=20, ge=1, le=100),
                  db=Depends(db_session)):
@@ -165,7 +175,19 @@ def install(ns):
                 stmt = stmt.where(Product.product_type == value.strip())
         for value in (catalog, catalog_name):
             if value.strip():
-                stmt = stmt.where(Product.catalog_name == value.strip())
+                legacy = value.strip()
+                if legacy == "其他":
+                    stmt = stmt.where(Product.catalog_name == "其他")
+                else:
+                    stmt = stmt.where(Product.catalog_name == legacy)
+        if delivery_method.strip():
+            stmt = stmt.where(Product.delivery_method == delivery_method.strip())
+        if category_id.strip():
+            stmt = stmt.where(Product.category_id == category_id.strip())
+        if parent_id.strip():
+            Category = ns["ProductCategory"]
+            child_ids = select(Category.id).where(Category.parent_id == parent_id.strip())
+            stmt = stmt.where(Product.category_id.in_(child_ids))
         # Readiness includes persisted gateway evidence. Filter before counting or
         # slicing so a failed route never inflates total or leaves a short page.
         items = []

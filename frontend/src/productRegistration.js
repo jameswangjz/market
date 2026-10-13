@@ -1,6 +1,13 @@
 const versionFields = ["version_code", "description", "compatibility_mode", "compatibility_notes", "price", "cost", "rate_limit_per_minute", "daily_quota", "monthly_quota", "quota_unit", "quota_amount", "status"];
-const productFields = ["name", "product_type", "catalog_name", "provider_name", "provider_type", "description", "usage_scenarios", "delivery_method", "upstream_url", "application_url", "integration_api_url", "oidc_redirect_uris", "download_limit", "logo_file_id", "price", "pricing_strategy", "version", "quality_level", "security_level", "authorization_conditions", "data_source_statement", "compliance_statement", "settlement_rule_mode", "settlement_rule_id", "settlement_rule"];
+const productFields = ["name", "product_type", "catalog_name", "category_id", "provider_name", "provider_type", "description", "usage_scenarios", "delivery_method", "upstream_url", "application_url", "integration_api_url", "oidc_redirect_uris", "download_limit", "logo_file_id", "price", "pricing_strategy", "version", "quality_level", "security_level", "authorization_conditions", "data_source_statement", "compliance_statement", "settlement_rule_mode", "settlement_rule_id", "settlement_rule"];
 const integrationFields = ["upstream_url", "route_key", "auth_mode", "upstream_auth_mode", "upstream_scope", "timeout_ms", "strip_prefix", "health_path", "health_method"];
+export const productDeliveryMapping = Object.freeze({ dataset: "file", model: "file", report: "file", application: "file", api: "api", saas: "tenant_access", training: "training", consulting: "consulting", custom: "custom" });
+
+export function deliveryForProductType(type) { return productDeliveryMapping[type] || "file"; }
+
+export function stableRouteKey(productId, versionId) {
+  return `p-${productId}-v-${versionId}`.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 100);
+}
 
 export function splitOidcRedirectUris(text) {
   return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -46,6 +53,7 @@ export async function loadRegistrationIntegrations(api, productId, versions) {
   for (const version of versions) {
     const { data } = await api.get(`/products/${productId}/versions/${version.id}/integration`);
     version.integration = { ...emptyVersionIntegration(), ...Object.fromEntries(integrationFields.filter((key) => data.route && key in data.route).map((key) => [key, data.route[key]])) };
+    if (!version.integration.route_key) version.integration.route_key = stableRouteKey(productId, version.id);
   }
 }
 
@@ -63,6 +71,7 @@ export async function saveRegistrationAttachments(api, form, productId) {
       if (version.is_sold === true) continue;
       const config = version.integration;
       if (!config) throw new Error("请重新打开产品加载每版本接入配置");
+      if (!config.route_key) config.route_key = stableRouteKey(productId, version.id);
       const payload = Object.fromEntries(integrationFields.map((key) => [key, config[key]]));
       Object.assign(payload, { version: version.version_code, rate_limit_per_minute: version.rate_limit_per_minute, daily_quota: version.daily_quota, monthly_quota: version.monthly_quota });
       await api.put(`/products/${productId}/versions/${version.id}/integration`, payload);

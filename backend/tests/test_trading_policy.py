@@ -26,6 +26,21 @@ class TradingPolicyTests(unittest.TestCase):
         options = self.request("GET", "/api/storefront/buyer-enterprises")["items"]
         self.assertEqual({x["id"] for x in options if x["eligible"]}, {"buyer_tenant", "other_tenant"})
 
+    def test_product_type_delivery_mapping_and_illegal_new_combo_rejection(self):
+        m = self.m
+        expected = {"dataset": "file", "model": "file", "report": "file",
+                    "application": "file", "api": "api", "saas": "tenant_access",
+                    "training": "training", "consulting": "consulting", "custom": "custom"}
+        with m.SessionLocal() as db:
+            product = db.get(m.Product, "product")
+            for product_type, delivery_method in expected.items():
+                product.product_type, product.delivery_method = product_type, delivery_method
+                m.trading_policy["validate_product_delivery"](db, product)
+            product.product_type, product.delivery_method = "model", "model_api"
+            with self.assertRaises(m.HTTPException) as error:
+                m.trading_policy["validate_product_delivery"](db, product)
+            self.assertEqual(error.exception.status_code, 400)
+
     def test_enterprise_selection_required(self):
         self.request("POST", "/api/orders", expected=422, json={"product_id": "product"})
         self.create("", expected=422)
@@ -78,16 +93,25 @@ class TradingPolicyTests(unittest.TestCase):
             self.assertEqual(len(self.request("GET", "/api/products", actor=actor)["items"]), 1)
         self.request("GET", "/api/products", actor="finance", expected=403)
 
-    def test_unverified_console_catalog_does_not_leak_private_fields(self):
+    def test_unverified_console_catalog_is_enterprise_scoped_and_whitelisted(self):
         with self.m.SessionLocal() as db:
             db.get(self.m.User, "buyer").verified_status = "pending"
             db.get(self.m.Product, "product").upstream_url = "https://private.invalid"
+            db.get(self.m.ProductReleaseVersion, "version").cost = 321
             db.commit()
-        for path in ("/api/products", "/api/products/product"):
-            response = self.request("GET", path)
-            text = str(response)
-            for private in ("cost", "upstream_url", "settlement_rule", "https://private.invalid"):
-                self.assertNotIn(private, text)
+        self.assertEqual(self.request("GET", "/api/products")["items"], [])
+        self.request("GET", "/api/products/product", expected=404)
+        with self.m.SessionLocal() as db:
+            db.add(self.m.Product(id="unverified-owned", enterprise_id="buyer_tenant", name="Owned",
+                product_type="dataset", provider_name="Buyer", provider_type="enterprise", status="draft",
+                delivery_method="file", description="Safe description", upstream_url="https://private.invalid",
+                catalog_name="Test", pricing_strategy="Internal strategy", price=12))
+            db.commit()
+        results = (self.request("GET", "/api/products"), self.request("GET", "/api/products/unverified-owned"))
+        for result in results:
+            for private in ("cost", "upstream_url", "private.invalid", "settlement_rule", "pricing_strategy", "Internal strategy"):
+                self.assertNotIn(private, str(result))
+        self.assertEqual({item["id"] for item in results[0]["items"]}, {"unverified-owned"})
 
 
 if __name__ == "__main__":

@@ -251,7 +251,7 @@ test("order-detail fetch ignores older results and drawer closure invalidates pe
   const state = {
     orderDetailRequest: 0, selectedOrder: { value: null }, user: { value: user }, enterprise: { value: enterprise }, token: { value: "token" },
     subscriptionSession: { reset() {}, load: async value => calls.push(value.id) },
-    deliveryAttachmentDescription: { value: "" }, saasOrderState: { value: {} }, apiOrderState: { value: {} }, apiCredentialReveal: { value: null },
+    deliveryAttachmentDescription: { value: "" }, saasOrderState: { value: {} }, saasSyncDialog: { value: null }, apiOrderState: { value: {} }, apiCredentialReveal: { value: null },
     orderProductFiles: { value: {} }, orderDeliveryAttachments: { value: {} }, isOfflineFulfillmentOrder: () => false,
     api: { get: async url => url === "/orders/order-1" ? pending.promise : { data: { order: { ...order, id: "new", payment_status: "unpaid" } } } },
   };

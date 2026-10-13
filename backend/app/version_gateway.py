@@ -106,10 +106,17 @@ def install(ns):
     def save_config(db, product, version_id, body, user):
         ns["gateway_operator_allowed"](product, user, db, "configure")
         locked_product(db, product)
-        if product.delivery_method not in {"api", "model_api"}:
+        if product.delivery_method not in {"api", "model_api"} or product.product_type not in {"api", "model"}:
             raise HTTPException(409, "Only release API integration is implemented")
         version = get_version(db, product, version_id)
+        route = db.scalar(select(Route).where(Route.product_id == product.id,
+                                             Route.version == version.version_code).with_for_update())
         body = ns["GatewayConfigBody"].model_validate(body.model_dump() if hasattr(body, "model_dump") else body)
+        if body.route_key and not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", body.route_key):
+            raise HTTPException(400, "API路由标识无效")
+        # Preserve explicit legacy API identities used by journaled runtime fixtures.
+        body.route_key = route.route_key if route else body.route_key or re.sub(
+            r"[^A-Za-z0-9_-]", "-", f"p-{product.id}-v-{version.id}")[:100]
         try:
             ns["validate_upstream_url"](body.upstream_url.rstrip("/") + body.health_path)
             ns["application_address_policy"]["validate_url"](body.upstream_url, db=db)
@@ -141,8 +148,6 @@ def install(ns):
             for key, value in values.items():
                 setattr(config, key, value)
             config.version_code = version.version_code
-        route = db.scalar(select(Route).where(Route.product_id == product.id,
-                                             Route.version == version.version_code).with_for_update())
         collision = db.scalar(select(Route).where(Route.route_key == body.route_key))
         if collision and (not route or collision.id != route.id):
             raise HTTPException(409, "API路由标识已被其它版本占用")

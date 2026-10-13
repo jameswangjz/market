@@ -2,8 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { computed, ref } from "vue";
-import { bindRegistrationVersions, emptyVersionIntegration, isValidOidcRedirectUri, loadRegistrationIntegrations, registrationPayload, saveRegistrationAttachments, splitOidcRedirectUris } from "../src/productRegistration.js";
+import { computed, ref, watch } from "vue";
+import { bindRegistrationVersions, deliveryForProductType, emptyVersionIntegration, isValidOidcRedirectUri, loadRegistrationIntegrations, productDeliveryMapping, registrationPayload, saveRegistrationAttachments, splitOidcRedirectUris, stableRouteKey } from "../src/productRegistration.js";
+
+test("product types map to their canonical delivery and route keys use stable IDs", () => {
+  assert.deepEqual(productDeliveryMapping, { dataset: "file", model: "file", report: "file", application: "file", api: "api", saas: "tenant_access", training: "training", consulting: "consulting", custom: "custom" });
+  assert.equal(deliveryForProductType("saas"), "tenant_access");
+  assert.equal(stableRouteKey("product id", "version/id"), "p-product-id-v-version-id");
+});
 
 test("registration JSON omits file objects and integration-only fields", () => {
   const payload = registrationPayload({ logoFile: {}, fileUpload: {}, client_secret: "must-not-send", review_logs: [], versions: [{ version_code: "v1", fileUpload: {}, integration: { client_secret: "must-not-send" } }] });
@@ -88,9 +94,12 @@ test("new and reset forms have independent defaults and multiline editing preser
   const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
   const start = source.indexOf("const emptyProductVersion =");
   const end = source.indexOf("let progressTimer;", start);
-  const state = { computed, ref, applicationAddressPolicy: ref({ allow_http: false }), emptyVersionIntegration, splitOidcRedirectUris, isValidOidcRedirectUri };
+  const readinessStart = source.indexOf("const productReadiness =", start);
+  const formWatchStart = source.indexOf("watch(() => productForm.value.product_type", readinessStart);
+  const formSource = source.slice(start, readinessStart) + source.slice(formWatchStart, end);
+  const state = { computed, ref, watch, deliveryForProductType, applicationAddressPolicy: ref({ allow_http: false }), emptyVersionIntegration, splitOidcRedirectUris, isValidOidcRedirectUri };
   vm.createContext(state);
-  vm.runInContext(source.slice(start, end) + "\nthis.form = productForm; this.redirectText = oidcRedirectUrisText; this.reset = emptyProductForm; this.emptyVersion = emptyProductVersion; this.validateRedirects = updateOidcRedirectUris;", state);
+  vm.runInContext(formSource + "\nthis.form = productForm; this.redirectText = oidcRedirectUrisText; this.reset = emptyProductForm; this.emptyVersion = emptyProductVersion; this.validateRedirects = updateOidcRedirectUris;", state);
   assert.equal(state.form.value.oidc_redirect_uris.length, 0);
   assert.equal(state.form.value.versions[0].compatibility_mode, "compatible");
   assert.equal(state.emptyVersion().compatibility_notes, "");
@@ -143,7 +152,15 @@ test("integration loading and saving whitelist config without carrying credentia
   assert.equal(calls[0].body.version, "v1");
   assert.equal(calls[0].body.daily_quota, 0);
   assert.equal(calls[0].body.monthly_quota, 12000);
+  assert.equal(calls[0].body.route_key, "route-one");
   assert.equal("healthy" in calls[0].body, false);
+});
+
+test("integration save generates a missing route key from persisted IDs", async () => {
+  const versions = [{ id: "v-1", version_code: "v1", integration: emptyVersionIntegration() }];
+  let request;
+  await saveRegistrationAttachments({ put: async (url, body) => { request = { url, body }; } }, { delivery_method: "api", versions }, "p-1");
+  assert.equal(request.body.route_key, "p-p-1-v-v-1");
 });
 
 test("missing saved version identity stops attachment writes", () => {

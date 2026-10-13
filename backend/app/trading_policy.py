@@ -12,6 +12,25 @@ def install(ns):
     SaaSSubscription = ns.get("SaaSSubscription")
     online = {"file", "api", "model_api", "tenant_access"}
     offline = {"training", "consulting", "custom"}
+    product_delivery = {"dataset": "file", "model": "file", "report": "file",
+                       "application": "file", "api": "api", "saas": "tenant_access",
+                       "training": "training", "consulting": "consulting", "custom": "custom"}
+
+    def validate_product_delivery(db, product, product_type=None, delivery_method=None):
+        product_type = product_type if product_type is not None else product.product_type
+        delivery_method = delivery_method if delivery_method is not None else product.delivery_method
+        product_id = getattr(product, "id", "") if product is not None else ""
+        expected = product_delivery.get(product_type)
+        if (product is not None and product.product_type == "model"
+                and product.delivery_method == "model_api"
+                and product_type == "model" and delivery_method == "model_api"):
+            has_sold_snapshot = db.scalar(select(Order.id).where(
+                Order.product_id == product_id, Order.delivery_method_snapshot == "model_api",
+                Order.paid_amount > 0).limit(1))
+            if has_sold_snapshot:
+                return
+        if expected != delivery_method:
+            raise HTTPException(400, "产品类型与交付方式不匹配")
 
     def delivery_category(method):
         if method not in online | offline:
@@ -131,6 +150,7 @@ def install(ns):
         return removed_codes
 
     def validate_submission(db, product):
+        validate_product_delivery(db, product)
         delivery_category(product.delivery_method)
         logo = db.get(FileObject, product.logo_file_id) if product.logo_file_id else None
         if not logo or logo.product_id != product.id or logo.file_role != "product_logo" or logo.status not in {"draft", "active"} or logo.scan_status != "clean":
@@ -199,6 +219,7 @@ def install(ns):
         return {"items": items}
 
     return {"require_buyer": require_buyer, "delivery_category": delivery_category,
+            "validate_product_delivery": validate_product_delivery,
             "validate_submission": validate_submission, "update_versions": update_versions,
             "sync_saas_versions": sync_saas_versions,
             "protect_sold_version": protect_sold_version, "protect_sold_file": protect_sold_file}

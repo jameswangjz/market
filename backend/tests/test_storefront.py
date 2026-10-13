@@ -54,6 +54,9 @@ class StorefrontTests(unittest.TestCase):
                        apisix_enabled=Mock(return_value=False), MINIO_ENDPOINT="isolated:9000",
                        Minio=Mock(side_effect=AssertionError("Unmocked MinIO forbidden")))
         self.install(self.ns)
+        category_route = next(route for route in self.m.app.routes if route.path == "/api/storefront/categories")
+        self.ns["app"].add_api_route("/api/storefront/categories", category_route.endpoint, methods=["GET"])
+        self.ns["app"].dependency_overrides[self.m.db_session] = db_session
         self.client = TestClient(self.ns["app"])
         self.addCleanup(self.client.close)
         self.product("file")
@@ -114,7 +117,8 @@ class StorefrontTests(unittest.TestCase):
         self.assertEqual(set(data), {"items", "total", "page", "page_size"})
         dto = data["items"][0]
         self.assertEqual(set(dto), {"id", "name", "provider_name", "description", "delivery_method",
-                         "product_type", "logo_url", "versions", "minimum_price", "price_unit"})
+                         "category_id", "category_parent_id", "category_name", "category_parent_name",
+                         "catalog_name", "product_type", "logo_url", "versions", "minimum_price", "price_unit"})
         self.assertEqual(dto["minimum_price"], 20)
         self.assertEqual(dto["price_unit"], "order")
         self.assertEqual({v["id"] for v in dto["versions"]}, {"file-v1", "cheap"})
@@ -124,8 +128,22 @@ class StorefrontTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", json.dumps(dto))
         with self.Session() as db:
             after = {table.name: db.scalar(select(func.count()).select_from(table))
-                     for table in self.m.Base.metadata.sorted_tables}
+                      for table in self.m.Base.metadata.sorted_tables}
         self.assertEqual(after, before)
+
+    def test_category_tree_and_public_category_filters(self):
+        with self.Session() as db:
+            self.m.product_categories["seed"](db)
+            parent = db.scalar(select(self.m.ProductCategory).where(self.m.ProductCategory.name == "行业数据集", self.m.ProductCategory.parent_id.is_(None)))
+            child = db.scalar(select(self.m.ProductCategory).where(self.m.ProductCategory.name == "产品质量", self.m.ProductCategory.parent_id == parent.id))
+            db.get(self.m.Product, "file").category_id = child.id
+            parent_id, child_id = parent.id, child.id
+            db.commit()
+        tree = self.client.get("/api/storefront/categories", params={"delivery_method": "file"})
+        self.assertEqual(tree.status_code, 200)
+        self.assertIn(child_id, {entry["id"] for root in tree.json()["items"] for entry in root["children"]})
+        result = self.get(parent_id=parent_id, category_id=child_id, delivery_method="file")
+        self.assertEqual([item["id"] for item in result["items"]], ["file"])
 
     def test_hidden_states_missing_and_no_active_versions_are_404(self):
         for state in ("draft", "rejected", "security_unpublished", "unpublished", "operation_review"):

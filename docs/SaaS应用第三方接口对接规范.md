@@ -162,8 +162,12 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 ### 4.1 增加或恢复用户 `USER_ASSIGN`
 
 ```json
-{"type":"USER_ASSIGN","tenant_id":"tenant-10001","user_id":"platform-user-id","username":"user@example.com","name":"张三","email":"user@example.com","phone":"13800000000","department_id":"platform-department-id"}
+{"type":"USER_ASSIGN","tenant_id":"tenant-10001","user_id":"platform-user-id","username":"user@example.com","name":"张三","email":"user@example.com","phone":"13800000000","department_id":"external-department-1","department_ids":["external-department-1","external-department-2"]}
 ```
+
+`department_ids` 为可选字段，表示用户所属的多个 SaaS 部门；平台会将企业部门 ID 映射为第三方部门 ID 后传入。兼容只处理 `department_id` 的旧接入时，平台仍会同时发送首个部门到 `department_id`。
+
+同步管理发送当前已同步部门的第三方 ID；未同步部门不包含在数组内。再次添加已映射用户时，平台重新计算部门列表并调用 `USER_ASSIGN` 更新关联；空数组表示清除部门关联。第三方应以本次列表替换原关联，而非仅追加。相同状态的重复请求复用成功结果；删除后恢复、部门列表改变后再恢复旧列表会发起新的实际调用。
 
 删除后的用户再次调用该接口即可恢复。成功返回：
 
@@ -182,7 +186,7 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 ### 4.3 创建部门 `DEPT_CREATE`
 
 ```json
-{"type":"DEPT_CREATE","tenant_id":"tenant-10001","department_id":"platform-department-id","parent_id":"","name":"生产部"}
+{"type":"DEPT_CREATE","tenant_id":"tenant-10001","department_id":"platform-saas-department-mapping-id","parent_id":"","name":"生产部"}
 ```
 
 成功返回：
@@ -197,7 +201,15 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 {"type":"DEPT_REMOVE","tenant_id":"tenant-10001","department_id":"external-department-1"}
 ```
 
-平台会先处理部门下人员映射，再删除或停用部门。第三方应返回 `status=deleted` 或 `status=disabled`，不得因重复删除返回不可解析错误。
+同步管理按父部门在先创建、子部门在先删除的顺序执行。仍有关联成员或已同步子部门的部门会被阻止删除并报告单项失败；需先移除成员关联及子部门，再移除父部门。平台保留最近一次成功同步的多部门关联，即使平台成员已离职或部门已停用，也不会绕过关联检查。第三方应返回 `status=deleted` 或 `status=disabled`，不得因重复删除返回不可解析错误。
+
+### 4.5 平台同步管理约束
+
+仅购买企业已实名、已激活且启用的超级管理员或管理员可使用同步管理；平台账号不可管理或添加到同步列表。企业须存在且已实名，订阅须处于有效期内的 `active` 状态。企业模型当前没有独立启停字段。
+
+平台管理接口 `sync-actions` 使用 `action=add|remove`、`kind=users|departments`，并且只能提供非空 `ids` 或 `all=true` 之一。每次最多处理 10 项，全部操作超过 10 项也会拒绝，需分批选择。右侧保留不可用成员、停用或已删除平台部门的映射，便于移除；用户可显示在多个部门，实际操作按用户去重。所有移除操作均需界面确认。
+
+平台拒绝移除成功交付记录标记的 SaaS 主管理员，并阻止移除最后一个已同步且有效的企业管理员。操作使用实际第三方调用和操作台账，最多尝试 3 次，失败后间隔 10 秒再试；HTTP 超时使用应用接口配置。返回逐项成功、失败或跳过结果，并记录状态前后及失败原因。单项失败不视为整批成功。
 
 ## 5. 生命周期闭环
 

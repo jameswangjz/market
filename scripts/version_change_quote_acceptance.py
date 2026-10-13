@@ -439,7 +439,8 @@ def exercise(m, ids, orders, tokens, current):
             for role in ('member', 'other'):
                 request('GET', options_path, role, 403)
                 quote(oid, ids['versions'][method]['up'], role, expected=403)
-            quote(oid, ids['versions'][method]['up'], confirmed=False, expected=409)
+            breaking_http = 409 if method == 'tenant_access' else 200
+            quote(oid, ids['versions'][method]['up'], confirmed=False, expected=breaking_http)
             # Literal expected segment amounts: no duplication of quote arithmetic.
             for target, action, net, payment, refund, current_delta, future_delta in (
                     ('up', 'upgrade', '125.00', '125.00', '0.00', '75.00', '50.00'),
@@ -504,13 +505,15 @@ def exercise(m, ids, orders, tokens, current):
                     db.commit()
             results[method] = {'upgrade': '125.00', 'downgrade_refund': '125.00',
                                'cent_upgrade': '125.03', 'expired_http': 409, 'changed_future_http': 409,
-                               'paid_future_without_term_http': 409}
+                               'paid_future_without_term_http': 409,
+                               'breaking_compatibility_http': breaking_http}
         check(readonly_snapshot(m, ids) == before,
               'Quote/options/validate changed owned business rows or added order/payment/settlement/metering')
         return {'methods': results, 'quote_http': 'production TestClient routes with real PG sessions',
                 'readonly_business_rows': True, 'cost_hidden_dto_and_decoded_jwt': True,
                 'buyer_admin_allowed': True, 'member_other_http': 403,
-                'breaking_compatibility_http': 409, 'future_paid_segment_included': True}
+                'breaking_compatibility_http': {method: result['breaking_compatibility_http'] for method, result in results.items()},
+                'future_paid_segment_included': True}
     finally:
         client.close()
 

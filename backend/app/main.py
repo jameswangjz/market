@@ -39,6 +39,8 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, and_, case, create_engine, func, inspect, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
+from .enterprise_console_scope import resolve_enterprise_membership, require_enterprise_super_admin, require_enterprise_editor
+from .console_business_scope import resolve_business_scope, order_predicate, audit_predicate
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./market.db")
@@ -257,6 +259,7 @@ class Product(Base):
     name: Mapped[str] = mapped_column(String(220))
     product_type: Mapped[str] = mapped_column(String(50))
     catalog_name: Mapped[str] = mapped_column(String(180), default="未分类", nullable=True)
+    category_id: Mapped[str | None] = mapped_column(ForeignKey("product_categories.id", name="fk_products_category_id_product_categories", ondelete="RESTRICT"), nullable=True, index=True)
     provider_name: Mapped[str] = mapped_column(String(180), default="", nullable=True)
     provider_type: Mapped[str] = mapped_column(String(60), default="企业", nullable=True)
     description: Mapped[str] = mapped_column(Text, default="")
@@ -1105,6 +1108,7 @@ class ProductBody(BaseModel):
     name: str
     product_type: str
     catalog_name: str = "未分类"
+    category_id: str = ""
     provider_name: str = ""
     provider_type: str = "企业"
     description: str = ""
@@ -1967,6 +1971,7 @@ def ensure_product_metadata_schema():
     """Add product registration metadata to an existing development database."""
     columns = {
         "catalog_name": "VARCHAR(180)",
+        "category_id": "VARCHAR(36)",
         "provider_name": "VARCHAR(180)",
         "provider_type": "VARCHAR(60)",
         "usage_scenarios": "TEXT",
@@ -2229,6 +2234,10 @@ def repair_settlement_state_consistency():
 def startup():
     Base.metadata.create_all(engine)
     ensure_product_metadata_schema()
+    product_categories["ensure_schema"](engine)
+    with SessionLocal() as db:
+        product_categories["seed"](db)
+        db.commit()
     ensure_review_and_file_schema()
     ensure_gateway_version_schema()
     with engine.begin() as connection:
@@ -2605,7 +2614,7 @@ def me(user: User = Depends(current_user), db: Session = Depends(db_session)):
     membership = memberships[0] if memberships else None
     enterprise = db.get(Enterprise, membership.enterprise_id) if membership else None
     return {"user": {**UserOut.model_validate(user).model_dump(), "enterprise_memberships": [
-        {"enterprise_id": item.enterprise_id, "role": item.role, "status": item.status} for item in memberships]},
+        {"enterprise_id": item.enterprise_id, "enterprise_name": db.get(Enterprise, item.enterprise_id).name if db.get(Enterprise, item.enterprise_id) else "", "role": item.role, "status": item.status, "business_roles": item.business_roles.split(",")} for item in memberships]},
         "enterprise": {"id": enterprise.id, "name": enterprise.name,
                        "verification_status": enterprise.verification_status} if enterprise else None,
         "membership_status": membership.status if membership else "none",
@@ -3195,31 +3204,54 @@ def assign_platform_role(body: PlatformRoleAssignmentBody, user: User = Depends(
 
 
 @app.get("/api/dashboard")
-def dashboard(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def dashboard(request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
     platform_scope = user.platform_role in {"super_admin", "platform_operator", "security_compliance"}
-    enterprise = None if platform_scope else first_enterprise(db, user)
+    if user.platform_role:
+        if not platform_scope:
+            raise HTTPException(403, "当前平台角色无权访问运营总览")
+        enterprise = None
+    else:
+        selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+        membership = resolve_enterprise_membership(db, user, Membership, selected_id)
+        require_enterprise_super_admin(membership)
+        enterprise = db.get(Enterprise, membership.enterprise_id)
     product_filter = True if platform_scope else Product.enterprise_id == enterprise.id
-    order_filter = True if platform_scope else or_(Order.buyer_enterprise_id == enterprise.id, Order.provider_enterprise_id == enterprise.id)
+    order_filter = True if platform_scope else Order.provider_enterprise_id == enterprise.id
     products = db.scalar(select(func.count(Product.id)).where(product_filter)) or 0
     orders = db.scalar(select(func.count(Order.id)).where(order_filter)) or 0
-    active = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status.in_(["pending_review", "pending_fulfillment", "fulfilling", "pending_confirmation"]))) or 0
+    active = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status.in_(["pending_review", "pending_fulfillment", "awaiting_start", "fulfilling", "in_delivery", "pending_confirmation", "rectifying"]))) or 0
     completed = db.scalar(select(func.count(Order.id)).where(order_filter, Order.main_status == "completed")) or 0
-    revenue = db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(order_filter, Order.provider_enterprise_id == (None if platform_scope else enterprise.id))) if not platform_scope else db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(Order.payment_status == "paid"))
-    return {"metrics": {"products": products, "orders": orders, "active_orders": active, "completed_orders": completed, "revenue": float(revenue or 0)}, "status_breakdown": [{"label": "履约中", "value": active, "color": "orange"}, {"label": "已完成", "value": completed, "color": "green"}], "notice": "首版外部连接器接口暂未开发，当前工作台展示平台内部运营闭环。"}
+    sales_filter = (Order.payment_status.in_(["paid", "refunding", "refunded"]),) if platform_scope else (
+        Order.provider_enterprise_id == enterprise.id,
+        Order.payment_status.in_(["paid", "refunding", "refunded"]),
+    )
+    paid = db.scalar(select(func.coalesce(func.sum(Order.paid_amount), 0)).where(*sales_filter)) or 0
+    refunds = db.scalar(select(func.coalesce(func.sum(Order.refunded_amount), 0)).where(*sales_filter)) or 0
+    return {"metrics": {"products": products if platform_scope else db.scalar(select(func.count(Product.id)).where(Product.enterprise_id == enterprise.id, Product.status == "published")) or 0, "orders": orders, "active_orders": active, "completed_orders": completed, "revenue": float(paid), "refunds": float(refunds), "net_revenue": float(paid - refunds)}, "status_breakdown": [{"label": "履约中", "value": active, "color": "orange"}, {"label": "已完成", "value": completed, "color": "green"}], "notice": "首版外部连接器接口暂未开发，当前工作台展示平台内部运营闭环。"}
 
 
 def product_out(p: Product) -> dict[str, Any]:
     versions = [{"id": x.id, "product_id": x.product_id, "version_code": x.version_code, "description": x.description or "", "price": float(x.price or 0), "cost": float(x.cost or 0), "rate_limit_per_minute": x.rate_limit_per_minute, "daily_quota": x.daily_quota, "monthly_quota": x.monthly_quota, "quota_unit": x.quota_unit or "", "quota_amount": x.quota_amount or 0, "status": x.status, "created_at": x.created_at} for x in (p.versions or [])]
     for dto, version in zip(versions, p.versions or []):
         dto.update(compatibility_mode=version.compatibility_mode or "compatible", compatibility_notes=version.compatibility_notes or "")
-    return {"id": p.id, "enterprise_id": p.enterprise_id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "oidc_redirect_uris": json.loads(p.oidc_redirect_uris_json or "[]"), "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "logo_thumbnail_file_id": p.logo_thumbnail_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
+    return {"id": p.id, "enterprise_id": p.enterprise_id, "name": p.name, "product_type": p.product_type, "catalog_name": p.catalog_name or "未分类", "category_id": p.category_id or "", "provider_name": p.provider_name or "", "provider_type": p.provider_type or "企业", "description": p.description, "usage_scenarios": p.usage_scenarios or "", "status": p.status, "delivery_method": p.delivery_method, "upstream_url": p.upstream_url or "", "application_url": p.application_url or "", "integration_api_url": p.integration_api_url or "", "oidc_redirect_uris": json.loads(p.oidc_redirect_uris_json or "[]"), "download_limit": p.download_limit or 0, "logo_file_id": p.logo_file_id or "", "logo_thumbnail_file_id": p.logo_thumbnail_file_id or "", "price": float(p.price or 0), "pricing_strategy": p.pricing_strategy or "", "currency": p.currency, "version": p.version, "versions": versions, "settlement_rule_mode": p.settlement_rule_mode or "global", "settlement_rule_id": p.settlement_rule_id or "", "settlement_rule": json.loads(p.settlement_rule_json or "{}"), "quality_level": p.quality_level, "security_level": p.security_level or "一般", "authorization_conditions": p.authorization_conditions or "", "data_source_statement": p.data_source_statement or "", "compliance_statement": p.compliance_statement or "", "review_comment": p.review_comment or "", "reviewed_by": p.reviewed_by or "", "reviewed_at": p.reviewed_at, "created_at": p.created_at, "updated_at": p.updated_at}
 
 
-def product_for_enterprise(product_id: str, user: User, db: Session) -> Product:
+def unverified_product_out(product: Product) -> dict[str, Any]:
+    return {"id": product.id, "enterprise_id": product.enterprise_id, "name": product.name,
+        "product_type": product.product_type, "catalog_name": product.catalog_name or "未分类",
+        "provider_name": product.provider_name or "", "provider_type": product.provider_type or "企业",
+        "description": product.description or "", "usage_scenarios": product.usage_scenarios or "",
+        "status": product.status, "delivery_method": product.delivery_method,
+        "price": float(product.price or 0), "currency": product.currency, "version": product.version or ""}
+
+
+def product_for_enterprise(product_id: str, user: User, db: Session, enterprise_id: str = "") -> Product:
     if user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
         product = db.get(Product, product_id)
     else:
-        enterprise = first_enterprise(db, user)
+        membership = resolve_enterprise_membership(db, user, Membership, enterprise_id)
+        enterprise = db.get(Enterprise, membership.enterprise_id)
         product = db.scalar(select(Product).where(Product.id == product_id, Product.enterprise_id == enterprise.id))
     if not product:
         raise HTTPException(404, "产品不存在")
@@ -3248,14 +3280,14 @@ def product_directories(user: User = Depends(current_user)):
 
 
 @app.get("/api/products")
-def products(q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+def products(request: Request, enterprise_id: str = Query(default=""), q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     stmt = select(Product)
-    if user.verified_status != "verified":
-        stmt = stmt.where(Product.status == "published")
-    elif user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
         if user.platform_role:
             raise HTTPException(403, "当前平台角色无权访问产品管理")
-        enterprise = first_enterprise(db, user)
+        selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+        membership = resolve_enterprise_membership(db, user, Membership, selected_id)
+        enterprise = db.get(Enterprise, membership.enterprise_id)
         stmt = stmt.where(Product.enterprise_id == enterprise.id)
     if q:
         stmt = stmt.where(or_(Product.name.ilike(f"%{q}%"), Product.description.ilike(f"%{q}%")))
@@ -3264,33 +3296,23 @@ def products(q: str = "", status: str = "", product_type: str = "", user: User =
     if product_type:
         stmt = stmt.where(Product.product_type == product_type)
     rows = db.scalars(stmt.order_by(Product.updated_at.desc())).all()
-    if user.verified_status != "verified":
-        public_items = []
-        for product in rows:
-            dto = storefront["public_product"](db, product)
-            if dto:
-                public_items.append({**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency})
-        return {"items": public_items}
+    if user.verified_status != "verified" and not user.platform_role:
+        return {"items": [unverified_product_out(product) for product in rows]}
     return {"items": [product_out(x) for x in rows]}
 
 
 @app.get("/api/products/{product_id}")
-def product_detail(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    if user.verified_status != "verified":
-        product = db.scalar(select(Product).where(Product.id == product_id, Product.status == "published"))
-        if not product:
-            raise HTTPException(404, "产品不存在或未发布")
-        dto = storefront["public_product"](db, product)
-        if not dto:
-            raise HTTPException(404, "产品不存在或未就绪")
-        return {**dto, "status": "published", "price": dto["minimum_price"], "currency": product.currency, "review_logs": []}
-    else:
-        result = product_out(product_for_enterprise(product_id, user, db))
-        sold_versions = set(db.scalars(select(Order.product_version_id).where(
-            Order.product_id == product_id, Order.paid_amount > 0).distinct()).all())
-        result["delivery_fields_locked"] = bool(sold_versions)
-        for version in result["versions"]:
-            version["is_sold"] = version["id"] in sold_versions
+def product_detail(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+    product = product_for_enterprise(product_id, user, db, selected_id)
+    if user.verified_status != "verified" and not user.platform_role:
+        return unverified_product_out(product)
+    result = product_out(product)
+    sold_versions = set(db.scalars(select(Order.product_version_id).where(
+        Order.product_id == product_id, Order.paid_amount > 0).distinct()).all())
+    result["delivery_fields_locked"] = bool(sold_versions)
+    for version in result["versions"]:
+        version["is_sold"] = version["id"] in sold_versions
     review_actions = (
         "submit_product_review",
         "enter_product_security_review",
@@ -3312,8 +3334,8 @@ def product_detail(product_id: str, user: User = Depends(current_user), db: Sess
 
 
 @app.get("/api/products/{product_id}/access-grants")
-def access_grants(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def access_grants(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     if product.product_type != "saas":
         raise HTTPException(400, "只有 SaaS 应用支持企业用户访问授权")
     items = db.execute(select(ApplicationAccessGrant, User).join(User, User.id == ApplicationAccessGrant.user_id).where(ApplicationAccessGrant.product_id == product.id, ApplicationAccessGrant.status == "active")).all()
@@ -3321,11 +3343,11 @@ def access_grants(product_id: str, user: User = Depends(current_user), db: Sessi
 
 
 @app.post("/api/products/{product_id}/access-grants")
-def grant_application_access(product_id: str, body: ApplicationAccessBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def grant_application_access(product_id: str, body: ApplicationAccessBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     if product.product_type != "saas":
         raise HTTPException(400, "只有 SaaS 应用支持企业用户访问授权")
-    enterprise = first_enterprise(db, user)
+    enterprise = db.get(Enterprise, product.enterprise_id)
     require_enterprise_admin(db, user, enterprise.id)
     db.scalar(select(Enterprise).where(Enterprise.id == enterprise.id).with_for_update())
     member = db.scalar(select(Membership).where(Membership.user_id == body.user_id, Membership.enterprise_id == enterprise.id, Membership.status == "active"))
@@ -3366,18 +3388,47 @@ def validate_product_settlement_rule(values: dict[str, Any], db: Session) -> Non
         raise HTTPException(400, "产品专属清算规则的分配比例必须在 0-100% 之间且合计不超过 100%")
 
 
+def resolve_product_category(db: Session, values: dict[str, Any]):
+    category_id = (values.get("category_id") or "").strip()
+    legacy = (values.get("catalog_name") or "").strip()
+    if not category_id and legacy:
+        if legacy == "其他":
+            legacy = "其他/其他"
+        parent_name, sep, child_name = legacy.partition("/")
+        if sep:
+            parent = db.scalar(select(ProductCategory).where(ProductCategory.name == parent_name, ProductCategory.parent_id.is_(None)))
+            if parent:
+                category = db.scalar(select(ProductCategory).where(ProductCategory.parent_id == parent.id, ProductCategory.name == child_name))
+                category_id = category.id if category else ""
+    category = db.scalar(select(ProductCategory).where(ProductCategory.id == category_id).with_for_update()) if category_id else None
+    if not category or not category.parent_id:
+        raise HTTPException(400, "请选择有效的二级产品目录")
+    parent = db.scalar(select(ProductCategory).where(ProductCategory.id == category.parent_id).with_for_update())
+    if not parent or parent.parent_id:
+        raise HTTPException(400, "产品目录层级无效")
+    return category
+
+
 @app.post("/api/products")
-def create_product(body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    enterprise = first_enterprise(db, user)
+def create_product(body: ProductBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+    membership = resolve_enterprise_membership(db, user, Membership, selected_id) if not user.platform_role else None
+    enterprise = db.get(Enterprise, membership.enterprise_id) if membership else first_enterprise(db, user)
+    require_enterprise_editor(db, user, Membership, enterprise.id)
     trading_policy["require_buyer"](db, user, enterprise.id)
     trading_policy["delivery_category"](body.delivery_method)
+    trading_policy["validate_product_delivery"](db, None, body.product_type, body.delivery_method)
     values = body.model_dump()
+    category = resolve_product_category(db, values)
     from .registration_config import pop_registration_config
     pop_registration_config(values)
     versions = values.pop("versions", [])
     custom_rule = values.pop("settlement_rule", {}) or {}
     validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
     values["settlement_rule_json"] = json.dumps(custom_rule, ensure_ascii=False)
+    values["category_id"] = category.id
+    parent = db.get(ProductCategory, category.parent_id)
+    values["catalog_name"] = "其他" if parent.name == "其他" else f"{parent.name}/{category.name}"
     values["provider_name"] = values["provider_name"] or enterprise.name
     if not versions:
         versions = [{"version_code": values["version"], "description": values["description"], "price": values["price"], "status": "active"}]
@@ -3397,18 +3448,21 @@ def create_product(body: ProductBody, user: User = Depends(current_user), db: Se
 
 
 @app.put("/api/products/{product_id}")
-def update_product(product_id: str, body: ProductBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def update_product(product_id: str, body: ProductBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
+    require_enterprise_editor(db, user, Membership, product.enterprise_id)
     if not user.platform_role:
         trading_policy["require_buyer"](db, user, product.enterprise_id)
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
+    trading_policy["validate_product_delivery"](db, product, body.product_type, body.delivery_method)
     if db.scalar(select(Order.id).where(Order.product_id == product.id, Order.paid_amount > 0).limit(1)):
         if json.loads(product.oidc_redirect_uris_json or "[]") != body.oidc_redirect_uris:
             raise HTTPException(409, "已售产品的OIDC回调地址不可覆盖")
         if any(getattr(product, key) != getattr(body, key) for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")):
             raise HTTPException(409, "已售产品的交付类型和接入地址不可覆盖")
     values = body.model_dump()
+    category = resolve_product_category(db, values)
     from .registration_config import pop_registration_config
     pop_registration_config(values)
     trading_policy["delivery_category"](body.delivery_method)
@@ -3416,6 +3470,9 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
     custom_rule = values.pop("settlement_rule", {}) or {}
     validate_product_settlement_rule({**values, "settlement_rule": custom_rule}, db)
     values["settlement_rule_json"] = json.dumps(custom_rule, ensure_ascii=False)
+    values["category_id"] = category.id
+    parent = db.get(ProductCategory, category.parent_id)
+    values["catalog_name"] = "其他" if parent.name == "其他" else f"{parent.name}/{category.name}"
     values["provider_name"] = values["provider_name"] or db.get(Enterprise, product.enterprise_id).name
     removed_version_codes = set()
     if versions:
@@ -3433,14 +3490,15 @@ def update_product(product_id: str, body: ProductBody, user: User = Depends(curr
 
 
 @app.get("/api/products/{product_id}/versions")
-def list_product_versions(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def list_product_versions(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     return {"items": product_out(product)["versions"]}
 
 
 @app.post("/api/products/{product_id}/versions")
-def add_product_version(product_id: str, body: ProductVersionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def add_product_version(product_id: str, body: ProductVersionBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
+    require_enterprise_editor(db, user, Membership, product.enterprise_id)
     if not user.platform_role:
         trading_policy["require_buyer"](db, user, product.enterprise_id)
     if product.status not in {"draft", "rejected", "security_unpublished"}:
@@ -3455,8 +3513,9 @@ def add_product_version(product_id: str, body: ProductVersionBody, user: User = 
 
 
 @app.put("/api/products/{product_id}/versions/{version_id}")
-def update_product_version(product_id: str, version_id: str, body: ProductVersionUpdateBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def update_product_version(product_id: str, version_id: str, body: ProductVersionUpdateBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
+    require_enterprise_editor(db, user, Membership, product.enterprise_id)
     if not user.platform_role:
         trading_policy["require_buyer"](db, user, product.enterprise_id)
     if product.status not in {"draft", "rejected", "security_unpublished"}:
@@ -3479,8 +3538,9 @@ def update_product_version(product_id: str, version_id: str, body: ProductVersio
 
 
 @app.post("/api/products/{product_id}/submit")
-def submit_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def submit_product(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
+    require_enterprise_editor(db, user, Membership, product.enterprise_id)
     if not user.platform_role:
         trading_policy["require_buyer"](db, user, product.enterprise_id)
     required = {
@@ -3508,8 +3568,8 @@ def submit_product(product_id: str, user: User = Depends(current_user), db: Sess
 
 
 @app.post("/api/products/{product_id}/withdraw")
-def withdraw_product(product_id: str, body: ProductUnpublishBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def withdraw_product(product_id: str, body: ProductUnpublishBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     if user.platform_role not in {"super_admin", "platform_operator"}:
         require_enterprise_admin(db, user, product.enterprise_id)
     if product.status != "pending_review":
@@ -3756,11 +3816,8 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
             route = db.get(ApiGatewayRoute, config.route_id)
             client = ensure_oauth_client(db, product)
             route.upstream_client_id, route.upstream_client_secret = client.client_id, client.client_secret
-            try:
-                version_gateway["verify_version"](db, product, version.id, user)
-            except HTTPException as exc:
-                audit(db, actor, "version_integration_pending", "product", product.id,
-                      f"version={version.id}; status={exc.status_code}", result="failed")
+            audit(db, actor, "version_integration_pending", "product", product.id,
+                  f"version={version.id}; verification scheduled", result="success")
     if (body.decision == "approve" and stage == "operation" and product.product_type == "saas"
             and product.delivery_method == "tenant_access"):
         product.status = "pending_integration"
@@ -4169,8 +4226,8 @@ def unpublish_product(product: Product, db: Session, actor: str, reason: str, so
 
 
 @app.post("/api/products/{product_id}/unpublish")
-def unpublish_product_endpoint(product_id: str, body: ProductUnpublishBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def unpublish_product_endpoint(product_id: str, body: ProductUnpublishBody, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     if user.platform_role not in {"super_admin", "platform_operator"}:
         require_enterprise_admin(db, user, product.enterprise_id)
     actor = user.email or user.phone or user.id
@@ -4215,7 +4272,7 @@ def security_check_all_products(user: User = Depends(current_user), db: Session 
 
 
 @app.get("/api/products/{product_id}/oauth-credentials-download")
-def download_oauth_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def download_oauth_credentials(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), enterprise_id: str = Query(default=""), request: Request = None):
     product = db.get(Product, product_id)
     if not product:
         raise HTTPException(404, "产品不存在")
@@ -4223,7 +4280,14 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
         raise HTTPException(403, "接入凭据仅可由产品提供企业管理员下载")
     if user.verified_status != "verified":
         raise HTTPException(403, "完成个人实名认证后才能下载接入凭据")
-    require_enterprise_admin(db, user, product.enterprise_id)
+    selected_id = enterprise_id if isinstance(enterprise_id, str) else ""
+    header_id = request.headers.get("X-Enterprise-Id", "") if request is not None else ""
+    if selected_id and header_id and selected_id != header_id:
+        raise HTTPException(400, "企业请求范围不一致")
+    membership = resolve_enterprise_membership(db, user, Membership,
+        selected_id or header_id or (product.enterprise_id if request is None else ""))
+    if membership.enterprise_id != product.enterprise_id or membership.role not in {"super_admin", "enterprise_admin"}:
+        raise HTTPException(403, "只有当前企业管理员可以下载接入凭据")
     if product.product_type not in {"api", "model", "saas"} or product.status not in {"published", "pending_integration", "draft"}:
         raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
     if product.status == "draft" and not (product.reviewed_at and product.reviewed_by):
@@ -4259,10 +4323,8 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
 
 
 @app.get("/api/products/{product_id}/credential-metadata")
-def product_credential_metadata(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = db.get(Product, product_id)
-    if not product:
-        raise HTTPException(404, "产品不存在")
+def product_credential_metadata(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     member = db.scalar(select(Membership).where(Membership.user_id == user.id,
         Membership.enterprise_id == product.enterprise_id, Membership.status == "active",
         Membership.role.in_(["super_admin", "enterprise_admin"])))
@@ -4288,8 +4350,8 @@ def product_credential_metadata(product_id: str, user: User = Depends(current_us
 
 
 @app.post("/api/products/{product_id}/publish")
-def publish_product(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = product_for_enterprise(product_id, user, db)
+def publish_product(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     raise HTTPException(409, "产品须依次通过业务、质量、安全和运营审核，不能直接发布")
 
 
@@ -4934,7 +4996,7 @@ def saas_integration_out(config: SaaSIntegrationConfig | None) -> dict[str, Any]
     return {"id": config.id, "product_id": config.product_id, "base_url": config.base_url, "operation_path": config.operation_path, "token_url": config.token_url, "client_id": config.client_id, "scope": config.scope, "auth_mode": config.auth_mode, "timeout_ms": config.timeout_ms, "retention_days": config.retention_days, "status": config.status, "verification_status": config.verification_status, "verified_at": config.verified_at, "verified_by": config.verified_by, "health_status_code": config.health_status_code, "updated_at": config.updated_at}
 
 
-def saas_access_token(config: SaaSIntegrationConfig) -> str:
+def saas_access_token(config: SaaSIntegrationConfig, *, probe: bool = False) -> str:
     with _saas_tokens_lock:
         cached = _saas_tokens.get(config.id)
     if cached and cached[1] > now() + timedelta(seconds=30):
@@ -4942,7 +5004,7 @@ def saas_access_token(config: SaaSIntegrationConfig) -> str:
     if not config.client_id or not config.client_secret:
         raise HTTPException(400, "SaaS OAuth2 配置不完整")
     try:
-        response = httpx.post(platform_oauth_token_url(), data={"grant_type": "client_credentials", "client_id": config.client_id, "client_secret": config.client_secret, **({"scope": config.scope or "resource.invoke"} if config.scope else {})}, timeout=config.timeout_ms / 1000)
+        response = httpx.post(platform_oauth_token_url(), data={"grant_type": "client_credentials", "client_id": config.client_id, "client_secret": config.client_secret, **({"scope": config.scope or "resource.invoke"} if config.scope else {})}, timeout=min(config.timeout_ms / 1000, 5.0) if probe else config.timeout_ms / 1000, follow_redirects=False)
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -5098,14 +5160,9 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
     return saas_integration_out(config)
 
 
-@app.post("/api/products/{product_id}/saas-integration/verify")
-def verify_saas_integration(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product = saas_product(product_id, db)
-    if (user.platform_role or not user.is_active or user.activation_status != "active"
-            or user.verified_status != "verified"):
-        raise HTTPException(403, "仅已实名且已激活的提供方企业管理员可以验证 SaaS 接入")
-    require_enterprise_admin(db, user, product.enterprise_id)
-    if product.status != "pending_integration":
+def verify_saas_integration_service(db: Session, product: Product, actor: str, *, publish: bool = True,
+                                   commit: bool = True):
+    if publish and product.status != "pending_integration":
         raise HTTPException(409, "只有待接入验证的 SaaS 产品可以验证并发布")
     config = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id).with_for_update())
     before = {"product_status": product.status,
@@ -5136,7 +5193,7 @@ def verify_saas_integration(product_id: str, user: User = Depends(current_user),
         application_address_policy["validate_url"](product.application_url, db=db)
         with _saas_tokens_lock:
             _saas_tokens.pop(config.id, None)
-        token = saas_access_token(config)
+        token = saas_access_token(config, probe=True)
         health_url = f"{application.scheme}://{application.netloc}/health"
         response = validated_http_request("GET", health_url, timeout=5, follow_redirects=False,
             headers={"Authorization": "Bearer " + token})
@@ -5146,40 +5203,72 @@ def verify_saas_integration(product_id: str, user: User = Depends(current_user),
         if (not isinstance(callbacks, list) or not callbacks
                 or any(not isinstance(uri, str) or not oidc_provider["valid_redirect"](uri, db=db) for uri in callbacks)):
             raise ValueError("invalid_oidc_registration")
-        oidc_client, _ = oidc_provider["ensure_client"](db, product,
-            user.email or user.phone or user.id)
-    except HTTPException as exc:
-        if exc.status_code >= 500:
+        oidc_client = None
+        if publish:
+            oidc_client, _ = oidc_provider["ensure_client"](db, product, actor)
+    except (httpx.TimeoutException, TimeoutError):
+        if publish:
             config.verification_status = "pending"
             config.verified_at = None
             config.verified_by = ""
-            audit(db, user.email or user.phone or user.id, "verify_saas_integration", "product",
-                  product.id, "SaaS OAuth2或健康检查未通过", result="failed")
+        audit(db, actor, "verify_saas_integration", "product", product.id,
+              "SaaS integration probe timed out (5s request timeout)", result="failed")
+        if commit:
             db.commit()
+        if publish:
+            raise HTTPException(504, "SaaS 接入健康检查超时") from None
+        raise
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            if publish:
+                config.verification_status = "pending"
+                config.verified_at = None
+                config.verified_by = ""
+            audit(db, actor, "verify_saas_integration", "product",
+                  product.id, "SaaS OAuth2或健康检查未通过", result="failed")
+            if commit:
+                db.commit()
         raise
     except Exception:
-        config.verification_status = "pending"
-        config.verified_at = None
-        config.verified_by = ""
-        config.health_status_code = getattr(locals().get("response"), "status_code", None)
-        audit(db, user.email or user.phone or user.id, "verify_saas_integration", "product",
+        if publish:
+            config.verification_status = "pending"
+            config.verified_at = None
+            config.verified_by = ""
+            config.health_status_code = getattr(locals().get("response"), "status_code", None)
+        audit(db, actor, "verify_saas_integration", "product",
               product.id, "SaaS OAuth2或健康检查未通过", result="failed")
-        db.commit()
-        raise HTTPException(502, "SaaS OAuth2 或健康检查未通过") from None
+        if commit:
+            db.commit()
+        if publish:
+            raise HTTPException(502, "SaaS OAuth2 或健康检查未通过") from None
+        raise
+    if not publish:
+        return {"status": "healthy", "status_code": response.status_code}
     config.verification_status = "verified"
     config.verified_at = now()
-    config.verified_by = user.email or user.phone or user.id
+    config.verified_by = actor
     config.health_status_code = response.status_code
     product.status = "published"
-    audit(db, user.email or user.phone or user.id, "verify_saas_integration", "product",
+    audit(db, actor, "verify_saas_integration", "product",
           product.id, "提供方确认接入；SaaS OAuth2、健康检查及OIDC登记检查通过。此项不代表浏览器SSO已端到端联调",
           before=before, after={"product_status": product.status,
               "integration_verification_status": config.verification_status,
               "health_status_code": response.status_code, "oidc_client_id": oidc_client.client_id})
-    db.commit()
+    if commit:
+        db.commit()
     return {"product": product_out(product), "integration": saas_integration_out(config),
         "health_check": {"status": "passed", "status_code": response.status_code},
         "verification_status": "verified", "browser_sso_end_to_end_tested": False}
+
+
+@app.post("/api/products/{product_id}/saas-integration/verify")
+def verify_saas_integration(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = saas_product(product_id, db)
+    if (user.platform_role or not user.is_active or user.activation_status != "active"
+            or user.verified_status != "verified"):
+        raise HTTPException(403, "仅已实名且已激活的提供方企业管理员可以验证 SaaS 接入")
+    require_enterprise_admin(db, user, product.enterprise_id)
+    return verify_saas_integration_service(db, product, user.email or user.phone or user.id)
 
 
 def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> None:
@@ -5404,8 +5493,13 @@ def order_out(o: Order) -> dict[str, Any]:
 
 
 @app.get("/api/orders")
-def orders(q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+def orders(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+    scope = resolve_business_scope(request, db, user, Membership, business_view)
     stmt = settlement_metering["scoped_orders"](db, user)
+    if scope is not None:
+        stmt = stmt.where(order_predicate(Order, scope))
+        if scope["membership"].role not in {"super_admin", "enterprise_admin"}:
+            stmt = stmt.where(Order.buyer_enterprise_id == scope["enterprise_id"])
     if q:
         stmt = stmt.where(or_(Order.order_no.ilike(f"%{q}%"), Order.product_name.ilike(f"%{q}%"), Order.buyer_name.ilike(f"%{q}%")))
     if status:
@@ -5414,10 +5508,16 @@ def orders(q: str = "", status: str = "", user: User = Depends(current_user), db
 
 
 @app.get("/api/orders/{order_id}")
-def order_detail(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def order_detail(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
     order = db.get(Order, order_id)
     if not order:
         raise HTTPException(404, "订单不存在")
+    if request is not None and (request.headers.get("X-Enterprise-Id") or
+            request.query_params.get("enterprise_id") or request.query_params.get("business_view")):
+        scope = resolve_business_scope(request, db, user, Membership)
+        if scope is not None and not db.scalar(select(Order.id).where(
+                Order.id == order.id, order_predicate(Order, scope))):
+            raise HTTPException(404, "订单不存在")
     settlement_metering["require_order_access"](db, user, order)
     logs = db.scalars(select(OrderStateLog).where(OrderStateLog.order_id == order.id).order_by(OrderStateLog.created_at)).all()
     payment = db.scalar(select(Payment).where(Payment.order_id == order.id).order_by(Payment.created_at.desc()))
@@ -5762,9 +5862,19 @@ def list_delivery_attachments(task_id: str, user: User = Depends(current_user), 
 
 
 @app.get("/api/delivery-tasks")
-def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def delivery_tasks(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    try:
+        scope = resolve_business_scope(request, db, user, Membership, business_view)
+    except HTTPException as exc:
+        if exc.status_code == 403 and not request.headers.get("X-Enterprise-Id") and not request.query_params.get("enterprise_id") and not request.query_params.get("business_view"):
+            return {"items": []}
+        raise
+    if scope is not None and scope["membership"].role not in {"super_admin", "enterprise_admin"}:
+        return {"items": []}
     stmt = select(DeliveryTask)
-    if user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
+    if scope is not None:
+        stmt = stmt.where(DeliveryTask.order_id.in_(select(Order.id).where(order_predicate(Order, scope))))
+    elif user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
         enterprises = select(Membership.enterprise_id).where(
             Membership.user_id == user.id, Membership.status == "active",
             Membership.role.in_(["super_admin", "enterprise_admin"]))
@@ -5772,13 +5882,45 @@ def delivery_tasks(user: User = Depends(current_user), db: Session = Depends(db_
                                             Order.provider_enterprise_id.in_(enterprises)))
         stmt = stmt.where(DeliveryTask.order_id.in_(orders)) if not user.platform_role else stmt.where(False)
     items = db.scalars(stmt.order_by(DeliveryTask.created_at.desc())).all()
+    if scope is not None:
+        return {"items": [{"id": x.id, "order_id": x.order_id, "method": x.method,
+            "delivery_mode": x.delivery_mode, "status": x.status, "sla_due_at": x.sla_due_at,
+            "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0,
+            "created_at": x.created_at} for x in items]}
     return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0, "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/after-sales")
-def after_sales(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    items = db.scalars(select(AfterSalesTicket).order_by(AfterSalesTicket.created_at.desc())).all()
+def after_sales(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    scope = resolve_business_scope(request, db, user, Membership, business_view)
+    if scope is not None and scope["membership"].role not in {"super_admin", "enterprise_admin"}:
+        raise HTTPException(403, "普通企业成员无权查看售后工单")
+    stmt = select(AfterSalesTicket)
+    if scope is not None:
+        stmt = stmt.where(AfterSalesTicket.order_id.in_(select(Order.id).where(order_predicate(Order, scope))))
+    items = db.scalars(stmt.order_by(AfterSalesTicket.created_at.desc())).all()
+    if scope is not None:
+        return {"items": [{"id": x.id, "ticket_no": x.ticket_no, "order_id": x.order_id,
+            "type": x.type, "status": x.status, "priority": x.priority, "service_level_code": x.service_level_code,
+            "response_due_at": x.response_due_at, "created_at": x.created_at} for x in items]}
     return {"items": [{"id": x.id, "ticket_no": x.ticket_no, "order_id": x.order_id, "type": x.type, "status": x.status, "priority": x.priority, "description": x.description, "owner": x.owner, "service_level_code": x.service_level_code, "response_due_at": x.response_due_at, "created_at": x.created_at} for x in items]}
+
+
+@app.get("/api/enterprise-settlements")
+def enterprise_settlements(request: Request, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    scope = resolve_business_scope(request, db, user, Membership)
+    if (scope is None or user.verified_status != "verified" or
+            scope["membership"].role not in {"super_admin", "enterprise_admin"} or
+            scope["mode"] == "buyer"):
+        raise HTTPException(403, "只有已验证的提供方企业管理员可以查看企业清算")
+    rows = db.execute(select(Settlement, Order).join(Order, Settlement.order_id == Order.id).where(
+        Order.provider_enterprise_id == scope["enterprise_id"],
+        Settlement.status != "superseded",
+    ).order_by(Settlement.created_at.desc())).all()
+    return {"items": [{"id": item.id, "settlement_no": item.settlement_no,
+        "order_id": order.id, "order_no": order.order_no, "product_name": order.product_name,
+        "provider_share": float(item.provider_share or 0), "status": item.status,
+        "created_at": item.created_at} for item, order in rows]}
 
 
 @app.get("/api/settlements")
@@ -6591,20 +6733,39 @@ def export_settlement_report(status: str | None = None, start: str | None = None
 
 
 @app.get("/api/audit-logs")
-def audit_logs(category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_audit_viewer(user)
+def audit_logs(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    scope = resolve_business_scope(request, db, user, Membership, business_view)
+    if scope is None:
+        require_audit_viewer(user)
+    elif scope["membership"].role not in {"super_admin", "enterprise_admin"}:
+        raise HTTPException(403, "普通企业成员无权查看企业审计记录")
     stmt = audit_support["query"](db, category, q, actor, order_id, batch_no, rule_version, risk_level, start, end)
+    if scope is not None:
+        stmt = stmt.where(audit_predicate(AuditLog, Order, scope))
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     items = db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all()
     audit_items = audit_support["objects"](db, items)
+    if scope is not None:
+        allowed = ("id", "action", "target_type", "target_id", "result", "category", "order_id", "order_no", "created_at")
+        audit_items = [{key: item[key] for key in allowed} for item in audit_items]
     return {"items": audit_items, "total": total, "page": page, "page_size": page_size, "pages": (total + page_size - 1) // page_size}
 
 
 @app.get("/api/audit-logs/categories")
-def audit_log_categories(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_audit_viewer(user)
-    rows = db.execute(select(AuditLog.category, func.count(AuditLog.id)).group_by(AuditLog.category).order_by(func.count(AuditLog.id).desc())).all()
-    settlement_count = db.scalar(select(func.count()).select_from(audit_support["query"](db, category="settlement_all").subquery())) or 0
+def audit_log_categories(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    scope = resolve_business_scope(request, db, user, Membership, business_view)
+    if scope is None:
+        require_audit_viewer(user)
+    elif scope["membership"].role not in {"super_admin", "enterprise_admin"}:
+        raise HTTPException(403, "普通企业成员无权查看企业审计记录")
+    audit_scope = audit_predicate(AuditLog, Order, scope) if scope is not None else None
+    query = select(AuditLog.category, func.count(AuditLog.id))
+    settlement_query = audit_support["query"](db, category="settlement_all")
+    if audit_scope is not None:
+        query = query.where(audit_scope)
+        settlement_query = settlement_query.where(audit_scope)
+    rows = db.execute(query.group_by(AuditLog.category).order_by(func.count(AuditLog.id).desc())).all()
+    settlement_count = db.scalar(select(func.count()).select_from(settlement_query.subquery())) or 0
     return {"items": [{"category": row[0] or "ops", "count": row[1]} for row in rows] + [{"category": "settlement_all", "count": settlement_count}]}
 
 
@@ -7007,12 +7168,20 @@ def scan_report_pdf(item: FileObject, report_type: str = "combined") -> bytes:
 
 
 @app.get("/api/files/{file_id}/scan-report.pdf")
-def download_scan_report(file_id: str, report_type: str = Query(default="combined"), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def download_scan_report(file_id: str, request: Request, enterprise_id: str = Query(default=""), report_type: str = Query(default="combined"), user: User = Depends(current_user), db: Session = Depends(db_session)):
     item = db.get(FileObject, file_id)
     if not item:
         raise HTTPException(404, "文件不存在")
-    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"} and item.owner_id != user.id:
-        raise HTTPException(403, "无权查看扫描报告")
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+        if item.product_id:
+            product = db.get(Product, item.product_id)
+            selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+            membership = resolve_enterprise_membership(db, user, Membership, selected_id)
+            if (not product or membership.enterprise_id != product.enterprise_id or
+                    membership.role not in {"super_admin", "enterprise_admin"} or user.verified_status != "verified"):
+                raise HTTPException(403, "无权查看扫描报告")
+        elif item.owner_id != user.id:
+            raise HTTPException(403, "无权查看扫描报告")
     if report_type not in {"combined", "clamav", "presidio"}:
         raise HTTPException(400, "报告类型必须是 combined、clamav 或 presidio")
     report_name = f"{item.original_name}.{report_type}.scan-report.pdf"
@@ -7061,18 +7230,25 @@ def validate_product_archive(content: bytes, filename: str) -> None:
 
 
 @app.get("/api/products/{product_id}/files")
-def product_files(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    product_for_enterprise(product_id, user, db)
+def product_files(product_id: str, request: Request, enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    product = product_for_enterprise(product_id, user, db, enterprise_id or request.headers.get("X-Enterprise-Id", ""))
     items = db.scalars(select(FileObject).where(FileObject.product_id == product_id).order_by(FileObject.created_at.desc())).all()
     # 详情页只展示当前 Logo，历史 Logo 和缩略图仍保留在存储中供审计追溯。
     logos = [item for item in items if item.file_role == "product_logo"]
     latest_logo_id = logos[0].id if logos else ""
     visible = [item for item in items if item.file_role != "product_logo_thumbnail" and (item.file_role != "product_logo" or item.id == latest_logo_id)]
+    membership = None if user.platform_role else resolve_enterprise_membership(db, user, Membership, product.enterprise_id)
+    if (not user.platform_role and (user.verified_status != "verified" or
+            membership.role not in {"super_admin", "enterprise_admin"})):
+        return {"items": [{"id": item.id, "product_id": item.product_id, "version_id": item.version_id,
+            "original_name": item.original_name, "size": item.size, "file_role": item.file_role,
+            "version": item.version, "status": item.status} for item in visible]}
     return {"items": [file_out(item) for item in visible]}
 
 
 @app.post("/api/files/upload")
 def upload_file(
+    request: Request,
     upload: UploadFile = File(...),
     product_id: str | None = Form(default=None),
     version_id: str | None = Form(default=None),
@@ -7083,7 +7259,8 @@ def upload_file(
     db: Session = Depends(db_session),
 ):
     if product_id:
-        product = product_for_enterprise(product_id, user, db)
+        product = product_for_enterprise(product_id, user, db, request.headers.get("X-Enterprise-Id", ""))
+        require_enterprise_editor(db, user, Membership, product.enterprise_id)
         if file_role in {"product_data", "product_logo"} and not user.platform_role:
             trading_policy["require_buyer"](db, user, product.enterprise_id)
         if file_role in {"product_data", "product_logo"} and product.status not in {"draft", "rejected", "security_unpublished"}:
@@ -7211,13 +7388,20 @@ def upload_file(
 
 
 @app.get("/api/files/{file_id}/download")
-def download_file(file_id: str, order_id: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+def download_file(file_id: str, request: Request, order_id: str = "", enterprise_id: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
     """Serve persisted identity/license files to their owner or authorized reviewers."""
     item = db.get(FileObject, file_id)
     if not item or item.status == "deleted":
         raise HTTPException(404, "文件不存在")
     reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
+    if item.product_id and item.file_role not in {"product_data", "delivery_attachment"} and not reviewer:
+        product = db.get(Product, item.product_id)
+        selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+        membership = resolve_enterprise_membership(db, user, Membership, selected_id)
+        if (not product or membership.enterprise_id != product.enterprise_id or
+                membership.role not in {"super_admin", "enterprise_admin"} or user.verified_status != "verified"):
+            raise HTTPException(403, "只有当前企业的已验证管理员可以下载产品文件")
     if item.file_role == "delivery_attachment":
         attachment = db.scalar(select(DeliveryAttachment).where(DeliveryAttachment.file_id == item.id))
         task = db.get(DeliveryTask, attachment.task_id) if attachment else None
@@ -7231,9 +7415,7 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
     if item.file_role == "product_data":
         if reviewer:
             order = None
-        elif not order_id:
-            raise HTTPException(400, "下载产品数据文件必须提供订单号")
-        else:
+        elif order_id:
             order = db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
             member = db.scalar(select(Membership).where(Membership.enterprise_id == order.buyer_enterprise_id, Membership.user_id == user.id, Membership.status == "active")) if order and not user.platform_role else None
             if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or user.platform_role or (order.buyer_user_id != user.id and not member):
@@ -7256,6 +7438,15 @@ def download_file(file_id: str, order_id: str = "", user: User = Depends(current
                 audit(db, user.email or user.phone or user.id, "download_file_denied", "file", item.id, download_log.detail, category="delivery", business_domain="product", order_id=order.id, risk_level="warning")
                 db.commit()
                 raise HTTPException(429, "该订单的文件下载次数已用尽")
+        else:
+            product = db.get(Product, item.product_id) if item.product_id else None
+            selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
+            membership = resolve_enterprise_membership(db, user, Membership, selected_id)
+            provider_admin = bool(product and membership.enterprise_id == product.enterprise_id and
+                membership.role in {"super_admin", "enterprise_admin"} and user.verified_status == "verified")
+            if not provider_admin:
+                raise HTTPException(403, "只有所选企业的已验证管理员可以下载提供方产品文件")
+            order = None
     if not MINIO_ENDPOINT:
         raise HTTPException(503, "文件存储服务未配置")
     client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
@@ -7330,6 +7521,9 @@ version_gateway = install_version_gateway(globals())
 from .storefront import install as install_storefront
 
 storefront = install_storefront(globals())
+from .product_categories import install as install_product_categories
+
+product_categories = install_product_categories(globals())
 
 from .order_economics import install as install_order_economics
 
@@ -7382,3 +7576,8 @@ from .browser_sso import install as install_browser_sso
 install_browser_sso(globals())
 from .applications import install as install_applications
 install_applications(globals())
+from .application_health import install as install_application_health
+install_application_health(globals())
+from .saas_sync_management import install as install_saas_sync_management
+
+saas_sync_management = install_saas_sync_management(globals())

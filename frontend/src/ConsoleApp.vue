@@ -1,22 +1,25 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import axios from "axios";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
+import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
+import SaaSSyncManagement from "./SaaSSyncManagement.vue";
 import ApplicationsCenter from "./ApplicationsCenter.vue";
-import { canManageProviderSaas, canViewProductIntegration } from "./productIntegration.js";
+import { canManageProviderSaas, canViewProductIntegration, createReadinessController, readinessLabel } from "./productIntegration.js";
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
 import "./gateway-doc.css";
-import { canAccessConsoleView } from "./consolePermissions.js";
+import { canAccessConsoleView, canManageProductRegistration } from "./consolePermissions.js";
 import { consoleRoleLabel } from "./consoleRoleLabel.js";
+import { allowedBusinessViews, businessModes, businessViewParams, consoleEnterpriseSelection } from "./consoleBusinessView.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
 import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
-import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments } from "./productRegistration.js";
+import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments, deliveryForProductType } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
@@ -69,6 +72,7 @@ const productReviewSubmitting = ref(false);
 const token = ref(localStorage.getItem("market_token") || "");
 const user = ref(null);
 const enterprise = ref(null);
+const businessView = ref("provider");
 const providerReview = ref(null);
 const providerReviewForm = ref({ amount: "", cost: "", reason: "" });
 const providerReviewLoading = ref(false);
@@ -82,6 +86,10 @@ const buyerEnterprises = ref([]);
 const buyerEnterprisesLoading = ref(false);
 const buyerEnterprisesError = ref("");
 api.interceptors.request.use((config) => {
+  if (enterprise.value?.id) {
+    config.headers = config.headers || {};
+    config.headers["X-Enterprise-Id"] = enterprise.value.id;
+  }
   if (config.method === "post" && config.url === "/orders") {
     const selected = buyerEnterprises.value.find((item) => item.id === selectedBuyerEnterpriseId.value && item.eligible === true);
     if (!selected) {
@@ -132,6 +140,7 @@ let ordersPollLoading = false;
 let ordersListRequest = 0;
 let ordersListPromise = null;
 let ordersListContext = null;
+let businessContextEpoch = 0;
 function deliveryBuyerEnterprise(order) {
   return buyerEnterprises.value.find(item => item.id === order?.buyer_enterprise_id) ||
     (enterprise.value?.id === order?.buyer_enterprise_id ? enterprise.value : null);
@@ -317,9 +326,14 @@ function versionChangeMoney(value, currency) {
 watch(() => JSON.stringify(versionChangeContext()), () => versionChangeSession.reset(), { flush: "sync" });
 watch(versionChangeAllowed, allowed => { if (!allowed) versionChangeSession.reset(); }, { flush: "sync" });
 watch([() => user.value?.id, () => enterprise.value?.id, token], () => {
+  businessContextEpoch++;
+  ordersListRequest++;
+  auditLoadVersion++;
+  auditDetailVersion++;
+  auditTimelineVersion++;
   orderDetailRequest++;
   subscriptionSession.reset();
-});
+}, { flush: "sync" });
 async function submitRenewal() {
   if (orderActionSubmitting.value || renewalProcessing.value) return;
   const source = selectedOrder.value?.order.id;
@@ -340,6 +354,7 @@ async function submitRenewal() {
 function closeOrder() {
   orderDetailRequest++;
   selectedOrder.value = null;
+  saasSyncDialog.value = null;
   if (typeof versionChangeCapability !== "undefined") versionChangeCapability.value = { orderId: "", allowed: false };
   subscriptionSession.reset();
 }
@@ -351,6 +366,7 @@ async function refreshVersionChangeContext() {
 }
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
+const saasSyncDialog = ref(null);
 const apiOrderState = ref({
   available: false,
   items: [],
@@ -527,6 +543,7 @@ const emptyProductForm = () => ({
   name: "",
   product_type: "dataset",
   catalog_name: "",
+  category_id: "",
   provider_name: "",
   provider_type: "企业",
   description: "",
@@ -550,6 +567,18 @@ const emptyProductForm = () => ({
   settlement_rule: { platform_rate: 8, provider_rate: 67, service_rate: 20, expert_rate: 5, channel_rate: 0 },
 });
 const productForm = ref(emptyProductForm());
+const productReadiness = reactive({ data: null, loading: false, error: "" });
+const productReadinessController = createReadinessController({ state: productReadiness, api });
+watch([showProductForm, productDetailMode, () => productForm.value.id, () => user.value?.id], () => {
+  const eligible = showProductForm.value && productDetailMode.value
+    && ['api', 'model_api', 'tenant_access'].includes(productForm.value.delivery_method);
+  productReadinessController.load(eligible ? productForm.value.id : null);
+});
+watch(() => productForm.value.product_type, (type, previous) => {
+  if (previous && !productForm.value.delivery_fields_locked) {
+    productForm.value.delivery_method = deliveryForProductType(type);
+  }
+});
 const oidcRedirectUrisText = computed({
   get: () => (productForm.value.oidc_redirect_uris ?? []).join("\n"),
   set: (text) => { productForm.value.oidc_redirect_uris = text.split(/\r?\n/); },
@@ -577,7 +606,11 @@ const nav = [
   { key: "development", label: "开发进度", icon: Activity },
 ];
 
-const visibleNav = computed(() => nav.filter((item) => canAccessConsoleView(user.value, enterprise.value, item.key)));
+const visibleNav = computed(() => {
+  const base = nav.filter((item) => canAccessConsoleView(user.value, enterprise.value, item.key));
+  const allowed = allowedBusinessViews(user.value, enterprise.value, businessView.value);
+  return allowed ? (user.value?.platform_role ? base : nav.filter(item => allowed.includes(item.key))) : base;
+});
 const filteredProducts = computed(() =>
   products.value.filter((p) => !search.value || p.name.includes(search.value)),
 );
@@ -763,6 +796,15 @@ async function loadSession() {
     if (token.value !== sessionToken) return;
     user.value = { ...data.user, enterprise_role: data.role, membership_status: data.membership?.status || data.membership_status || "active" };
     enterprise.value = data.enterprise;
+    const query = new URLSearchParams(window.location.search);
+    const selection = consoleEnterpriseSelection(user.value, query.get("enterprise_id"));
+    if (selection) {
+      enterprise.value = enterprise.value?.id === selection.enterprise.id ? enterprise.value : selection.enterprise;
+      user.value = { ...user.value, enterprise_id: selection.enterprise.id,
+        enterprise_role: selection.membership.role, membership_status: "active" };
+    }
+    businessView.value = selection && query.get("view") === "orders" ? "buyer" :
+      businessModes(user.value, enterprise.value).includes("provider") ? "provider" : "buyer";
     await loadApplicationAddressPolicy(sessionToken);
     if (token.value !== sessionToken) return;
     await loadBuyerEnterprises();
@@ -776,12 +818,47 @@ async function loadSession() {
     } else {
       const preferred = user.value.platform_role === 'finance_settlement' ? 'settlements' : user.value.platform_role === 'delivery_monitor' ? 'delivery' : 'overview';
       const requested = new URLSearchParams(window.location.search).get("view") || preferred;
-      activeView.value = canAccessConsoleView(user.value, enterprise.value, requested) ? requested : visibleNav.value[0]?.key || 'users';
+      activeView.value = visibleNav.value.some(item => item.key === requested) ? requested : visibleNav.value[0]?.key || 'users';
       await refreshData();
     }
   } catch {
     if (token.value === sessionToken) logout();
   }
+}
+async function selectEnterprise(id) {
+  if (user.value?.platform_role) return;
+  const selection = consoleEnterpriseSelection(user.value, id);
+  if (!selection || enterprise.value?.id === id) return;
+  const { membership } = selection;
+  businessContextEpoch++;
+  enterprise.value = selection.enterprise;
+  user.value = { ...user.value, enterprise_id: id, enterprise_role: membership.role, membership_status: membership.status };
+  const modes = businessModes(user.value, enterprise.value);
+  businessView.value = modes.includes(businessView.value) ? businessView.value : modes[0] || "";
+  activeView.value = "users";
+  const url = new URL(window.location.href);
+  url.searchParams.set("enterprise_id", id);
+  url.searchParams.set("view", "users");
+  window.history.replaceState(null, "", url);
+  orders.value = []; products.value = []; deliveryItems.value = []; afterSalesItems.value = [];
+  settlementItems.value = []; settlementFilterItems.value = []; auditItems.value = []; auditCategories.value = [];
+  selectedOrder.value = null; selectedProductId.value = ""; auditSelected.value = null; auditTimeline.value = [];
+  settlementDetail.value = null; settlementAdjusting.value = null; providerReview.value = null; showProductForm.value = false;
+  closeDeliveryAccess();
+  orderDetailRequest++; ordersListRequest++; auditLoadVersion++;
+  await loadViewData("users");
+}
+async function selectBusinessView(mode) {
+  if (!businessModes(user.value, enterprise.value).includes(mode) || businessView.value === mode) return;
+  businessContextEpoch++;
+  businessView.value = mode;
+  orders.value = []; deliveryItems.value = []; afterSalesItems.value = []; auditItems.value = []; auditCategories.value = [];
+  settlementItems.value = []; settlementFilterItems.value = []; settlementDetail.value = null;
+  settlementAdjusting.value = null; providerReview.value = null;
+  selectedOrder.value = null; closeAuditEvent(); closeDeliveryAccess();
+  ordersListRequest++; auditLoadVersion++;
+  activeView.value = visibleNav.value[0]?.key || "users";
+  await loadViewData(activeView.value);
 }
 async function loadApplicationAddressPolicy(sessionToken = token.value) {
   if (!sessionToken) return;
@@ -886,10 +963,15 @@ function applyConfirmedPaymentOrder(updatedOrder, selectedOrderId) {
   }
 }
 async function loadViewData(view) {
-  if (!canAccessConsoleView(user.value, enterprise.value, view)) return;
+  if (view !== "settings" && !visibleNav.value.some(item => item.key === view)) return;
+  const contextEpoch = businessContextEpoch;
+  const contextKey = [user.value?.id, enterprise.value?.id, token.value, businessView.value].join(":");
+  const contextCurrent = () => contextEpoch === businessContextEpoch &&
+    contextKey === [user.value?.id, enterprise.value?.id, token.value, businessView.value].join(":");
   if (view === "overview") {
     const ordersRequest = ++ordersListRequest;
-    const [d, p, o] = await Promise.all([api.get("/dashboard"), api.get("/products"), api.get("/orders")]);
+    const [d, p, o] = await Promise.all([api.get("/dashboard"), api.get("/products"), api.get("/orders", { params: businessViewParams(user.value, enterprise.value, businessView.value) })]);
+    if (!contextCurrent()) return;
     dashboard.value = d.data;
     products.value = p.data.items;
     if (ordersRequest === ordersListRequest) {
@@ -904,14 +986,17 @@ async function loadViewData(view) {
   if (view === "products") {
     const [productData, directoryData, ruleData] = await Promise.all([
       api.get("/products"),
-      api.get("/product-directories"),
+      api.get("/admin/product-categories"),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
     ]);
+    if (!contextCurrent()) return;
     products.value = productData.data.items;
-    productDirectories.value = directoryData.data.items;
+    productDirectories.value = directoryData.data.items.flatMap(parent => parent.children.map(child => ({
+      value: child.id, label: `${parent.name} · ${child.name}`, catalog_name: `${parent.name}/${child.name}`,
+    })));
     settlementRules.value = ruleData.data.items;
-    if (!productForm.value.catalog_name && productDirectories.value.length)
-      productForm.value.catalog_name = productDirectories.value[0].value;
+    if (!productForm.value.category_id && productDirectories.value.length)
+      productForm.value.category_id = productDirectories.value[0].value;
   }
   if (view === "orders") {
     if (ordersListPromise) {
@@ -928,7 +1013,7 @@ async function loadViewData(view) {
       ordersListContext = context;
       const current = () => request === ordersListRequest && context.token === token.value && context.userId === user.value?.id &&
         context.enterpriseId === enterprise.value?.id && context.view === activeView.value && activeView.value === "orders";
-      const promise = api.get("/orders").then(({ data }) => {
+      const promise = api.get("/orders", { params: businessViewParams(user.value, enterprise.value, businessView.value) }).then(({ data }) => {
         if (!current()) return;
         orders.value = data.items;
         loadSaasListAccess(orders.value);
@@ -942,13 +1027,20 @@ async function loadViewData(view) {
   }
   if (view === "delivery") {
     const [delivery, afterSales] = await Promise.all([
-      api.get("/delivery-tasks"),
-      api.get("/after-sales"),
+      api.get("/delivery-tasks", { params: businessViewParams(user.value, enterprise.value, businessView.value) }),
+      api.get("/after-sales", { params: businessViewParams(user.value, enterprise.value, businessView.value) }),
     ]);
+    if (!contextCurrent()) return;
     deliveryItems.value = delivery.data.items;
     afterSalesItems.value = afterSales.data.items;
   }
   if (view === "settlements") {
+    if (!user.value?.platform_role) {
+      const { data } = await api.get("/enterprise-settlements", { params: businessViewParams(user.value, enterprise.value, businessView.value) });
+      if (!contextCurrent()) return;
+      settlementItems.value = data.items;
+      return;
+    }
     const [settlements, allSettlements, rules, batches, reconciliations, corrections, report, measurements] = await Promise.all([
       api.get("/settlements", { params: settlementFilters.value }),
       api.get("/settlements"),
@@ -959,6 +1051,7 @@ async function loadViewData(view) {
       api.get("/settlement-reports", { params: settlementReportFilters.value }).catch(() => ({ data: { summary: {}, items: [] } })),
       api.get("/settlement-measurements").catch(() => ({ data: { items: [] } })),
     ]);
+    if (!contextCurrent()) return;
     settlementItems.value = settlements.data.items;
     settlementFilterItems.value = allSettlements.data.items;
     settlementRules.value = rules.data.items;
@@ -1257,12 +1350,12 @@ async function loadAuditLogs() {
   auditError.value = "";
   try {
     const params = auditQuery();
-    const { data } = await api.get("/audit-logs", { params });
+    const { data } = await api.get("/audit-logs", { params: { ...businessViewParams(user.value, enterprise.value, businessView.value), ...params } });
     if (version !== auditLoadVersion) return;
     auditItems.value = data.items || [];
     const total = data.total || 0;
     auditFilters.value = { ...auditFilters.value, total, pages: data.pages ?? Math.ceil(total / params.page_size), page: data.page || params.page };
-    const categoryData = await api.get("/audit-logs/categories");
+    const categoryData = await api.get("/audit-logs/categories", { params: businessViewParams(user.value, enterprise.value, businessView.value) });
     if (version === auditLoadVersion) auditCategories.value = categoryData.data.items || [];
   } catch (error) {
     if (version === auditLoadVersion) auditError.value = auditFailure(error, "审计日志加载失败");
@@ -1276,7 +1369,7 @@ async function exportAuditLogs() {
   if (auditExporting.value) return;
   auditExporting.value = true; auditError.value = "";
   try {
-    const result = await api.get("/audit-logs/export", { params: auditQuery(), responseType: "blob" });
+    const result = await api.get("/audit-logs/export", { params: { ...businessViewParams(user.value, enterprise.value, businessView.value), ...auditQuery() }, responseType: "blob" });
     const url = URL.createObjectURL(result.data);
     const link = document.createElement("a");
     link.href = url;
@@ -1305,10 +1398,11 @@ async function openAuditEvent(item) {
   ++auditDetailVersion;
   auditSelected.value = item; auditTimeline.value = []; auditTimelineError.value = "";
   auditTimelineRoot.value = item.id; auditTimelinePage.value = 1; auditTimelineTotal.value = 0;
+  if (!user.value?.platform_role) return;
   await loadAuditTimeline(1, true);
 }
 async function loadAuditTimeline(page = 1, selectCurrent = false) {
-  if (!auditTimelineRoot.value || page < 1) return;
+  if (!user.value?.platform_role || !auditTimelineRoot.value || page < 1) return;
   const detailVersion = auditDetailVersion;
   const version = ++auditTimelineVersion;
   const current = () => detailVersion === auditDetailVersion && version === auditTimelineVersion;
@@ -1471,7 +1565,7 @@ async function rollbackGatewayConfig() {
   }
 }
 function selectView(view) {
-  if (!canAccessConsoleView(user.value, enterprise.value, view)) {
+  if (view !== "settings" && !visibleNav.value.some(item => item.key === view)) {
     notify("当前账号无权查看相关业务页面");
     return;
   }
@@ -1512,14 +1606,12 @@ async function openOrder(order) {
     const id = data.order.subscription_id;
     requests.push(
       Promise.all([
-        api.get(`/saas-subscriptions/${id}/users`),
-        api.get(`/saas-subscriptions/${id}/departments`),
         api.get(`/saas-subscriptions/${id}/operations`),
-      ]).then(([users, departments, operations]) => {
+      ]).then(([operations]) => {
         if (!current()) return;
         saasOrderState.value = {
-          users: users.data.items,
-          departments: departments.data.items,
+          users: [],
+          departments: [],
           operations: operations.data.items,
         };
       }),
@@ -1845,10 +1937,8 @@ async function createProduct() {
   try {
     const { data } = await api.post("/products", {
       ...registrationPayload(productForm.value, { allowHttp: applicationAddressPolicy.value.allow_http }),
-      catalog_name:
-        productForm.value.catalog_name ||
-        productDirectories.value[0]?.value ||
-        "未分类",
+      category_id: productForm.value.category_id,
+      catalog_name: productDirectories.value.find(item => item.value === productForm.value.category_id)?.catalog_name || productForm.value.catalog_name || "未分类",
     });
     // Retain the committed draft before uploading so retries update it.
     selectedProductId.value = data.id;
@@ -1869,7 +1959,7 @@ async function createProduct() {
     showProductForm.value = false;
     productForm.value = {
       ...emptyProductForm(),
-      catalog_name: productDirectories.value[0]?.value || "",
+      category_id: productDirectories.value[0]?.value || "",
     };
     notify("产品草稿已创建");
     await loadViewData("products");
@@ -1880,7 +1970,7 @@ async function createProduct() {
   }
 }
 function openNewProduct() {
-  if (productSaving.value) return;
+  if (productSaving.value || !canManageProductRegistration(user.value, enterprise.value)) return;
   productDetailMode.value = false;
   productDetailTab.value = "info";
   productReadOnlyMode.value = false;
@@ -1889,7 +1979,7 @@ function openNewProduct() {
   productFiles.value = [];
   productForm.value = {
     ...emptyProductForm(),
-    catalog_name: productDirectories.value[0]?.value || "",
+    category_id: productDirectories.value[0]?.value || "",
   };
   showProductForm.value = true;
 }
@@ -1899,7 +1989,7 @@ async function openProductDetail(product, review = false) {
   productDetailMode.value = true;
   productDetailTab.value = "info";
   productReviewMode.value = review && canReviewProduct(product);
-  productReadOnlyMode.value = !["draft", "rejected"].includes(product.status);
+  productReadOnlyMode.value = !canManageProductRegistration(user.value, enterprise.value) || !["draft", "rejected"].includes(product.status);
   let detail = product;
   try {
     const response = await api.get(`/products/${product.id}`);
@@ -2865,9 +2955,21 @@ onUnmounted(() => {
               ><small>{{ currentConsoleRoleLabel }}</small>
             </div>
           </div>
+          <label v-if="!user.platform_role && user.enterprise_memberships?.filter(item => item.status === 'active').length > 1" class="context-select-label">
+            <span class="sr-only">当前企业</span>
+            <select :value="enterprise?.id || ''" aria-label="当前企业" @change="selectEnterprise($event.target.value)">
+              <option v-for="membership in user.enterprise_memberships.filter(item => item.status === 'active')" :key="membership.enterprise_id" :value="membership.enterprise_id">{{ membership.enterprise_name || membership.enterprise_id }}</option>
+            </select>
+          </label>
+          <label v-if="businessModes(user, enterprise).length > 1" class="context-select-label">
+            <span class="sr-only">业务身份</span>
+            <select :value="businessView" aria-label="业务身份" @change="selectBusinessView($event.target.value)">
+              <option value="provider">提供方</option><option value="buyer">购买方</option>
+            </select>
+          </label>
         </div>
       </header>
-      <div v-if="!user.platform_role && user.verified_status === 'verified' && ['products', 'orders'].includes(activeView)" class="console-buyer-context">
+      <div v-if="!user.platform_role && user.verified_status === 'verified' && businessView === 'buyer' && activeView === 'orders'" class="console-buyer-context">
         <label for="buyer-enterprise">购买企业</label>
         <select id="buyer-enterprise" v-model="selectedBuyerEnterpriseId" :disabled="buyerEnterprisesLoading">
           <option value="">{{ buyerEnterprisesLoading ? '正在加载企业' : '请选择购买企业' }}</option>
@@ -2884,6 +2986,7 @@ onUnmounted(() => {
         </div>
         <div v-if="activeView === 'settings'" class="tabs settings-tabs">
           <button :class="{ active: systemSettingsTab === 'notifications' }" type="button" @click="systemSettingsTab = 'notifications'">通知与角色</button>
+          <button :class="{ active: systemSettingsTab === 'product-categories' }" type="button" @click="systemSettingsTab = 'product-categories'">产品目录</button>
           <button :class="{ active: systemSettingsTab === 'message-center' }" type="button" @click="systemSettingsTab = 'message-center'">消息中心</button>
           <button :class="{ active: systemSettingsTab === 'application-address' }" type="button" @click="systemSettingsTab = 'application-address'">应用接入</button>
           <button type="button" disabled>安全与审计</button>
@@ -3272,7 +3375,7 @@ onUnmounted(() => {
               <h1>数据与服务</h1>
               <p>登记产品所属目录和完整运营元数据，再进入审核发布流程。</p>
             </div>
-            <button class="primary-btn" @click="openNewProduct">
+            <button v-if="canManageProductRegistration(user, enterprise)" class="primary-btn" @click="openNewProduct">
               <FileText :size="16" />新建产品
             </button>
           </div>
@@ -3360,16 +3463,13 @@ onUnmounted(() => {
                       </div>
                       <div v-else class="table-actions">
                         <button
-                          v-if="
-                            product.status === 'draft' ||
-                            product.status === 'rejected'
-                          "
+                          v-if="canManageProductRegistration(user, enterprise) && ['draft', 'rejected'].includes(product.status)"
                           class="text-btn"
                           @click="productAction(product, 'submit')"
                         >
                           提交审核</button
                         ><button
-                          v-if="canReviewProduct(product)"
+                          v-if="canManageProductRegistration(user, enterprise) && canReviewProduct(product)"
                           class="text-btn"
                           @click="productAction(product, 'review')"
                         >
@@ -3607,6 +3707,10 @@ onUnmounted(() => {
             </div>
           </div></template
         >
+        <template v-else-if="activeView === 'settlements' && !user?.platform_role">
+          <div class="page-heading"><h1>企业清算</h1><button class="secondary-btn" @click="loadViewData('settlements')"><RefreshCw :size="16" />刷新</button></div>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>产品</th><th>提供方分账</th><th>状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementItems" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_no }}</td><td>{{ item.product_name }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ settlementStatusLabels[item.status] || item.status }}</td><td>{{ fmtDate(item.created_at) }}</td></tr><tr v-if="!settlementItems.length"><td colspan="6"><div class="empty-state">暂无企业清算数据</div></td></tr></tbody></table></div>
+        </template>
         <template v-else-if="activeView === 'settlements'"
           ><div class="page-heading">
             <div>
@@ -3778,7 +3882,7 @@ onUnmounted(() => {
               <div class="audit-filter-actions">
                 <button class="primary-btn" :disabled="auditBusy"><Search :size="15" />检索</button>
                 <button type="button" class="secondary-btn" :disabled="auditBusy" @click="resetAuditFilters">清空条件</button>
-                <button type="button" class="secondary-btn" :disabled="auditExporting || auditBusy" @click="exportAuditLogs"><Download :size="15" />{{ auditExporting ? "导出中" : "导出 CSV" }}</button>
+                <button v-if="user.platform_role" type="button" class="secondary-btn" :disabled="auditExporting || auditBusy" @click="exportAuditLogs"><Download :size="15" />{{ auditExporting ? "导出中" : "导出 CSV" }}</button>
                 <span class="muted">共 {{ auditFilters.total }} 条，当前第 {{ auditFilters.page }} / {{ auditFilters.pages || 1 }} 页</span>
               </div>
             </form>
@@ -3822,12 +3926,12 @@ onUnmounted(() => {
                   <button v-if="auditCanNavigate('settlements') && auditSelected.batch_no" class="secondary-btn" :disabled="auditNavigating" @click="navigateAuditBusiness(auditSelected, 'settlements')"><ExternalLink :size="15" />查看清算批次</button>
                 </div>
               </div>
-              <div class="drawer-section">
+              <div v-if="user?.platform_role" class="drawer-section">
                 <div class="drawer-section-title">变更前后值</div>
                 <div v-if="auditChangeRows(auditSelected).length" class="table-wrap"><table class="data-table audit-change-table"><thead><tr><th>字段</th><th>变更前</th><th>变更后</th></tr></thead><tbody><tr v-for="row in auditChangeRows(auditSelected)" :key="row.key" :class="{ 'audit-field-changed': row.changed }"><th scope="row">{{ row.name }}</th><td><pre>{{ auditValue(row.before, row.key) }}</pre></td><td><pre>{{ auditValue(row.after, row.key) }}</pre></td></tr></tbody></table></div>
                 <p v-else class="muted">无字段变更</p>
               </div>
-              <div class="drawer-section">
+              <div v-if="user?.platform_role" class="drawer-section">
                 <div class="drawer-head"><div class="drawer-section-title">关联事件时间线</div><button class="icon-btn" title="刷新时间线" aria-label="刷新时间线" :disabled="auditTimelineBusy" @click="loadAuditTimeline(auditTimelinePage)"><RefreshCw :size="16" /></button></div>
                 <p v-if="auditTimelineError" class="error-text" role="alert">{{ auditTimelineError }}</p>
                 <p v-if="auditTimelineBusy" class="muted" role="status">加载中</p>
@@ -4026,6 +4130,7 @@ onUnmounted(() => {
           </div></template
         >
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'message-center'"><MessageSettings /></template>
+        <template v-else-if="activeView === 'settings' && systemSettingsTab === 'product-categories'"><ProductCategoriesSettings /></template>
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'application-address'">
           <div class="page-heading">
             <div><div class="eyebrow">平台管理 · 应用接入</div><h1>应用接入地址</h1></div>
@@ -4496,55 +4601,9 @@ onUnmounted(() => {
           <p class="muted">
             订阅 ID：{{ selectedOrder.order.subscription_id }}
           </p>
-          <div class="saas-sync-grid">
-            <div>
-              <div class="drawer-section-title">
-                用户同步
-                <button class="text-btn" @click="saasSyncUser">增加用户</button>
-              </div>
-              <div
-                v-for="item in saasOrderState.users"
-                :key="item.id"
-                class="saas-sync-item"
-              >
-                <span>{{ item.user_id }}</span
-                ><button
-                  class="icon-btn"
-                  title="删除用户"
-                  @click="saasRemoveUser(item)"
-                >
-                  <X :size="14" />
-                </button>
-              </div>
-              <small v-if="!saasOrderState.users.length" class="muted"
-                >暂无同步用户</small
-              >
-            </div>
-            <div>
-              <div class="drawer-section-title">
-                部门同步
-                <button class="text-btn" @click="saasSyncDepartment">
-                  增加部门
-                </button>
-              </div>
-              <div
-                v-for="item in saasOrderState.departments"
-                :key="item.id"
-                class="saas-sync-item"
-              >
-                <span>{{ item.name }}</span
-                ><button
-                  class="icon-btn"
-                  title="删除部门"
-                  @click="saasRemoveDepartment(item)"
-                >
-                  <X :size="14" />
-                </button>
-              </div>
-              <small v-if="!saasOrderState.departments.length" class="muted"
-                >暂无同步部门</small
-              >
-            </div>
+          <div v-if="!user?.platform_role && user?.is_active && user?.activation_status === 'active' && user?.verified_status === 'verified' && selectedOrder.order.buyer_enterprise_id === enterprise?.id && ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role) && subscriptionState.orderId === selectedOrder.order.id && subscriptionState.item?.id === selectedOrder.order.subscription_id && subscriptionDisplayStatus(subscriptionState.item) === 'active'" class="saas-sync-launchers">
+            <button type="button" class="secondary-btn" @click="saasSyncDialog = { subscriptionId: selectedOrder.order.subscription_id, kind: 'users' }"><Users :size="15" />用户管理</button>
+            <button type="button" class="secondary-btn" @click="saasSyncDialog = { subscriptionId: selectedOrder.order.subscription_id, kind: 'departments' }"><Network :size="15" />部门管理</button>
           </div>
           <small class="muted"
             >最近操作：{{ saasOrderState.operations[0]?.operation || "暂无" }} ·
@@ -4626,6 +4685,12 @@ onUnmounted(() => {
         </div>
       </aside>
     </div>
+    <div v-if="saasSyncDialog && selectedOrder?.order?.subscription_id === saasSyncDialog.subscriptionId && !user?.platform_role && user?.is_active && user?.activation_status === 'active' && user?.verified_status === 'verified' && selectedOrder.order.buyer_enterprise_id === enterprise?.id && ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role) && subscriptionState.orderId === selectedOrder.order.id && subscriptionState.item?.id === saasSyncDialog.subscriptionId && subscriptionDisplayStatus(subscriptionState.item) === 'active'" class="modal-scrim saas-sync-modal-scrim" @click.self="saasSyncDialog = null">
+      <section class="modal-card saas-sync-modal-card" role="dialog" aria-modal="true" aria-labelledby="saas-sync-modal-title" tabindex="-1" @keydown.esc.stop="saasSyncDialog = null">
+        <h2 id="saas-sync-modal-title" class="visually-hidden">SaaS {{ saasSyncDialog.kind === 'users' ? '用户管理' : '部门管理' }}</h2>
+        <SaaSSyncManagement :api="api" :subscription-id="saasSyncDialog.subscriptionId" :initial-kind="saasSyncDialog.kind" @close="saasSyncDialog = null" />
+      </section>
+    </div>
     <div
       v-if="showProductForm"
       class="modal-scrim"
@@ -4668,7 +4733,7 @@ onUnmounted(() => {
         /></label>
         <div class="form-grid">
           <label
-            >所属目录<select v-model="productForm.catalog_name" required>
+            >所属目录<select v-model="productForm.category_id" required>
               <option disabled value="">请选择产品或服务所属目录</option>
               <option
                 v-for="item in productDirectories"
@@ -4808,7 +4873,7 @@ onUnmounted(() => {
             </label>
             <div v-if="['api', 'model_api'].includes(productForm.delivery_method) && version.integration" class="form-grid" style="grid-column: 1 / -1">
               <label class="wide">版本上游URL<input v-model="version.integration.upstream_url" type="url" maxlength="500" required /></label>
-              <label>路由标识<input v-model="version.integration.route_key" pattern="[A-Za-z0-9_-]{1,100}" maxlength="100" required /></label>
+              <label>路由标识<input v-model="version.integration.route_key" pattern="[A-Za-z0-9_-]{1,100}" maxlength="100" readonly /></label>
               <label>入口认证<select v-model="version.integration.auth_mode" required><option value="api_key">API Key</option></select></label>
               <label>上游认证<select v-model="version.integration.upstream_auth_mode" required><option value="oauth2">OAuth2（机器凭据）</option><option value="none">无认证</option></select></label>
               <label>上游Scope<input v-model="version.integration.upstream_scope" maxlength="500" :required="version.integration.upstream_auth_mode === 'oauth2'" /></label>
@@ -4929,6 +4994,22 @@ onUnmounted(() => {
           >
         </div>
         </fieldset>
+        <section v-if="productDetailMode && ['api', 'model_api', 'tenant_access'].includes(productForm.delivery_method)" class="product-file-status" aria-live="polite">
+          <div class="form-section-title">接入健康与就绪状态</div>
+          <p v-if="productReadiness.loading" class="muted">加载中</p>
+          <p v-else-if="productReadiness.error" class="muted">{{ productReadiness.error }}</p>
+          <template v-else-if="productReadiness.data">
+            <p>{{ productReadiness.data.visible ? '发布就绪' : readinessLabel(productReadiness.data.visibility_reason) }}</p>
+            <div v-for="item in productReadiness.data.readiness" :key="item.version_id" class="file-status-row">
+              <strong>{{ productForm.versions?.find(version => version.id === item.version_id)?.version_code || 'SaaS 接入' }}</strong>
+              <span>健康：{{ readinessLabel(item.status) }}</span>
+              <span>就绪：{{ readinessLabel(item.configuration) }}</span>
+              <span v-if="item.configuration_reason">{{ readinessLabel(item.configuration_reason) }}</span>
+              <span v-if="item.reason">{{ readinessLabel(item.reason) }}</span>
+              <small v-if="item.last_checked_at">{{ fmtDate(item.last_checked_at) }}</small>
+            </div>
+          </template>
+        </section>
         <ProductIntegrationPanel
           v-if="productDetailMode && ['api', 'model_api'].includes(productForm.delivery_method) && canViewProductIntegration(user)"
           :product="productForm" :api="api" :provider="!user?.platform_role" :can-manage-saas="canManageProviderSaas(user, productForm)"
@@ -4941,16 +5022,16 @@ onUnmounted(() => {
           <div v-for="file in visibleProductFiles" :key="file.id" class="file-status-row product-file-row">
             <div class="product-file-name"><strong>{{ file.original_name }}</strong><small class="muted"> · {{ file.version || "产品级" }} · {{ file.size }} bytes</small></div>
             <div class="product-file-scan">
-              <button type="button" class="text-btn" @click="downloadProductFile(file)">下载文件</button>
+              <button v-if="canManageProductRegistration(user, enterprise)" type="button" class="text-btn" @click="downloadProductFile(file)">下载文件</button>
               <template v-if="file.file_role === 'product_logo'">
                 <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+                <button v-if="canManageProductRegistration(user, enterprise)" type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
               </template>
               <template v-else>
                 <span :class="['status-pill', file.clamav_status === 'clean' ? 'status-done' : 'status-blocked']">病毒：{{ file.clamav_status === 'clean' ? '通过' : file.clamav_status }}</span>
-                <button type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
+                <button v-if="canManageProductRegistration(user, enterprise)" type="button" class="text-btn" @click="openFileReport(file, 'clamav')">病毒报告</button>
                 <span :class="['status-pill', file.presidio_status === 'available' ? 'status-done' : file.presidio_status === 'not_scanned' ? 'status-review' : 'status-blocked']">Presidio：{{ file.presidio_status === 'available' ? '完成' : file.presidio_status }}</span>
-                <button type="button" class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
+                <button v-if="canManageProductRegistration(user, enterprise)" type="button" class="text-btn" @click="openFileReport(file, 'presidio')">Presidio报告</button>
               </template>
             </div>
           </div>
@@ -5488,4 +5569,8 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .version-change-amounts th, .version-change-amounts td { padding: 10px 8px; border-bottom: 1px solid #e5e6eb; text-align: left; overflow-wrap: anywhere; }
 .version-change-amounts thead { background: #f7f8fa; }
 .version-change-modal .modal-actions { flex-wrap: wrap; }
+.saas-sync-launchers { display: flex; flex-wrap: wrap; gap: 8px; }
+.saas-sync-modal-scrim { z-index: 30; }
+.saas-sync-modal-card { width: min(980px, calc(100vw - 32px)); max-height: min(760px, calc(100dvh - 32px)); overflow: auto; }
+@media (max-width: 640px) { .saas-sync-modal-card { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); padding: 14px; } }
 </style>

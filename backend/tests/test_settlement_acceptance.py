@@ -248,9 +248,14 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         for actor in ('buyer', 'provider', 'outsider'):
             for path in ('/api/settlements', f'/api/settlements/{sid}/detail', '/api/settlement-batches',
                          f'/api/settlement-batches/{bid}/lines', '/api/settlement-reports',
-                         '/api/settlement-reports/export', '/api/audit-logs'):
+                         '/api/settlement-reports/export', '/api/audit-logs/export'):
                 with self.subTest(actor=actor, path=path):
                     self.request('GET', path, actor=actor, expected=403)
+            records = self.request('GET', '/api/audit-logs', actor=actor)['items']
+            if actor == 'outsider':
+                self.assertEqual(records, [])
+            for row in records:
+                self.assertEqual(set(row), {'id', 'action', 'target_type', 'target_id', 'result', 'category', 'order_id', 'order_no', 'created_at'})
             self.request('POST', f'/api/settlements/{sid}/lock', actor=actor, expected=403)
             self.request('POST', f'/api/settlement-batches/{bid}/pay', actor=actor, expected=403, json={})
         self.request('GET', '/api/settlement-reports', actor='security')
