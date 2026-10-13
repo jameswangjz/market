@@ -12,6 +12,7 @@ import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
 import "./gateway-doc.css";
 import { canAccessConsoleView } from "./consolePermissions.js";
+import { consoleRoleLabel } from "./consoleRoleLabel.js";
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
 import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
@@ -95,6 +96,7 @@ const enterpriseInitial = computed(() => {
   const name = String(enterprise.value?.name || "").trim();
   return [...name].find((char) => /[\u4e00-\u9fffA-Za-z0-9]/.test(char)) || "企";
 });
+const currentConsoleRoleLabel = computed(() => consoleRoleLabel(user.value, enterprise.value));
 const loginForm = ref({ email: "admin@market.local", password: "Admin123!" });
 const loginError = ref("");
 const activationHint = ref("");
@@ -868,14 +870,32 @@ async function refreshData() {
     loading.value = false;
   }
 }
+function applyConfirmedPaymentOrder(updatedOrder, selectedOrderId) {
+  ordersListRequest++;
+  orders.value = orders.value.map(order => order.id === updatedOrder.id ? { ...order, ...updatedOrder } : order);
+  if (selectedOrder.value?.order.id === selectedOrderId && selectedOrderId === updatedOrder.id) {
+    selectedOrder.value = {
+      ...selectedOrder.value,
+      order: { ...selectedOrder.value.order, ...updatedOrder },
+      payment: selectedOrder.value.payment ? {
+        ...selectedOrder.value.payment,
+        status: updatedOrder.payment_status,
+        amount: updatedOrder.paid_amount ?? updatedOrder.amount,
+      } : selectedOrder.value.payment,
+    };
+  }
+}
 async function loadViewData(view) {
   if (!canAccessConsoleView(user.value, enterprise.value, view)) return;
   if (view === "overview") {
+    const ordersRequest = ++ordersListRequest;
     const [d, p, o] = await Promise.all([api.get("/dashboard"), api.get("/products"), api.get("/orders")]);
     dashboard.value = d.data;
     products.value = p.data.items;
-    orders.value = o.data.items;
-    loadSaasListAccess(orders.value);
+    if (ordersRequest === ordersListRequest) {
+      orders.value = o.data.items;
+      loadSaasListAccess(orders.value);
+    }
   }
   if (view === "development" || view === "overview") {
     const { data } = await api.get("/development/tasks");
@@ -1612,10 +1632,13 @@ async function transition(action) {
       if (!await confirmDialog(`订单 ${order.order_no}，金额 ${fmtMoney(order.amount)}`, { title, confirmText: title })) return;
       if (selectedOrder.value?.order.id !== order.id || !nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
     }
-    await api.post(`/orders/${order.id}/transition`, body);
+    const { data: updatedOrder } = await api.post(`/orders/${order.id}/transition`, body);
     notify("订单状态已更新");
-    await openOrder(order);
-    await refreshData();
+    if (action === "confirm_payment") {
+      if (updatedOrder?.id === order.id) applyConfirmedPaymentOrder(updatedOrder, order.id);
+    } else await openOrder(order);
+    try { await refreshData(); }
+    catch { notify("订单状态已更新，列表刷新失败"); }
   } catch (error) {
     notify(error.response?.data?.detail || error.message || "状态操作失败");
     if (error.response?.status === 409 && selectedOrder.value?.order.id === order.id) {
@@ -1673,18 +1696,6 @@ async function submitProviderReview(decision) {
     }
   } finally {
     providerReviewSubmitting.value = false;
-  }
-}
-async function saasOrderAction(action) {
-  const id = selectedOrder.value?.order?.subscription_id;
-  if (!id || !["close", "restore"].includes(action)) return;
-  try {
-    await api.post(`/saas-subscriptions/${id}/${action}`);
-    notify("SaaS 订阅操作已提交");
-    await openOrder(selectedOrder.value.order);
-    await refreshData();
-  } catch (error) {
-    notify(error.response?.data?.detail || "SaaS 订阅操作失败");
   }
 }
 async function saasSyncUser() {
@@ -2851,7 +2862,7 @@ onUnmounted(() => {
             <div class="avatar">{{ user.name?.slice(0, 1) }}</div>
             <div class="user-chip-copy">
               <strong>{{ user.name }}</strong
-              ><small>平台管理员</small>
+              ><small>{{ currentConsoleRoleLabel }}</small>
             </div>
           </div>
         </div>
@@ -4485,13 +4496,6 @@ onUnmounted(() => {
           <p class="muted">
             订阅 ID：{{ selectedOrder.order.subscription_id }}
           </p>
-          <div class="action-list">
-            <button class="secondary-btn" @click="saasOrderAction('close')">
-              关闭租户</button
-            ><button class="secondary-btn" @click="saasOrderAction('restore')">
-              恢复租户
-            </button>
-          </div>
           <div class="saas-sync-grid">
             <div>
               <div class="drawer-section-title">
@@ -4780,9 +4784,9 @@ onUnmounted(() => {
             ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="该版本每分钟允许的最大调用次数"
               >每分钟限流（次）<input v-model.number="version.rate_limit_per_minute" type="number" min="1" max="100000" step="1" required /></label
             ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="0 表示不限"
-              >每日配额（次）<input v-model.number="version.daily_quota" type="number" min="0" max="100000000" step="1" required /><small class="muted">0 表示不限</small></label
+              >每日配额（次，0 表示不限）<input v-model.number="version.daily_quota" type="number" min="0" max="100000000" step="1" required /></label
             ><label v-if="['api', 'model_api'].includes(productForm.delivery_method)" title="1 表示 1000 次，0 表示不限">
-              每订阅月配额（千次）<input :value="monthlyQuotaThousands(version.monthly_quota ?? 0)" type="number" min="0" max="3000000" step="0.001" required @input="updateVersionMonthlyQuota(version, $event)" /><small class="muted">1 千次 = 1000 次；0 表示不限</small></label
+              每订阅月配额（千次，1 千次 = 1000 次，0 表示不限）<input :value="monthlyQuotaThousands(version.monthly_quota ?? 0)" type="number" min="0" max="3000000" step="0.001" required @input="updateVersionMonthlyQuota(version, $event)" /></label
             ><label class="version-description"
               >版本简要介绍<textarea
                 v-model="version.description"
@@ -4798,10 +4802,6 @@ onUnmounted(() => {
             >
               <X :size="16" />
             </button>
-            <div class="form-grid version-compatibility">
-              <label>版本兼容性<select v-model="version.compatibility_mode" required><option value="compatible">向后兼容</option><option value="breaking">不兼容变更</option></select></label>
-              <label>兼容性说明<textarea v-model="version.compatibility_notes" rows="2"></textarea></label>
-            </div>
             <label v-if="productForm.delivery_method === 'file'" class="version-description" style="grid-column: 1 / -1">
               版本交付文件（压缩包，必填）<input type="file" accept=".zip,.tar,.gz,.tgz,.tar.gz,.bz2,.xz,.rar,.7z" :required="version.status === 'active' && !version.fileUpload && !version.uploadedFileName && !productFiles.some((file) => file.version_id === version.id && file.file_role === 'product_data' && ['draft', 'active'].includes(file.status))" @change="version.fileUpload = $event.target.files[0]" />
               <small class="muted">{{ version.uploadedFileName || productFiles.find((file) => file.version_id === version.id && file.file_role === 'product_data' && ['draft', 'active'].includes(file.status))?.original_name || '待上传版本文件' }}</small>
@@ -5432,10 +5432,8 @@ onUnmounted(() => {
 .version-editor-head > .text-btn { white-space: nowrap; flex-shrink: 0; }
 fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid #f0f1f3; padding: 12px 0 0; }
 .version-lock-notice { grid-column: 1 / -1; margin: 0; color: #727782; font-size: 12px; }
-.version-compatibility { grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.version-compatibility label, .oidc-redirect-field { min-width: 0; overflow-wrap: anywhere; }
-.version-compatibility select, .version-compatibility textarea, .oidc-redirect-field textarea { width: 100%; min-width: 0; }
-@media (max-width: 760px) { .version-compatibility { grid-template-columns: minmax(0, 1fr); } }
+.oidc-redirect-field { min-width: 0; overflow-wrap: anywhere; }
+.oidc-redirect-field textarea { width: 100%; min-width: 0; }
 .version-row label.version-prefix-toggle { flex-direction: row; align-items: center; gap: 8px; }
 .version-row .version-prefix-toggle input { width: 14px; height: 14px; margin: 0; padding: 0; flex-shrink: 0; }
 .subscription-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

@@ -72,7 +72,39 @@ test("reject requires reason and sends no edited economics", () => {
   assert.throws(() => providerReviewPayload({ ...quote, expected_updated_at: null, updated_at: "wrong-field" }, { reason: "yes" }, "approve"));
 });
 
+test("confirmed payment applies server order values and only patches the matching drawer", () => {
+  const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+  const state = {
+    ordersListRequest: 4,
+    orders: { value: [{ ...order }, { ...order, id: "other" }] },
+    selectedOrder: { value: { order: { ...order }, payment: { status: "paying" }, logs: [] } },
+  };
+  vm.createContext(state);
+  vm.runInContext(source.slice(source.indexOf("function applyConfirmedPaymentOrder("), source.indexOf("async function loadViewData(")), state);
+  const authoritative = { ...order, payment_status: "paid", main_status: "pending_fulfillment", paid_amount: 100, updated_at: "server-time" };
+  state.applyConfirmedPaymentOrder(authoritative, order.id);
+  assert.equal(state.ordersListRequest, 5);
+  assert.deepEqual({ ...state.orders.value[0] }, authoritative);
+  assert.equal(state.orders.value[1].payment_status, "unpaid");
+  assert.deepEqual({ ...state.selectedOrder.value.order }, authoritative);
+  assert.equal(state.selectedOrder.value.payment.status, "paid");
+  assert.equal(state.selectedOrder.value.payment.amount, 100);
+
+  state.selectedOrder.value = { order: { ...order, id: "other" }, payment: null };
+  const currentDrawer = state.selectedOrder.value;
+  state.applyConfirmedPaymentOrder(authoritative, order.id);
+  assert.equal(state.selectedOrder.value, currentDrawer);
+  const transition = source.slice(source.indexOf("async function transition(action)"), source.indexOf("function closeProviderReview()"));
+  assert.match(transition, /const \{ data: updatedOrder \} = await api\.post/);
+  assert.match(transition, /if \(action === "confirm_payment"\) \{[\s\S]*?updatedOrder\?\.id === order\.id\) applyConfirmedPaymentOrder/);
+  assert.match(transition, /try \{ await refreshData\(\); \}[\s\S]*?catch \{ notify\("订单状态已更新，列表刷新失败"\); \}/);
+});
+
 const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+test("order drawer does not expose tenant close or restore actions", () => {
+  assert.doesNotMatch(source, /关闭租户|恢复租户/);
+  assert.doesNotMatch(source, /saasOrderAction\('(?:close|restore)'\)/);
+});
 function harness() {
   const state = {
     selectedOrder: { value: { order: { ...order } } }, user: { value: { ...admin } }, enterprise: { value: enterprise },
@@ -85,12 +117,12 @@ function harness() {
     fmtMoney: value => String(value),
   };
   state.api.get = async url => { state.calls.push(["get", url]); return { data: quote }; };
-  state.api.post = async (url, body) => { state.calls.push(["post", url, body]); };
+  state.api.post = async (url, body) => { state.calls.push(["post", url, body]); return { data: undefined }; };
   state.notify = message => state.messages.push(message);
   state.openOrder = async item => state.refreshes.push(item.id);
   state.refreshData = async () => state.refreshes.push("list");
   vm.createContext(state);
-  vm.runInContext(source.slice(source.indexOf("async function loadOrderDeliveryAttachments(order)"), source.indexOf("async function saasOrderAction(action)")) + source.slice(source.indexOf("function nextActions(order)"), source.indexOf("onMounted(() =>")), state);
+  vm.runInContext(source.slice(source.indexOf("async function loadOrderDeliveryAttachments(order)"), source.indexOf("async function saasSyncUser()")) + source.slice(source.indexOf("function nextActions(order)"), source.indexOf("onMounted(() =>")), state);
   return state;
 }
 

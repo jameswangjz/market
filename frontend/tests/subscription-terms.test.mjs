@@ -277,7 +277,7 @@ test("renewal integration refreshes orders and opens the created unpaid order wi
   await state.submitRenewal(); assert.deepEqual(calls, ["refresh", "renewal"]);
   state.refreshData = async () => { state.selectedOrder.value = null; };
   await state.submitRenewal(); assert.deepEqual(calls, ["refresh", "renewal"]);
-  assert.doesNotMatch(source, /saasOrderAction\('(?:renew|change)'\)|\/change-version/);
-  assert.match(source, /每订阅月配额（千次）/);
+  assert.doesNotMatch(source, /saasOrderAction\('(?:close|restore)'\)|关闭租户|恢复租户/);
+  assert.match(source, /每订阅月配额（千次，1 千次 = 1000 次，0 表示不限）/);
   assert.doesNotMatch(source, /v-model="version.quota_unit"|v-model.number="version.quota_amount"/);
 });
