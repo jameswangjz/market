@@ -18,6 +18,36 @@ export function integrationStatus(item) {
   return { pending_integration: '待接入验证', failed: '验证失败', error: '验证失败' }[item.status] || '未就绪';
 }
 
+export function readinessLabel(code) {
+  return { healthy: '健康', failed: '检查失败', not_checked: '尚未检查', ready: '已就绪',
+    configuration_missing: '未配置接入', configuration_not_ready: '接入验证未通过',
+    product_not_published: '产品尚未发布', probe_timeout: '健康检查超时',
+    upstream_unavailable: '上游服务不可用', probe_unavailable: '检查服务不可用',
+    address_policy_rejected: '地址策略拒绝访问', invalid_configuration: '接入配置无效',
+    not_authorized: '未获授权', probe_failed: '健康检查失败', verification_failed: '验证失败',
+    integration_failed: '接入验证失败' }[code] || '状态未知';
+}
+
+export function createReadinessController({ state, api }) {
+  let epoch = 0;
+  async function load(id) {
+    const generation = ++epoch;
+    state.data = null;
+    state.error = '';
+    state.loading = Boolean(id);
+    if (!id) return;
+    try {
+      const { data } = await api.get(`/products/${encodeURIComponent(id)}/integration-readiness`);
+      if (generation === epoch) state.data = data;
+    } catch {
+      if (generation === epoch) state.error = '接入健康状态加载失败';
+    } finally {
+      if (generation === epoch) state.loading = false;
+    }
+  }
+  return { load };
+}
+
 export function createIntegrationController({ state, api, product, changed }) {
   let epoch = 0;
   let verification = 0;

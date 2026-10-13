@@ -64,7 +64,8 @@ class ProductReviewAcceptanceTests(harness.AcceptanceHTTPCase):
             jobs = self.rows(self.Outbox, message_id=row.id)
             self.assertEqual(len({receipt.user_id for receipt in receipts}), len(receipts))
             self.assertEqual(len({(job.user_id, job.channel) for job in jobs}), len(jobs))
-        self.request('GET', '/api/audit-logs', actor='outsider', expected=403)
+        self.assertEqual(self.request('GET', '/api/audit-logs', actor='outsider')['items'], [])
+        self.request('GET', '/api/audit-logs/export', actor='outsider', expected=403)
         self.assertTrue(self.request('GET', '/api/audit-logs', actor='security', params={'q': 'product'})['items'])
 
     def test_wrong_stage_roles_cannot_advance_or_emit_events(self):

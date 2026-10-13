@@ -14,6 +14,12 @@ class RegistrationConfigTests(unittest.TestCase):
     tearDown = fixtures.BusinessRoutesHTTPTests.tearDown
     request = fixtures.BusinessRoutesHTTPTests.request
 
+    def setUp(self):
+        fixtures.BusinessRoutesHTTPTests.setUp(self)
+        with self.m.SessionLocal() as db:
+            self.m.product_categories['seed'](db)
+            db.commit()
+
     def test_redirect_uri_whitelist_validation(self):
         valid = ['https://saas.example.com/callback', 'http://localhost:8000/callback',
                  'http://127.0.0.1/callback', 'http://market-mock-saas/callback']
@@ -36,6 +42,7 @@ class RegistrationConfigTests(unittest.TestCase):
     def test_callback_and_compatibility_persist_and_reload(self):
         data = self.request('POST', '/api/products', actor='provider', json={
             'name': 'configuration fixture', 'product_type': 'saas', 'delivery_method': 'tenant_access',
+            'catalog_name': '其他',
             'oidc_redirect_uris': ['https://saas.example.com/callback'],
             'versions': [{'version_code': 'v1', 'price': 100, 'cost': 20,
                           'compatibility_mode': 'breaking', 'compatibility_notes': 'requires new request schema'}]})
@@ -54,6 +61,15 @@ class RegistrationConfigTests(unittest.TestCase):
         self.request('PUT', '/api/products/'+data['id'], actor='provider', expected=409, json={
             'name': 'configuration fixture', 'product_type': 'saas', 'delivery_method': 'tenant_access',
             'oidc_redirect_uris': ['https://saas.example.com/new-callback']})
+
+    def test_http_product_create_and_edit_reject_mismatched_type_delivery(self):
+        self.request('POST', '/api/products', actor='provider', expected=400, json={
+            'name': 'invalid mapping', 'product_type': 'saas', 'delivery_method': 'api'})
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Product, 'product').status = 'draft'
+            db.commit()
+        self.request('PUT', '/api/products/product', actor='provider', expected=400, json={
+            'name': 'fixture', 'product_type': 'api', 'delivery_method': 'file'})
 
     def test_explicit_development_callback_origin_requires_flag_and_exact_origin(self):
         uri = 'http://192.168.10.10:30083/sso/callback'

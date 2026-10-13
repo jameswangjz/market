@@ -8,15 +8,27 @@ export function canAccessConsoleView(user, enterprise, view) {
   if (view === "applications") return canViewApplications(user);
   // Keep account, verification and enterprise onboarding available to all users.
   if (["users", "messages"].includes(view)) return true;
-  if (view === "products") return !user.platform_role || [...operators, "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.platform_role);
+  if (view === "products") return [...operators, "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.platform_role) || Boolean(!user.platform_role && activeConsoleMembership(user, enterprise));
   if (user.verified_status !== "verified") return false;
   const role = user.platform_role;
   if (["gateway", "sla", "settings", "development"].includes(view)) return operators.includes(role);
-  if (["settlements", "audit"].includes(view)) return auditors.includes(role);
-  if (view === "delivery") return [...operators, "delivery_monitor"].includes(role) || Boolean(enterprise?.id && ["super_admin", "enterprise_admin"].includes(user.enterprise_role));
-  if (view === "orders") return [...auditors, "delivery_monitor"].includes(role) || Boolean(!role && enterprise?.id);
-  if (view === "overview") return Boolean(enterprise?.id || [...operators, "security_compliance"].includes(role));
+  const enterpriseAdmin = !role && ["super_admin", "enterprise_admin"].includes(activeConsoleMembership(user, enterprise)?.role);
+  if (["settlements", "audit"].includes(view)) return auditors.includes(role) || enterpriseAdmin;
+  if (view === "delivery") return [...operators, "delivery_monitor"].includes(role) || enterpriseAdmin;
+  if (view === "orders") return [...auditors, "delivery_monitor"].includes(role) || Boolean(!role && activeConsoleMembership(user, enterprise));
+  if (view === "overview") return Boolean((!role && activeConsoleMembership(user, enterprise)?.role === "super_admin") || [...operators, "security_compliance"].includes(role));
   return false;
+}
+
+function activeConsoleMembership(user, enterprise) {
+  return enterprise?.id && user?.enterprise_memberships?.find(member => member.enterprise_id === enterprise.id &&
+    (member.status || member.membership_status) === "active");
+}
+
+export function canManageProductRegistration(user, enterprise) {
+  if (!user) return false;
+  if ([...operators, "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.platform_role)) return true;
+  return !user.platform_role && user.verified_status === "verified" && ["super_admin", "enterprise_admin"].includes(activeConsoleMembership(user, enterprise)?.role);
 }
 
 export function activeApplicationMembership(user, enterpriseId) {

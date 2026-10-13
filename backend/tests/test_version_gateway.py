@@ -127,7 +127,7 @@ class VersionGatewayTests(unittest.TestCase):
                                      status="active", created_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
         self.db.flush()
         self.assertEqual(self.m.first_enterprise(self.db, owner).id, "other")
-        self.assertIn(b"test-client", self.m.download_oauth_credentials("p", owner, self.db).body)
+        self.assertIn(b"test-client", self.m.download_oauth_credentials("p", owner, self.db, enterprise_id=self.product.enterprise_id).body)
 
     def test_outside_enterprise_cannot_download_credentials(self):
         owner = self.credential_owner()
@@ -244,13 +244,40 @@ class VersionGatewayTests(unittest.TestCase):
         self.admin.assert_not_called()
         self.db.add(self.m.ProductReleaseVersion(id="v2", product_id="p", version_code="v2", price=20, cost=1))
         self.db.flush()
-        self.hooks["save_config"](self.db, self.product, "v2", self.body | {"version": "v2", "route_key": "p-v2"}, self.user)
+        self.hooks["save_config"](self.db, self.product, "v2", self.body | {"version": "v2", "route_key": ""}, self.user)
+        generated_route = self.db.scalar(select(self.m.ApiGatewayRoute).where(
+            self.m.ApiGatewayRoute.product_id == "p", self.m.ApiGatewayRoute.version == "v2"))
+        self.assertEqual(generated_route.route_key, "p-p-v-v2")
         second = self.hooks["verify_version"](self.db, self.product, "v2", self.user)
         self.assertEqual(second.status, "verified")
         self.assertNotEqual(second.route_id, self.route.id)
         self.hooks["require_ready"](self.db, self.product)
         self.assertEqual((self.route.route_key, self.route.version, self.route.status), ("p-v1", "v1", "active"))
         self.assertTrue(self.ready())
+
+    def test_valid_explicit_legacy_route_key_is_preserved_for_new_route(self):
+        self.db.delete(self.route)
+        self.db.flush()
+        saved = self.save(route_key="caller-chosen")
+        route = self.db.get(self.m.ApiGatewayRoute, saved.route_id)
+        self.assertEqual(route.route_key, "caller-chosen")
+
+    def test_missing_route_key_is_generated_for_new_route(self):
+        self.db.delete(self.route)
+        self.db.flush()
+        saved = self.save(route_key="")
+        self.assertEqual(saved.route_key, "p-p-v-v")
+
+    def test_malformed_explicit_route_key_is_rejected_before_generation(self):
+        for key in ("../route", "bad/path", " bad", "bad.key"):
+            with self.subTest(key=key):
+                self.assert_http(400, lambda: self.save(route_key=key))
+
+    def test_caller_route_key_cannot_change_existing_active_route_identity(self):
+        self.route.status = "active"
+        saved = self.save(route_key="caller-chosen")
+        self.assertEqual(saved.route_key, "p-v1")
+        self.assertEqual(self.route.route_key, "p-v1")
 
     def test_unsold_config_change_invalidates_and_can_be_reverified(self):
         self.save()
@@ -294,7 +321,7 @@ class VersionGatewayTests(unittest.TestCase):
 
     def test_url_path_and_version_validation(self):
         for values in ({"upstream_url": "https://user:secret@provider.invalid"},
-                       {"health_path": "//private/health"}, {"route_key": "../route"},
+                       {"health_path": "//private/health"},
                        {"version": "v2"}, {"auth_mode": "none"}):
             with self.subTest(values=values):
                 self.assert_http(400, lambda: self.save(**values))

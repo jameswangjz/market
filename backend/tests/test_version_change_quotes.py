@@ -111,6 +111,17 @@ class VersionChangeQuoteTests(unittest.TestCase):
             db.commit()
         self.quote(oid, expected=409)
 
+    def test_breaking_saas_change_still_requires_explicit_confirmation(self):
+        oid, _ = self.prepare(method='tenant_access', future=False)
+        with self.m.SessionLocal() as db:
+            version = db.get(self.m.SaaSProductVersion, 'v2')
+            version.compatibility_mode = 'breaking'
+            version.compatibility_notes = 'Tenant contract changed'
+            db.commit()
+        self.quote(oid, expected=409)
+        quote = self.quote(oid, confirmed=True)
+        self.assertTrue(quote['compatibility']['confirmation_required'])
+
     def test_downgrade_and_equal_price_are_not_execution(self):
         oid, _ = self.prepare()
         for price, cost, expected, action in [(50, 20, -125, 'downgrade'), (100, 90, 0, 'no_payment')]:
@@ -200,15 +211,17 @@ class VersionChangeQuoteTests(unittest.TestCase):
         self.quote(oid, target='version', expected=409)
         self.quote(oid, target='missing-version', expected=400)
 
-    def test_breaking_version_requires_confirmation_and_changed_notes_invalidate(self):
+    def test_api_breaking_version_does_not_require_confirmation_and_changed_notes_invalidate(self):
         oid, _ = self.prepare()
         with self.m.SessionLocal() as db:
             version = db.get(self.m.ProductReleaseVersion, 'v2')
-            version.compatibility_mode, version.compatibility_notes = 'breaking', 'Changed request schema'
+            version.compatibility_mode, version.compatibility_notes = 'legacy-unknown', 'Changed request schema'
             db.commit()
-        self.quote(oid, expected=409)
-        quoted = self.quote(oid, confirmed=True)
-        self.assertTrue(quoted['compatibility']['confirmation_required'])
+        listed = self.request('GET', f'/api/orders/{oid}/version-change-options')
+        self.assertEqual((listed['versions'][0]['compatibility_mode'], listed['versions'][0]['compatibility_notes']), ('compatible', ''))
+        quoted = self.quote(oid)
+        self.assertEqual((quoted['compatibility']['mode'], quoted['compatibility']['notes']), ('compatible', ''))
+        self.assertFalse(quoted['compatibility']['confirmation_required'])
         with self.m.SessionLocal() as db:
             db.get(self.m.ProductReleaseVersion, 'v2').compatibility_notes = 'Changed again'
             db.commit()

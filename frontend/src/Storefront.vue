@@ -9,6 +9,7 @@ const props = defineProps({ productId: { type: String, default: "" }, search: { 
 // This client never inherits the console's bearer token or private product API.
 const api = createPublicStorefrontClient();
 const items = ref([]);
+const categories = ref([]);
 const product = ref(null);
 const busy = ref(false);
 const error = ref("");
@@ -18,6 +19,10 @@ const page = ref(1);
 const pageSize = ref(12);
 const query = ref("");
 const type = ref("");
+const deliveryMethod = ref("");
+const parentId = ref("");
+const categoryId = ref("");
+const childCategories = computed(() => categories.value.find(item => item.id === parentId.value)?.children || []);
 const selectedVersion = ref("");
 const selectedEnterprise = ref("");
 const subscriptionMonths = ref(1);
@@ -62,14 +67,30 @@ function refreshQuote() { return purchase.setSelection(quoteSelection()); }
 async function subscribe() {
   if (!canSubscribe.value) return;
   const order = await purchase.submit();
-  if (order) navigate("/console?view=orders");
+  if (order) {
+    const query = new URLSearchParams({ view: "orders" });
+    if (typeof order.buyer_enterprise_id === "string" && order.buyer_enterprise_id)
+      query.set("enterprise_id", order.buyer_enterprise_id);
+    navigate(`/console?${query}`);
+  }
 }
 function applyFilters(nextPage = 1) {
   const params = new URLSearchParams();
   if (query.value.trim()) params.set("q", query.value.trim());
   if (type.value) params.set("type", type.value);
+  if (deliveryMethod.value) params.set("delivery_method", deliveryMethod.value);
+  if (parentId.value) params.set("parent_id", parentId.value);
+  if (categoryId.value) params.set("category_id", categoryId.value);
   if (nextPage > 1) params.set("page", String(nextPage));
   navigate(`/${params.size ? `?${params}` : ""}`);
+}
+async function changeDelivery() {
+  parentId.value = "";
+  categoryId.value = "";
+  try {
+    const { data } = await api.get("/categories", { params: { delivery_method: deliveryMethod.value } });
+    categories.value = data.items || [];
+  } catch { categories.value = []; }
 }
 async function load() {
   controller?.abort();
@@ -86,6 +107,9 @@ async function load() {
   const params = new URLSearchParams(props.search);
   query.value = params.get("q") || "";
   type.value = params.get("type") || "";
+  deliveryMethod.value = params.get("delivery_method") || "";
+  parentId.value = params.get("parent_id") || "";
+  categoryId.value = params.get("category_id") || "";
   const requestedPage = Number(params.get("page") || 1);
   page.value = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   try {
@@ -97,9 +121,14 @@ async function load() {
       selectedVersion.value = data.versions[0]?.id || "";
       purchase.loadIdentity();
     } else {
-      const { data } = await api.get("/products", { params: { q: query.value, type: type.value, page: page.value, page_size: 12 }, signal: request.signal });
+      const [response, categoryResponse] = await Promise.all([
+        api.get("/products", { params: { q: query.value, type: type.value, delivery_method: deliveryMethod.value, parent_id: parentId.value, category_id: categoryId.value, page: page.value, page_size: 12 }, signal: request.signal }),
+        api.get("/categories", { params: { delivery_method: deliveryMethod.value }, signal: request.signal }),
+      ]);
       if (request.signal.aborted) return;
+      const { data } = response;
       if (!Array.isArray(data?.items) || !Number.isFinite(data.total) || !Number.isInteger(data.page) || !Number.isInteger(data.page_size) || data.total < 0 || data.page < 1 || data.page_size < 1) throw new Error("invalid-contract");
+      categories.value = categoryResponse.data.items || [];
       items.value = data.items.filter(item => item?.id && item.name);
       total.value = data.total;
       page.value = data.page;
@@ -128,9 +157,14 @@ onUnmounted(() => { controller?.abort(); purchase.dispose(); });
       <template v-if="!productId">
         <div class="page-heading"><div><h1>数据与服务商城</h1><p>数据产品、API 服务与专业服务</p></div><span v-if="!busy && !error" class="muted">{{ total }} 个商品</span></div>
         <form class="store-filters" @submit.prevent="applyFilters()">
-          <label class="store-search"><Search :size="18" /><input v-model="query" type="search" aria-label="搜索商品" placeholder="搜索商品名称" /></label>
-          <select v-model="type" aria-label="商品类型" @change="applyFilters()"><option value="">全部类型</option><option v-for="(name, key) in types" :key="key" :value="key">{{ name }}</option></select>
-          <button type="submit" class="primary-btn"><Search :size="16" />搜索</button>
+          <div class="store-filter-row"><label class="store-search"><Search :size="18" /><input v-model="query" type="search" aria-label="搜索商品" placeholder="搜索商品名称" /></label>
+            <select v-model="type" aria-label="商品类型"><option value="">全部类型</option><option v-for="(name, key) in types" :key="key" :value="key">{{ name }}</option></select>
+            <select v-model="deliveryMethod" aria-label="交付方式" @change="changeDelivery"><option value="">全部交付方式</option><option v-for="(name, key) in deliveryLabels" :key="key" :value="key">{{ name }}</option></select>
+          </div>
+          <div class="store-filter-row"><select v-model="parentId" aria-label="一级目录" @change="categoryId = ''"><option value="">全部一级目录</option><option v-for="item in categories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
+            <select v-model="categoryId" aria-label="二级目录" :disabled="!parentId"><option value="">全部二级目录</option><option v-for="item in childCategories" :key="item.id" :value="item.id">{{ item.name }}</option></select>
+            <button type="submit" class="primary-btn"><Search :size="16" />搜索</button>
+          </div>
         </form>
       </template>
       <a v-else href="/" class="store-back text-btn" @click.prevent="navigate('/')"><ArrowLeft :size="16" />全部商品</a>
@@ -180,7 +214,7 @@ onUnmounted(() => { controller?.abort(); purchase.dispose(); });
             <div class="store-card-bottom"><strong>{{ price(item.minimum_price) }}<small v-if="item.price_unit"> / {{ priceUnit(item.price_unit) }}</small></strong><a :href="productUrl(item.id)" class="icon-btn" title="查看商品详情" aria-label="查看商品详情" @click.prevent="navigate(productUrl(item.id))"><ArrowRight :size="18" /></a></div>
           </article>
         </div>
-        <div v-else class="store-state"><Database :size="32" /><h2>{{ query || type ? '没有找到匹配的商品' : '暂无在售商品' }}</h2></div>
+        <div v-else class="store-state"><Database :size="32" /><h2>{{ query || type || deliveryMethod || parentId || categoryId ? '没有找到匹配的商品' : '暂无在售商品' }}</h2></div>
         <nav v-if="total > 0" class="store-pagination" aria-label="商品分页"><button class="icon-btn" title="上一页" aria-label="上一页" :disabled="page <= 1" @click="applyFilters(page - 1)"><ArrowLeft :size="18" /></button><span>{{ page }} / {{ pages }}</span><button class="icon-btn" title="下一页" aria-label="下一页" :disabled="page >= pages" @click="applyFilters(page + 1)"><ArrowRight :size="18" /></button></nav>
       </template>
     </main>

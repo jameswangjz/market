@@ -103,17 +103,31 @@ test("options whitelist versions and reject wrong binding, duplicate IDs, bad pr
   for (const changes of [{ order_id: "other" }, { combination_id: "other" }, { delivery_method: "file" },
     { current_version_id: "other" }, { current_version_code: "other" }, { expires_at: "bad" },
     { expires_at: "2030-02-14T00:00:00Z" }, { versions: null }, { versions: [options.versions[0], options.versions[0]] },
-    ...[{ monthly_price: "200" }, { monthly_price: NaN }, { monthly_price: -1 }, { compatibility_mode: "unknown" },
-      { compatibility_notes: null }].map(change => ({ versions: [{ ...options.versions[1], ...change }] }))]) {
+    ...[{ monthly_price: "200" }, { monthly_price: NaN }, { monthly_price: -1 }]
+      .map(change => ({ versions: [{ ...options.versions[1], ...change }] }))]) {
     assert.throws(() => sanitizeVersionChangeOptions({ ...options, ...changes }, order, subscription, at));
   }
   assert.deepEqual(sanitizeVersionChangeOptions({ ...options, versions: [] }, order, subscription, at).versions, []);
 });
 
-test("quote payload sends only target ID and explicit confirmation; breaking requires confirmation", () => {
+test("API options normalize legacy breaking and invalid compatibility while SaaS remains strict", () => {
+  const legacy = { ...options, versions: [{ ...options.versions[2], compatibility_mode: "legacy-invalid", compatibility_notes: "old API note" }] };
+  assert.deepEqual(sanitizeVersionChangeOptions(legacy, order, subscription, at).versions[0], {
+    id: "v3", version_code: "v3", monthly_price: 50, compatibility_mode: "compatible", compatibility_notes: "",
+  });
+  const saasOrder = { ...order, delivery_method: "tenant_access" };
+  assert.throws(() => sanitizeVersionChangeOptions({ ...legacy, delivery_method: "tenant_access" }, saasOrder, subscription, at));
+  assert.throws(() => sanitizeVersionChangeOptions({ ...options, delivery_method: "tenant_access",
+    versions: [{ ...options.versions[1], compatibility_notes: null }] }, saasOrder, subscription, at));
+});
+
+test("API payload ignores legacy breaking flags while SaaS breaking still requires confirmation", () => {
   assert.deepEqual(versionChangeQuotePayload(options, "v2", false, at), { target_version_id: "v2", compatibility_confirmed: false });
-  assert.deepEqual(versionChangeQuotePayload(options, "v3", true, at), { target_version_id: "v3", compatibility_confirmed: true });
-  for (const [target, confirmed] of [["v1", false], ["missing", true], ["v3", false], ["v2", "true"]]) {
+  assert.deepEqual(versionChangeQuotePayload(options, "v3", false, at), { target_version_id: "v3", compatibility_confirmed: false });
+  const saasOptions = { ...options, delivery_method: "tenant_access" };
+  assert.deepEqual(versionChangeQuotePayload(saasOptions, "v3", true, at), { target_version_id: "v3", compatibility_confirmed: true });
+  assert.throws(() => versionChangeQuotePayload(saasOptions, "v3", false, at));
+  for (const [target, confirmed] of [["v1", false], ["missing", true], ["v2", "true"]]) {
     assert.throws(() => versionChangeQuotePayload(options, target, confirmed, at));
   }
   assert.throws(() => versionChangeQuotePayload({ ...options, expires_at: "2030-02-14T00:00:00Z" }, "v2", false, at));
@@ -231,8 +245,10 @@ test("session obtains and validates quotes without exposing signed token or prov
   assert.equal("execute" in h.session, false);
 });
 
-test("breaking target cannot obtain a quote until confirmed; target and confirmation changes invalidate quote", async () => {
-  const h = harness(); await h.session.open(); h.session.setTarget("v3");
+test("breaking SaaS target needs confirmation; target and confirmation changes invalidate quote", async () => {
+  const h = harness(); h.context.order.delivery_method = "tenant_access";
+  h.api.get = async path => { h.calls.push({ method: "GET", path }); return { data: { ...options, delivery_method: "tenant_access" } }; };
+  await h.session.open(); h.session.setTarget("v3");
   await h.session.quote(); assert.equal(h.calls.length, 1); assert.match(h.state().error, /不兼容/);
   h.session.setConfirmed(true);
   h.api.post = async () => ({ data: quote({ target_version_code: "v3", compatibility: { mode: "breaking", notes: "接口变更", confirmation_required: true } }) });
@@ -292,7 +308,9 @@ test("newer option loads win over stale successes and failures", async () => {
 });
 
 test("target change and refresh discard stale quotation without releasing a newer request", async () => {
-  const h = harness(); await h.session.open(); h.session.setTarget("v2");
+  const h = harness(); h.context.order.delivery_method = "tenant_access";
+  h.api.get = async () => ({ data: { ...options, delivery_method: "tenant_access" } });
+  await h.session.open(); h.session.setTarget("v2");
   const old = deferred(); h.api.post = () => old.promise; const pending = h.session.quote();
   h.session.setTarget("v3"); h.session.setConfirmed(true);
   const recent = deferred(); h.api.post = () => recent.promise; const current = h.session.quote();
