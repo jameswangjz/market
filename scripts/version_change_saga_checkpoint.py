@@ -7,10 +7,22 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'browser-regression', 'extended-regression', 'verified'), required=True)
+    parser.add_argument('--phase', choices=('start', 'implemented', 'api-runtime', 'saas-runtime', 'financial-reviewed', 'runtime-regression', 'browser-regression', 'extended-regression', 'oauth-revocation', 'verified'), required=True)
     parser.add_argument('--proof')
     parser.add_argument('--runtime-tag', default='development')
     args = parser.parse_args()
+    if args.phase == 'oauth-revocation':
+        proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
+        if (proof.get('status') != 'passed' or
+                proof.get('scope') != 'platform machine OAuth and mock-SaaS STATUS' or
+                any(proof.get(key) is not True for key in (
+                    'individual_token_revocation', 'same_client_sibling_token_survives',
+                    'new_token_issuance_after_individual_revoke',
+                    'client_status_revokes_remaining_tokens',
+                    'new_issuance_after_client_status_revoke_denied', 'other_clients_unchanged')) or
+                proof.get('individual_and_client_revoked_token_status') != 401 or
+                proof.get('cleanup') != 'exact QA roots removed'):
+            raise ValueError('Live OAuth revocation, protected resource rejection and exact cleanup proof required')
     if args.phase == 'extended-regression':
         proof = json.loads(Path(args.proof).read_text()) if args.proof else {}
         if (proof.get('status') != 'passed' or
@@ -76,6 +88,11 @@ def main():
     from app import main as m
     from sqlalchemy import select
     phases = {
+        'oauth-revocation': {
+            'TRD-BE-017': (95, 'OAuth撤销修复已部署；真实HTTP内省及模拟SaaS鉴权验证：单Token撤销不影响同客户端其它Token，客户端停用使全部Token失效；不等同完整Saga令牌故障补偿覆盖。'),
+            'TRD-OPS-002': (95, 'API及三类Worker滚动更新成功，数据库已备份，持久化凭据Secret未变；OAuth撤销真实链路与精确测试数据清理通过。'),
+            'TRD-QA-005': (95, '已验证真实OAuth发放、重复撤销、旧Token拒绝、新Token发放及客户端停用；APISIX缓存路径、令牌缓存恢复和完整资源故障矩阵仍待验证。'),
+        },
         'start': {
             'TRD-BE-017': (10, '开始持久化差价资金、资源版本切换与失败补偿；沿用模拟资金。'),
             'TRD-BE-018': (30, '开始连续变更有效期限修订和已入账正负调整的月度清算接入。'),

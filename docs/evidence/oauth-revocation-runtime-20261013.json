@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "scope": "platform machine OAuth and mock-SaaS STATUS",
+  "environment": "192.168.10.10 / market",
+  "runtime_tag": "20261013001410-3626b03",
+  "individual_token_revocation": true,
+  "same_client_sibling_token_survives": true,
+  "new_token_issuance_after_individual_revoke": true,
+  "client_status_revokes_remaining_tokens": true,
+  "new_issuance_after_client_status_revoke_denied": true,
+  "pre_revoke_protected_status": "404 tenant_not_found",
+  "individual_and_client_revoked_token_status": 401,
+  "other_clients_unchanged": true,
+  "cleanup": "exact QA roots removed",
+  "gateway_cache_path": "not exercised; fixture does not populate saas_access_token cache",
+  "backend_regression": {"tests": 750, "skipped": 44, "status": "passed"},
+  "deployment": {
+    "api": "ready",
+    "message_center_worker": "ready",
+    "online_delivery_worker": "ready",
+    "version_change_worker": "ready",
+    "credential_secret_unchanged": true,
+    "database_backup": "/root/market/backups/pre-oauth-revocation-20261013001410-3626b03.sql"
+  },
+  "limitations": [
+    "Pre-revocation STATUS reaches authentication but intentionally targets an absent QA tenant; this is not tenant fulfillment or a version-change transaction",
+    "Client status is changed only for the generated QA client through the database, not a client management UI",
+    "APISIX token cache, SaaS cached-token refresh, OIDC user session revocation and full Saga token-failure compensation are not covered"
+  ]
+}
