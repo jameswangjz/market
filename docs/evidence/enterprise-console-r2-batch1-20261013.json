@@ -1,0 +1,30 @@
+{
+  "plan": "enterprise-console-r2-20261013",
+  "task_count": 20,
+  "coding_model": "gpt-6-luna",
+  "reasoning_effort": "medium",
+  "design_review_validation": "current parent model",
+  "token_usage": null,
+  "token_usage_reason": "agent tools did not expose model token accounting",
+  "source_commit": "5e4edc8",
+  "deployment": "market-web:20261013081342-5e4edc8",
+  "unit_tests": {"passed": 185, "failed": 0},
+  "production_build": "passed",
+  "browser": {
+    "status": "passed",
+    "scope": "real Chrome password login, public storefront purchase, simulated payment, automatic API delivery, desktop/mobile screenshots",
+    "blocked_requests": 0,
+    "native_dialogs": 0,
+    "private_credential_exposed": false,
+    "artifact": "D:/HXYL/01 天地奔牛/05 部署相关/05 market/R2首批浏览器验证-20261013",
+    "fixture_cleanup": "recorded generated consumer, exact owned database and external identities removed"
+  },
+  "downloads": {
+    "provider": "api-gateway-integration.md v1.3",
+    "buyer": "api-consumer-integration.md v1.2",
+    "source_public_and_deployed_content": "matched"
+  },
+  "implemented": ["remove order tenant close/restore buttons", "actual platform/current enterprise role label", "inline quota labels", "remove registration compatibility inputs", "payment confirmation immediately updates order and payment DTO; guards old list responses"],
+  "not_verified_in_browser": ["SaaS drawer tenant-button absence", "all seven platform role labels", "platform administrator payment confirmation specifically", "registration quota layout"],
+  "remaining": ["enterprise-wide backend isolation", "catalog CRUD and storefront category filters", "type/delivery backend mapping", "generated gateway route identifiers", "unified pending integration and five-minute health scheduler", "SaaS member/department dual trees", "provider/buyer console views", "backend legacy compatibility gates removal", "full R2 end-to-end acceptance"]
+}
