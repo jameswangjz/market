@@ -103,3 +103,114 @@ test('stale product read cannot replace current state', async () => {
   await pending;
   assert.equal(f.state.rows.length, 0);
 });
+
+test('integration paths encode product and version identifiers', async () => {
+  const f = fixture();
+  f.product.id = 'company/one';
+  f.product.versions[0].id = 'release one';
+  await f.controller.load();
+  assert.equal(f.calls[0][1], '/products/company%2Fone/versions/release%20one/integration');
+});
+
+test('load rejects evidence whose response identifies another release', async () => {
+  const f = fixture();
+  f.api.get = async () => ({ data: { item: { version_id: 'other' }, route: { route_key: 'wrong' } } });
+  await f.controller.load();
+  assert.equal(f.state.rows[0].item, null);
+  assert.match(f.state.rows[0].error, /不匹配/);
+});
+
+test('verification rejects stale rows and versions removed from the selected product', async () => {
+  const f = fixture();
+  await f.controller.load();
+  const staleRow = f.state.rows[0];
+  f.product.versions = [{ id: 'other', version_code: 'v2' }];
+  await f.controller.verify(staleRow);
+  assert.equal(f.calls.filter(call => call[0] === 'post').length, 0);
+});
+
+test('switching products during verification cannot clear a newer busy action', async () => {
+  const f = fixture();
+  await f.controller.load();
+  let finishOld;
+  f.api.post = () => new Promise(resolve => { finishOld = resolve; });
+  const oldVerify = f.controller.verify(f.state.rows[0]);
+  f.product.id = 'new-product';
+  f.product.versions = [{ id: 'new-version', version_code: 'v2' }];
+  await f.controller.load();
+  const newRow = f.state.rows[0];
+  f.api.post = async () => {};
+  const newVerify = f.controller.verify(newRow);
+  assert.equal(f.state.busy, 'new-version');
+  finishOld();
+  await oldVerify;
+  assert.equal(f.state.busy, 'new-version');
+  await newVerify;
+  assert.equal(f.state.busy, '');
+});
+
+test('dispose clears pending state and invalidates a late read', async () => {
+  const f = fixture();
+  let release;
+  f.api.get = () => new Promise(resolve => { release = resolve; });
+  const pending = f.controller.load();
+  f.controller.dispose();
+  assert.equal(f.state.loading, false);
+  assert.equal(f.state.busy, '');
+  release({ data: { item: { status: 'verified', healthy: true } } });
+  await pending;
+  assert.equal(f.state.rows.length, 0);
+});
+
+test('Vue watcher arguments invalidate the current busy operation', async () => {
+  const f = fixture();
+  await f.controller.load();
+  let finishVerify;
+  f.api.post = () => new Promise(resolve => { finishVerify = resolve; });
+  const pendingVerify = f.controller.verify(f.state.rows[0]);
+  assert.equal(f.state.busy, 'v');
+  f.controller.load(['new-product', 'pending_integration', 'v2']);
+  assert.equal(f.state.busy, '');
+  finishVerify();
+  await pendingVerify;
+  assert.equal(f.changes(), 0);
+});
+
+test('product switch during successful verification refresh cannot emit changed', async () => {
+  const f = fixture();
+  await f.controller.load();
+  let releaseRefresh;
+  f.api.get = async () => {
+    return new Promise(resolve => { releaseRefresh = resolve; });
+  };
+  const pendingVerify = f.controller.verify(f.state.rows[0]);
+  await new Promise(resolve => setImmediate(resolve));
+  f.product.id = 'next';
+  f.product.versions = [{ id: 'next-version', version_code: 'v2' }];
+  f.api.get = async () => ({ data: { item: { status: 'pending_integration' } } });
+  await f.controller.load(['next', 'pending_integration', 'next-version']);
+  releaseRefresh({ data: { item: { status: 'verified', healthy: true } } });
+  await pendingVerify;
+  assert.equal(f.changes(), 0);
+  assert.equal(f.state.rows[0].version.id, 'next-version');
+});
+
+test('product switch during failed verification refresh cannot annotate the new product row', async () => {
+  const f = fixture();
+  await f.controller.load();
+  let releaseRefresh;
+  f.api.get = async () => {
+    return new Promise(resolve => { releaseRefresh = resolve; });
+  };
+  f.api.post = async () => { throw { response: { data: { detail: 'old product failure' } } }; };
+  const pendingVerify = f.controller.verify(f.state.rows[0]);
+  await new Promise(resolve => setImmediate(resolve));
+  f.product.id = 'next';
+  f.product.versions = [{ id: 'next-version', version_code: 'v2' }];
+  f.api.get = async () => ({ data: { item: { status: 'pending_integration' } } });
+  await f.controller.load(['next', 'pending_integration', 'next-version']);
+  releaseRefresh({ data: { item: { status: 'failed' } } });
+  await pendingVerify;
+  assert.equal(f.state.rows[0].version.id, 'next-version');
+  assert.equal(f.state.rows[0].error, '');
+});
