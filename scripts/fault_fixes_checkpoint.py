@@ -14,6 +14,8 @@ def validate(proof):
             proof.get('saas', {}).get('individually_revoked_warm_token_next_attempt_recovered') is not True or
             set(proof.get('native_gateway', {})) != {'api', 'model'} or
             any(item.get('revoked_token_next_call_after_auto_eviction') != 200
+                or item.get('atomic_new_token_preserved') is not True
+                or item.get('atomic_exact_token_deleted') is not True
                 for item in proof['native_gateway'].values()) or
             proof.get('startup', {}).get('valid_buyer_foreign_key') is not True or
             proof.get('startup', {}).get('repeat_core_rows_unchanged') is not True or

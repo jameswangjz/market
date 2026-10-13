@@ -51,8 +51,15 @@ native OAuth plugin schedules Redis CAS eviction from log phase only for real
 upstream401, without replaying requests. Seeded demo order now references the
 existing admin user without adding platform enterprise memberships. Backend
 754 tests passed (44 skipped); focused cache tests and APISIX LuaJIT harness
-passed. New private-PG startup/repeat-startup acceptance passed. Deployment
-and live next-request cache recovery still pending; keep defect tasks open.
+passed. API/three worker types deployed as 20261013050623-88e7042 and all three
+APISIX replicas rolled to the CAS plugin. Actual native API/model first401,
+automatic eviction and next200 passed; real Redis preserves replacement tokens.
+SaaS expired/revoked tokens evict and recover next safe call. Deployed startup
+and repeat startup passed in an owned PG schema, platform memberships zero.
+Exact fixture cleanup and protected business fingerprint passed. Close these
+two defect tasks only from docs/evidence/fault-fixes-runtime-20261013.json;
+broader daemon/payment/provider/HA tasks remain open. Earlier findings below
+are historical observations, not the current status of these two defects.
 
 Available fault matrix follow-up: 66 bounded checks completed against deployed
 PG/APISIX/Redis/mock SaaS. PG statement-error rollback, proof rejection, finance
