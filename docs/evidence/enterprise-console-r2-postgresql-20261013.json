@@ -1,0 +1,150 @@
+{
+  "status": "passed",
+  "scope": "actual R2 handlers and constraints; synthetic fixtures in private PostgreSQL",
+  "tests": 34,
+  "failures": 0,
+  "errors": 0,
+  "cleanup_verified": true,
+  "limits": [
+    "no external SaaS/APISIX fault injection",
+    "no concurrent PostgreSQL lock stress"
+  ],
+  "cases": [
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_explicit_scope_header_is_rejected_without_active_membership",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_members_cannot_edit_and_dashboard_is_super_admin_provider_only",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_oauth_http_scope_and_verified_editor_permissions",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_provider_admin_downloads_own_file_without_order_member_is_denied",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_unverified_member_sees_only_selected_enterprise_products",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_platform_roles_trimmed_names_delivery_enum_and_two_levels",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_referenced_categories_cannot_be_deleted_and_mutations_audited",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_seed_is_deterministic_one_time_and_keeps_unclassified_unassigned",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_competing_sessions_cannot_claim_the_same_scheduled_slot",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_each_pending_version_uses_actual_verifier_and_own_publication_evidence",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_failed_first_pending_api_verification_stays_pending",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_first_pending_api_verification_publishes_only_after_success",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_invalid_pending_version_does_not_disable_verified_version",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_oauth_probe_uses_configured_scope_and_bearer_header",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_success_three_failures_single_incident_recovery_and_unchanged_publication",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_timeout_and_address_rejection_retain_completed_slot",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_conflicting_header_and_query_scope_is_rejected",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_enterprise_audit_response_omits_internal_payloads",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_order_detail_explicit_context_isolated_and_legacy_call_preserved",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_ordinary_member_keeps_legacy_order_list_but_cannot_toggle_view",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_provider_buyer_and_legacy_union_are_current_enterprise_scoped",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_provider_settlement_view_is_scoped_redacted_and_read_only",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_assignment_can_return_to_previous_departments_without_cached_completion",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_changed_departments_refresh_and_stale_links_block_removal",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_child_before_parent_removal_by_platform_ids",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_department_removal_checks_child_and_synced_user_dependencies",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_department_then_multi_department_user_sync_and_replay",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_enterprise_subscription_and_actor_must_be_active",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_foreign_selection_rejected_and_failed_items_audited",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_inactive_mapping_leftovers_removable_and_lifecycle_replay",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_primary_admin_and_last_admin_protected_in_bulk",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_stale_department_mappings_and_recreated_departments",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_strict_body_and_bounds_and_platform_accounts",
+      "schema_created": true
+    },
+    {
+      "test": "__main__.main.<locals>.pg_case.<locals>.PostgreSQLCase.test_tree_is_buyer_enterprise_scoped_and_admin_only",
+      "schema_created": true
+    }
+  ]
+}

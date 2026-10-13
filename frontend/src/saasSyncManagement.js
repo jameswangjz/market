@@ -58,8 +58,19 @@ export function selectedSyncIds(rows, kind, ids) {
   return [...new Set(ids)].filter(id => allowed.has(id));
 }
 
-export function syncActionPayload(action, kind, ids = null) {
-  if (ids === null) return { action, kind, all: true };
+export function syncActionPayload(action, kind, ids = []) {
   if (!ids.length) throw new Error("请选择同步项目");
   return { action, kind, ids: [...new Set(ids)] };
+}
+
+export function syncActionBatches(rows, action, kind, ids = null) {
+  const selected = new Set(selectedSyncIds(rows, kind, ids === null ? rows.map(row => row.id) : ids));
+  const ordered = rows.filter(row => selected.has(row.id) && row.selectable &&
+    row.type === (kind === "users" ? "user" : "department"));
+  if (kind === "departments") ordered.sort((a, b) => action === "add" ? a.depth - b.depth : b.depth - a.depth);
+  const unique = [...new Set(ordered.map(row => row.id))];
+  if (!unique.length) throw new Error("请选择同步项目");
+  const batches = [];
+  for (let offset = 0; offset < unique.length; offset += 10) batches.push(unique.slice(offset, offset + 10));
+  return batches;
 }

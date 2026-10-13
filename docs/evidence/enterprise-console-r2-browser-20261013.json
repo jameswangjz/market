@@ -1,0 +1,21 @@
+﻿{
+    "checks":  [
+                   "Buyer order opens two-tree user management; tenant lifecycle buttons absent; desktop/mobile screenshots",
+                   "Platform category settings visible on desktop/mobile without mutations",
+                   "Provider catalog contains SaaS-APP1 under validated enterprise context"
+               ],
+    "scope":  "Deployed UI read-only inspection; no SaaS synchronization mutations",
+    "status":  "passed",
+    "startupDiagnostics":  {
+                               "portFileValid":  true,
+                               "cdpReady":  true,
+                               "executableFound":  true,
+                               "pageTargetCount":  1,
+                               "socketConnected":  true,
+                               "portFileFound":  true,
+                               "websocketLoopback":  true,
+                               "processStarted":  true,
+                               "targetType":  "PSCustomObject"
+                           },
+    "stage":  "provider catalog"
+}

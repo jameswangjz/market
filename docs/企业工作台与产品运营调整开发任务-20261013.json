@@ -1,7 +1,7 @@
 {
   "version": "enterprise-console-r2-20261013",
-  "coding_model": "gpt-6-luna",
-  "reasoning_effort": "medium",
+  "coding_model": "gpt-6.1-sol",
+  "reasoning_effort": "low",
   "validation_model": "current parent model",
   "tasks": [
     {

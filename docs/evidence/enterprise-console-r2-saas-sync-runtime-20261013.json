@@ -1,0 +1,72 @@
+{
+  "status": "passed",
+  "scope": "market-mock-saas upgrade/downgrade worker",
+  "results": {
+    "upgrade_status": "completed",
+    "downgrade_status": "completed",
+    "fund_payment_count": 1,
+    "fund_refund_count": 2,
+    "migrated_term_count": 2,
+    "posted_adjustment_count": 8,
+    "posted_change_totals": {
+      "1b2331b6daa2acc888ccde23dcd23fcb": {
+        "row_count": 4,
+        "net_revenue": "240.00"
+      },
+      "a3faae945272f79fe2adfc8e9240bfd6": {
+        "row_count": 4,
+        "net_revenue": "-360.00"
+      }
+    },
+    "sync_runtime": {
+      "proofs": [
+        {
+          "kind": "departments",
+          "action": "add",
+          "items": 10,
+          "succeeded": 10
+        },
+        {
+          "kind": "departments",
+          "action": "add",
+          "items": 3,
+          "succeeded": 3
+        },
+        {
+          "kind": "users",
+          "action": "add",
+          "items": 1,
+          "succeeded": 1
+        },
+        {
+          "kind": "users",
+          "action": "add",
+          "items": 1,
+          "succeeded": 1
+        },
+        {
+          "kind": "departments",
+          "action": "remove",
+          "items": 10,
+          "succeeded": 10
+        },
+        {
+          "kind": "departments",
+          "action": "remove",
+          "items": 3,
+          "succeeded": 3
+        }
+      ],
+      "multi_department_assignment": true,
+      "primary_admin_removal_blocked": true,
+      "cross_enterprise_denied": true,
+      "provider": "actual market-mock-saas HTTP, no response mocks",
+      "limits": [
+        "explicit backend batches, not a browser bulk-operation test"
+      ]
+    }
+  },
+  "worker": "deployed worker observed via HTTP polling",
+  "cleanup": "fixture database rows removed; exact tenant closed; exact mock OIDC client removed",
+  "manifest_mode": "0600"
+}

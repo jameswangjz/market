@@ -46,6 +46,39 @@ class ConsoleBusinessScopeTests(harness.AcceptanceHTTPCase):
             {"lens-buy"})
         self.request("GET", "/api/orders?business_view=provider", actor="buyer", expected=403)
 
+    def test_real_order_routes_include_public_product_identity_without_private_snapshots(self):
+        m = self.m
+        with m.SessionLocal() as db:
+            order = db.get(m.Order, "lens-buy")
+            order.delivery_method_snapshot = "saas"
+            order.subscription_id = "saas-subscription"
+            order.unit_cost_snapshot = 19
+            order.total_cost_snapshot = 38
+            order.economic_snapshot_json = '{"credential":"private-secret"}'
+            db.commit()
+        public_fields = {"id", "order_no", "buyer_user_id", "buyer_enterprise_id",
+            "provider_enterprise_id", "buyer_name", "product_id", "product_name",
+            "product_version_id", "product_version_code", "product_version_name", "billing_cycle",
+            "subscription_months", "delivery_method", "snapshot_version", "unit_price",
+            "subscription_id", "business_type", "related_order_id", "main_status", "payment_status",
+            "delivery_status", "after_sales_status", "amount", "paid_amount", "refunded_amount",
+            "created_at", "updated_at"}
+        for mode, expected_ids in (("buyer", {"lens-buy"}), ("provider", {"lens-sell"}),
+                ("", {"lens-buy", "lens-sell"})):
+            response = self.request("GET", "/api/orders", actor="buyer_admin",
+                params={"enterprise_id": "buyer_tenant", **({"business_view": mode} if mode else {})})
+            self.assertEqual({row["id"] for row in response["items"]}, expected_ids)
+            for row in response["items"]:
+                self.assertEqual(set(row), public_fields)
+                self.assertEqual(row["product_id"], "lens-product")
+        detail = self.request("GET", "/api/orders/lens-buy", actor="buyer_admin",
+            params={"enterprise_id": "buyer_tenant", "business_view": "buyer"})["order"]
+        self.assertEqual(set(detail), public_fields)
+        self.assertEqual((detail["product_id"], detail["subscription_id"], detail["delivery_method"]),
+            ("lens-product", "saas-subscription", "saas"))
+        self.assertNotIn("private-secret", str(detail))
+        self.request("GET", "/api/orders/lens-buy", actor="reviewer", expected=403)
+
     def test_enterprise_audit_response_omits_internal_payloads(self):
         with self.m.SessionLocal() as db:
             db.add(self.m.AuditLog(actor="audit@example.invalid", action="safe-action", target_type="order",

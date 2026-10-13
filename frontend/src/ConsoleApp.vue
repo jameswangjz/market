@@ -367,6 +367,31 @@ async function refreshVersionChangeContext() {
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
 const saasSyncDialog = ref(null);
+function saasSyncBuyerAllowed(order) {
+  return Boolean(order?.subscription_id && !user.value?.platform_role && user.value?.is_active &&
+    user.value?.activation_status === 'active' && user.value?.verified_status === 'verified' &&
+    order.buyer_enterprise_id === enterprise.value?.id &&
+    ['super_admin', 'enterprise_admin'].includes(user.value?.enterprise_role));
+}
+function saasSyncReadCurrent(order) {
+  const saas = saasOrderState.value;
+  return Boolean(order && saas.orderId === order.id && saas.subscriptionId === order.subscription_id &&
+    saas.request === orderDetailRequest &&
+    saas.context === [user.value?.id, enterprise.value?.id, token.value].join(':'));
+}
+const saasSyncAllowed = computed(() => {
+  const order = selectedOrder.value?.order;
+  const subscription = subscriptionState.value;
+  const saas = saasOrderState.value;
+  return Boolean(saasSyncBuyerAllowed(order) && !subscription.loading && !subscription.error &&
+    subscription.orderId === order.id && subscription.item?.enterprise_id === order.buyer_enterprise_id &&
+    subscription.item?.product_id === order.product_id && subscriptionDisplayStatus(subscription.item) === 'active' &&
+    saas.syncReady === true && saasSyncReadCurrent(order));
+});
+const saasSyncUnavailableReason = computed(() => {
+  const order = selectedOrder.value?.order;
+  return saasSyncBuyerAllowed(order) && saasSyncReadCurrent(order) ? saasOrderState.value.syncError || '' : '';
+});
 const apiOrderState = ref({
   available: false,
   items: [],
@@ -986,7 +1011,7 @@ async function loadViewData(view) {
   if (view === "products") {
     const [productData, directoryData, ruleData] = await Promise.all([
       api.get("/products"),
-      api.get("/admin/product-categories"),
+      api.get("/product-categories").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
     ]);
     if (!contextCurrent()) return;
@@ -1579,6 +1604,7 @@ function selectView(view) {
 async function openOrder(order) {
   const request = ++orderDetailRequest;
   const context = [user.value?.id, enterprise.value?.id, token.value].join(":");
+  saasSyncDialog.value = null;
   subscriptionSession.reset();
   if (typeof versionChangeCapability !== "undefined") versionChangeCapability.value = { orderId: "", allowed: false };
   selectedOrder.value = null;
@@ -1610,12 +1636,27 @@ async function openOrder(order) {
       ]).then(([operations]) => {
         if (!current()) return;
         saasOrderState.value = {
+          ...saasOrderState.value,
           users: [],
           departments: [],
           operations: operations.data.items,
         };
       }),
     );
+    if (saasSyncBuyerAllowed(data.order)) {
+      requests.push(api.get(`/saas-subscriptions/${id}/sync-tree`).then(() => {
+        if (!current() || selectedOrder.value?.order.id !== data.order.id ||
+            selectedOrder.value?.order.subscription_id !== id) return;
+        saasOrderState.value = { ...saasOrderState.value, orderId: data.order.id,
+          subscriptionId: id, request, context, syncReady: true, syncError: '' };
+      }).catch(cause => {
+        if (!current() || selectedOrder.value?.order.id !== data.order.id ||
+            selectedOrder.value?.order.subscription_id !== id) return;
+        saasOrderState.value = { ...saasOrderState.value, orderId: data.order.id,
+          subscriptionId: id, request, context, syncReady: false,
+          syncError: typeof cause.response?.data?.detail === 'string' ? cause.response.data.detail : 'SaaS 同步管理暂不可用，请刷新订单详情' };
+      }));
+    }
   }
   requests.push(
     api
@@ -4601,10 +4642,11 @@ onUnmounted(() => {
           <p class="muted">
             订阅 ID：{{ selectedOrder.order.subscription_id }}
           </p>
-          <div v-if="!user?.platform_role && user?.is_active && user?.activation_status === 'active' && user?.verified_status === 'verified' && selectedOrder.order.buyer_enterprise_id === enterprise?.id && ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role) && subscriptionState.orderId === selectedOrder.order.id && subscriptionState.item?.id === selectedOrder.order.subscription_id && subscriptionDisplayStatus(subscriptionState.item) === 'active'" class="saas-sync-launchers">
-            <button type="button" class="secondary-btn" @click="saasSyncDialog = { subscriptionId: selectedOrder.order.subscription_id, kind: 'users' }"><Users :size="15" />用户管理</button>
-            <button type="button" class="secondary-btn" @click="saasSyncDialog = { subscriptionId: selectedOrder.order.subscription_id, kind: 'departments' }"><Network :size="15" />部门管理</button>
+          <div v-if="saasSyncAllowed" class="saas-sync-launchers">
+            <button type="button" class="secondary-btn" @click="saasSyncDialog = { orderId: selectedOrder.order.id, subscriptionId: selectedOrder.order.subscription_id, kind: 'users' }"><Users :size="15" />用户管理</button>
+            <button type="button" class="secondary-btn" @click="saasSyncDialog = { orderId: selectedOrder.order.id, subscriptionId: selectedOrder.order.subscription_id, kind: 'departments' }"><Network :size="15" />部门管理</button>
           </div>
+          <p v-if="saasSyncUnavailableReason" class="danger-text" role="alert">{{ saasSyncUnavailableReason }}</p>
           <small class="muted"
             >最近操作：{{ saasOrderState.operations[0]?.operation || "暂无" }} ·
             {{ saasOrderState.operations[0]?.status || "" }}</small
@@ -4685,7 +4727,7 @@ onUnmounted(() => {
         </div>
       </aside>
     </div>
-    <div v-if="saasSyncDialog && selectedOrder?.order?.subscription_id === saasSyncDialog.subscriptionId && !user?.platform_role && user?.is_active && user?.activation_status === 'active' && user?.verified_status === 'verified' && selectedOrder.order.buyer_enterprise_id === enterprise?.id && ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role) && subscriptionState.orderId === selectedOrder.order.id && subscriptionState.item?.id === saasSyncDialog.subscriptionId && subscriptionDisplayStatus(subscriptionState.item) === 'active'" class="modal-scrim saas-sync-modal-scrim" @click.self="saasSyncDialog = null">
+    <div v-if="saasSyncDialog && saasSyncAllowed && selectedOrder?.order?.id === saasSyncDialog.orderId && selectedOrder.order.subscription_id === saasSyncDialog.subscriptionId" class="modal-scrim saas-sync-modal-scrim" @click.self="saasSyncDialog = null">
       <section class="modal-card saas-sync-modal-card" role="dialog" aria-modal="true" aria-labelledby="saas-sync-modal-title" tabindex="-1" @keydown.esc.stop="saasSyncDialog = null">
         <h2 id="saas-sync-modal-title" class="visually-hidden">SaaS {{ saasSyncDialog.kind === 'users' ? '用户管理' : '部门管理' }}</h2>
         <SaaSSyncManagement :api="api" :subscription-id="saasSyncDialog.subscriptionId" :initial-kind="saasSyncDialog.kind" @close="saasSyncDialog = null" />
@@ -5570,7 +5612,6 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .version-change-amounts thead { background: #f7f8fa; }
 .version-change-modal .modal-actions { flex-wrap: wrap; }
 .saas-sync-launchers { display: flex; flex-wrap: wrap; gap: 8px; }
-.saas-sync-modal-scrim { z-index: 30; }
 .saas-sync-modal-card { width: min(980px, calc(100vw - 32px)); max-height: min(760px, calc(100dvh - 32px)); overflow: auto; }
 @media (max-width: 640px) { .saas-sync-modal-card { width: calc(100vw - 20px); max-height: calc(100dvh - 20px); padding: 14px; } }
 </style>
