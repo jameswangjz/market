@@ -40,6 +40,14 @@
     "protected_order_unchanged": true,
     "not_tested": ["external browser SSO protocol", "APISIX credential provisioning", "separate verified_status downgrade mutation"]
   },
+  "qa001_follow_up": {
+    "status": "partial",
+    "progress_target": 85,
+    "oidc_browser_prepare": "blocked",
+    "oidc_block_reason": "Mock SaaS client registration returned HTTP 400 because the configured public callback origin did not match the test registration origin",
+    "cleanup_verified": true,
+    "next_action": "Align mock SaaS public callback configuration and rerun isolated OIDC browser acceptance"
+  },
   "file_worker": {
     "status": "passed",
     "scope": "actual file worker and MinIO delivery",
