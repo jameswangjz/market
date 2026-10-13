@@ -1,0 +1,297 @@
+{
+  "version": "enterprise-console-r2-20261013",
+  "coding_model": "gpt-6-luna",
+  "reasoning_effort": "medium",
+  "validation_model": "current parent model",
+  "tasks": [
+    {
+      "code": "TRD-R2-ARC-001",
+      "owner": "主Agent",
+      "title": "需求冻结、历史冲突及迁移设计",
+      "area": "设计",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [],
+      "acceptance": "新旧冲突、交付映射、权限矩阵、状态和验证边界成文",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-001",
+      "owner": "后端Agent",
+      "title": "当前企业产品、附件及凭据隔离",
+      "area": "权限",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-ARC-001"
+      ],
+      "acceptance": "列表/详情/文件/报告/凭据按当前企业；跨企业请求拒绝，普通成员无编辑权限",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-002",
+      "owner": "后端Agent",
+      "title": "企业提供方运营总览隔离",
+      "area": "统计",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-001"
+      ],
+      "acceptance": "仅企业超级管理员读取本企业提供方产品和销售订单统计；管理员/员工403",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-003",
+      "owner": "后端Agent",
+      "title": "两级产品目录及引用保护",
+      "area": "目录",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-ARC-001"
+      ],
+      "acceptance": "管理员/运营CRUD；产品绑定二级ID；有关联产品不得删除；公开目录读取",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-004",
+      "owner": "后端Agent",
+      "title": "类型交付映射与网关路由自动生成",
+      "area": "登记",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-ARC-001"
+      ],
+      "acceptance": "后端拒绝非法类型交付组合；新模型/报告/应用文件交付；路由自动生成稳定且唯一",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-005",
+      "owner": "后端Agent",
+      "title": "接入验证与发布门禁统一",
+      "area": "发布",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-004"
+      ],
+      "acceptance": "线上接口运营审核后待接入；配置、OAuth、版本和路由证据完整后发布；SaaS验证OIDC配置",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-006",
+      "owner": "后端Agent",
+      "title": "五分钟持久化健康探测及异常恢复",
+      "area": "监控",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-005"
+      ],
+      "acceptance": "300秒一次；连续3次异常通知；不影响新购；记录恢复和超时，SSRF保护及多副本去重",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-007",
+      "owner": "后端Agent",
+      "title": "SaaS双树用户部门同步接口",
+      "area": "SaaS",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-001"
+      ],
+      "acceptance": "仅购买企业管理员；成员多部门；同步/移除幂等，子部门顺序，逐项结果和审计",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-BE-008",
+      "owner": "后端Agent",
+      "title": "提供消费双视角业务查询隔离",
+      "area": "权限",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-001"
+      ],
+      "acceptance": "订单/履约/清算/审计/消息按企业及视角过滤；买方无成本和提供方Secret",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-001",
+      "owner": "前端Agent",
+      "title": "移除租户开关、角色显示、配额标签",
+      "area": "界面",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-ARC-001"
+      ],
+      "acceptance": "删除订单关闭/恢复操作；按实际角色显示；配额说明合并标签",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-002",
+      "owner": "前端Agent",
+      "title": "支付成功订单列表详情即时刷新",
+      "area": "订单",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-ARC-001"
+      ],
+      "acceptance": "确认支付后列表和详情即时已支付；请求失败恢复；切换订单无竞态",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-003",
+      "owner": "前端Agent",
+      "title": "登记联动与API参数解释",
+      "area": "登记",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-004",
+        "TRD-R2-FE-001"
+      ],
+      "acceptance": "类型交付联动；路由只读；HTTP依系统策略；简短字段提示与一致布局",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-004",
+      "owner": "前端Agent",
+      "title": "系统目录维护及商城两行筛选",
+      "area": "目录",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-003"
+      ],
+      "acceptance": "两级目录CRUD、引用删除提示、商城一级/二级联动及交付方式筛选",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-005",
+      "owner": "前端Agent",
+      "title": "提供方消费方导航及企业总览",
+      "area": "工作台",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-002",
+        "TRD-R2-BE-008"
+      ],
+      "acceptance": "当前企业选择、视角切换、角色菜单及权限；平台工作台独立",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-006",
+      "owner": "前端Agent",
+      "title": "SaaS用户部门双树管理弹框",
+      "area": "SaaS",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-007"
+      ],
+      "acceptance": "左右树、多选、右同步左移除、全部操作、部分失败、移动布局及忙碌状态",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-FE-007",
+      "owner": "前端Agent",
+      "title": "接入阶段及商城不显示原因",
+      "area": "发布",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-005"
+      ],
+      "acceptance": "提供方展示缺失原因、接入配置下载和立即验证；已发布可购状态与健康异常分离",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-OPS-001",
+      "owner": "部署测试Agent",
+      "title": "健康任务K8S部署及回退",
+      "area": "部署",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-006"
+      ],
+      "acceptance": "market命名空间，300秒调度并发禁止，超时和持久记录，时间Git标签及备份恢复",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-QA-001",
+      "owner": "主Agent",
+      "title": "跨企业角色和敏感信息回归",
+      "area": "验证",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-BE-001",
+        "TRD-R2-BE-002",
+        "TRD-R2-BE-008",
+        "TRD-R2-FE-005"
+      ],
+      "acceptance": "A/B企业及多企业用户、平台角色、员工、未实名接口及导出/附件越权测试",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-QA-002",
+      "owner": "主Agent",
+      "title": "发布监控支付及双树浏览器回归",
+      "area": "验证",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-FE-002",
+        "TRD-R2-FE-003",
+        "TRD-R2-FE-004",
+        "TRD-R2-FE-006",
+        "TRD-R2-FE-007",
+        "TRD-R2-OPS-001"
+      ],
+      "acceptance": "桌面移动注册审核接入发布商城购买支付同步；3次异常/恢复不影响新购",
+      "status": "todo",
+      "progress": 0
+    },
+    {
+      "code": "TRD-R2-ARC-002",
+      "owner": "主Agent",
+      "title": "需求追踪、证据和验收归档",
+      "area": "归档",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R2-QA-001",
+        "TRD-R2-QA-002"
+      ],
+      "acceptance": "逐任务代码测试部署证据、保留测试边界；未完成不标待验收",
+      "status": "todo",
+      "progress": 0
+    }
+  ]
+}
