@@ -31,6 +31,20 @@ not password login. Cross-month and all-resource fault matrices remain open;
 do not treat this narrower regression as full browser trading completion.
 Real payment/bank reconciliation needs external test data.
 
+Additional bounded acceptance: real Chrome password login and first purchase
+through storefront, simulated payment, online worker fulfillment and buyer
+credential summary passed on desktop/mobile, without token injection or preset
+orders. Controlled February/March/April ledger dates passed production HTTP
+monthly accounting in a newly created/dropped private PostgreSQL schema.
+Model API owned-route deletion and mock SaaS owned-tenant closure passed actual
+worker retries, resource recovery and simulated funding compensation. SaaS
+target and compensation each exhausted three retries; finance HTTP retry and
+its audit were verified after restoring the owned tenant. All owned fixtures
+were removed, protected business data unchanged, worker batch restored to 10.
+See docs/evidence/version-change-extended-regression-20261012.json and the fault
+matrix for scope. Full resource network/token failure timing and real cross-month
+subscription activation remain open; real bank payments are user-deferred.
+
 ## Owner
 wangjizhong, biru (reviews and merges PRs)
 
