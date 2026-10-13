@@ -1,0 +1,36 @@
+{
+  "date": "2026-10-13",
+  "trd_ops_001": {
+    "status": "partial_pass",
+    "runtime": "deployed API image, native APISIX, Redis and private PostgreSQL",
+    "api_model_migration": "passed",
+    "old_route_after_migration": 403,
+    "downgraded_route": 200,
+    "higher_route_after_downgrade": 403,
+    "redis_month_counter": ["1", "2", "3"],
+    "monthly_snapshot": "passed",
+    "monthly_checks": ["source and posted adjustment totals", "funding/refund exclusion", "exact adjustment links", "ledger cost and five-party reconciliation", "month-filtered report/export", "replay/rebuild/confirmed immutability"],
+    "cleanup": "exact owned live fixtures removed; protected order unchanged",
+    "remaining": ["production backup/restore", "historical legacy quota counter migration"]
+  },
+  "trd_qa_007": {
+    "status": "passed_scoped",
+    "browser": "real Chrome",
+    "checks": ["password login", "public storefront quote and exact order", "simulated payment", "online worker delivery", "desktop order view", "mobile order view", "secret-free response and no extra POST"],
+    "blocked_requests": 0,
+    "native_dialogs": 0,
+    "artifact": "D:/HXYL/01 天地奔牛/05 部署相关/05 market/TRD-QA-007-浏览器回归-20261013",
+    "remaining": ["historical audit/settlement/file-report links", "provider credential download"]
+  },
+  "trd_arc_003": {
+    "status": "partial",
+    "completed": ["task snapshot generation", "evidence ownership and cleanup records", "external payment/provider limitations listed"],
+    "blocked_by": ["TRD-QA-007 historical regression", "QA-002/QA-004 prerequisite evidence"]
+  },
+  "flt_ops_002": {
+    "status": "partial",
+    "completed": ["application-layer fault harness evidence", "exact fixture cleanup"],
+    "remaining": ["isolated worker queue", "per-fixture fault proxy", "daemon timing and lease recovery verification"],
+    "environment_limit": "single-node shared development K8S"
+  }
+}

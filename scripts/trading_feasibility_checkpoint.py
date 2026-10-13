@@ -18,6 +18,10 @@ NOTES = {
     'TRD-QA-001': '真实私有PG权限验收通过：匿名、多企业订单绑定、付款权限、敏感字段、文件/API凭据隔离及同Token角色降级均通过；已修正模拟SaaS公开回调地址并完成桌面/移动端OIDC浏览器验收、拒绝授权、跨企业隔离、应用访问及授权回收验证。真实银行支付、外部真实SaaS和生产环境HA仍不在本轮范围。',
     'TRD-BE-019': '隔离回归67项全部通过，覆盖SaaS到期重启、未来时段不污染当前权益、退款/撤销后授权回收、权限重检、续费幂等、失败回滚和共享凭据安全恢复；真实支付渠道和外部供应商仍不在范围。',
     'TRD-BE-020': '隔离回归67项全部通过，覆盖支付/交付/退款/清算业务事件审计、消息租户收件人隔离、敏感字段过滤、事件去重、Outbox回滚及通知失败不影响业务事务；真实SMTP/银行渠道另行验证。',
+    'TRD-OPS-001': '实际 API/模型 API 变更、旧路由回收、降级退款、Redis计数连续性及私有PG月度清算快照通过；重放/重建和已确认批次不可改写通过，真实生产备份恢复与历史旧计数在线迁移仍需独立环境。',
+    'TRD-QA-007': '真实Chrome密码登录、公开商城首购、模拟支付、线上Worker交付及桌面/移动订单页面隐私检查通过；历史审核、清算、文件报告全量回归及凭据下载仍需补测。',
+    'TRD-ARC-003': '已归档权限、OIDC、订阅、交易迁移和浏览器验收证据，任务计数已由控制台实时生成；待QA-007历史回归、QA-002/004等前置证据和外部限制清单齐备后再结项。',
+    'FLT-OPS-002': '已具备应用层故障脚本和精确夹具清理证据；当前单节点环境尚无独立队列/故障代理，未将进程内注入冒充守护进程时序验收，待隔离组件后补测。',
 }
 
 
@@ -47,9 +51,9 @@ def main():
                 raise ValueError('Task missing: ' + code)
             if task.status in {'done', 'review'}:
                 continue
-            target_progress = {'TRD-FE-005': 95, 'TRD-QA-003': 50, 'TRD-BE-012': 70, 'TRD-QA-001': 100, 'TRD-BE-019': 100, 'TRD-BE-020': 100}.get(code)
+            target_progress = {'TRD-FE-005': 95, 'TRD-QA-003': 50, 'TRD-BE-012': 70, 'TRD-QA-001': 100, 'TRD-BE-019': 100, 'TRD-BE-020': 100, 'TRD-OPS-001': 90, 'TRD-QA-007': 80, 'TRD-ARC-003': 50, 'FLT-OPS-002': 30}.get(code)
             progress = max(task.progress, target_progress) if target_progress else task.progress
-            task_status = 'review' if code in {'TRD-QA-001', 'TRD-BE-019', 'TRD-BE-020'} else 'in_progress'
+            task_status = 'review' if code in {'TRD-QA-001', 'TRD-BE-019', 'TRD-BE-020', 'TRD-OPS-001', 'TRD-QA-007'} else 'in_progress'
             m.update_development_task(code, m.DevelopmentTaskUpdate(
                 status=task_status, progress=progress,
                 note='20261013可开发性复核：' + note), actor, db)
