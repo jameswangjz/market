@@ -1,14 +1,14 @@
 {
   "total": 168,
   "counts": {
-    "todo": 4,
-    "in_progress": 9,
-    "review": 11,
+    "todo": 0,
+    "in_progress": 11,
+    "review": 13,
     "blocked": 5,
     "done": 139
   },
   "completion_rate": 82.7,
-  "updated_at": "2026-10-13 06:54:32.773994+00:00",
+  "updated_at": "2026-10-13 07:05:23.165001+00:00",
   "items": [
     {
       "id": "bb20269be8d63df790904cdf7168e797",
@@ -1883,6 +1883,32 @@
       "updated_at": "2026-10-06 07:04:52.108144+00:00"
     },
     {
+      "id": "9daa2f06ae648718ddeca2680ab3c462",
+      "code": "FLT-OPS-002",
+      "owner": "部署测试 Agent",
+      "title": "专属Worker队列及故障代理验证设施",
+      "area": "部署",
+      "priority": "P0",
+      "status": "in_progress",
+      "dependencies": "TRD-QA-005",
+      "acceptance": "增加仅测试订单可命中的隔离Worker/故障代理，再完成全部资源prepare/apply/proof/restore与资金阶段的守护进程时序组合；当前脚本内注入不冒充此验证。",
+      "progress": 30,
+      "updated_at": "2026-10-13 07:05:23.150632+00:00"
+    },
+    {
+      "id": "afc8a6fa604d2c96def79e01edd8d0ca",
+      "code": "TRD-ARC-003",
+      "owner": "主Agent",
+      "title": "分阶段上线门禁、验收归档与任务复核",
+      "area": "集成验收",
+      "priority": "P0",
+      "status": "in_progress",
+      "dependencies": "TRD-QA-001,TRD-QA-002,TRD-QA-003,TRD-QA-004,TRD-QA-005,TRD-QA-006,TRD-QA-007",
+      "acceptance": "测试和部署证据逐任务归档、全量计数准确；仅实际通过标记done，真实外部支付/第三方联调限制单列，不以模拟代替生产验收。",
+      "progress": 50,
+      "updated_at": "2026-10-13 07:05:23.136825+00:00"
+    },
+    {
       "id": "13ddcf078b36695e165a64864bb7b981",
       "code": "TRD-BE-011",
       "owner": "后端Agent",
@@ -2117,6 +2143,19 @@
       "updated_at": "2026-10-12 03:25:27.801141+00:00"
     },
     {
+      "id": "438cc9fc3fe9b12fade22139d6882c42",
+      "code": "TRD-OPS-001",
+      "owner": "部署测试Agent",
+      "title": "快照、组合、经济调整及网关计数迁移",
+      "area": "迁移部署",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-BE-005,TRD-BE-009,TRD-BE-013",
+      "acceptance": "真实PG备份与重复迁移，已支付和历史多租户保持；历史成本缺失明确标记不伪造；网关旧计数映射、回退及数据核对。",
+      "progress": 90,
+      "updated_at": "2026-10-13 07:05:23.106622+00:00"
+    },
+    {
       "id": "ddc5dc5d417f787a70ff410f3fdb8ed8",
       "code": "TRD-QA-001",
       "owner": "部署测试Agent",
@@ -2143,56 +2182,17 @@
       "updated_at": "2026-10-12 03:25:27.831386+00:00"
     },
     {
-      "id": "9daa2f06ae648718ddeca2680ab3c462",
-      "code": "FLT-OPS-002",
-      "owner": "部署测试 Agent",
-      "title": "专属Worker队列及故障代理验证设施",
-      "area": "部署",
-      "priority": "P0",
-      "status": "todo",
-      "dependencies": "TRD-QA-005",
-      "acceptance": "增加仅测试订单可命中的隔离Worker/故障代理，再完成全部资源prepare/apply/proof/restore与资金阶段的守护进程时序组合；当前脚本内注入不冒充此验证。",
-      "progress": 0,
-      "updated_at": "2026-10-13 03:51:45.860125+00:00"
-    },
-    {
-      "id": "afc8a6fa604d2c96def79e01edd8d0ca",
-      "code": "TRD-ARC-003",
-      "owner": "主Agent",
-      "title": "分阶段上线门禁、验收归档与任务复核",
-      "area": "集成验收",
-      "priority": "P0",
-      "status": "todo",
-      "dependencies": "TRD-QA-001,TRD-QA-002,TRD-QA-003,TRD-QA-004,TRD-QA-005,TRD-QA-006,TRD-QA-007",
-      "acceptance": "测试和部署证据逐任务归档、全量计数准确；仅实际通过标记done，真实外部支付/第三方联调限制单列，不以模拟代替生产验收。",
-      "progress": 0,
-      "updated_at": "2026-10-09 11:13:14.674201+00:00"
-    },
-    {
-      "id": "438cc9fc3fe9b12fade22139d6882c42",
-      "code": "TRD-OPS-001",
-      "owner": "部署测试Agent",
-      "title": "快照、组合、经济调整及网关计数迁移",
-      "area": "迁移部署",
-      "priority": "P0",
-      "status": "todo",
-      "dependencies": "TRD-BE-005,TRD-BE-009,TRD-BE-013",
-      "acceptance": "真实PG备份与重复迁移，已支付和历史多租户保持；历史成本缺失明确标记不伪造；网关旧计数映射、回退及数据核对。",
-      "progress": 0,
-      "updated_at": "2026-10-09 11:13:14.674166+00:00"
-    },
-    {
       "id": "2bca070bf414d06bd975256cf3a39c21",
       "code": "TRD-QA-007",
       "owner": "部署测试Agent",
       "title": "商城后台桌面移动及历史端到端回归",
       "area": "前端验收",
       "priority": "P0",
-      "status": "todo",
+      "status": "review",
       "dependencies": "TRD-FE-009,TRD-FE-010,TRD-OPS-002",
       "acceptance": "Playwright截图检查/和/console直接访问F5、Logo加载、第二列与弹框不溢出、公开价单位清晰；旧订单/审核/清算及文件报告链接正常。",
-      "progress": 0,
-      "updated_at": "2026-10-09 11:13:14.674197+00:00"
+      "progress": 80,
+      "updated_at": "2026-10-13 07:05:23.121801+00:00"
     }
   ]
 }
