@@ -49,6 +49,12 @@ def main():
             checks.append({'actor': actor, 'path': path, 'status': expected})
             return response.json()
         tree = get('/api/saas-subscriptions/' + fixture['subscriptionId'] + '/sync-tree', 'buyer')
+        detail = get('/api/orders/' + fixture['orderId'], 'buyer')['order']
+        subscription = get('/api/orders/' + fixture['orderId'] + '/subscription', 'buyer')['item']
+        assert detail['product_id'] == subscription['product_id'] == fixture['productId']
+        assert detail['buyer_enterprise_id'] == subscription['enterprise_id'] == fixture['buyerEnterpriseId']
+        assert detail['subscription_id'] == fixture['subscriptionId']
+        assert subscription['id'] != detail['subscription_id']
         for key in ('departments', 'unassigned_users', 'mapped_users', 'mapped_departments'):
             assert isinstance(tree[key], list)
         get('/api/saas-subscriptions/' + fixture['subscriptionId'] + '/sync-tree', 'provider', 403)

@@ -249,7 +249,14 @@ test("item failures survive refresh failures and invalid selection sends no requ
 });
 
 const consoleSource = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
-const syncOrder = { id: "order-sync", subscription_id: "saas-id", buyer_enterprise_id: "buyer", product_id: "product", payment_status: "unpaid" };
+// Deployed order_out() omits product_id; readiness requires the backend contract fix.
+const syncOrder = { id: "order-sync", order_no: "ORD-SYNC", buyer_user_id: "admin", buyer_enterprise_id: "buyer",
+  provider_enterprise_id: "provider", buyer_name: "Buyer", product_name: "SaaS", product_version_id: "version",
+  product_version_code: "v1", product_version_name: "Version 1", billing_cycle: "monthly", subscription_months: 3,
+  delivery_method: "tenant_access", snapshot_version: 1, unit_price: 10, subscription_id: "saas-id",
+  business_type: "purchase", related_order_id: "", main_status: "completed", payment_status: "paid",
+  delivery_status: "accepted", after_sales_status: "none", amount: 30, paid_amount: 30, refunded_amount: 0,
+  created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z" };
 function consoleSync(api, changes = {}) {
   const state = vm.createContext({
     computed: getter => ({ get value() { return getter(); } }), subscriptionDisplayStatus,
@@ -262,7 +269,7 @@ function consoleSync(api, changes = {}) {
     subscriptionSession: { reset() {}, load: async () => {} }, api,
     deliveryAttachmentDescription: { value: "" }, saasOrderState: { value: {} }, saasSyncDialog: { value: null },
     apiOrderState: { value: {} }, apiCredentialReveal: { value: null }, orderProductFiles: { value: {} },
-    orderDeliveryAttachments: { value: {} }, isOfflineFulfillmentOrder: () => false,
+    orderDeliveryAttachments: { value: {} }, isOfflineFulfillmentOrder: () => false, isNewFileOrder: () => false,
   });
   vm.runInContext(consoleSource.slice(consoleSource.indexOf("function saasSyncBuyerAllowed(order)"), consoleSource.indexOf("const apiOrderState =")) +
     consoleSource.slice(consoleSource.indexOf("async function openOrder(order)"), consoleSource.indexOf("async function downloadOrderProductFile(file)")) +
@@ -271,7 +278,7 @@ function consoleSync(api, changes = {}) {
   return state;
 }
 
-test("distinct combination and SaaS IDs show launchers only after the actual SaaS readiness read", async () => {
+test("real deployed order DTO fails closed until backend supplies product_id, independently of combination/SaaS IDs", async () => {
   const ready = deferred(), operations = deferred(), calls = [];
   const state = consoleSync({ get: async url => {
     calls.push(url);
@@ -286,20 +293,29 @@ test("distinct combination and SaaS IDs show launchers only after the actual Saa
   assert.ok(!calls.some(url => url.includes("combination-id")));
   ready.resolve({ data: { departments: [], mapped_users: [], mapped_departments: [] } });
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(state.allowed.value, true);
+  assert.equal(state.allowed.value, false, "the deployed DTO lacks the product identity required by the guard");
+  assert.equal(Object.hasOwn(state.selectedOrder.value.order, "product_id"), false);
+  state.selectedOrder.value.order = { ...state.selectedOrder.value.order, product_id: "product" };
+  assert.equal(state.allowed.value, true, "the backend product_id addition satisfies the existing guard");
   operations.resolve({ data: { items: [] } });
   await opening;
   assert.equal(state.allowed.value, true, "operations response must preserve the independent readiness result");
   assert.equal(state.saasOrderState.value.subscriptionId, "saas-id");
+  assert.equal(state.selectedOrder.value.order.product_id, state.subscriptionState.value.item.product_id);
   assert.match(consoleSource, /v-if="saasSyncAllowed" class="saas-sync-launchers"/);
   assert.match(consoleSource, /saasSyncDialog && saasSyncAllowed && selectedOrder\?\.order\?\.id === saasSyncDialog.orderId && selectedOrder.order.subscription_id === saasSyncDialog.subscriptionId/);
   assert.doesNotMatch(consoleSource, /subscriptionState\.item\?\.id === (selectedOrder\.order\.subscription_id|saasSyncDialog\.subscriptionId)/);
-  for (const change of [{ status: "closed" }, { expires_at: "2000-01-01T00:00:00Z" }, { enterprise_id: "other" }, { product_id: "other" }]) {
+  for (const change of [{ status: "closed" }, { expires_at: "2000-01-01T00:00:00Z" }, { enterprise_id: "other" }, { product_id: "" }]) {
     const original = state.subscriptionState.value.item;
     state.subscriptionState.value.item = { ...original, ...change };
     assert.equal(state.allowed.value, false);
     state.subscriptionState.value.item = original;
   }
+  state.selectedOrder.value.order = { ...syncOrder, product_id: "different-product" };
+  assert.equal(state.allowed.value, false, "an explicitly supplied conflicting product must still fail");
+  state.selectedOrder.value.order = { ...syncOrder, product_id: "product" };
+  assert.equal(state.allowed.value, true);
+  state.selectedOrder.value.order = { ...syncOrder, product_id: "product" };
   for (const field of ["loading", "error"]) {
     state.subscriptionState.value[field] = field === "loading" ? true : "failed";
     assert.equal(state.allowed.value, false);
