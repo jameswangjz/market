@@ -394,7 +394,7 @@ class SubscriptionTermsTests(unittest.TestCase):
                 original = getattr(row, field)
                 setattr(row, field, value)
                 db.commit()
-            expected = 401 if field == 'is_active' else 403
+            expected = 401 if field in {'is_active', 'activation_status'} else 403
             self.request('GET', f'/api/orders/{oid}/subscription', expected=expected)
             self.renewal(oid, expected=expected)
             with self.m.SessionLocal() as db:
