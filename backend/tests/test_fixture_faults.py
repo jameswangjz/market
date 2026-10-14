@@ -15,7 +15,8 @@ from unittest.mock import Mock, patch
 from sqlalchemy import DateTime, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, mapped_column, sessionmaker
 
-from app.fixture_faults import FixtureScope, PROTECTED_ORDER, fault_server
+from app.fixture_faults import (FixtureScope, PROTECTED_ORDER, fault_server,
+                               reservation_metadata, reserve_fixture, release_fixture)
 from app import version_change_worker as worker
 
 
@@ -154,9 +155,14 @@ class FixtureFaultTests(unittest.TestCase):
             version_change_saga={'VersionChangeRequest': Request}, json=json,
             subscription_terms={'Combination': Combo, 'Term': Term},
             version_change_resources={'prepare': prepare})
+        reservation_metadata.create_all(engine)
+        token = 'legacy-test-owner-' + 's' * 32
+        with sessions.begin() as db:
+            reserve_fixture(db, main.__dict__, fixture, token=token)
+        dedicated = lambda: worker.process_once(fixture_scope=fixture, reservation_token=token)
         with patch.object(worker.importlib, 'import_module', return_value=main), \
                 patch.object(worker, '_assert_current'):
-            self.assertTrue(worker.process_once(fixture_scope=fixture))
+            self.assertTrue(dedicated())
             with sessions() as db:
                 self.assertEqual(db.get(Request, 'b' * 32).resource_plan_json, '{}')
                 row = db.get(Request, fixture.change_id)
@@ -165,22 +171,26 @@ class FixtureFaultTests(unittest.TestCase):
                 db.add(Order(id='protected', order_no=PROTECTED_ORDER,
                              product_id=fixture.product_id))
                 db.commit()
-            self.assertFalse(worker.process_once(fixture_scope=fixture))
+            self.assertFalse(dedicated())
             with sessions() as db:
                 db.delete(db.get(Order, 'protected'))
                 db.get(Term, 'owned-term').combination_id = 'other-combo'
                 db.commit()
-            self.assertFalse(worker.process_once(fixture_scope=fixture))
+            self.assertFalse(dedicated())
             with sessions() as db:
                 db.get(Term, 'owned-term').combination_id = fixture.combination_id
                 db.get(Term, 'owned-term').generation = 2
                 db.commit()
-            self.assertFalse(worker.process_once(fixture_scope=fixture))
+            self.assertFalse(dedicated())
             with sessions() as db:
                 db.get(Term, 'owned-term').generation = 1
                 db.get(Order, fixture.order_id).buyer_enterprise_id = 'other'
                 db.commit()
-            self.assertFalse(worker.process_once(fixture_scope=fixture))
+            self.assertFalse(dedicated())
+            self.assertFalse(worker.process_once(excluded_scopes=(fixture,)))
+            with sessions.begin() as db:
+                db.get(Order, fixture.order_id).buyer_enterprise_id = fixture.enterprise_id
+                release_fixture(db, main.__dict__, fixture, token)
             self.assertTrue(worker.process_once(excluded_scopes=(fixture,)))
         self.assertEqual(prepare.call_count, 2)
         with sessions() as db:

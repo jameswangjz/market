@@ -9,6 +9,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PROTECTED_ORDER = 'ORD-261012005144E1B3'
+PROTECTED_PRODUCT = 'qa-vcq-a044ea9ea181-p2'
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,8 @@ class FixtureScope:
                 raise ValueError('invalid exact database ID')
         if self.order_id == PROTECTED_ORDER:
             raise ValueError('protected order cannot be selected')
+        if self.product_id == PROTECTED_PRODUCT:
+            raise ValueError('protected product cannot be selected')
 
     @classmethod
     def load(cls, path):
@@ -88,6 +91,113 @@ class FixtureScope:
                                   Term.generation == Combo.generation).exists())
         return (Request.id == self.change_id) & (Request.source_order_id.in_(orders)) & (
             Request.enterprise_id == self.enterprise_id) & (Request.combination_id.in_(combinations))
+
+
+# Separate metadata: importing this module never creates or migrates a table.
+from sqlalchemy import (MetaData, Table, Column, String, DateTime, UniqueConstraint,
+                        select, inspect, func, or_)
+from datetime import timedelta, timezone
+import hashlib
+import secrets
+
+reservation_metadata = MetaData()
+reservations = Table('qa_fixture_reservations', reservation_metadata,
+    *(Column(name, String(128), primary_key=name == 'change_id', nullable=False)
+      for name in FixtureScope.__dataclass_fields__),
+    Column('token_hash', String(64), nullable=False),
+    Column('expires_at', DateTime(timezone=True), nullable=False),
+    UniqueConstraint('order_id'), UniqueConstraint('combination_id'),
+    UniqueConstraint('product_id'))
+
+
+def registry_present(db):
+    return inspect(db.connection()).has_table(reservations.name)
+
+
+def registry_exclusion(Request):
+    # Expired entries remain quarantined until an owner explicitly releases them.
+    return ~select(reservations.c.change_id).where(or_(
+        reservations.c.change_id == Request.id,
+        reservations.c.order_id == Request.source_order_id,
+        reservations.c.combination_id == Request.combination_id)).exists()
+
+
+def _token_hash(token):
+    if not isinstance(token, str) or len(token) < 32:
+        raise ValueError('reservation token must contain at least 32 characters')
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _clock(db):
+    clock = (func.clock_timestamp() if db.get_bind().dialect.name == 'postgresql'
+             else func.current_timestamp())
+    value = db.scalar(select(clock))
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _owned(record, scope, token):
+    return record is not None and all(record[name] == value for name, value in
+        scope.__dict__.items()) and hmac.compare_digest(record['token_hash'], _token_hash(token))
+
+
+def lock_reservation(db, scope, token):
+    record = db.execute(select(reservations).where(
+        reservations.c.change_id == scope.change_id).with_for_update()).mappings().first()
+    if not _owned(record, scope, token):
+        raise ValueError('reservation ownership mismatch')
+    return record
+
+
+def reservation_active(db, scope, token):
+    record = lock_reservation(db, scope, token)
+    expiry = record['expires_at']
+    if expiry.tzinfo is None:
+        expiry = expiry.replace(tzinfo=timezone.utc)
+    if expiry <= _clock(db):
+        raise ValueError('fixture reservation expired; explicit recovery required')
+
+
+def reserve_fixture(db, ns, scope, *, token=None, seconds=120, require_existing=False):
+    """Caller commits. Provision registry explicitly before invoking; no runtime DDL."""
+    if not isinstance(scope, FixtureScope) or not 1 <= seconds <= 3600:
+        raise ValueError('invalid reservation scope or duration')
+    token = token or secrets.token_urlsafe(32)
+    digest = _token_hash(token)
+    Request = ns['version_change_saga']['VersionChangeRequest']
+    row = db.scalar(select(Request).where(scope.predicate(ns, Request)).with_for_update())
+    if row is None:
+        raise ValueError('fixture live ownership mismatch')
+    instant = _clock(db)
+    record = db.execute(select(reservations).where(
+        reservations.c.change_id == scope.change_id).with_for_update()).mappings().first()
+    if record is None:
+        if require_existing:
+            raise ValueError('reservation missing')
+        if row.lease_owner or row.lease_expires_at is not None:
+            raise ValueError('fixture has an outstanding worker lease; reconcile first')
+        db.execute(reservations.insert().values(**scope.__dict__, token_hash=digest,
+            expires_at=instant + timedelta(seconds=seconds)))
+    else:
+        if not _owned(record, scope, token):
+            raise ValueError('fixture already reserved by another owner')
+        expiry = record['expires_at']
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= instant and (row.lease_owner or row.lease_expires_at is not None):
+            raise ValueError('expired reservation has outstanding lease; reconcile first')
+        db.execute(reservations.update().where(reservations.c.change_id == scope.change_id)
+            .values(expires_at=instant + timedelta(seconds=seconds)))
+    return token
+
+
+def release_fixture(db, ns, scope, token):
+    """Explicit cleanup only; expiry alone never returns a fixture to shared workers."""
+    Request = ns['version_change_saga']['VersionChangeRequest']
+    row = db.scalar(select(Request).where(scope.predicate(ns, Request)).with_for_update())
+    if row is None or row.lease_owner or row.lease_expires_at is not None:
+        raise ValueError('cannot release missing, mismatched, or leased fixture')
+    lock_reservation(db, scope, token)
+    db.execute(reservations.delete().where(reservations.c.change_id == scope.change_id))
 
 
 def fault_server(scope, secret, *, mode='unavailable', delay=0, port=0):

@@ -1,6 +1,9 @@
 import json
 import os
+from pathlib import Path
 import subprocess
+import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -10,7 +13,7 @@ import trading_rollback_compatibility as compatibility
 class CompatibilityTests(unittest.TestCase):
     container = 'market-rollback-' + 'a' * 32
 
-    def execute(self, failure=None, mode='none', new_detail_checks=False):
+    def execute(self, failure=None, mode='none', new_detail_checks=False, seed=False):
         calls = []
         def command(args, **kwargs):
             calls.append((args, kwargs))
@@ -19,6 +22,10 @@ class CompatibilityTests(unittest.TestCase):
                     'Labels': {'market.isolated-rollback': 'true'}}, 'State': {'Running': True}}]
             elif 'image' in args:
                 output = [{'Id': 'sha256:' + ('1' if args[-1] == 'new' else '2') * 64}]
+            elif 'exec' in args:
+                output = (b'net:[999999999999999]\n' if 'readlink' in args else
+                          b' lo: 0 0\n' if args[-1] == '/proc/net/dev' else b'Iface Destination\n')
+                return subprocess.CompletedProcess(args, 0, stdout=output, stderr=b'')
             elif 'run' in args:
                 self.assertTrue(kwargs['stdin'].read(20))
                 if failure == 'run':
@@ -28,20 +35,26 @@ class CompatibilityTests(unittest.TestCase):
                           'shared_http_get_checks': 7, 'new_detail_capability_checks': extra,
                           **{key: 'a' * 64 for key in ('finance_read_sha256', 'provider_read_sha256',
                                                      'public_read_sha256', 'protected_sha256')}}
+                if seed:
+                    output.update(synthetic_fixture=True, original_unchanged=True,
+                                  original_sha256='b' * 64, original_columns={'orders': ['id']})
                 if failure == 'mismatch' and 'sha256:' + '2' * 64 in args:
                     output['protected_sha256'] = 'b' * 64
                 if failure == 'incomplete':
                     output['http_get_checks'] = 0
+                if failure == 'original_changed' and 'sha256:' + '2' * 64 in args:
+                    output['original_sha256'] = 'c' * 64
             else:
                 return subprocess.CompletedProcess(args, 0, stdout=b'', stderr=b'')
             return subprocess.CompletedProcess(args, 0, stdout=json.dumps(output).encode(), stderr=b'')
         with patch.object(compatibility.subprocess, 'run', side_effect=command):
-            if failure or mode != 'none':
+            if failure or mode not in {'none', ''}:
                 with self.assertRaises(subprocess.CalledProcessError if failure == 'run' else ValueError):
-                    compatibility.run_images('old', 'new', ['nerdctl', '--namespace', 'k8s.io'], self.container)
+                    compatibility.run_images('old', 'new', ['nerdctl', '--namespace', 'k8s.io'], self.container,
+                                              seed_isolated_fixtures=seed)
             else:
                 report = compatibility.run_images('old', 'new', ['nerdctl', '--namespace', 'k8s.io'], self.container,
-                                                  new_detail_checks=new_detail_checks)
+                                                  new_detail_checks=new_detail_checks, seed_isolated_fixtures=seed)
                 self.assertTrue(report['cleanup_verified'])
                 self.assertFalse(report['full_production_rollback'])
         return calls
@@ -92,6 +105,10 @@ class CompatibilityTests(unittest.TestCase):
     def test_nonisolated_target_rejected_before_api_run(self):
         self.assertFalse(any('run' in args for args, _ in self.execute(mode='bridge')))
 
+    def test_missing_nerdctl_network_mode_still_requires_kernel_checks(self):
+        calls = self.execute(mode='')
+        self.assertEqual(sum('exec' in args for args, _ in calls), 3)
+
     def test_changed_fingerprint_and_incomplete_probe_rejected(self):
         self.execute(failure='mismatch')
         self.execute(failure='incomplete')
@@ -111,6 +128,111 @@ class CompatibilityTests(unittest.TestCase):
         with patch.dict(os.environ, {'DATABASE_URL': 'postgresql://live.invalid/db'}, clear=True):
             with self.assertRaisesRegex(ValueError, 'isolated probe environment'):
                 compatibility.probe()
+
+    def test_fixture_flag_new_only_with_safe_original_metadata(self):
+        calls = self.execute(seed=True)
+        runs = [args for args, _ in calls if 'run' in args][-2:]
+        self.assertIn('REHEARSAL_SEED_ISOLATED_FIXTURES=true', runs[0])
+        self.assertIn('REHEARSAL_SEED_ISOLATED_FIXTURES=false', runs[1])
+        for args in runs:
+            self.assertIn('REHEARSAL_FIXTURE_MODE=true', args)
+            self.assertIn('REHEARSAL_ISOLATION_PROVEN=true', args)
+        self.assertIn('REHEARSAL_ORIGINAL_COLUMNS={"orders": ["id"]}', runs[1])
+        self.assertNotIn('password', ' '.join(runs[1]))
+
+    def test_changed_original_seed_fingerprint_rejected(self):
+        self.execute(failure='original_changed', seed=True)
+
+
+class FixtureTests(unittest.TestCase):
+    def environment(self):
+        return {'DATABASE_URL': compatibility.DATABASE_URL, 'MESSAGE_CENTER_DISABLE_BACKGROUND': 'true',
+                'REHEARSAL_ISOLATION_PROVEN': 'true', 'REHEARSAL_PROBE_SIDE': 'new',
+                'REHEARSAL_FIXTURE_MODE': 'true'}
+
+    def test_guard_requires_new_side_exact_database_and_proven_isolation(self):
+        with patch.dict(os.environ, self.environment(), clear=True):
+            compatibility.fixture_guard()
+            for key in self.environment():
+                with self.subTest(key=key), patch.dict(os.environ, {key: 'wrong'}):
+                    with self.assertRaisesRegex(ValueError, 'guard rejected'):
+                        compatibility.seed_fixtures(None)
+
+    def test_real_orm_seed_and_collision_rejection(self):
+        from sqlalchemy import create_engine, select, func
+        from sqlalchemy.orm import sessionmaker
+        from sqlalchemy.pool import StaticPool
+        from fastapi.testclient import TestClient
+        with patch.dict(os.environ, {'DATABASE_URL': 'sqlite://', 'MESSAGE_CENTER_DISABLE_BACKGROUND': 'true'}), \
+                patch.object(sys, 'path', [str(Path(__file__).resolve().parents[1] / 'backend'), *sys.path]):
+            from app import main as m
+        engine = create_engine('sqlite://', poolclass=StaticPool, connect_args={'check_same_thread': False})
+        self.addCleanup(engine.dispose)
+        m.Base.metadata.create_all(engine)
+        ns = SimpleNamespace(engine=engine, SessionLocal=sessionmaker(bind=engine, autoflush=False),
+                             **{name: getattr(m, name) for name in ('User', 'Enterprise', 'Membership',
+                                                                 'ProductCategory', 'Product', 'Order', 'Settlement')})
+        with patch.dict(os.environ, self.environment(), clear=True):
+            compatibility.seed_fixtures(ns)
+            with ns.SessionLocal() as db:
+                self.assertEqual(db.scalar(select(func.count()).select_from(m.User)), 3)
+                rows = db.scalars(select(m.Settlement)).all()
+                self.assertEqual({row.id for row in rows}, set(compatibility.FIXTURE_IDS['settlements']))
+                for row in rows:
+                    self.assertEqual(row.platform_fee + row.provider_share + row.service_share +
+                                     row.expert_fee + row.channel_fee, row.profit_amount)
+                self.assertTrue(all(row.payment_status == 'paid' and row.paid_amount == 100
+                                    for row in db.scalars(select(m.Order))))
+                finance_headers = {'Authorization': 'Bearer ' + m.issue_token(db.get(m.User, compatibility.FIXTURE_PREFIX + 'finance'))}
+                provider_headers = {'Authorization': 'Bearer ' + m.issue_token(db.get(m.User, compatibility.FIXTURE_PREFIX + 'provider')),
+                                    'X-Enterprise-Id': compatibility.FIXTURE_PREFIX + 'provider-co'}
+            with patch.object(m, 'SessionLocal', ns.SessionLocal), patch.object(m, 'startup') as startup:
+                client = TestClient(m.app)
+                try:
+                    def get(path, headers=None, expected=200):
+                        response = client.get(path, headers=headers)
+                        self.assertEqual(response.status_code, expected)
+                        return response.json() if expected == 200 else None
+                    finance, provider, public = compatibility.read_checks(
+                        get, finance_headers, provider_headers, {compatibility.FIXTURE_PREFIX + 'settlement'},
+                        compatibility.FIXTURE_PREFIX + 'foreign-settlement', new_detail_checks=True)
+                    self.assertEqual(len(finance), 2)
+                    self.assertEqual(len(provider), 1)
+                    self.assertTrue(public['items'])
+                    startup.assert_not_called()
+                finally:
+                    client.close()
+            with self.assertRaisesRegex(ValueError, 'identity collision'):
+                compatibility.seed_fixtures(ns)
+            with ns.SessionLocal() as db:
+                self.assertEqual(db.scalar(select(func.count()).select_from(m.User)), 3)
+
+    def test_original_fingerprint_excludes_exact_ids_only_and_preserves_column_projection(self):
+        from sqlalchemy import create_engine, MetaData, Table, Column, String, text
+        engine = create_engine('sqlite://')
+        self.addCleanup(engine.dispose)
+        with engine.begin() as connection:
+            connection.execute(text("ATTACH DATABASE ':memory:' AS public"))
+        tables = {}
+        for name in compatibility.PROTECTED_TABLES:
+            table = Table(name, MetaData(), Column('id', String, primary_key=True), Column('value', String), schema='public')
+            table.create(engine)
+            tables[name] = table
+            with engine.begin() as connection:
+                connection.execute(table.insert(), {'id': 'original', 'value': 'protected'})
+        before = compatibility.protected_fingerprint(engine)
+        columns = {name: entry['columns'] for name, entry in before.items()}
+        with engine.begin() as connection:
+            for name, table in tables.items():
+                for identifier in compatibility.FIXTURE_IDS.get(name, ()):
+                    connection.execute(table.insert(), {'id': identifier, 'value': 'synthetic'})
+            connection.execute(text('ALTER TABLE public.products ADD COLUMN category_id VARCHAR(36)'))
+        self.assertEqual(before, compatibility.protected_fingerprint(engine, exclude_fixtures=True, columns=columns))
+        full = compatibility.protected_fingerprint(engine)
+        self.assertNotEqual(full, before)
+        with engine.begin() as connection:
+            connection.execute(tables['orders'].insert(), {'id': compatibility.FIXTURE_PREFIX + 'not-owned', 'value': 'x'})
+        self.assertNotEqual(before, compatibility.protected_fingerprint(engine, exclude_fixtures=True, columns=columns))
 
 
 if __name__ == '__main__':

@@ -18,8 +18,9 @@ LEASE_SECONDS = 60
 
 
 def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=None,
-                 excluded_scopes=()):
-    from .fixture_faults import FixtureScope
+                 excluded_scopes=(), reservation_token=None):
+    from .fixture_faults import (FixtureScope, registry_present, registry_exclusion,
+                                 reservation_active)
     if fixture_scope is not None and not isinstance(fixture_scope, FixtureScope):
         raise ValueError('explicit fixture scope required')
     if not isinstance(excluded_scopes, tuple) or any(
@@ -41,6 +42,11 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=N
     if excluded_scopes:
         filters.append(Request.id.not_in(tuple(scope.change_id for scope in excluded_scopes)))
     with SessionLocal() as db:
+        registered = registry_present(db)
+        if fixture_scope is not None and (not registered or reservation_token is None):
+            raise ValueError('dedicated worker requires an owned reservation')
+        if registered and fixture_scope is None:
+            filters.append(registry_exclusion(Request))
         row = db.scalar(select(Request).where(
             *filters,
             Request.status.in_(('pending_payment','resource_pending','compensating','refund_pending','retrying')),
@@ -49,6 +55,11 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=N
         ).order_by(Request.created_at).with_for_update(skip_locked=True).limit(1))
         if row is None:
             db.rollback(); return False
+        # Recheck after acquiring the request lock using a fresh PG statement.
+        if db.scalar(select(Request.id).where(Request.id == row.id, *filters)) is None:
+            db.rollback(); return False
+        if fixture_scope is not None:
+            reservation_active(db, fixture_scope, reservation_token)
         row.lease_owner = owner
         row.lease_expires_at = instant + timedelta(seconds=LEASE_SECONDS)
         row.updated_at = instant
@@ -61,6 +72,8 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=N
             Request.lease_owner == owner, *filters).with_for_update())
         if row is None:
             db.rollback(); return False
+        if fixture_scope is not None:
+            reservation_active(db, fixture_scope, reservation_token)
         try:
             resource = ns.get('version_change_resources')
             if not isinstance(resource, dict):
@@ -296,7 +309,8 @@ def main():
             handlers[sig] = signal.signal(sig, lambda *_: stopped.set())
         heartbeat = (Path('/tmp') / f'{scope.run_id}-{scope.change_id}-heartbeat'
                      if scope is not None else HEARTBEAT)
-        run_worker(lambda: process_once(fixture_scope=scope, excluded_scopes=excluded),
+        run_worker(lambda: process_once(fixture_scope=scope, excluded_scopes=excluded,
+                   reservation_token=os.environ.get('QA_FIXTURE_RESERVATION_TOKEN')),
                    stopped, interval=interval, batch=batch, heartbeat=heartbeat)
     except Exception as exc:
         logger.error('Version change worker failed: %s', type(exc).__name__)

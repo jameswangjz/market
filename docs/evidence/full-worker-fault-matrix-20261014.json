@@ -1,0 +1,650 @@
+{
+  "cases": [
+    {
+      "case": "upgrade",
+      "change_id": "7806ffef94b7cf237cdb36d37a90ac41",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 4,
+      "resource": "api",
+      "retry_wait_seconds": 0.0,
+      "status": "completed",
+      "wall_clock_seconds": 6.195
+    },
+    {
+      "case": "downgrade",
+      "change_id": "e7b4c7b963c8e849e43af2ef17710a29",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 4,
+      "resource": "api",
+      "retry_wait_seconds": 0,
+      "status": "completed",
+      "wall_clock_seconds": 6.489
+    },
+    {
+      "case": "no_payment",
+      "change_id": "675a1cb63896148cf1236676cd30afba",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 3,
+      "resource": "api",
+      "retry_wait_seconds": 0,
+      "status": "completed",
+      "wall_clock_seconds": 4.856
+    },
+    {
+      "case": "unpaid_expiry",
+      "change_id": "d7672afab3d29f846da16f972dbe1922",
+      "checks": [
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 2,
+      "resource": "api",
+      "retry_wait_seconds": 0,
+      "status": "cancelled",
+      "wall_clock_seconds": 2.973
+    },
+    {
+      "case": "prepare_failure",
+      "change_id": "5e75ed9407f4106214c22c55e5203008",
+      "checks": [
+        "prepare-exhaustion-no-apply",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 6,
+      "resource": "api",
+      "retry_wait_seconds": 29.043,
+      "status": "compensated",
+      "wall_clock_seconds": 38.421
+    },
+    {
+      "case": "apply_failure",
+      "change_id": "61503bb0012ac9f7b555b87cb8288e07",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "api",
+      "retry_wait_seconds": 29.099,
+      "status": "compensated",
+      "wall_clock_seconds": 40.331
+    },
+    {
+      "case": "invalid_proof",
+      "change_id": "e5cf58798baf81dfb6d32bebb37aa47b",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "mismatched-proof-blocked-financial-posting",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "api",
+      "retry_wait_seconds": 29.061,
+      "status": "compensated",
+      "wall_clock_seconds": 40.631
+    },
+    {
+      "case": "commit_failure",
+      "change_id": "dfa722c2d0af5c000e1618a86f4fbf98",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-domain-post-apply-transaction-rollback",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 5,
+      "resource": "api",
+      "retry_wait_seconds": 9.676,
+      "status": "completed",
+      "wall_clock_seconds": 18.28
+    },
+    {
+      "case": "crash_replay",
+      "change_id": "b102fdb0326778507a5da9ec9d23f7b8",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-kill-after-external-apply-before-db-commit",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 5,
+      "resource": "api",
+      "retry_wait_seconds": 0.0,
+      "status": "completed",
+      "wall_clock_seconds": 8.08
+    },
+    {
+      "case": "restore_failure",
+      "change_id": "82193d360c98230526ea4fff78f963f4",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "compensation-repaired-without-duplicate-refund",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 10,
+      "resource": "api",
+      "retry_wait_seconds": 58.064,
+      "status": "compensated",
+      "wall_clock_seconds": 74.737
+    },
+    {
+      "case": "upgrade_refund_failure",
+      "change_id": "bdd6ad5850140dd5584a2dcd157c354b",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "compensation-repaired-without-duplicate-refund",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 10,
+      "resource": "api",
+      "retry_wait_seconds": 58.098,
+      "status": "compensated",
+      "wall_clock_seconds": 74.883
+    },
+    {
+      "case": "downgrade_refund_failure",
+      "change_id": "c1bc7b5f0fd9d9bf6ed8f4a144c489bf",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "downgrade-refund-repair-preserves-revision",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "api",
+      "retry_wait_seconds": 29.113,
+      "status": "completed",
+      "wall_clock_seconds": 40.73
+    },
+    {
+      "case": "upgrade",
+      "change_id": "0f47af8af3db82b254cb31c3d3cbb772",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 4,
+      "resource": "model_api",
+      "retry_wait_seconds": 0.0,
+      "status": "completed",
+      "wall_clock_seconds": 6.58
+    },
+    {
+      "case": "downgrade",
+      "change_id": "1f409539dc2303876386c60ade6b4dd5",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 4,
+      "resource": "model_api",
+      "retry_wait_seconds": 0,
+      "status": "completed",
+      "wall_clock_seconds": 6.594
+    },
+    {
+      "case": "no_payment",
+      "change_id": "423f74aeae037a103ec3689079a57614",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 3,
+      "resource": "model_api",
+      "retry_wait_seconds": 0,
+      "status": "completed",
+      "wall_clock_seconds": 4.855
+    },
+    {
+      "case": "unpaid_expiry",
+      "change_id": "59258e3e6cebd56a6ccfbf4cfda1bc61",
+      "checks": [
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 2,
+      "resource": "model_api",
+      "retry_wait_seconds": 0,
+      "status": "cancelled",
+      "wall_clock_seconds": 3.161
+    },
+    {
+      "case": "prepare_failure",
+      "change_id": "e75a98da21ebc5eec4ca55f746cb5a17",
+      "checks": [
+        "prepare-exhaustion-no-apply",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 6,
+      "resource": "model_api",
+      "retry_wait_seconds": 29.043,
+      "status": "compensated",
+      "wall_clock_seconds": 38.579
+    },
+    {
+      "case": "apply_failure",
+      "change_id": "52cbd1fb68847014c88cc4b54cd8ec20",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "model_api",
+      "retry_wait_seconds": 29.045,
+      "status": "compensated",
+      "wall_clock_seconds": 39.972
+    },
+    {
+      "case": "invalid_proof",
+      "change_id": "1e95034e1ccd46d98592f12f04c3c1b8",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "mismatched-proof-blocked-financial-posting",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "model_api",
+      "retry_wait_seconds": 29.099,
+      "status": "compensated",
+      "wall_clock_seconds": 39.804
+    },
+    {
+      "case": "commit_failure",
+      "change_id": "3d743c81bab20b1bf495472de55458e9",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-domain-post-apply-transaction-rollback",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 5,
+      "resource": "model_api",
+      "retry_wait_seconds": 9.708,
+      "status": "completed",
+      "wall_clock_seconds": 17.302
+    },
+    {
+      "case": "crash_replay",
+      "change_id": "ae4cf2d3f80ed856aaaf3adf0e7ee23f",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-kill-after-external-apply-before-db-commit",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 5,
+      "resource": "model_api",
+      "retry_wait_seconds": 0.0,
+      "status": "completed",
+      "wall_clock_seconds": 7.153
+    },
+    {
+      "case": "restore_failure",
+      "change_id": "f3a00f24dace62a69a073ddb8c9d91a3",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "compensation-repaired-without-duplicate-refund",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 10,
+      "resource": "model_api",
+      "retry_wait_seconds": 58.222,
+      "status": "compensated",
+      "wall_clock_seconds": 73.28
+    },
+    {
+      "case": "upgrade_refund_failure",
+      "change_id": "5b4d5d8ed97b58a8409b25b301f145bf",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "compensation-repaired-without-duplicate-refund",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 10,
+      "resource": "model_api",
+      "retry_wait_seconds": 58.223,
+      "status": "compensated",
+      "wall_clock_seconds": 73.562
+    },
+    {
+      "case": "downgrade_refund_failure",
+      "change_id": "69b6babf03f5d771e835b9b62a77a8d2",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "downgrade-refund-repair-preserves-revision",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "model_api",
+      "retry_wait_seconds": 29.066,
+      "status": "completed",
+      "wall_clock_seconds": 40.615
+    },
+    {
+      "case": "upgrade",
+      "change_id": "03c23c750c81cd3d2fb83769aa8625dd",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 4,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 0.0,
+      "status": "completed",
+      "wall_clock_seconds": 6.78
+    },
+    {
+      "case": "downgrade",
+      "change_id": "783ef08992ed4d9c4f332e08e08d93eb",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 4,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 0,
+      "status": "completed",
+      "wall_clock_seconds": 6.81
+    },
+    {
+      "case": "no_payment",
+      "change_id": "3b67b20a50b07724feb5494327923cef",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 3,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 0,
+      "status": "completed",
+      "wall_clock_seconds": 5.124
+    },
+    {
+      "case": "unpaid_expiry",
+      "change_id": "e58e43e655e7ede774f88f899a1b1015",
+      "checks": [
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 2,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 0,
+      "status": "cancelled",
+      "wall_clock_seconds": 3.172
+    },
+    {
+      "case": "prepare_failure",
+      "change_id": "c9013c188c1c8cd0969daf960db824c6",
+      "checks": [
+        "prepare-exhaustion-no-apply",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 6,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 29.056,
+      "status": "compensated",
+      "wall_clock_seconds": 38.956
+    },
+    {
+      "case": "apply_failure",
+      "change_id": "6235e3356dec4b95ded52a3dd59b69e6",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 29.046,
+      "status": "compensated",
+      "wall_clock_seconds": 40.453
+    },
+    {
+      "case": "invalid_proof",
+      "change_id": "57eced845b5619b12a1739c5ed92f40f",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "mismatched-proof-blocked-financial-posting",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 29.086,
+      "status": "compensated",
+      "wall_clock_seconds": 40.549
+    },
+    {
+      "case": "commit_failure",
+      "change_id": "bfad2c3c21ec0d2a8a83e9458126ab16",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-domain-post-apply-transaction-rollback",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 5,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 9.698,
+      "status": "completed",
+      "wall_clock_seconds": 17.751
+    },
+    {
+      "case": "crash_replay",
+      "change_id": "1b510c71e39d36c5730fa9284ce5c53b",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-kill-after-external-apply-before-db-commit",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 5,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 0.0,
+      "status": "completed",
+      "wall_clock_seconds": 7.436
+    },
+    {
+      "case": "restore_failure",
+      "change_id": "5930ddc72c3ee6887210139b0e96d18b",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "compensation-repaired-without-duplicate-refund",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 10,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 58.235,
+      "status": "compensated",
+      "wall_clock_seconds": 73.199
+    },
+    {
+      "case": "upgrade_refund_failure",
+      "change_id": "a47e7c039ce28f843c81982e75bdb41a",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "compensation-repaired-without-duplicate-refund",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 10,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 58.147,
+      "status": "compensated",
+      "wall_clock_seconds": 73.519
+    },
+    {
+      "case": "downgrade_refund_failure",
+      "change_id": "f2d472aa91c0baeb4da3e8263f08e656",
+      "checks": [
+        "durable-prepare-checkpoint",
+        "real-operator-retry-handler",
+        "downgrade-refund-repair-preserves-revision",
+        "terminal-proof-ledger-revision-funds-invariants",
+        "original-order-immutable",
+        "external-resource-readback",
+        "terminal-replay-no-effects",
+        "owned-reservation-cleanup"
+      ],
+      "cycles": 7,
+      "resource": "tenant_access",
+      "retry_wait_seconds": 29.096,
+      "status": "completed",
+      "wall_clock_seconds": 39.768
+    }
+  ],
+  "database": "postgresql-private-schema",
+  "original_tables_used": false,
+  "protected_private_sentinels_unchanged": true,
+  "result": "passed",
+  "scheduler": "real-UTC-persisted-deadlines-minimum-ten-second-audit-spacing",
+  "schema": "qa_fixture_matrix_cb08cf71e0c34718bc60929986c90a67",
+  "schema_dropped": true,
+  "vendor_boundary": "authenticated-isolated-HTTP-mocks",
+  "execution_scope": "production worker/domain hooks, real private PostgreSQL, controlled authenticated HTTP mock vendors; no real bank or shared vendor outage",
+  "total_cycles": 210
+}

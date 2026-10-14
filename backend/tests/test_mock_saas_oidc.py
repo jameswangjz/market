@@ -398,9 +398,16 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertEqual(self.client.post('/oauth/token', data={}).status_code, 401)
         self.assertEqual(self.machine('RENEW')['status'], 'active')
         self.assertEqual(self.machine('CHANGE', to_version='2')['version'], '2')
-        self.assertEqual(self.machine('USER_ASSIGN', user_id='fixture-user')['user_id'], 'mock-user-fixture-user')
-        self.assertEqual(self.machine('DEPT_CREATE', department_id='engineering')['department_id'], 'mock-dept-engineering')
-        self.assertEqual(self.machine('DEPT_REMOVE', department_id='engineering')['status'], 'deleted')
+        user = self.machine('USER_ASSIGN', user_id='fixture-user')
+        expected_user = 'mock-user-' + hashlib.sha256(json.dumps(
+            ['fixture-tenant', 'fixture-user'], separators=(',', ':')).encode()).hexdigest()
+        self.assertEqual(user['user_id'], expected_user)
+        self.assertEqual(user['external_user_id'], expected_user)
+        department = self.machine('DEPT_CREATE', department_id='engineering')
+        expected_department = 'mock-dept-' + hashlib.sha256(json.dumps(
+            ['fixture-tenant', 'engineering'], separators=(',', ':')).encode()).hexdigest()
+        self.assertEqual(department['department_id'], expected_department)
+        self.assertEqual(self.machine('DEPT_REMOVE', department_id=department['department_id'])['status'], 'deleted')
         self.assertFalse(self.machine('NOT_SUPPORTED')['retryable'])
         self.introspection_active = False
         self.assertEqual(self.client.post('/isv.php', json={'type': 'OPEN'},
@@ -538,6 +545,20 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertEqual(self.client.get('/app').status_code, 401)
         self.machine('USER_UNASSIGN', user_id='mock-user-not-local')
         self.assertEqual(self.machine_snapshot(), first)
+
+    def test_machine_assigned_identity_survives_oidc_login_and_external_removal(self):
+        assigned = self.machine('USER_ASSIGN', user_id='fixture-user')
+        external = assigned['external_user_id']
+        self.signed_in()
+        with self.store.connect() as db:
+            row = db.execute('SELECT payload FROM users WHERE tenant_id=? AND user_id=?',
+                ('fixture-tenant', 'fixture-user')).fetchone()
+        self.assertEqual(json.loads(row['payload'])['external_user_id'], external)
+        self.assertEqual(self.client.get('/app').status_code, 200)
+        self.machine('USER_UNASSIGN', user_id=external)
+        self.assertEqual(self.client.get('/app').status_code, 401)
+        self.assertEqual(self.machine('USER_ASSIGN', user_id='fixture-user')['external_user_id'], external)
+        self.signed_in()
 
 
 if __name__ == '__main__':

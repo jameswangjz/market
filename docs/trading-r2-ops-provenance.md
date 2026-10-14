@@ -99,11 +99,50 @@ must remain identical across this schema preparation and both image reads.
 Optional `--new-detail-checks` runs two additional own-detail/foreign-detail
 authorization checks on the new image only, reported separately as new feature
 capability. The old 01cd96c image need not expose the BE008 detail route. Foreign
-settlement rows are required only for these optional checks. If needed rows are
-absent, provide an isolated schema fixture; the hook never creates fake rows in
-the restored public business tables or silently counts empty checks as passing.
+settlement rows are required only for these optional checks. By default missing
+rows fail closed. The explicitly authorized isolated fixture mode below supplies
+synthetic rows only inside the disposable restored copy.
 This proves restored database read rollback compatibility for these GET routes,
 not worker behavior, economic writes, gateway compatibility or full production
 rollback. The parent reported a successful actual VM double restore; its hashes
 and explicit scope are recorded in
 `docs/evidence/trading-r2-ops-isolated-restore-20261013.json`.
+
+## Optional Disposable Fixtures
+
+The old backup lacks a verified provider actor linked to a settlement. Use the
+explicit opt-in for this isolated rehearsal, with the already available images:
+
+```sh
+python3 scripts/trading_rollback_rehearsal.py --backup /path/to/backup.sql \
+  --compatibility-hook-argv '["python3", "scripts/trading_rollback_compatibility.py", "--old-image", "market-api:20261013101927-01cd96c", "--new-image", "market-api:20261014025638-9570a05", "--seed-isolated-fixtures", "--new-detail-checks"]'
+```
+
+The host runner must first pass the existing inspect and kernel namespace,
+interface/tunnel, route and published-port checks. Only then does it pass the
+isolation authorization to the probe. Seeding also requires the exact localhost
+DATABASE_URL, disabled background messages, fixture mode and new-image role.
+The old-image probe receives fixture mode but never permission to seed.
+
+The new probe inserts deterministic `r2-rollback-` identities: finance, provider
+and buyer users, two enterprises and memberships, a category pair, two products,
+two paid orders and owned/foreign settlements. Each settlement has gross/net
+100, cost 40, profit 60, and five-party amounts 12/30/6/6/6. Collision with any
+planned primary ID or fixture unique identity fails closed; prefix matching
+never authorizes overwrites. No existing rows are updated or deleted. Only a
+missing category table and nullable products.category_id column are created;
+full startup, task seeding and general migrations never run.
+
+Original protected business, actor, enterprise, membership and existing category
+rows are fingerprinted before any application import. After insertion, the
+same original column projection is compared, excluding only the exact fixture
+IDs in their exact tables. This permits an additive nullable category column
+without hiding changes to original values. The full post-seed fingerprint,
+including fixture rows and new columns, is compared before/after each image's
+GET probes and between images. The original projection is passed to the old
+probe as column-name metadata; no row data or secrets are passed or logged.
+Reports explicitly include `synthetic_fixture: true`, `original_unchanged: true`
+and original/full hashes. These synthetic reads test restored schema and API
+compatibility, not historical provider activity or full production rollback.
+The backup and live business remain untouched; the enclosing helper drops the
+disposable restored database after each rehearsal round.
