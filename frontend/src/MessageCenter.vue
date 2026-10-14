@@ -3,14 +3,28 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import axios from 'axios';
 import { Search, RefreshCw, X, Bell, Send, Save, Settings, Paperclip, Download, Eye, ExternalLink, CheckCircle2 } from 'lucide-vue-next';
 import { useNotificationStream } from './useNotificationStream';
+import { notificationRequest, notificationScopeKey, isNotificationRequestCurrent } from './notificationScope.js';
 
 const emit = defineEmits(['changed', 'navigate']);
-const props = defineProps({ allowedViews: { type: Array, default: null }, initialId: { type: String, default: '' } });
+const props = defineProps({ allowedViews: { type: Array, default: null }, initialId: { type: String, default: '' }, enterpriseId: { type: String, default: '' }, businessView: { type: String, default: '' } });
+const messageScope = computed(() => props.enterpriseId ? { enterprise_id: props.enterpriseId, ...(props.businessView ? { business_view: props.businessView } : {}) } : {});
+let scopeVersion = 0;
 const api = axios.create({ baseURL: '/api' });
 api.interceptors.request.use(config => {
   const token = localStorage.getItem('market_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
+  config.notificationScopeVersion = scopeVersion;
+  return notificationRequest(config, messageScope.value);
+}, undefined, { synchronous: true });
+const assertCurrentScope = config => {
+  if (!isNotificationRequestCurrent(config, scopeVersion, disposed)) throw new axios.CanceledError('Notification scope changed');
+};
+api.interceptors.response.use(response => {
+  assertCurrentScope(response.config);
+  return response;
+}, error => {
+  assertCurrentScope(error.config);
+  return Promise.reject(error);
 });
 const data = ref({ items: [], total: 0 });
 const folder = ref('inbox');
@@ -39,7 +53,10 @@ const currentUser = ref(null);
 const deliveryHealth = ref({ counts: [], failures: [], expired_urgent: [] });
 const resolutionReasons = ref({});
 const healthBusy = ref(false);
-const availableUsers = computed(() => (context.value.users || []).filter(user => !composer.value?.tenant_id || user.enterprise_ids?.includes(composer.value.tenant_id)));
+const availableUsers = computed(() => (context.value.users || []).filter(user => {
+  const tenant = context.value.platform_admin ? composer.value?.tenant_id : props.enterpriseId || composer.value?.tenant_id;
+  return !tenant || user.enterprise_ids?.includes(tenant);
+}));
 const platformRoles = computed(() => [...new Set(availableUsers.value.map(user => user.platform_role).filter(Boolean))]);
 const platformRoleName = role => ({ super_admin: '平台超级管理员', platform_operator: '平台运营', product_manager: '产品经理', business_reviewer: '业务审核', quality_reviewer: '质量审核', security_compliance: '安全合规' }[role] || '其他平台角色');
 const pollMs = computed(() => Number(settings.value.poll_interval_seconds || 30) * 1000);
@@ -62,8 +79,9 @@ function businessView(item) {
   return currentUser.value && (currentUser.value.verified_status === 'verified' || ['products', 'users', 'messages'].includes(view)) ? view : null;
 }
 async function loadAccess() {
-  try { currentUser.value = (await api.get('/auth/me')).data.user; }
-  catch { currentUser.value = null; }
+  const scope = scopeVersion;
+  try { const result = await api.get('/auth/me'); if (scopeActive(scope)) currentUser.value = result.data.user; }
+  catch { if (scopeActive(scope)) currentUser.value = null; }
 }
 function dateBoundary(value, exclusive = false) {
   if (!value) return '';
@@ -73,11 +91,13 @@ function dateBoundary(value, exclusive = false) {
 }
 const isDraft = item => item.status === 'draft' || item.draft === true;
 const isRecalled = item => item.status === 'recalled' || !!item.recalled_at;
-const failure = (e, fallback) => { error.value = typeof e.response?.data?.detail === 'string' ? e.response.data.detail : fallback; };
+const failure = (e, fallback) => { if (!axios.isCancel(e)) error.value = typeof e.response?.data?.detail === 'string' ? e.response.data.detail : fallback; };
 let loadVersion = 0;
 let detailVersion = 0;
 let disposed = false;
+const scopeActive = version => !disposed && version === scopeVersion;
 async function load(background = false) {
+  const scope = scopeVersion;
   const version = ++loadVersion;
   const currentFolder = folder.value;
   if (!background) busy.value = true;
@@ -95,7 +115,7 @@ async function load(background = false) {
     emit('changed');
   } catch (e) {
     if (version === loadVersion && !disposed && !background) failure(e, e.message === 'date' ? '结束日期不能早于开始日期' : '消息加载失败');
-  } finally { if (version === loadVersion) busy.value = false; }
+  } finally { if (scopeActive(scope) && version === loadVersion) busy.value = false; }
 }
 function changeFolder(value) {
   folder.value = value; page.value = 1; selected.value = []; closeDetail();
@@ -112,99 +132,123 @@ async function open(item) {
     if (folder.value !== 'trash') {
       const read = await api.post(`/notifications/${encodeURIComponent(item.id)}/read`);
       if (version === detailVersion && !disposed) detail.value = { ...detail.value, ...read.data };
-      await load(true);
+      if (version === detailVersion && !disposed) await load(true);
     }
   } catch (e) { if (version === detailVersion) failure(e, '消息读取失败'); }
 }
 async function action(name, ids) {
+  const scope = scopeVersion;
   if (saving.value) return;
   saving.value = true; error.value = '';
   try {
     await api.post('/notifications/batch-actions', { action: name, ids: [...ids] });
+    if (!scopeActive(scope)) return;
     closeDetail(); await load();
-  } catch (e) { failure(e, '操作失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, '操作失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 async function readAll() {
+  const scope = scopeVersion;
   if (saving.value || !['inbox', 'unread', 'urgent'].includes(folder.value) || !data.value.unread) return;
   const cutoff = data.value.server_time;
   if (!cutoff) { error.value = '请刷新消息后重试'; return; }
   saving.value = true; error.value = '';
   try {
     await api.post('/notifications/read-all', { cutoff });
+    if (!scopeActive(scope)) return;
     notice.value = '消息已标记为已读';
     await load();
-  } catch (e) { failure(e, '标记全部已读失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, '标记全部已读失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 async function loadContext() {
+  const scope = scopeVersion;
   try {
     const result = await api.get('/notifications/sender-context');
+    if (!scopeActive(scope)) return;
     context.value = { ...context.value, ...result.data }; contextReady.value = true;
+    if (!context.value.platform_admin && props.enterpriseId) {
+      context.value.enterprises = context.value.enterprises.filter(item => item.id === props.enterpriseId);
+      context.value.users = context.value.users.filter(item => item.enterprise_ids?.includes(props.enterpriseId));
+    }
     if (context.value.settings) settings.value = { ...settings.value, ...context.value.settings };
-  } catch (e) { failure(e, '发送权限信息加载失败'); }
+  } catch (e) { if (scopeActive(scope)) failure(e, '发送权限信息加载失败'); }
 }
 async function loadPreferences() {
+  const scope = scopeVersion;
   try {
     const result = await api.get('/notifications/preferences');
+    if (!scopeActive(scope)) return;
     preferences.value = { email_enabled: !!result.data.email_enabled }; preferencesReady.value = true;
-  } catch (e) { failure(e, '邮件偏好加载失败'); }
+  } catch (e) { if (scopeActive(scope)) failure(e, '邮件偏好加载失败'); }
 }
 async function openSettings() {
+  const scope = scopeVersion;
   settingsOpen.value = true; notice.value = ''; error.value = '';
   await loadPreferences();
+  if (!scopeActive(scope)) return;
   if (!contextReady.value) await loadContext();
+  if (!scopeActive(scope)) return;
   if (context.value.platform_admin) {
     settingsReady.value = false;
     try {
       const result = await api.get('/notifications/settings');
+      if (!scopeActive(scope)) return;
       settings.value = { ...settings.value, ...result.data }; settingsReady.value = true;
-    } catch (e) { failure(e, '消息设置加载失败'); }
+    } catch (e) { if (scopeActive(scope)) failure(e, '消息设置加载失败'); }
+    if (!scopeActive(scope)) return;
     await loadHealth();
   }
 }
 async function loadHealth() {
+  const scope = scopeVersion;
   if (!context.value.platform_admin || healthBusy.value) return;
   healthBusy.value = true;
-  try { deliveryHealth.value = { counts: [], failures: [], expired_urgent: [], ...(await api.get('/notifications/delivery-health')).data }; }
-  catch (e) { failure(e, '投递状态加载失败'); }
-  finally { healthBusy.value = false; }
+  try { const result = await api.get('/notifications/delivery-health'); if (scopeActive(scope)) deliveryHealth.value = { counts: [], failures: [], expired_urgent: [], ...result.data }; }
+  catch (e) { if (scopeActive(scope)) failure(e, '投递状态加载失败'); }
+  finally { if (scopeActive(scope)) healthBusy.value = false; }
 }
 async function retryDelivery(item) {
+  const scope = scopeVersion;
   if (saving.value) return;
   saving.value = true; error.value = '';
   try {
     await api.post(`/notifications/deliveries/${encodeURIComponent(item.id)}/retry`);
+    if (!scopeActive(scope)) return;
     notice.value = '失败任务已重新排队'; await loadHealth();
-  } catch (e) { failure(e, '任务重试失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, '任务重试失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 async function resolveExpired(item) {
+  const scope = scopeVersion;
   if (saving.value || !context.value.platform_admin) return;
   const reason = resolutionReasons.value[item.id]?.trim();
   if (!reason) { error.value = '请填写运营处理说明'; return; }
   saving.value = true; error.value = '';
   try {
     await api.post(`/notifications/expired-urgent/${encodeURIComponent(item.id)}/resolve`, { reason });
+    if (!scopeActive(scope)) return;
     delete resolutionReasons.value[item.id];
     notice.value = '运营处理已记录'; await loadHealth();
-  } catch (e) { failure(e, '运营处理记录失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, '运营处理记录失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 async function saveConfig(platform) {
+  const scope = scopeVersion;
   if (saving.value) return;
   saving.value = true; error.value = '';
   try {
     const payload = platform ? { ...settings.value, retention_days: Number(settings.value.retention_days), attachment_max_mb: Number(settings.value.attachment_max_mb) } : { email_enabled: preferences.value.email_enabled };
     if (platform && (!Number.isInteger(payload.retention_days) || payload.retention_days < 1 || payload.retention_days > 3650 || !Number.isInteger(payload.attachment_max_mb) || payload.attachment_max_mb < 1 || payload.attachment_max_mb > 100)) throw new Error('validation');
     await api.put(platform ? '/notifications/settings' : '/notifications/preferences', payload);
+    if (!scopeActive(scope)) return;
     notice.value = '设置已保存';
-  } catch (e) { failure(e, e.message === 'validation' ? '请输入有效的保留天数和附件大小' : '设置保存失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, e.message === 'validation' ? '请输入有效的保留天数和附件大小' : '设置保存失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 function compose() {
   if (!canSend.value) return;
-  composer.value = { title: '', content: '', severity: 'normal', category: 'announcement', tenant_id: context.value.platform_admin ? '' : context.value.enterprises[0]?.id || '', recipient_mode: '', recipient_ids: [], attachments: [], event_key: globalThis.crypto?.randomUUID?.() || `manual-${Date.now()}-${Math.random().toString(36).slice(2)}` };
+  composer.value = { title: '', content: '', severity: 'normal', category: 'announcement', tenant_id: context.value.platform_admin ? '' : props.enterpriseId || context.value.enterprises[0]?.id || '', recipient_mode: '', recipient_ids: [], attachments: [], event_key: globalThis.crypto?.randomUUID?.() || `manual-${Date.now()}-${Math.random().toString(36).slice(2)}` };
   notice.value = ''; error.value = '';
   if (!contextReady.value) loadContext();
 }
@@ -226,6 +270,7 @@ function selectRecipients() {
   form.recipient_ids = [...new Set(users.map(user => user.id))];
 }
 async function upload(event) {
+  const scope = scopeVersion;
   const files = Array.from(event.target.files || []);
   event.target.value = '';
   const draft = composer.value;
@@ -237,12 +282,14 @@ async function upload(event) {
       if (file.size > Number(settings.value.attachment_max_mb) * 1024 * 1024) throw new Error('size');
       const body = new FormData(); body.append('upload', file);
       const result = await api.post('/notifications/attachments', body);
-      if (composer.value === draft) draft.attachments.push(result.data);
+      if (!scopeActive(scope) || composer.value !== draft) return;
+      draft.attachments.push(result.data);
     }
-  } catch (e) { failure(e, e.message === 'size' ? `附件不能超过 ${settings.value.attachment_max_mb} MB` : e.message === 'count' ? '最多添加 5 个附件' : '附件上传失败'); }
-  finally { uploading.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, e.message === 'size' ? `附件不能超过 ${settings.value.attachment_max_mb} MB` : e.message === 'count' ? '最多添加 5 个附件' : '附件上传失败'); }
+  finally { if (scopeActive(scope)) uploading.value = false; }
 }
 async function send(draft) {
+  const scope = scopeVersion;
   if (saving.value || uploading.value || !composer.value) return;
   const form = composer.value;
   if (form.attachments.length > 5) { error.value = '最多添加 5 个附件'; return; }
@@ -250,41 +297,49 @@ async function send(draft) {
     error.value = draft ? '请填写标题和内容' : '请填写标题、内容并选择收件人'; return;
   }
   if (!context.value.platform_admin && !form.tenant_id) { error.value = '请选择所属企业'; return; }
+  if (!context.value.platform_admin && props.enterpriseId && form.tenant_id !== props.enterpriseId) { error.value = '请选择当前企业'; return; }
+  if (form.recipient_ids.some(id => !availableUsers.value.some(user => user.id === id))) { error.value = '请选择有效收件人'; return; }
   if (form.recipient_ids.length > 500) { error.value = '最多选择 500 位收件人'; return; }
   saving.value = true; error.value = '';
   try {
     const payload = { title: form.title.trim(), content: form.content, severity: form.severity, category: form.category, tenant_id: form.tenant_id, recipient_ids: [...form.recipient_ids], attachment_ids: form.attachments.map(item => item.id), draft: form.id ? true : draft, event_key: form.event_key };
     if (form.id) {
       await api.put(`/notifications/sent/${encodeURIComponent(form.id)}`, payload);
+      if (!scopeActive(scope)) return;
       if (!draft) await api.post(`/notifications/sent/${encodeURIComponent(form.id)}/publish`);
     } else await api.post('/notifications/send', payload);
+    if (!scopeActive(scope)) return;
     composer.value = null; notice.value = draft ? '草稿已保存' : '消息已发送'; changeFolder(draft ? 'drafts' : 'sent');
-  } catch (e) { failure(e, '消息保存失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, '消息保存失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 async function sentAction() {
+  const scope = scopeVersion;
   if (saving.value || !confirmation.value) return;
   const { item, action: command, reason } = confirmation.value;
   if (command === 'recall' && !reason?.trim()) { error.value = '请填写撤回原因'; return; }
   saving.value = true; error.value = '';
   try {
     await api.post(`/notifications/sent/${encodeURIComponent(item.id)}/${command}`, command === 'recall' ? { reason: reason.trim() } : undefined);
+    if (!scopeActive(scope)) return;
     confirmation.value = null; closeDetail(); notice.value = command === 'publish' ? '草稿已发送' : '消息已撤回'; await load();
-  } catch (e) { failure(e, '操作失败'); }
-  finally { saving.value = false; }
+  } catch (e) { if (scopeActive(scope)) failure(e, '操作失败'); }
+  finally { if (scopeActive(scope)) saving.value = false; }
 }
 function closePreview() {
   if (preview.value?.url) URL.revokeObjectURL(preview.value.url);
   preview.value = null;
 }
 async function attachment(item, view = false) {
+  const version = scopeVersion;
   if (downloading.value) return;
   downloading.value = true;
   try {
     const result = await api.get(`/notifications/attachments/${encodeURIComponent(item.id)}/download`, { responseType: 'blob' });
-    if (disposed) return;
+    if (!scopeActive(version)) return;
     let blob = result.data;
     const bytes = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+    if (disposed || version !== scopeVersion) return;
     const signature = String.fromCharCode(...bytes);
     const type = bytes[0] === 137 && signature.slice(1, 4) === 'PNG' ? 'image/png'
       : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? 'image/jpeg'
@@ -297,24 +352,36 @@ async function attachment(item, view = false) {
     if (view) {
       closePreview();
       const text = kind === 'text' ? await blob.slice(0, 1024 * 1024).text() : '';
-      if (!disposed) preview.value = { item, kind, url: kind && kind !== 'text' ? URL.createObjectURL(blob) : '', text };
+      if (!disposed && version === scopeVersion) preview.value = { item, kind, url: kind && kind !== 'text' ? URL.createObjectURL(blob) : '', text };
     } else {
       const url = URL.createObjectURL(blob); const link = document.createElement('a');
       link.href = url; link.download = item.name || '附件'; document.body.appendChild(link); link.click(); link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
-  } catch (e) { failure(e, '附件读取失败'); }
-  finally { downloading.value = false; }
+  } catch (e) { if (scopeActive(version)) failure(e, '附件读取失败'); }
+  finally { if (scopeActive(version)) downloading.value = false; }
 }
 async function navigate(item) {
+  const scope = scopeVersion;
   if (!props.allowedViews) await loadAccess();
-  if (disposed) return;
+  if (!scopeActive(scope)) return;
   const view = businessView(item);
   if (!view) return;
   emit('navigate', view, { target_type: item.target_type, target_id: item.target_id });
   closeDetail();
 }
-const { connected } = useNotificationStream(() => load(true), { pollMs, onAuthExpired: () => { error.value = '登录已过期，请重新登录'; } });
+watch(() => notificationScopeKey(messageScope.value), () => {
+  ++scopeVersion; ++loadVersion; closeDetail(); closePreview();
+  busy.value = false; saving.value = false; uploading.value = false; downloading.value = false; healthBusy.value = false;
+  data.value = { items: [], total: 0 }; selected.value = []; page.value = 1;
+  composer.value = null; confirmation.value = null; settingsOpen.value = false;
+  context.value = { platform_admin: false, enterprises: [], users: [], settings: {} }; contextReady.value = false;
+  preferencesReady.value = false; settingsReady.value = false;
+  deliveryHealth.value = { counts: [], failures: [], expired_urgent: [] };
+  error.value = ''; notice.value = '';
+  loadContext(); load();
+}, { flush: 'sync' });
+const { connected } = useNotificationStream(() => load(true), { scope: messageScope, pollMs, onAuthExpired: () => { error.value = '登录已过期，请重新登录'; } });
 onMounted(() => {
   loadContext();
   if (!props.allowedViews) loadAccess();

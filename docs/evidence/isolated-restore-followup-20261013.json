@@ -1,0 +1,1 @@
+{"backup_sha256": "a8d4f397178c77b444eb5edb1c9c3c1eaf4492b09ceee743ae451fbde88eb21b", "restored_snapshot_sha256": "50755e2c99d91d255bafe6679123107085e5375750390f2a8449eb1a22c8797d", "restores": 2, "cleanup_verified": true, "compatibility_hook": "not run", "scope": "isolated backup restore; application compatibility requires hook assertions"}

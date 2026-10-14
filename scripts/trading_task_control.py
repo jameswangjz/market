@@ -46,7 +46,7 @@ def validate(plan):
 def inspect(rows, expected, now=None, stale_minutes=60):
     now = now or datetime.now(timezone.utc)
     index = {row['code']: row for row in rows}
-    alerts, ready = [], []
+    alerts, ready, pending_acceptance = [], [], []
     for code in expected:
         row = index.get(code)
         if not row:
@@ -54,10 +54,15 @@ def inspect(rows, expected, now=None, stale_minutes=60):
             continue
         if row['status'] == 'done' and row['progress'] != 100:
             alerts.append({'code': code, 'reason': 'done_progress_mismatch'})
-        if row['status'] in {'todo', 'review', 'in_progress'} and row['progress'] == 100:
+        if row['status'] in {'todo', 'in_progress'} and row['progress'] == 100:
             alerts.append({'code': code, 'reason': 'unaccepted_progress_100'})
         deps = [x.strip() for x in row['dependencies'].split(',') if x.strip()]
-        unfinished = [x for x in deps if x not in index or index[x]['status'] != 'done']
+        unfinished = [x for x in deps if x not in index or
+                      not (index[x]['status'] == 'done' or
+                           (index[x]['status'] == 'review' and index[x]['progress'] == 100))]
+        awaiting_review = [x for x in deps if x in index and index[x]['status'] == 'review']
+        if awaiting_review:
+            pending_acceptance.append({'code': code, 'dependencies': awaiting_review})
         if row['status'] == 'in_progress' and unfinished:
             alerts.append({'code': code, 'reason': 'unfinished_dependency', 'dependencies': unfinished})
         if row['status'] == 'todo' and not unfinished:
@@ -75,7 +80,7 @@ def inspect(rows, expected, now=None, stale_minutes=60):
     counts = {status: sum(row['status'] == status for row in selected)
               for status in ('todo', 'in_progress', 'review', 'blocked', 'done')}
     return {'checked_at': now.isoformat(), 'total': len(selected), 'counts': counts,
-            'ready': ready, 'alerts': alerts,
+            'ready': ready, 'alerts': alerts, 'pending_acceptance_dependencies': pending_acceptance,
             'interpretation': 'Stale progress is a review signal, not proof that a process is stuck. No task state is changed automatically.'}
 
 

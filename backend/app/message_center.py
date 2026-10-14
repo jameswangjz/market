@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from string import Template
+from typing import Annotated
 from urllib.parse import quote
 
 from fastapi import Depends, File, HTTPException, Query, Request, UploadFile
@@ -18,6 +19,7 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, delete, func, select, text, update
 from sqlalchemy.orm import Mapped, mapped_column
+
 
 
 class BatchAction(BaseModel):
@@ -132,6 +134,7 @@ def install(ns):
         __tablename__ = "notification_attachments"
         id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
         owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+        tenant_id: Mapped[str] = mapped_column(String(36), default="")
         name: Mapped[str] = mapped_column(String(240))
         object_name: Mapped[str] = mapped_column(String(300), unique=True)
         size: Mapped[int] = mapped_column(Integer)
@@ -233,14 +236,29 @@ def install(ns):
         db.flush()
         return count
 
-    def base_query(uid):
-        return select(Receipt, Message).join(Message, Message.id == Receipt.message_id).where(Receipt.user_id == uid, Message.status == "sent", Message.expires_at > now())
+    def business_scope(request: Request, user=Depends(current_user), db=Depends(db_session)):
+        if "Order" not in ns:
+            return None
+        explicit = any((request.headers.get("X-Enterprise-Id"), request.query_params.get("enterprise_id"),
+                        request.query_params.get("business_view")))
+        if not explicit and not user.platform_role and not db.scalar(select(ns["Membership"].id).where(
+                ns["Membership"].user_id == user.id, ns["Membership"].status == "active")):
+            return None
+        from .console_business_scope import resolve_business_scope
+        return resolve_business_scope(request, db, user, ns["Membership"], allow_member_view=True)
+
+    def base_query(uid, scope=None):
+        query = select(Receipt, Message).join(Message, Message.id == Receipt.message_id).where(Receipt.user_id == uid, Message.status == "sent", Message.expires_at > now())
+        if scope is not None:
+            from .console_business_scope import message_predicate
+            query = query.where(message_predicate(Message, ns, scope))
+        return query
 
     def unread_condition():
         return (Receipt.first_read_at.is_(None)) & (Receipt.legacy_read != "read")
 
-    def summary(db, uid):
-        base = base_query(uid).where(Receipt.deleted_at.is_(None), Receipt.archived_at.is_(None))
+    def summary(db, uid, scope=None):
+        base = base_query(uid, scope).where(Receipt.deleted_at.is_(None), Receipt.archived_at.is_(None))
         unread = db.scalar(select(func.count()).select_from(base.where(unread_condition()).subquery()))
         urgent = db.scalar(select(func.count()).select_from(base.where(Message.severity == "urgent", Receipt.acknowledged_at.is_(None)).subquery()))
         recent = db.execute(base.order_by(Receipt.created_at.desc(), Receipt.id.desc()).limit(5)).all()
@@ -258,8 +276,8 @@ def install(ns):
                 "acknowledged_at": receipt.acknowledged_at, "deleted_at": receipt.deleted_at, "archived_at": receipt.archived_at,
                 "email_status": email_job.status if email_job else "", "email_skip_reason": email_job.result if email_job and email_job.status == "skipped" else ""}
 
-    def find(db, uid, rid):
-        row = db.execute(base_query(uid).where((Receipt.id == rid) | (Receipt.legacy_id == rid)).with_for_update(of=Receipt)).first()
+    def find(db, uid, rid, scope=None):
+        row = db.execute(base_query(uid, scope).where((Receipt.id == rid) | (Receipt.legacy_id == rid)).with_for_update(of=Receipt)).first()
         if not row:
             raise HTTPException(404, "消息不存在或已过期")
         return row
@@ -305,8 +323,8 @@ def install(ns):
     def inbox(q: str = "", folder: str = "inbox", category: str = "", severity: str = "", read: str = "",
               start: str = "", end: str = "",
               page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
-              user=Depends(current_user), db=Depends(db_session)):
-        query = base_query(user.id)
+              user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        query = base_query(user.id, scope)
         if folder == "trash":
             query = query.where(Receipt.deleted_at.is_not(None))
         elif folder == "archived":
@@ -337,22 +355,22 @@ def install(ns):
             query = query.where(Message.title.ilike(pattern, escape="\\") | Message.body.ilike(pattern, escape="\\"))
         total = db.scalar(select(func.count()).select_from(query.subquery()))
         rows = db.execute(query.order_by(Receipt.created_at.desc(), Receipt.id.desc()).offset((page - 1) * page_size).limit(page_size)).all()
-        return {"items": [out(r, m, db) for r, m in rows], "total": total, "page": page, "page_size": page_size, **summary(db, user.id)}
+        return {"items": [out(r, m, db) for r, m in rows], "total": total, "page": page, "page_size": page_size, **summary(db, user.id, scope)}
 
     @app.get("/api/notifications/summary")
-    def counts(user=Depends(current_user), db=Depends(db_session)):
-        return summary(db, user.id)
+    def counts(user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        return summary(db, user.id, scope)
 
     @app.post("/api/notifications/read-all")
-    def read_all(body: ReadAllBody, user=Depends(current_user), db=Depends(db_session)):
+    def read_all(body: ReadAllBody, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
         if body.cutoff.tzinfo is None or body.cutoff > now():
             raise HTTPException(422, "截止时间必须包含时区且不能晚于当前时间")
-        rows = db.execute(base_query(user.id).where(Receipt.deleted_at.is_(None), Receipt.archived_at.is_(None),
+        rows = db.execute(base_query(user.id, scope).where(Receipt.deleted_at.is_(None), Receipt.archived_at.is_(None),
                                                   Receipt.created_at <= body.cutoff, unread_condition()).with_for_update(of=Receipt)).all()
         for receipt, message in rows:
             apply_action(db, user, receipt, message, "read")
         db.commit()
-        return {"processed": len(rows), **summary(db, user.id)}
+        return {"processed": len(rows), **summary(db, user.id, scope)}
 
     def platform_admin(user):
         return getattr(user, "platform_role", "") in {"super_admin", "platform_operator"}
@@ -396,27 +414,33 @@ def install(ns):
                                         MessageAttachment.attachment_id == Attachment.id).where(MessageAttachment.message_id == mid))]
 
     @app.get("/api/notifications/sender-context")
-    def sender_context(user=Depends(current_user), db=Depends(db_session)):
+    def sender_context(user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
         enterprises = []
         user_query = select(ns["User"])
         if "Membership" in ns:
             ids = list(db.scalars(select(ns["Membership"].enterprise_id).where(ns["Membership"].user_id == user.id,
                         ns["Membership"].status == "active", ns["Membership"].role.in_(["super_admin", "enterprise_admin"]))))
+            if scope is not None:
+                ids = [eid for eid in ids if eid == scope["enterprise_id"]]
             if "Enterprise" in ns:
                 enterprises = [{"id": e.id, "name": e.name} for e in db.scalars(select(ns["Enterprise"]).where(ns["Enterprise"].id.in_(ids)))]
             if not platform_admin(user):
                 user_query = user_query.where(ns["User"].id.in_(select(ns["Membership"].user_id).where(ns["Membership"].enterprise_id.in_(ids), ns["Membership"].status == "active")))
+            if scope is not None:
+                user_query = user_query.where(ns["User"].platform_role == "")
         elif not platform_admin(user):
             user_query = user_query.where(ns["User"].id == user.id)
         users = [{"id": u.id, "name": getattr(u, "name", u.id), "email": getattr(u, "email", ""),
                   "platform_role": getattr(u, "platform_role", ""),
-                  "enterprise_ids": list(db.scalars(select(ns["Membership"].enterprise_id).where(ns["Membership"].user_id == u.id, ns["Membership"].status == "active"))) if "Membership" in ns else []}
+                  "enterprise_ids": [scope["enterprise_id"]] if scope is not None else list(db.scalars(select(ns["Membership"].enterprise_id).where(ns["Membership"].user_id == u.id, ns["Membership"].status == "active"))) if "Membership" in ns else []}
                  for u in db.scalars(user_query).all() if getattr(u, "is_active", True)]
         return {"platform_admin": platform_admin(user), "enterprises": enterprises, "users": users, "settings": settings(db),
                 "channels": {"in_app": "enabled", "email": "enabled", "sms": "not_configured"}}
 
     @app.post("/api/notifications/send")
-    def send(body: SendMessage, user=Depends(current_user), db=Depends(db_session)):
+    def send(body: SendMessage, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        if scope is not None and body.tenant_id != scope["enterprise_id"]:
+            raise HTTPException(403, "消息企业与当前企业不一致")
         if not body.title.strip() or not body.content.strip() or body.severity not in {"normal", "important", "urgent"}:
             raise HTTPException(422, "消息内容或等级无效")
         if body.category not in {"announcement", "review", "order", "delivery", "settlement", "security", "sla", "identity", "system"}:
@@ -425,7 +449,8 @@ def install(ns):
             raise HTTPException(422, "请选择收件人")
         validate_recipients(db, user, body.tenant_id, body.recipient_ids)
         attachments = [db.get(Attachment, aid) for aid in set(body.attachment_ids)]
-        if any(not a or a.owner_id != user.id or a.scan_result != "clean" for a in attachments):
+        if any(not a or a.owner_id != user.id or a.scan_result != "clean" or
+               (scope is not None and a.tenant_id != scope["enterprise_id"]) for a in attachments):
             raise HTTPException(403, "附件不可用或无权使用")
         message = create(db, body.recipient_ids, body.title.strip(), body.content.strip(), severity=body.severity,
                          event_key=f"manual:{user.id}:{body.event_key}" if body.event_key else None,
@@ -448,8 +473,10 @@ def install(ns):
 
     @app.get("/api/notifications/sent")
     def sent(folder: str = "sent", q: str = "", category: str = "", severity: str = "", start: str = "", end: str = "",
-             page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), user=Depends(current_user), db=Depends(db_session)):
+             page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
         query = select(Message).where(Message.sender_id == user.id)
+        if scope is not None:
+            query = query.where(Message.tenant_id == scope["enterprise_id"])
         if folder == "drafts":
             query = query.where(Message.status == "draft")
         elif folder == "sent":
@@ -474,17 +501,23 @@ def install(ns):
         return {"items": [sender_out(db, m) for m in db.scalars(query.order_by(Message.sent_at.desc()).offset((page - 1) * page_size).limit(page_size))], "total": total}
 
     @app.put("/api/notifications/sent/{mid}")
-    def update_draft(mid: str, body: SendMessage, user=Depends(current_user), db=Depends(db_session)):
-        message = db.scalar(select(Message).where(Message.id == mid, Message.sender_id == user.id).with_for_update())
+    def update_draft(mid: str, body: SendMessage, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        query = select(Message).where(Message.id == mid, Message.sender_id == user.id)
+        if scope is not None:
+            query = query.where(Message.tenant_id == scope["enterprise_id"])
+        message = db.scalar(query.with_for_update())
         if not message:
             raise HTTPException(404, "草稿不存在")
         if message.status != "draft":
             raise HTTPException(409, "只有草稿可以编辑")
+        if scope is not None and body.tenant_id != scope["enterprise_id"]:
+            raise HTTPException(403, "消息企业与当前企业不一致")
         if not body.title.strip() or not body.content.strip() or body.severity not in {"normal", "important", "urgent"}:
             raise HTTPException(422, "内容或等级无效")
         validate_recipients(db, user, body.tenant_id, body.recipient_ids)
         attachments = [db.get(Attachment, aid) for aid in set(body.attachment_ids)]
-        if any(not a or a.owner_id != user.id or a.scan_result != "clean" for a in attachments):
+        if any(not a or a.owner_id != user.id or a.scan_result != "clean" or
+               (scope is not None and a.tenant_id != scope["enterprise_id"]) for a in attachments):
             raise HTTPException(403, "附件不可用")
         before = {"title": message.title, "status": message.status}
         db.execute(delete(Receipt).where(Receipt.message_id == mid))
@@ -499,9 +532,22 @@ def install(ns):
         db.commit()
         return sender_out(db, message)
 
+    @app.get("/api/notifications/sent/{mid}")
+    def sender_detail(mid: str, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        query = select(Message).where(Message.id == mid, Message.sender_id == user.id)
+        if scope is not None:
+            query = query.where(Message.tenant_id == scope["enterprise_id"])
+        message = db.scalar(query)
+        if message is None:
+            raise HTTPException(404, "发件不存在")
+        return sender_out(db, message)
+
     @app.post("/api/notifications/sent/{mid}/{operation}")
-    def sender_action(mid: str, operation: str, body: RecallBody | None = None, user=Depends(current_user), db=Depends(db_session)):
-        message = db.scalar(select(Message).where(Message.id == mid, Message.sender_id == user.id).with_for_update())
+    def sender_action(mid: str, operation: str, body: RecallBody | None = None, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        query = select(Message).where(Message.id == mid, Message.sender_id == user.id)
+        if scope is not None:
+            query = query.where(Message.tenant_id == scope["enterprise_id"])
+        message = db.scalar(query.with_for_update())
         if not message:
             raise HTTPException(404, "发件不存在")
         can_send(db, user, message.tenant_id)
@@ -582,7 +628,9 @@ def install(ns):
         return ns["Minio"](ns["MINIO_ENDPOINT"], access_key=ns["MINIO_ACCESS_KEY"], secret_key=ns["MINIO_SECRET_KEY"], secure=False)
 
     @app.post("/api/notifications/attachments")
-    def upload_attachment(upload: UploadFile = File(...), user=Depends(current_user), db=Depends(db_session)):
+    def upload_attachment(upload: UploadFile = File(...), user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        if scope is not None:
+            can_send(db, user, scope["enterprise_id"])
         if not platform_admin(user):
             if "Membership" not in ns or not db.scalar(select(ns["Membership"].id).where(ns["Membership"].user_id == user.id,
                    ns["Membership"].status == "active", ns["Membership"].role.in_(["super_admin", "enterprise_admin"]))):
@@ -607,7 +655,8 @@ def install(ns):
         if not client.bucket_exists(bucket):
             client.make_bucket(bucket)
         client.put_object(bucket, key, upload.file, length=size, content_type="application/octet-stream")
-        row = Attachment(owner_id=user.id, name=filename, object_name=key, size=size, content_type="application/octet-stream")
+        row = Attachment(owner_id=user.id, tenant_id=scope["enterprise_id"] if scope is not None else "",
+            name=filename, object_name=key, size=size, content_type="application/octet-stream")
         try:
             db.add(row)
             db.flush()
@@ -619,15 +668,20 @@ def install(ns):
         return {"id": row.id, "name": row.name, "size": row.size}
 
     @app.get("/api/notifications/attachments/{aid}/download")
-    def download_attachment(aid: str, user=Depends(current_user), db=Depends(db_session)):
+    def download_attachment(aid: str, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
         attachment = db.get(Attachment, aid)
         if not attachment:
             raise HTTPException(404, "附件不存在")
-        authorized = attachment.owner_id == user.id
+        authorized = attachment.owner_id == user.id and (scope is None or attachment.tenant_id == scope["enterprise_id"])
+        if not authorized and attachment.owner_id == user.id and scope is not None:
+            from .console_business_scope import message_predicate
+            authorized = db.scalar(select(Message.id).join(MessageAttachment, MessageAttachment.message_id == Message.id).where(
+                MessageAttachment.attachment_id == aid, Message.sender_id == user.id,
+                Message.tenant_id == scope["enterprise_id"], message_predicate(Message, ns, scope)).limit(1))
         if not authorized:
-            authorized = db.scalar(select(Receipt.id).join(Message, Message.id == Receipt.message_id).join(MessageAttachment,
+            authorized = db.execute(base_query(user.id, scope).join(MessageAttachment,
                     MessageAttachment.message_id == Message.id).where(MessageAttachment.attachment_id == aid,
-                    Receipt.user_id == user.id, Receipt.deleted_at.is_(None), Message.status == "sent", Message.expires_at > now()))
+                    Receipt.deleted_at.is_(None))).first()
         if not authorized:
             raise HTTPException(404, "附件不存在或没有访问权限")
         try:
@@ -652,7 +706,7 @@ def install(ns):
         return redis.Redis.from_url(os.getenv("REDIS_URL", "redis://market-redis:6379/0"), socket_connect_timeout=2, socket_timeout=3, decode_responses=True)
 
     @app.get("/api/notifications/stream")
-    async def stream(request: Request, user=Depends(current_user), db=Depends(db_session)):
+    async def stream(request: Request, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
         uid = user.id
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
         db.rollback()
@@ -693,7 +747,13 @@ def install(ns):
                                 account = session.get(ns["User"], uid)
                                 if not account or not getattr(account, "is_active", True) or getattr(account, "activation_status", "") == "deleted":
                                     return None
-                                return summary(session, uid)
+                                try:
+                                    current_scope = business_scope(request, account, session)
+                                    if scope is not None and (current_scope is None or current_scope["enterprise_id"] != scope["enterprise_id"]):
+                                        return None
+                                except HTTPException:
+                                    return None
+                                return summary(session, uid, current_scope)
                         state = await asyncio.to_thread(snapshot)
                         if state is None:
                             yield "event: auth_expired\ndata: {}\n\n"
@@ -922,28 +982,28 @@ def install(ns):
             return len(ids)
 
     @app.post("/api/notifications/batch-actions")
-    def batch(body: BatchAction, user=Depends(current_user), db=Depends(db_session)):
-        rows = [find(db, user.id, rid) for rid in set(body.ids)]
+    def batch(body: BatchAction, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        rows = [find(db, user.id, rid, scope) for rid in set(body.ids)]
         for receipt, message in rows:
             apply_action(db, user, receipt, message, body.action)
         db.commit()
-        return {"processed": len(rows), **summary(db, user.id)}
+        return {"processed": len(rows), **summary(db, user.id, scope)}
 
     @app.get("/api/notifications/{rid}")
-    def detail(rid: str, user=Depends(current_user), db=Depends(db_session)):
-        receipt, message = find(db, user.id, rid)
+    def detail(rid: str, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        receipt, message = find(db, user.id, rid, scope)
         return {**out(receipt, message, db), "attachments": attachment_list(db, message.id)}
 
     @app.delete("/api/notifications/{rid}")
-    def delete_message(rid: str, user=Depends(current_user), db=Depends(db_session)):
-        receipt, message = find(db, user.id, rid)
+    def delete_message(rid: str, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        receipt, message = find(db, user.id, rid, scope)
         apply_action(db, user, receipt, message, "delete")
         db.commit()
         return {**out(receipt, message, db), "attachments": attachment_list(db, message.id)}
 
     @app.post("/api/notifications/{rid}/{action}")
-    def action(rid: str, action: str, user=Depends(current_user), db=Depends(db_session)):
-        receipt, message = find(db, user.id, rid)
+    def action(rid: str, action: str, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
+        receipt, message = find(db, user.id, rid, scope)
         apply_action(db, user, receipt, message, action)
         db.commit()
         return {**out(receipt, message, db), "attachments": attachment_list(db, message.id)}

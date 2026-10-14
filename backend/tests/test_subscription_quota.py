@@ -276,6 +276,27 @@ class SubscriptionQuotaTests(unittest.TestCase):
         self.assertEqual(statuses.count(429), 33)
         self.assertEqual(self.usage(), [7, 7, 7])
 
+    def test_shared_scope_upgrade_downgrade_retains_all_usage(self):
+        self.period.update(daily_quota=3, monthly_quota=3)
+        self.publish()
+        self.publish(consumer='second-member')
+        self.assertEqual(self.gateway().request(), 200)
+        self.assertEqual(self.gateway().request(consumer='second-member'), 200)
+        upgraded = dict(self.period, route_key='upgraded', daily_quota=5, monthly_quota=5)
+        self.publish([upgraded])
+        self.publish([upgraded], consumer='second-member')
+        self.assertEqual(self.gateway().request(route='upgraded'), 200)
+        self.assertEqual(self.usage(), [3, 3, 3])
+        self.publish()
+        self.publish(consumer='second-member')
+        self.assertEqual(self.gateway().request(), 429)
+        self.assertEqual(self.gateway().request(consumer='second-member'), 429)
+        self.assertEqual(self.gateway().request(route='upgraded'), 403)
+        self.assertEqual(self.usage(), [3, 3, 3])
+        self.publish(consumer='other-enterprise', quota_scope='other-combo')
+        self.assertEqual(self.gateway().request(consumer='other-enterprise'), 200)
+        self.assertEqual(self.usage(scope='other-combo'), [1, 1, 1])
+
     def test_redis_failures_and_revocation(self):
         for failure in ["connect", "select", "metadata", "eval"]:
             with self.subTest(failure=failure):

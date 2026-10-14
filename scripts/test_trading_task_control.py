@@ -39,8 +39,10 @@ class TaskControlTests(unittest.TestCase):
     def test_in_progress_unfinished_dependency_and_100(self):
         self.rows[0]['status'] = 'review'
         self.rows[1].update(status='in_progress', progress=100)
-        reasons = {a['reason'] for a in inspect(self.rows, ['TRD-B'], self.now)['alerts']}
-        self.assertEqual(reasons, {'unfinished_dependency', 'unaccepted_progress_100'})
+        result = inspect(self.rows, ['TRD-B'], self.now)
+        reasons = {a['reason'] for a in result['alerts']}
+        self.assertEqual(reasons, {'unaccepted_progress_100'})
+        self.assertTrue(result['pending_acceptance_dependencies'])
 
     def test_cycle_rejected(self):
         plan = {'tasks': [{'code': 'TRD-A', 'title': 'A', 'acceptance': 'A', 'status': 'todo', 'progress': 0, 'dependencies': ['TRD-B']},

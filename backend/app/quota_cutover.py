@@ -49,6 +49,12 @@ end
 """
 
 SYNC_SCRIPT = SCAN_GUARD + """
+local data = cjson.decode(ARGV[1])
+local mode = redis.call('HGET', KEYS[1], 'mode')
+if mode and (mode ~= 'subscription'
+    or redis.call('HGET', KEYS[1], 'quota_scope') ~= data.quota_scope) then
+    return {-2}
+end
 for i = 2, #KEYS do
     local value = redis.call('GET', KEYS[i])
     if value and (not value:match('^%d+$') or (#value > 1 and value:sub(1,1) == '0')
@@ -57,7 +63,6 @@ for i = 2, #KEYS do
     end
     if value and tonumber(value) > 0 then return {0} end
 end
-local data = cjson.decode(ARGV[1])
 for _, pattern in ipairs(cjson.decode(ARGV[2])) do
     local cursor = '0'
     repeat
@@ -71,6 +76,16 @@ for _, pattern in ipairs(cjson.decode(ARGV[2])) do
 end
 redis.call('HLEN', KEYS[1])
 check_budget()
+for key, value in pairs(data) do redis.call('HSET', KEYS[1], key, tostring(value)) end
+return {1}
+"""
+
+REFRESH_SCRIPT = """
+local data = cjson.decode(ARGV[1])
+if redis.call('HGET', KEYS[1], 'mode') ~= 'subscription'
+    or redis.call('HGET', KEYS[1], 'quota_scope') ~= data.quota_scope then
+    return {0}
+end
 for key, value in pairs(data) do redis.call('HSET', KEYS[1], key, tostring(value)) end
 return {1}
 """
@@ -239,8 +254,19 @@ def sync_unused(client, key, data, route, consumer):
     pattern = f"market:apisix:quota:*:{glob_token(route)}:{glob_token(consumer)}"
     result = client.eval(SYNC_SCRIPT, len(keys), *keys, json.dumps(data),
                          json.dumps([pattern, pattern + ":*"]))
+    if result[0] == -2:
+        raise QuotaCutoverError('Credential subscription scope changed; refusing unused cutover')
     if result[0] != 1:
         raise QuotaCutoverError("历史网关用量需完成配额迁移后才可切换订阅计数，当前用量不会清零")
+
+
+def refresh_subscription(client, key, data):
+    """Refresh policy without moving an existing credential to fresh counters."""
+    if data.get('mode') != 'subscription' or not isinstance(data.get('quota_scope'), str) or not data['quota_scope']:
+        raise QuotaCutoverError('Invalid subscription quota scope')
+    result = client.eval(REFRESH_SCRIPT, 1, key, json.dumps(data))
+    if result[0] != 1:
+        raise QuotaCutoverError('Credential subscription scope changed; refusing policy refresh')
 
 
 def preview(client, scope, credentials, *, actor, request_id):

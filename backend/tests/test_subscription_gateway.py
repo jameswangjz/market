@@ -195,6 +195,25 @@ class SubscriptionGatewayTests(unittest.TestCase):
             client.delete.assert_not_called()
             client.set.assert_not_called()
 
+    def test_subscription_scope_conflict_returns_409_without_direct_write(self):
+        order = self.purchase()
+        self.deliver(order)
+        with self.m.SessionLocal() as db:
+            route = db.get(self.m.ApiGatewayRoute, 'api-route')
+            credential = self.m.ApiCredential(route_id=route.id, enterprise_id='buyer_tenant',
+                key_hash='own-key', status='active', apisix_consumer_name='own-consumer')
+            client = Mock()
+            client.hgetall.return_value = {'mode': 'subscription', 'quota_scope': 'other-combo'}
+            client.eval.return_value = [0]
+            with patch.object(self.m, 'apisix_enabled', return_value=True), \
+                    patch.object(self.m, 'apisix_policy_redis', return_value=client):
+                with self.assertRaises(self.m.HTTPException) as error:
+                    self.m.subscription_gateway['sync'](db, credential, route)
+            self.assertEqual(error.exception.status_code, 409)
+            client.hset.assert_not_called()
+            client.delete.assert_not_called()
+            client.set.assert_not_called()
+
     def test_session_exposes_verified_enterprise_and_active_memberships(self):
         with self.m.SessionLocal() as db:
             db.add(self.m.Membership(user_id="buyer", enterprise_id="other_tenant",

@@ -1,0 +1,17 @@
+{
+  "scope": "Isolated plain-backup restore repeatability; not full production rollback",
+  "status": "passed_reported_by_parent",
+  "evidence_source": "Parent/user reported actual VM helper execution in this session",
+  "image": "postgres:16-alpine",
+  "network": "none",
+  "restores": 2,
+  "backup_sha256": "a8d4f397178c77b444eb5edb1c9c3c1eaf4492b09ceee743ae451fbde88eb21b",
+  "restored_snapshot_sha256": "50755e2c99d91d255bafe6679123107085e5375750390f2a8449eb1a22c8797d",
+  "application_read_compatibility": "Hook implemented; actual old/new image execution pending parent",
+  "release_provenance": "Final frozen committed release preparation and remote verification pending parent",
+  "session_status": "Scoped implementation ready for parent integration; task completion not asserted",
+  "focused_unit_tests": {"passed": 18, "failures": 0, "container_execution": "mocked"},
+  "artifact_gate_tests": {"passed": 10, "parent_confirmed": true},
+  "task_status_changed": false,
+  "full_production_rollback": false
+}

@@ -89,7 +89,7 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         report = self.request('GET', '/api/settlement-reports', actor='finance')
         self.assertAlmostEqual(report['summary']['net_amount'], 80)
 
-    def test_proposal_second_person_confirmation_updates_amounts_lines_and_audit(self):
+    def test_proposal_counterparty_confirmation_updates_amounts_lines_and_audit(self):
         self.paid_order()
         bid = self.batch(idempotency_key='proposal-flow')['id']
         sid = self.batch_settlements(bid)[0]['id']
@@ -99,7 +99,9 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         self.request('POST', f'/api/settlement-proposals/{proposal["id"]}/decision', actor='finance',
                      expected=409, json={'decision': 'approve'})
         self.assertEqual(self.counts(), before)
-        decided = self.request('POST', f'/api/settlement-proposals/{proposal["id"]}/decision', actor='ops',
+        self.request('POST', f'/api/settlement-proposals/{proposal["id"]}/decision', actor='ops',
+                     expected=409, json={'decision': 'approve'})
+        decided = self.request('POST', f'/api/settlement-proposals/{proposal["id"]}/decision', actor='provider',
                                json={'decision': 'approve', 'comment': 'Independent verification'})
         self.assertEqual(decided['status'], 'accepted')
         settlement = self.rows(self.m.Settlement, id=sid)[0]
@@ -246,17 +248,20 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         sid = self.batch_settlements(bid)[0]['id']
         before = self.counts()
         for actor in ('buyer', 'provider', 'outsider'):
-            for path in ('/api/settlements', f'/api/settlements/{sid}/detail', '/api/settlement-batches',
+            for path in ('/api/settlements', '/api/settlement-batches',
                          f'/api/settlement-batches/{bid}/lines', '/api/settlement-reports',
                          '/api/settlement-reports/export', '/api/audit-logs/export'):
                 with self.subTest(actor=actor, path=path):
                     self.request('GET', path, actor=actor, expected=403)
+            self.request('GET', f'/api/settlements/{sid}/detail', actor=actor,
+                         expected=200 if actor == 'provider' else 404)
             records = self.request('GET', '/api/audit-logs', actor=actor)['items']
             if actor == 'outsider':
                 self.assertEqual(records, [])
             for row in records:
                 self.assertEqual(set(row), {'id', 'action', 'target_type', 'target_id', 'result', 'category', 'order_id', 'order_no', 'created_at'})
-            self.request('POST', f'/api/settlements/{sid}/lock', actor=actor, expected=403)
+            if actor != 'provider':
+                self.request('POST', f'/api/settlements/{sid}/lock', actor=actor, expected=404)
             self.request('POST', f'/api/settlement-batches/{bid}/pay', actor=actor, expected=403, json={})
         self.request('GET', '/api/settlement-reports', actor='security')
         self.request('POST', f'/api/settlements/{sid}/lock', actor='security', expected=403)

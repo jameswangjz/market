@@ -399,6 +399,47 @@ return clock[1] * 1000 + math.floor(clock[2] / 1000) + ttl
         self.assertEqual(self.client.get(self.old()), "1")
         self.assertIsNone(self.client.hget("market:apisix:credential:consumer", "mode"))
 
+    def test_subscription_refresh_preserves_scope_and_usage(self):
+        key = 'market:apisix:credential:consumer'
+        data = self.credentials[0][2]
+        self.client.hset(key, mapping=data)
+        counters = runtime.keys(self.scope, self.now, self.period['period_key'])
+        for counter in counters:
+            self.client.set(counter, 7)
+        changed = dict(data, subscription_periods=json.dumps([
+            dict(self.period, monthly_quota=3, end_at=self.now + 7200)]))
+        cutover.refresh_subscription(self.client, key, changed)
+        self.assertEqual(self.client.mget(counters), ['7', '7', '7'])
+        self.assertEqual(runtime.Gateway(self.client, self.now).request(), 429)
+        self.assert_rejected_without_writes(lambda: cutover.refresh_subscription(
+            self.client, key, dict(changed, quota_scope='fresh-combo')))
+
+    def test_subscription_refresh_scope_race_rejects_without_writes(self):
+        key = 'market:apisix:credential:consumer'
+        data = self.credentials[0][2]
+        snapshots = []
+
+        def reassign():
+            self.client.hset(key, mapping=dict(data, quota_scope='other-combo'))
+            snapshots.append(self.snapshot())
+
+        for operation in [cutover.refresh_subscription,
+                          lambda client, key, data: cutover.sync_unused(
+                              client, key, data, 'route', 'consumer')]:
+            with self.subTest(operation=operation):
+                self.client.hset(key, mapping=data)
+                with self.assertRaises((cutover.QuotaCutoverError, runtime.redis.RedisError)):
+                    operation(EvalIntercept(self.client, reassign), key, data)
+                self.assertEqual(self.snapshot(), snapshots[-1])
+
+    def test_subscription_refresh_missing_or_legacy_metadata_rejects(self):
+        key = 'market:apisix:credential:consumer'
+        self.assert_rejected_without_writes(lambda: cutover.refresh_subscription(
+            self.client, key, self.credentials[0][2]))
+        self.client.delete(key)
+        self.assert_rejected_without_writes(lambda: cutover.refresh_subscription(
+            self.client, key, self.credentials[0][2]))
+
     def test_readonly_preflight_exact_live_mapping_and_conservative_fallback(self):
         self.client.set(self.old(), 17)
         self.client.set(self.old('minute'), 3)

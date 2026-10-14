@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import select
-from .quota_cutover import sync_unused, QuotaCutoverError
+from .quota_cutover import sync_unused, refresh_subscription, QuotaCutoverError
 
 
 def install(ns):
@@ -55,7 +55,10 @@ def install(ns):
             except QuotaCutoverError as exc:
                 raise HTTPException(409, str(exc)) from exc
             return True
-        client.hset(key, mapping=data)
+        try:
+            refresh_subscription(client, key, data)
+        except QuotaCutoverError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return True
 
     def refresh(db, enterprise_id, route):

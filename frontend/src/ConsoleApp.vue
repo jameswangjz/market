@@ -12,6 +12,8 @@ import { canManageProviderSaas, canViewProductIntegration, createReadinessContro
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import { useNotificationStream } from "./useNotificationStream.js";
+import { notificationScope, notificationScopeKey, notificationRequest } from "./notificationScope.js";
+import { settlementSide, settlementContextKey, settlementDetailRequest, canProposeSettlement, canDecideSettlement, canLockSettlement, settlementAdjustmentItem } from "./settlementParticipation.js";
 import "./gateway-doc.css";
 import { canAccessConsoleView, canManageProductRegistration } from "./consolePermissions.js";
 import { consoleRoleLabel } from "./consoleRoleLabel.js";
@@ -45,10 +47,12 @@ import {
   Database,
   Download,
   ExternalLink,
+  Eye,
   FileCheck2,
   FileText,
   LayoutDashboard,
   LogOut,
+  LockKeyhole,
   Menu,
   Network,
   PackageCheck,
@@ -73,6 +77,7 @@ const token = ref(localStorage.getItem("market_token") || "");
 const user = ref(null);
 const enterprise = ref(null);
 const businessView = ref("provider");
+const messageScope = computed(() => notificationScope(user.value, enterprise.value, businessView.value));
 const providerReview = ref(null);
 const providerReviewForm = ref({ amount: "", cost: "", reason: "" });
 const providerReviewLoading = ref(false);
@@ -86,6 +91,7 @@ const buyerEnterprises = ref([]);
 const buyerEnterprisesLoading = ref(false);
 const buyerEnterprisesError = ref("");
 api.interceptors.request.use((config) => {
+  if (config.url?.startsWith('/notifications')) return notificationRequest(config, messageScope.value);
   if (enterprise.value?.id) {
     config.headers = config.headers || {};
     config.headers["X-Enterprise-Id"] = enterprise.value.id;
@@ -444,6 +450,18 @@ const settlementFilterOrders = computed(() => {
   return settlementFilterItems.value.filter((item) => item.order_no && !seen.has(item.order_no) && seen.add(item.order_no));
 });
 const settlementDetail = ref(null);
+let settlementDetailRequestVersion = 0;
+let settlementScopeVersion = 0;
+const settlementSubmitting = ref(false);
+const settlementContext = () => `${settlementScopeVersion}:${settlementContextKey(user.value, enterprise.value, businessView.value, token.value)}`;
+const canProposeCurrentSettlement = item => canProposeSettlement(item, user.value, enterprise.value, businessView.value);
+const canDecideCurrentSettlement = proposal => canDecideSettlement(proposal, settlementDetail.value, user.value, enterprise.value, businessView.value);
+const canLockCurrentSettlement = item => canLockSettlement(item, user.value, enterprise.value, businessView.value);
+watch(() => settlementContextKey(user.value, enterprise.value, businessView.value, token.value), () => {
+  ++settlementScopeVersion;
+  ++settlementDetailRequestVersion;
+  settlementDetail.value = null; settlementAdjusting.value = null; settlementSubmitting.value = false;
+}, { flush: 'sync' });
 const settlementRules = ref([]);
 const settlementBatches = ref([]);
 const settlementTab = ref("settlements");
@@ -483,7 +501,15 @@ const notificationPreview = ref(false);
 const notificationFocus = ref("");
 const systemSettingsTab = ref("notifications");
 const applicationAddressPolicy = ref({ allow_http: false });
-useNotificationStream(loadNotificationSummary, { token });
+let notificationSummaryVersion = 0;
+watch(() => [token.value, notificationScopeKey(messageScope.value)], () => {
+  ++notificationSummaryVersion;
+  notificationSummary.value = { unread: 0, unacknowledged_urgent: 0, recent: [] };
+  notificationPreview.value = false;
+  notificationFocus.value = '';
+  if (user.value && token.value) loadNotificationSummary();
+}, { flush: 'sync' });
+useNotificationStream(loadNotificationSummary, { token, scope: messageScope });
 const enterpriseManageModal = ref(null);
 const enterpriseManageReadOnly = ref(false);
 const enterpriseManageTab = ref("details");
@@ -896,7 +922,12 @@ async function loadApplicationAddressPolicy(sessionToken = token.value) {
 }
 async function loadNotificationSummary() {
   if (!token.value) return;
-  try { const { data } = await api.get('/notifications/summary'); notificationSummary.value = data; }
+  const version = ++notificationSummaryVersion;
+  const sessionToken = token.value;
+  const scopeKey = notificationScopeKey(messageScope.value);
+  try { const { data } = await api.get('/notifications/summary', { params: { ...messageScope.value } });
+    if (version === notificationSummaryVersion && sessionToken === token.value && scopeKey === notificationScopeKey(messageScope.value)) notificationSummary.value = data;
+  }
   catch { /* Keep the last count during temporary network failures. */ }
 }
 async function loadBuyerEnterprises() {
@@ -2341,17 +2372,26 @@ function updateUiScale() {
   document.documentElement.style.setProperty("--ui-scale", String(Math.max(0.86, Math.min(1, scale))));
 }
 async function openSettlementDetail(item) {
+  if (!user.value?.platform_role && !settlementSide(user.value, enterprise.value, businessView.value)) return;
+  const version = ++settlementDetailRequestVersion;
+  const context = settlementContext();
+  settlementDetail.value = null;
   try {
-    const { data } = await api.get(`/settlements/${item.id}/detail`);
+    const request = settlementDetailRequest(item, user.value, enterprise.value, businessView.value);
+    const { data } = await api.get(request.url, { params: request.params });
+    if (context !== settlementContext() || version !== settlementDetailRequestVersion) return;
     settlementDetail.value = data;
   } catch (error) {
-    notify(error.response?.data?.detail || "清算单详情加载失败");
+    if (context === settlementContext() && version === settlementDetailRequestVersion) notify(error.response?.data?.detail || "清算单详情加载失败");
   }
 }
 function closeSettlementDetail() {
+  ++settlementDetailRequestVersion;
   settlementDetail.value = null;
 }
 function openSettlementAdjustment(item) {
+  if (!canProposeCurrentSettlement(item) || settlementSubmitting.value) return;
+  item = settlementAdjustmentItem(item);
   settlementAdjusting.value = item;
   settlementAdjustForm.value = { gross_amount: item.gross_amount, cost_amount: item.cost_amount, profit_amount: item.profit_amount, platform_rate: item.platform_rate || 0, provider_rate: item.provider_rate || 0, service_rate: item.service_rate || 0, expert_rate: item.expert_rate || 0, channel_rate: item.channel_rate || 0, reason: "" };
 }
@@ -2362,41 +2402,67 @@ function adjustmentShare(rate) {
   return ((Number(settlementAdjustForm.value.profit_amount || 0) * Number(rate || 0)) / 100).toFixed(2);
 }
 async function adjustSettlement() {
+  if (settlementSubmitting.value || !canProposeCurrentSettlement(settlementAdjusting.value)) return;
+  const context = settlementContext();
+  const item = settlementAdjusting.value;
+  const params = businessViewParams(user.value, enterprise.value, businessView.value);
   const form = settlementAdjustForm.value;
   if (!form.reason || form.reason.trim().length < 2) return notify("清算调整必须填写原因");
   const totalRate = [form.platform_rate, form.provider_rate, form.service_rate, form.expert_rate, form.channel_rate].reduce((sum, value) => sum + Number(value || 0), 0);
   if (Math.abs(totalRate - 100) > 0.01) return notify("五方分成比例合计必须为100%");
   if (Math.abs(Number(form.gross_amount) - Number(form.cost_amount) - Number(form.profit_amount)) > 0.01) return notify("订单利润必须等于订单金额减订单成本");
+  settlementSubmitting.value = true;
   try {
-    await api.post(`/settlements/${settlementAdjusting.value.id}/proposals`, { ...form, gross_amount: Number(form.gross_amount), cost_amount: Number(form.cost_amount), profit_amount: Number(form.profit_amount), platform_rate: Number(form.platform_rate), provider_rate: Number(form.provider_rate), service_rate: Number(form.service_rate), expert_rate: Number(form.expert_rate), channel_rate: Number(form.channel_rate) });
+    await api.post(`/settlements/${encodeURIComponent(item.id)}/proposals`, { ...form, gross_amount: Number(form.gross_amount), cost_amount: Number(form.cost_amount), profit_amount: Number(form.profit_amount), platform_rate: Number(form.platform_rate), provider_rate: Number(form.provider_rate), service_rate: Number(form.service_rate), expert_rate: Number(form.expert_rate), channel_rate: Number(form.channel_rate) }, { params });
+    if (context !== settlementContext()) return;
     notify("调整提案已提交，等待其他清算参与方确认");
     closeSettlementAdjustment();
+    if (settlementDetail.value?.id === item.id) await openSettlementDetail(item);
+    if (context !== settlementContext()) return;
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算调整失败");
-  }
+    if (context === settlementContext()) notify(error.response?.data?.detail || "清算调整失败");
+  } finally { if (context === settlementContext()) settlementSubmitting.value = false; }
 }
 async function lockSettlement(item) {
+  if (settlementSubmitting.value || !canLockCurrentSettlement(item)) return;
+  const context = settlementContext();
+  const detailVersion = settlementDetailRequestVersion;
+  const fromDetail = settlementDetail.value === item;
+  const params = businessViewParams(user.value, enterprise.value, businessView.value);
   if (!await confirmDialog("锁定后不能直接调整，确认锁定该清算单吗？")) return;
+  if (context !== settlementContext() || settlementSubmitting.value || !canLockCurrentSettlement(item) ||
+      (fromDetail && (detailVersion !== settlementDetailRequestVersion || settlementDetail.value !== item))) return;
+  settlementSubmitting.value = true;
   try {
-    await api.post(`/settlements/${item.id}/lock`);
+    await api.post(`/settlements/${encodeURIComponent(item.id)}/lock`, undefined, { params });
+    if (context !== settlementContext()) return;
     notify("清算单已锁定");
+    if (settlementDetail.value?.id === item.id) await openSettlementDetail(item);
+    if (context !== settlementContext()) return;
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算锁定失败");
-  }
+    if (context === settlementContext()) notify(error.response?.data?.detail || "清算锁定失败");
+  } finally { if (context === settlementContext()) settlementSubmitting.value = false; }
 }
 async function decideSettlementProposal(proposal, decision) {
+  if (settlementSubmitting.value || !canDecideCurrentSettlement(proposal)) return;
+  const context = settlementContext();
+  const item = settlementDetail.value;
+  const params = businessViewParams(user.value, enterprise.value, businessView.value);
   const comment = await promptDialog(decision === "approve" ? "请输入提案确认意见" : "请输入提案拒绝原因", "")
-  if (comment === null) return;
+  if (comment === null || context !== settlementContext() || settlementDetail.value !== item || settlementSubmitting.value || !canDecideCurrentSettlement(proposal)) return;
+  settlementSubmitting.value = true;
   try {
-    await api.post(`/settlement-proposals/${proposal.id}/decision`, { decision, comment });
+    await api.post(`/settlement-proposals/${encodeURIComponent(proposal.id)}/decision`, { decision, comment }, { params });
+    if (context !== settlementContext()) return;
     notify(decision === "approve" ? "调整提案已确认" : "调整提案已拒绝");
-    if (settlementDetail.value) await openSettlementDetail({ id: settlementDetail.value.id });
+    if (settlementDetail.value?.id === item.id) await openSettlementDetail(item);
+    if (context !== settlementContext()) return;
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "调整提案处理失败");
-  }
+    if (context === settlementContext()) notify(error.response?.data?.detail || "调整提案处理失败");
+  } finally { if (context === settlementContext()) settlementSubmitting.value = false; }
 }
 async function createSettlementRule() {
   if (!settlementRuleForm.value.name) return notify("请填写清算规则名称");
@@ -3032,7 +3098,7 @@ onUnmounted(() => {
           <button :class="{ active: systemSettingsTab === 'application-address' }" type="button" @click="systemSettingsTab = 'application-address'">应用接入</button>
           <button type="button" disabled>安全与审计</button>
         </div>
-        <template v-if="activeView === 'messages'"><MessageCenter :initial-id="notificationFocus" @changed="loadNotificationSummary" @navigate="navigateNotification" /></template>
+        <template v-if="activeView === 'messages'"><MessageCenter :initial-id="notificationFocus" :enterprise-id="messageScope.enterprise_id || ''" :business-view="messageScope.business_view || ''" :allowed-views="visibleNav.map(item => item.key)" @changed="loadNotificationSummary" @navigate="navigateNotification" /></template>
         <ApplicationsCenter v-else-if="activeView === 'applications' && canAccessConsoleView(user, enterprise, 'applications')" :user="user" :enterprise="enterprise" :token="token" :api="api" />
         <template v-else-if="activeView === 'overview'"
           ><div class="page-heading">
@@ -3750,7 +3816,7 @@ onUnmounted(() => {
         >
         <template v-else-if="activeView === 'settlements' && !user?.platform_role">
           <div class="page-heading"><h1>企业清算</h1><button class="secondary-btn" @click="loadViewData('settlements')"><RefreshCw :size="16" />刷新</button></div>
-          <div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>产品</th><th>提供方分账</th><th>状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementItems" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_no }}</td><td>{{ item.product_name }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ settlementStatusLabels[item.status] || item.status }}</td><td>{{ fmtDate(item.created_at) }}</td></tr><tr v-if="!settlementItems.length"><td colspan="6"><div class="empty-state">暂无企业清算数据</div></td></tr></tbody></table></div>
+          <div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>产品</th><th>提供方分账</th><th>状态</th><th>时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementItems" :key="item.id"><td><button class="text-btn task-code" @click="openSettlementDetail(item)">{{ item.settlement_no || item.id }}</button></td><td>{{ item.order_no }}</td><td>{{ item.product_name }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ settlementStatusLabels[item.status] || item.status }}</td><td>{{ fmtDate(item.created_at) }}</td><td><button class="text-btn" @click="openSettlementDetail(item)"><Eye :size="14" />详情</button></td></tr><tr v-if="!settlementItems.length"><td colspan="7"><div class="empty-state">暂无企业清算数据</div></td></tr></tbody></table></div>
         </template>
         <template v-else-if="activeView === 'settlements'"
           ><div class="page-heading">
@@ -3860,18 +3926,20 @@ onUnmounted(() => {
                     <td>
                       <div class="table-actions">
                         <button
-                          v-if="!['locked','paid','superseded'].includes(item.status)"
+                          v-if="canProposeCurrentSettlement(item)"
                           class="text-btn"
+                          :disabled="settlementSubmitting"
                           @click="openSettlementAdjustment(item)"
                         >
                           调整</button
                         ><button
-                          v-if="!['locked','paid','superseded'].includes(item.status)"
+                          v-if="canLockCurrentSettlement(item)"
                           class="text-btn danger-text"
+                          :disabled="settlementSubmitting"
                           @click="lockSettlement(item)"
                         >
                           锁定</button
-                        ><span v-else class="muted">已锁定</span>
+                        ><span v-if="['locked','paid','superseded'].includes(item.status)" class="muted">已锁定</span>
                       </div>
                     </td>
                   </tr>
@@ -5525,12 +5593,12 @@ onUnmounted(() => {
           <div class="settlement-adjust-total">比例合计：{{ (Number(settlementAdjustForm.platform_rate || 0) + Number(settlementAdjustForm.provider_rate || 0) + Number(settlementAdjustForm.service_rate || 0) + Number(settlementAdjustForm.expert_rate || 0) + Number(settlementAdjustForm.channel_rate || 0)).toFixed(2) }}%</div>
         </div>
         <div class="drawer-section"><label>调整原因<textarea v-model="settlementAdjustForm.reason" rows="3" required placeholder="请填写调整依据和业务原因"></textarea></label></div>
-        <div class="modal-actions"><button type="button" class="secondary-btn" @click="closeSettlementAdjustment">取消</button><button type="submit" class="primary-btn">保存调整 <CheckCircle2 :size="15" /></button></div>
+        <div class="modal-actions"><button type="button" class="secondary-btn" :disabled="settlementSubmitting" @click="closeSettlementAdjustment">取消</button><button type="submit" class="primary-btn" :disabled="settlementSubmitting || !canProposeCurrentSettlement(settlementAdjusting)">提交调整提案 <CheckCircle2 :size="15" /></button></div>
       </form>
     </div>
-    <div v-if="settlementDetail" class="modal-scrim" @click.self="closeSettlementDetail">
+    <div v-if="settlementDetail && !settlementAdjusting" class="modal-scrim" @click.self="closeSettlementDetail">
       <aside class="modal-card settlement-detail-modal" @click.stop>
-        <div class="drawer-head"><div><span class="eyebrow">SETTLEMENT DETAIL</span><h2>{{ settlementDetail.settlement_no }}</h2><p class="muted">清算单完整关联信息和状态生命周期</p></div><button class="icon-btn" @click="closeSettlementDetail"><X :size="19" /></button></div>
+        <div class="drawer-head"><div><span class="eyebrow">SETTLEMENT DETAIL</span><h2>{{ settlementDetail.settlement_no }}</h2><p class="muted">清算单完整关联信息和状态生命周期</p></div><div class="table-actions"><button v-if="canProposeCurrentSettlement(settlementDetail)" class="secondary-btn" :disabled="settlementSubmitting" @click="openSettlementAdjustment(settlementDetail)"><FileText :size="15" />调整提案</button><button v-if="canLockCurrentSettlement(settlementDetail)" class="secondary-btn" :disabled="settlementSubmitting" @click="lockSettlement(settlementDetail)"><LockKeyhole :size="15" />锁定清算单</button><button class="icon-btn" @click="closeSettlementDetail"><X :size="19" /></button></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算批次与订单</div><div class="state-grid settlement-context-grid"><div><small>清算批次</small><strong>{{ settlementDetail.batch?.batch_no || '-' }}</strong></div><div><small>批次 ID</small><strong>{{ settlementDetail.batch?.id || '-' }}</strong></div><div><small>批次状态</small><strong>{{ settlementDetail.batch?.status || '-' }}</strong></div><div><small>清算单 ID</small><strong>{{ settlementDetail.id }}</strong></div><div><small>订单号</small><strong>{{ settlementDetail.order?.order_no || '-' }}</strong></div><div><small>订单 ID</small><strong>{{ settlementDetail.order?.id || '-' }}</strong></div><div><small>购买方</small><strong>{{ settlementDetail.order?.buyer_name || '-' }}</strong></div><div><small>当前状态</small><strong>{{ settlementStatusLabel(settlementDetail.status) }}</strong></div></div></div>
         <div v-if="settlementDetail.version_change" class="settlement-version-change">
           <div class="settlement-version-change-title">版本变更关联</div>
@@ -5544,7 +5612,7 @@ onUnmounted(() => {
         <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>
-        <div v-if="settlementDetail.proposals?.length" class="drawer-section"><div class="drawer-section-title">调整提案</div><div class="settlement-proposal-list"><div v-for="proposal in settlementDetail.proposals" :key="proposal.id" class="settlement-proposal-item"><div><strong>{{ settlementProposalStatusLabel(proposal.status) }}</strong><span>{{ proposal.proposed_by }} · {{ fmtDate(proposal.created_at) }}</span></div><p>{{ proposal.reason }}</p><div v-if="proposal.status === 'pending'" class="table-actions"><button class="text-btn" @click="decideSettlementProposal(proposal, 'approve')">确认提案</button><button class="text-btn danger-text" @click="decideSettlementProposal(proposal, 'reject')">拒绝提案</button></div></div></div></div>
+        <div v-if="settlementDetail.proposals?.length" class="drawer-section"><div class="drawer-section-title">调整提案</div><div class="settlement-proposal-list"><div v-for="proposal in settlementDetail.proposals" :key="proposal.id" class="settlement-proposal-item"><div><strong>{{ settlementProposalStatusLabel(proposal.status) }}</strong><span>{{ proposal.proposed_by || (proposal.proposer_side === 'provider' ? '提供方' : '平台') }} · {{ fmtDate(proposal.created_at) }}</span></div><p>{{ proposal.reason }}</p><div v-if="canDecideCurrentSettlement(proposal)" class="table-actions"><button class="text-btn" :disabled="settlementSubmitting" @click="decideSettlementProposal(proposal, 'approve')"><CheckCircle2 :size="14" />确认提案</button><button class="text-btn danger-text" :disabled="settlementSubmitting" @click="decideSettlementProposal(proposal, 'reject')"><X :size="14" />拒绝提案</button></div></div></div></div>
       </aside>
     </div>
     <div v-if="toast" class="toast"><CheckCircle2 :size="17" />{{ toast }}</div>

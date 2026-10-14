@@ -1,4 +1,5 @@
 import { ref, unref, watch, onMounted, onUnmounted } from 'vue';
+import { notificationScopeKey, notificationUrl } from './notificationScope.js';
 
 // Preserve partial lines and events, including a CRLF split between chunks.
 export function createSSEParser(onEvent) {
@@ -30,13 +31,14 @@ export function createSSEParser(onEvent) {
   };
 }
 
-export function useNotificationStream(onRefresh, { token: tokenSource, pollMs: pollSource, onAuthExpired = () => {} } = {}) {
+export function useNotificationStream(onRefresh, { token: tokenSource, scope: scopeSource, pollMs: pollSource, onAuthExpired = () => {} } = {}) {
   const connected = ref(false);
   const pollMs = ref(30000);
   let stopped = true, controller, configController, retryTimer, pollTimer, refreshTimer, failures = 0, lastEventId, expiredToken, stopWatch, stopPollWatch;
   let generation = 0;
   let intervalFromStream = false;
   const getToken = () => tokenSource === undefined ? localStorage.getItem('market_token') || '' : (typeof tokenSource === 'function' ? tokenSource() : unref(tokenSource)) || '';
+  const getScope = () => (typeof scopeSource === 'function' ? scopeSource() : unref(scopeSource)) || {};
   const active = version => !stopped && generation === version;
   const refresh = version => {
     if (!active(version) || refreshTimer || !getToken()) return;
@@ -58,7 +60,7 @@ export function useNotificationStream(onRefresh, { token: tokenSource, pollMs: p
     const requestController = new AbortController();
     configController = requestController;
     try {
-      const response = await fetch('/api/notifications/sender-context', { headers: { Authorization: `Bearer ${getToken()}` }, signal: requestController.signal, cache: 'no-store' });
+      const response = await fetch(notificationUrl('/api/notifications/sender-context', getScope()), { headers: { Authorization: `Bearer ${getToken()}` }, signal: requestController.signal, cache: 'no-store' });
       if (!response.ok) return;
       const result = await response.json();
       if (active(version) && !expiredToken && !intervalFromStream && result.settings?.poll_interval_seconds) setPollInterval(Number(result.settings.poll_interval_seconds) * 1000);
@@ -93,7 +95,7 @@ export function useNotificationStream(onRefresh, { token: tokenSource, pollMs: p
     try {
       const headers = { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' };
       if (lastEventId) headers['Last-Event-ID'] = lastEventId;
-      const response = await fetch('/api/notifications/stream', { headers, signal: requestController.signal, cache: 'no-store' });
+      const response = await fetch(notificationUrl('/api/notifications/stream', getScope()), { headers, signal: requestController.signal, cache: 'no-store' });
       if (!active(version)) { await response.body?.cancel(); return; }
       if (response.status === 401 || response.status === 403) {
         expire(token);
@@ -141,7 +143,7 @@ export function useNotificationStream(onRefresh, { token: tokenSource, pollMs: p
   onMounted(() => {
     window.addEventListener('storage', storageChanged);
     if (pollSource !== undefined) stopPollWatch = watch(() => typeof pollSource === 'function' ? pollSource() : unref(pollSource), setPollInterval, { immediate: true, flush: 'sync' });
-    if (tokenSource !== undefined) stopWatch = watch(getToken, restart, { immediate: true, flush: 'sync' });
+    if (tokenSource !== undefined || scopeSource !== undefined) stopWatch = watch(() => [getToken(), notificationScopeKey(getScope())], restart, { immediate: true, flush: 'sync' });
     else restart();
   });
   onUnmounted(() => {

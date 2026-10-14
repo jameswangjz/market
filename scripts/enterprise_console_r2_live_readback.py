@@ -68,6 +68,14 @@ def main():
         assert fixture['productId'] in {row['id'] for row in own['items']}
         get('/api/products', 'provider', 403, {'enterprise_id': fixture['buyerEnterpriseId']})
         get('/api/enterprise-settlements', 'provider', params={'enterprise_id': fixture['providerEnterpriseId']})
+        for actor, enterprise_key, view in (
+                ('buyer', 'buyerEnterpriseId', 'buyer'),
+                ('provider', 'providerEnterpriseId', 'provider')):
+            params = {'enterprise_id': fixture[enterprise_key], 'business_view': view}
+            inbox = get('/api/notifications', actor, params=params)
+            counts = get('/api/notifications/summary', actor, params=params)
+            assert isinstance(inbox['items'], list)
+            assert isinstance(counts['unread'], int) and counts['unread'] >= 0
     args.output.write_text(json.dumps({'status': 'passed', 'checks': checks,
         'scope': 'deployed HTTP readback; no resource mutations or synchronization performed',
         'saas_tree_counts': {key: len(tree[key]) for key in

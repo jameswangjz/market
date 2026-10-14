@@ -17,7 +17,16 @@ logger = logging.getLogger(__name__)
 LEASE_SECONDS = 60
 
 
-def process_once(SessionLocal=None, *, worker_id=None, now=None):
+def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=None,
+                 excluded_scopes=()):
+    from .fixture_faults import FixtureScope
+    if fixture_scope is not None and not isinstance(fixture_scope, FixtureScope):
+        raise ValueError('explicit fixture scope required')
+    if not isinstance(excluded_scopes, tuple) or any(
+            not isinstance(scope, FixtureScope) for scope in excluded_scopes):
+        raise ValueError('explicit exclusion scopes required')
+    if fixture_scope is not None and excluded_scopes:
+        raise ValueError('selection and exclusion cannot be combined')
     main = importlib.import_module('app.main')
     SessionLocal = SessionLocal or main.SessionLocal
     saga = main.version_change_saga
@@ -26,8 +35,14 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None):
     Request = hooks['VersionChangeRequest']
     instant = now() if now else ns['now']()
     owner = worker_id or f'{os.getpid()}:{threading.get_ident()}'
+    filters = []
+    if fixture_scope is not None:
+        filters.append(fixture_scope.predicate(ns, Request))
+    if excluded_scopes:
+        filters.append(Request.id.not_in(tuple(scope.change_id for scope in excluded_scopes)))
     with SessionLocal() as db:
         row = db.scalar(select(Request).where(
+            *filters,
             Request.status.in_(('pending_payment','resource_pending','compensating','refund_pending','retrying')),
             or_(Request.next_retry_at.is_(None), Request.next_retry_at <= instant),
             or_(Request.lease_expires_at.is_(None), Request.lease_expires_at <= instant)
@@ -43,7 +58,7 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None):
     # The intent/lease is durable before crossing the resource boundary.
     with SessionLocal() as db:
         row = db.scalar(select(Request).where(Request.id == change_id,
-            Request.lease_owner == owner).with_for_update())
+            Request.lease_owner == owner, *filters).with_for_update())
         if row is None:
             db.rollback(); return False
         try:
@@ -237,6 +252,20 @@ def read_config(environ):
     return interval, batch
 
 
+def read_fixture_config(environ):
+    from .fixture_faults import FixtureScope
+    selection = environ.get('VERSION_CHANGE_FIXTURE_SCOPE_FILE')
+    exclusions = environ.get('VERSION_CHANGE_EXCLUDED_SCOPE_FILES')
+    for key in ('VERSION_CHANGE_FIXTURE_SCOPE_FILE', 'VERSION_CHANGE_EXCLUDED_SCOPE_FILES'):
+        if key in environ and not environ[key]:
+            raise ValueError('configured fixture scope cannot be empty')
+    if selection is not None and exclusions is not None:
+        raise ValueError('selection and exclusion cannot be combined')
+    scope = FixtureScope.load(selection) if selection is not None else None
+    excluded = tuple(FixtureScope.load(path) for path in exclusions.split(',')) if exclusions is not None else ()
+    return scope, excluded
+
+
 def run_worker(process, stopped, *, interval=2, batch=10, heartbeat=HEARTBEAT,
                monotonic=time.monotonic):
     interval, batch = read_config({'VERSION_CHANGE_WORKER_INTERVAL': str(interval),
@@ -261,10 +290,14 @@ def main():
     stopped, handlers = threading.Event(), {}
     try:
         interval, batch = read_config(os.environ)
+        scope, excluded = read_fixture_config(os.environ)
         os.environ['MESSAGE_CENTER_DISABLE_BACKGROUND'] = 'true'
         for sig in (signal.SIGTERM, signal.SIGINT):
             handlers[sig] = signal.signal(sig, lambda *_: stopped.set())
-        run_worker(process_once, stopped, interval=interval, batch=batch)
+        heartbeat = (Path('/tmp') / f'{scope.run_id}-{scope.change_id}-heartbeat'
+                     if scope is not None else HEARTBEAT)
+        run_worker(lambda: process_once(fixture_scope=scope, excluded_scopes=excluded),
+                   stopped, interval=interval, batch=batch, heartbeat=heartbeat)
     except Exception as exc:
         logger.error('Version change worker failed: %s', type(exc).__name__)
         return 1

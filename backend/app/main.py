@@ -41,6 +41,7 @@ from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, 
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from .enterprise_console_scope import resolve_enterprise_membership, require_enterprise_super_admin, require_enterprise_editor
 from .console_business_scope import resolve_business_scope, order_predicate, audit_predicate
+from .enterprise_settlement_scope import settlement_access, proposal_identity, require_counterparty, proposal_amounts, workflow_actions
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./market.db")
@@ -2101,6 +2102,7 @@ def ensure_review_and_file_schema():
             "before_json": "TEXT DEFAULT '{}'",
             "after_json": "TEXT DEFAULT '{}'",
         },
+        "notification_attachments": {"tenant_id": "VARCHAR(36) DEFAULT ''"},
         "orders": {
             "buyer_user_id": "VARCHAR(36)",
             "product_version_id": "VARCHAR(36)",
@@ -5792,7 +5794,7 @@ def process_delivery_task(task_id: str, body: DeliveryProcessBody, user: User = 
     return {"task": {"id": task.id, "status": task.status, "retry_count": task.retry_count, "max_retries": task.max_retries, "last_error": task.last_error, "next_retry_at": task.next_retry_at, "sla_due_at": task.sla_due_at}, "order": order_out(order)}
 
 
-def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[DeliveryTask, Order]:
+def delivery_task_access(task_id: str, user: User, db: Session, request: Request = None) -> tuple[DeliveryTask, Order]:
     task = db.get(DeliveryTask, task_id)
     if not task:
         raise HTTPException(404, "交付任务不存在")
@@ -5801,6 +5803,10 @@ def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[Deliver
         raise HTTPException(404, "关联订单不存在")
     if user.platform_role in {"super_admin", "platform_operator", "delivery_monitor"}:
         return task, order
+    if not user.platform_role:
+        scope = resolve_business_scope(request, db, user, Membership)
+        if not db.scalar(select(Order.id).where(Order.id == order.id, order_predicate(Order, scope))):
+            raise HTTPException(404, "交付任务不存在")
     membership = db.scalar(select(Membership).where(Membership.user_id == user.id, Membership.enterprise_id.in_([order.buyer_enterprise_id, order.provider_enterprise_id]), Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"])))
     if not membership:
         raise HTTPException(403, "无权访问该履约任务")
@@ -5808,8 +5814,8 @@ def delivery_task_access(task_id: str, user: User, db: Session) -> tuple[Deliver
 
 
 @app.post("/api/delivery-tasks/{task_id}/attachments")
-def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), description: str = Form(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
-    task, order = delivery_task_access(task_id, user, db)
+def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), description: str = Form(default=""), user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
+    task, order = delivery_task_access(task_id, user, db, request)
     order = db.scalar(select(Order).where(Order.id == order.id).with_for_update().execution_options(populate_existing=True))
     task = db.scalar(select(DeliveryTask).where(DeliveryTask.id == task.id).with_for_update().execution_options(populate_existing=True))
     order_fulfillment["require_attachment_upload"](db, user, order, task)
@@ -5854,8 +5860,8 @@ def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), des
 
 
 @app.get("/api/delivery-tasks/{task_id}/attachments")
-def list_delivery_attachments(task_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    task, _ = delivery_task_access(task_id, user, db)
+def list_delivery_attachments(task_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
+    task, _ = delivery_task_access(task_id, user, db, request)
     rows = db.scalars(select(DeliveryAttachment).where(DeliveryAttachment.task_id == task.id).order_by(DeliveryAttachment.created_at.desc())).all()
     files = {x.id: x for x in db.scalars(select(FileObject).where(FileObject.id.in_([item.file_id for item in rows]))).all()} if rows else {}
     return {"items": [{"id": x.id, "task_id": x.task_id, "file_id": x.file_id, "name": files.get(x.file_id).original_name if files.get(x.file_id) else "", "description": x.description, "uploaded_by": x.uploaded_by, "created_at": x.created_at} for x in rows]}
@@ -5923,6 +5929,16 @@ def enterprise_settlements(request: Request, user: User = Depends(current_user),
         "created_at": item.created_at} for item, order in rows]}
 
 
+@app.get("/api/enterprise-settlements/{settlement_id}")
+def enterprise_settlement_detail(settlement_id: str, request: Request, user: User = Depends(current_user), db: Session = Depends(db_session)):
+    scope = resolve_business_scope(request, db, user, Membership)
+    if (scope is None or user.verified_status != "verified" or
+            scope["membership"].role not in {"super_admin", "enterprise_admin"} or
+            scope["mode"] == "buyer"):
+        raise HTTPException(403, "只有已验证的提供方企业管理员可以查看企业清算")
+    return settlement_detail(settlement_id, user, db, request)
+
+
 @app.get("/api/settlements")
 def settlements(batch_id: str | None = None, settlement_id: str | None = None, order_no: str | None = None, status: str | None = None, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
@@ -5947,13 +5963,8 @@ def settlements(batch_id: str | None = None, settlement_id: str | None = None, o
 
 
 @app.get("/api/settlements/{settlement_id}/detail")
-def settlement_detail(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_viewer(user)
-    settlement = db.get(Settlement, settlement_id)
-    if not settlement:
-        settlement = db.scalar(select(Settlement).where(Settlement.settlement_no == settlement_id))
-    if not settlement:
-        raise HTTPException(404, "清算单不存在")
+def settlement_detail(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
+    settlement, scope = settlement_access(globals(), request, db, user, settlement_id)
     order = db.get(Order, settlement.order_id)
     lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded").order_by(SettlementLine.created_at)).all()
     batch = db.get(SettlementBatch, lines[0].batch_id) if lines else None
@@ -5962,14 +5973,43 @@ def settlement_detail(settlement_id: str, user: User = Depends(current_user), db
         return {"participant_type": participant_type, "participant_name": name, "rate": round(float(Decimal(str(amount or 0)) / profit * 100), 4) if profit else 0.0, "amount": float(amount or 0)}
     participant_map = {line.participant_type: participant_out(line.participant_type, line.participant_name, line.amount) for line in lines}
     defaults = [("platform", "平台运营方"), ("provider", "数据/服务提供方"), ("service", "数据服务方"), ("expert", "专家"), ("channel", "渠道")]
-    participants = [participant_map.get(kind, participant_out(kind, name, 0)) for kind, name in defaults]
+    amounts = {"platform": settlement.platform_fee, "provider": settlement.provider_share,
+        "service": settlement.service_share, "expert": settlement.expert_fee, "channel": settlement.channel_fee}
+    participants = [participant_map.get(kind, participant_out(kind, name, amounts[kind])) for kind, name in defaults]
+    proposals = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
     audit_ids = {settlement.id, settlement.settlement_no}
     # Scope lifecycle records by the current settlement ID. A batch contains
     # multiple orders, so batch_no/order_id alone would leak other settlements.
-    lifecycle_logs = db.scalars(select(AuditLog).where(AuditLog.target_id.in_(audit_ids), AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
+    lifecycle_logs = db.scalars(select(AuditLog).where(or_(
+        and_(AuditLog.target_type == "settlement", AuditLog.target_id.in_(audit_ids)),
+        and_(AuditLog.target_type == "settlement_proposal", AuditLog.target_id.in_([p.id for p in proposals]))),
+        AuditLog.business_domain == "settlement").order_by(AuditLog.created_at)).all()
     lifecycle = [{"action": item.action, "actor": item.actor, "result": item.result, "detail": item.detail, "before": json.loads(item.before_json or "{}"), "after": json.loads(item.after_json or "{}"), "created_at": item.created_at} for item in lifecycle_logs]
-    proposals = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
-    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle, "version_change": version_change_settlement["describe"](db, settlement.id)}
+    actions, proposal_actions = workflow_actions(globals(), db, user, scope, settlement, batch, proposals)
+    if scope is not None:
+        safe_snapshot_fields = {"status", "gross_amount", "cost_amount", "profit_amount", "net_amount", "refund_amount",
+            "platform_rate", "provider_rate", "service_rate", "expert_rate", "channel_rate", "platform_fee",
+            "provider_share", "service_share", "expert_fee", "channel_fee", "proposal_id", "proposal_status",
+            "reviewed_by", "batch_status"}
+        for event in lifecycle:
+            for key in ("before", "after"):
+                event[key] = {k: v for k, v in event[key].items() if k in safe_snapshot_fields}
+        return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status,
+            "created_at": settlement.created_at, "actions": actions,
+            "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle,
+                "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None,
+            "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name,
+                "buyer_enterprise_id": order.buyer_enterprise_id, "product_name": order.product_name},
+            "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0),
+                "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0),
+                "net_amount": float(settlement.net_amount or 0)}, "participants": participants,
+            "proposals": [{"id": p.id, "status": p.status, "reason": p.reason, "proposed_by": p.proposed_by,
+                "actions": proposal_actions[p.id],
+                "values": {k: v for k, v in json.loads(p.values_json or "{}").items() if not k.startswith("_")},
+                "proposer_side": json.loads(p.values_json or "{}").get("_proposer", {}).get("side", ""),
+                "reviewed_by": p.reviewed_by, "reviewed_at": p.reviewed_at, "review_comment": p.review_comment, "created_at": p.created_at} for p in proposals],
+            "lifecycle": lifecycle, "version_change": None}
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "actions": proposal_actions[item.id], "proposer_side": json.loads(item.values_json or "{}").get("_proposer", {}).get("side", ""), "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle, "version_change": version_change_settlement["describe"](db, settlement.id), "actions": actions}
 
 
 @app.post("/api/settlements/generate/{order_id}")
@@ -5980,7 +6020,7 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
         raise HTTPException(400, "订单尚未满足清算条件")
     if version_change_settlement["is_funding_order"](order):
         raise HTTPException(409, "版本变更差价支付单不单独清算，请按月清算关联的经济调整")
-    existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()))
+    existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()).with_for_update().execution_options(populate_existing=True))
     if existing and existing.status in {"locked", "paid", "archived", "disputed"}:
         raise HTTPException(409, "订单清算单已锁定、付款或存在待处理提案，不允许覆盖")
     if existing and db.scalar(select(SettlementLine.id).where(SettlementLine.settlement_id == existing.id, SettlementLine.status != "superseded")):
@@ -6073,11 +6113,8 @@ def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: 
 
 
 @app.post("/api/settlements/{settlement_id}/proposals")
-def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAdjustmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_operator(user)
-    settlement = db.get(Settlement, settlement_id)
-    if not settlement:
-        raise HTTPException(404, "清算单不存在")
+def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAdjustmentBody, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
+    settlement, scope = settlement_access(globals(), request, db, user, settlement_id, write=True)
     if settlement.status in {"locked", "paid", "superseded"}:
         raise HTTPException(409, "当前清算单已锁定、付款或作废，不能提交调整提案")
     line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
@@ -6093,6 +6130,8 @@ def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAd
     if pending:
         raise HTTPException(409, "当前清算单已有待处理调整提案")
     values = body.model_dump(exclude={"reason"})
+    values["_proposer"] = proposal_identity(user, scope)
+    values["_provider_enterprise_id"] = db.get(Order, settlement.order_id).provider_enterprise_id
     proposal = SettlementAdjustmentProposal(settlement_id=settlement.id, proposed_by=user.email or user.name, reason=body.reason, values_json=json.dumps(values), status="pending")
     current_profit = Decimal(str(settlement.profit_amount or 0))
     current_rate = lambda amount: float((Decimal(str(amount or 0)) / current_profit * 100).quantize(Decimal("0.01"))) if current_profit else 0.0
@@ -6107,23 +6146,28 @@ def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAd
 
 
 @app.get("/api/settlements/{settlement_id}/proposals")
-def settlement_adjustment_proposals(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_viewer(user)
+def settlement_adjustment_proposals(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
+    settlement, scope = settlement_access(globals(), request, db, user, settlement_id)
+    if scope is not None:
+        return {"items": settlement_detail(settlement.id, user, db, request)["proposals"]}
     items = db.scalars(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement_id).order_by(SettlementAdjustmentProposal.created_at.desc())).all()
     return {"items": [{"id": item.id, "settlement_id": item.settlement_id, "status": item.status, "proposed_by": item.proposed_by, "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in items]}
 
 
 @app.post("/api/settlement-proposals/{proposal_id}/decision")
-def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProposalDecisionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_operator(user)
+def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProposalDecisionBody, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
     proposal = db.get(SettlementAdjustmentProposal, proposal_id)
     if not proposal:
         raise HTTPException(404, "调整提案不存在")
+    settlement, scope = settlement_access(globals(), request, db, user, proposal.settlement_id, write=True)
+    proposal = db.scalar(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.id == proposal_id)
+        .with_for_update().execution_options(populate_existing=True))
     if proposal.status != "pending":
         raise HTTPException(409, "调整提案已经处理")
-    if proposal.proposed_by == (user.email or user.name):
-        raise HTTPException(409, "调整提案不能由提交人本人确认")
-    settlement = db.get(Settlement, proposal.settlement_id)
+    require_counterparty(globals(), db, proposal, user, scope)
+    original_provider = json.loads(proposal.values_json or "{}").get("_provider_enterprise_id")
+    if original_provider and db.get(Order, settlement.order_id).provider_enterprise_id != original_provider:
+        raise HTTPException(409, "原清算参与方发生变化，不能确认提案")
     if not settlement or settlement.status != "disputed":
         raise HTTPException(409, "关联清算单当前不在异议状态")
     before = {"status": settlement.status}
@@ -6134,7 +6178,7 @@ def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProp
     if body.decision == "approve":
         values = json.loads(proposal.values_json or "{}")
         profit = Decimal(str(values["profit_amount"])).quantize(Decimal("0.01"))
-        amounts = {"platform": (profit * Decimal(str(values["platform_rate"])) / 100).quantize(Decimal("0.01")), "provider": (profit * Decimal(str(values["provider_rate"])) / 100).quantize(Decimal("0.01")), "service": (profit * Decimal(str(values["service_rate"])) / 100).quantize(Decimal("0.01")), "expert": (profit * Decimal(str(values["expert_rate"])) / 100).quantize(Decimal("0.01")), "channel": (profit * Decimal(str(values["channel_rate"])) / 100).quantize(Decimal("0.01"))}
+        amounts = proposal_amounts(profit, values)
         settlement.gross_amount = Decimal(str(values["gross_amount"])).quantize(Decimal("0.01"))
         settlement.cost_amount = Decimal(str(values["cost_amount"])).quantize(Decimal("0.01"))
         settlement.profit_amount = profit
@@ -6151,15 +6195,16 @@ def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProp
 
 
 @app.post("/api/settlements/{settlement_id}/lock")
-def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_settlement_operator(user)
-    settlement = db.get(Settlement, settlement_id)
-    if not settlement:
-        raise HTTPException(404, "清算单不存在")
+def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
+    settlement, scope = settlement_access(globals(), request, db, user, settlement_id, write=True)
     if settlement.status in {"locked", "paid", "superseded"}:
         raise HTTPException(409, "当前清算单已经锁定、付款或作废")
     if settlement.status == "disputed" or db.scalar(select(SettlementAdjustmentProposal.id).where(SettlementAdjustmentProposal.settlement_id == settlement.id, SettlementAdjustmentProposal.status == "pending")):
         raise HTTPException(409, "清算单存在未处理调整提案，请先由对方确认或拒绝")
+    latest_proposal = db.scalar(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.settlement_id == settlement.id)
+        .order_by(SettlementAdjustmentProposal.created_at.desc(), SettlementAdjustmentProposal.id.desc()).limit(1))
+    if latest_proposal and "_proposer" in json.loads(latest_proposal.values_json or "{}") and latest_proposal.status != "accepted":
+        raise HTTPException(409, "调整提案须由对方批准后才能锁定")
     line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
     batch = db.get(SettlementBatch, line.batch_id) if line else None
     if batch and batch.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
@@ -6296,7 +6341,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
             raise HTTPException(409, "幂等键已用于不同的清算周期或规则")
         return {"id": existing.id, "batch_no": existing.batch_no, "status": existing.status, "idempotent": True}
     if body.cycle == "monthly":
-        existing_period = db.scalar(select(SettlementBatch).where(SettlementBatch.cycle == "monthly", SettlementBatch.period_start == body.period_start, SettlementBatch.period_end == body.period_end, SettlementBatch.status != "superseded").order_by(SettlementBatch.created_at.desc()))
+        existing_period = db.scalar(select(SettlementBatch).where(SettlementBatch.cycle == "monthly", SettlementBatch.period_start == body.period_start, SettlementBatch.period_end == body.period_end, SettlementBatch.status != "superseded").order_by(SettlementBatch.created_at.desc()).with_for_update().execution_options(populate_existing=True))
         if existing_period:
             if existing_period.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
                 raise HTTPException(409, "该月份清算批次已确认或进入付款流程，不允许重新生成")
@@ -6325,7 +6370,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         order_stmt = order_stmt.where(Order.id.in_(body.order_ids))
     order_ids = list(dict.fromkeys(db.scalars(order_stmt.with_only_columns(Order.id).distinct()).all()))
     if body.cycle == "monthly" and order_ids:
-        legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids), Settlement.id.not_in(linked_version_change_ids))))))).all()
+        legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids), Settlement.id.not_in(linked_version_change_ids)))))).order_by(SettlementBatch.id).with_for_update().execution_options(populate_existing=True)).all()
         for legacy in legacy_batches:
             legacy.status = "superseded"
             audit(db, user.email, "supersede_legacy_settlement_batch", "settlement_batch", legacy.batch_no, "月度批次覆盖旧手工批次", category="settlement", business_domain="settlement", batch_no=legacy.batch_no, risk_level="warning")
@@ -6339,7 +6384,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         order = db.get(Order, order_id)
         if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
             continue
-        prior_settlements = db.scalars(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded", Settlement.id.not_in(linked_version_change_ids))).all()
+        prior_settlements = db.scalars(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded", Settlement.id.not_in(linked_version_change_ids)).order_by(Settlement.id).with_for_update().execution_options(populate_existing=True)).all()
         finalized = next((item for item in prior_settlements if item.status in {"locked", "paid", "archived"}), None)
         if finalized:
             audit(db, user.email, "skip_finalized_settlement_order", "settlement", finalized.settlement_no, "订单已有已完成清算，批次不重复生成", category="settlement", business_domain="settlement", order_id=order.id, risk_level="warning")
@@ -6425,7 +6470,7 @@ def settlement_batch_lines(batch_id: str, user: User = Depends(current_user), db
 @app.post("/api/settlement-batches/{batch_id}/confirm")
 def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
-    batch = db.get(SettlementBatch, batch_id)
+    batch = db.scalar(select(SettlementBatch).where(SettlementBatch.id == batch_id).with_for_update().execution_options(populate_existing=True))
     if not batch:
         raise HTTPException(404, "清算批次不存在")
     if batch.status != "pending_confirm":
@@ -6458,7 +6503,7 @@ def dispute_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
 @app.post("/api/settlement-batches/{batch_id}/rollback")
 def rollback_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
-    batch = db.get(SettlementBatch, batch_id)
+    batch = db.scalar(select(SettlementBatch).where(SettlementBatch.id == batch_id).with_for_update().execution_options(populate_existing=True))
     if not batch:
         raise HTTPException(404, "清算批次不存在")
     if batch.status not in {"generated", "pending_confirm", "rolled_back"}:
@@ -6473,7 +6518,7 @@ def rollback_settlement_batch(batch_id: str, body: SettlementActionBody, user: U
 @app.post("/api/settlement-batches/{batch_id}/pay")
 def pay_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
-    batch = db.get(SettlementBatch, batch_id)
+    batch = db.scalar(select(SettlementBatch).where(SettlementBatch.id == batch_id).with_for_update().execution_options(populate_existing=True))
     if not batch:
         raise HTTPException(404, "清算批次不存在")
     if batch.status != "confirmed":
@@ -7407,7 +7452,7 @@ def download_file(file_id: str, request: Request, order_id: str = "", enterprise
         task = db.get(DeliveryTask, attachment.task_id) if attachment else None
         if not task:
             raise HTTPException(404, "履约附件关联任务不存在")
-        delivery_task_access(task.id, user, db)
+        delivery_task_access(task.id, user, db, request)
         owner = True
     if item.file_role != "product_data" and not owner and not reviewer:
         raise HTTPException(403, "无权查看该文件")
