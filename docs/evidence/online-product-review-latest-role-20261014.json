@@ -1,0 +1,151 @@
+{
+  "boundary": "actual three service review chains -> health gate -> initial production process delivery; SaaS OAuth/OIDC credentials seeded; no daemon, browser SSO or bank evidence",
+  "cases": {
+    "a0": {
+      "before_health": "pending_integration",
+      "delivery": {
+        "delivery": "accepted",
+        "error_present": false,
+        "finished": "2026-10-14T07:23:12.569630+00:00",
+        "main": "completed",
+        "max_retries": 3,
+        "next_retry_at": null,
+        "outcome": true,
+        "retry_count": 0,
+        "started": "2026-10-14T07:23:12.228181+00:00",
+        "status": "completed",
+        "task_id": "67f2176f9ca116290a8b86c068da79af"
+      },
+      "health": "real 404 rejected then healthy verify published",
+      "logo": "real multipart 380x280 PNG + ClamAV",
+      "oauth_boundary": "unused seeded client removed; operation approval created client",
+      "registration": "provider PUT on owned draft identity roots",
+      "reviewer_inbox_stages": 4,
+      "reviews": [
+        {
+          "action": "business_approve_product",
+          "actor": "qa-review-698346788828-a0-business@example.invalid",
+          "after": "quality_review",
+          "audit_id": "9398257bba0a6868bb1fd099abf17be6",
+          "before": "pending_review"
+        },
+        {
+          "action": "quality_approve_product",
+          "actor": "qa-review-698346788828-a0-quality@example.invalid",
+          "after": "security_review",
+          "audit_id": "15f1e102eb1e2365e5d48f6856d533e0",
+          "before": "quality_review"
+        },
+        {
+          "action": "approve_product_security",
+          "actor": "qa-review-698346788828-a0-security@example.invalid",
+          "after": "operation_review",
+          "audit_id": "8e25cd1f450a2526469ba855512c1828",
+          "before": "security_review"
+        },
+        {
+          "action": "operation_approve_product",
+          "actor": "qa-review-698346788828-a0-release@example.invalid",
+          "after": "pending_integration",
+          "audit_id": "38a1ead99540a58ad448b76a30aa5cd3",
+          "before": "operation_review"
+        }
+      ]
+    },
+    "a1": {
+      "before_health": "pending_integration",
+      "delivery": {
+        "delivery": "accepted",
+        "error_present": false,
+        "finished": "2026-10-14T07:23:13.300462+00:00",
+        "main": "completed",
+        "max_retries": 3,
+        "next_retry_at": null,
+        "outcome": true,
+        "retry_count": 0,
+        "started": "2026-10-14T07:23:13.018803+00:00",
+        "status": "completed",
+        "task_id": "1d749794ee6d37790f049e451fb56603"
+      },
+      "health": "real 404 rejected then healthy verify published",
+      "logo": "real multipart 380x280 PNG + ClamAV",
+      "oauth_boundary": "unused seeded client removed; operation approval created client",
+      "registration": "provider PUT on owned draft identity roots",
+      "reviewer_inbox_stages": 4,
+      "reviews": [
+        {
+          "action": "business_approve_product",
+          "actor": "qa-review-698346788828-a1-business@example.invalid",
+          "after": "quality_review",
+          "audit_id": "cc92672eb968cf179e5be67f17a1d3a6",
+          "before": "pending_review"
+        },
+        {
+          "action": "quality_approve_product",
+          "actor": "qa-review-698346788828-a1-quality@example.invalid",
+          "after": "security_review",
+          "audit_id": "3dc9c2f54b2328a08d9e60c15da2674f",
+          "before": "quality_review"
+        },
+        {
+          "action": "approve_product_security",
+          "actor": "qa-review-698346788828-a1-security@example.invalid",
+          "after": "operation_review",
+          "audit_id": "b2bf5d34ed3ca33254d5fba04d189519",
+          "before": "security_review"
+        },
+        {
+          "action": "operation_approve_product",
+          "actor": "qa-review-698346788828-a1-release@example.invalid",
+          "after": "pending_integration",
+          "audit_id": "34ccd0a9444a944cb61c0de74640cb6b",
+          "before": "operation_review"
+        }
+      ]
+    },
+    "s": {
+      "before_health": "pending_integration",
+      "delivery": "actual initial OPEN/STATUS proof",
+      "health": "real OAuth/health/OIDC verify published",
+      "logo": "real multipart 380x280 PNG + ClamAV",
+      "oauth_boundary": "retained seeded machine client; not fresh creation proof",
+      "registration": "provider PUT on owned draft identity roots",
+      "reviewer_inbox_stages": 4,
+      "reviews": [
+        {
+          "action": "business_approve_product",
+          "actor": "qa-review-698346788828-s-business@example.invalid",
+          "after": "quality_review",
+          "audit_id": "6c46a081e3d841c76009bc4cb697e090",
+          "before": "pending_review"
+        },
+        {
+          "action": "quality_approve_product",
+          "actor": "qa-review-698346788828-s-quality@example.invalid",
+          "after": "security_review",
+          "audit_id": "c65e76d4198b93da8cb5e5751962945c",
+          "before": "quality_review"
+        },
+        {
+          "action": "approve_product_security",
+          "actor": "qa-review-698346788828-s-security@example.invalid",
+          "after": "operation_review",
+          "audit_id": "669f591de1c4732e0f8a0e43327d9175",
+          "before": "security_review"
+        },
+        {
+          "action": "operation_approve_product",
+          "actor": "qa-review-698346788828-s-release@example.invalid",
+          "after": "pending_integration",
+          "audit_id": "76a5f036ed6ef1e2e0cbcce949ff63a9",
+          "before": "operation_review"
+        }
+      ]
+    }
+  },
+  "cleanup": "exact DB/assets/scans/inbox edges/routes/consumers/Redis; mock tenant closed and client removed",
+  "protected_business_unchanged": true,
+  "status": "passed",
+  "image_tag": "20261014074000-8db7d99",
+  "commit": "8db7d9908af5472028d739a77ebae71470a5dbea"
+}

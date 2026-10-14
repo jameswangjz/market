@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "checks": [
+    {
+      "check": "retired_account_disabled",
+      "passed": true
+    },
+    {
+      "check": "six_role_catalog",
+      "passed": true
+    },
+    {
+      "check": "retired_password_and_token_rejected",
+      "passed": true
+    }
+  ],
+  "retired_accounts": 1,
+  "protected_objects_present": true,
+  "boundary": "read-only runtime checks; historical preservation and migration idempotency tested separately"
+}
