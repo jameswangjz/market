@@ -58,7 +58,7 @@ const availableUsers = computed(() => (context.value.users || []).filter(user =>
   return !tenant || user.enterprise_ids?.includes(tenant);
 }));
 const platformRoles = computed(() => [...new Set(availableUsers.value.map(user => user.platform_role).filter(Boolean))]);
-const platformRoleName = role => ({ super_admin: '平台超级管理员', platform_operator: '平台运营', product_manager: '产品经理', business_reviewer: '业务审核', quality_reviewer: '质量审核', security_compliance: '安全合规' }[role] || '其他平台角色');
+const platformRoleName = role => ({ super_admin: '平台超级管理员', platform_operator: '平台运营', product_manager: '产品经理', quality_reviewer: '质量审核', security_compliance: '安全合规' }[role] || '其他平台角色');
 const pollMs = computed(() => Number(settings.value.poll_interval_seconds || 30) * 1000);
 const sentFolder = computed(() => ['sent', 'drafts'].includes(folder.value));
 const folders = [['inbox', '收件箱'], ['unread', '未读'], ['urgent', '待确认紧急消息'], ['archived', '已归档'], ['trash', '回收站'], ['drafts', '草稿'], ['sent', '发件箱']];

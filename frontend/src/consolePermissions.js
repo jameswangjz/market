@@ -8,7 +8,7 @@ export function canAccessConsoleView(user, enterprise, view) {
   if (view === "applications") return canViewApplications(user);
   // Keep account, verification and enterprise onboarding available to all users.
   if (["users", "messages"].includes(view)) return true;
-  if (view === "products") return [...operators, "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.platform_role) || Boolean(!user.platform_role && activeConsoleMembership(user, enterprise));
+  if (view === "products") return [...operators, "product_manager", "quality_reviewer", "security_compliance"].includes(user.platform_role) || Boolean(!user.platform_role && activeConsoleMembership(user, enterprise));
   if (user.verified_status !== "verified") return false;
   const role = user.platform_role;
   if (["gateway", "sla", "settings", "development"].includes(view)) return operators.includes(role);
@@ -27,7 +27,7 @@ function activeConsoleMembership(user, enterprise) {
 
 export function canManageProductRegistration(user, enterprise) {
   if (!user) return false;
-  if ([...operators, "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.platform_role)) return true;
+  if ([...operators, "product_manager", "quality_reviewer", "security_compliance"].includes(user.platform_role)) return true;
   return !user.platform_role && user.verified_status === "verified" && ["super_admin", "enterprise_admin"].includes(activeConsoleMembership(user, enterprise)?.role);
 }
 

@@ -18,7 +18,8 @@ class ProductReviewAcceptanceTests(harness.AcceptanceHTTPCase):
             db.flush()
             self.tokens['sjcp'] = self.m.issue_token(manager)
             legacy = self.m.User(id='ywsh', name='Business reviewer', email='ywsh@example.invalid',
-                password_hash='unused', platform_role='business_reviewer', verified_status='verified')
+                password_hash='unused', platform_role='business_reviewer', verified_status='verified',
+                is_active=False, activation_status='disabled')
             db.add(legacy)
             db.flush()
             self.tokens['ywsh'] = self.m.issue_token(legacy)
@@ -43,7 +44,7 @@ class ProductReviewAcceptanceTests(harness.AcceptanceHTTPCase):
 
     def test_four_stages_notifications_audit_and_scan_report_permissions(self):
         self.assertEqual(self.submit()['status'], 'pending_review')
-        self.assertEqual(self.recipients(target_id='product', title='产品待业务审核'), {'platform', 'sjcp'})
+        self.assertEqual(self.recipients(target_id='product', title='产品待业务审核'), {'platform', 'sjcp', 'reviewer'})
         self.assertEqual(self.review('sjcp')['status'], 'quality_review')
         self.assertEqual(self.recipients(target_id='product', title='产品待质量审核'), {'platform', 'quality'})
         quality = self.review('quality')
@@ -127,16 +128,16 @@ class ProductReviewAcceptanceTests(harness.AcceptanceHTTPCase):
                         db.get(self.m.Product, 'product').status = 'draft'
                         db.commit()
                     self.submit()
-                    self.assertEqual(self.recipients(target_id='product', title='产品待业务审核'), {'platform', 'sjcp'})
+                    self.assertEqual(self.recipients(target_id='product', title='产品待业务审核'), {'platform', 'sjcp', 'reviewer'})
                     before = self.counts()
                     audits = len(self.rows(self.m.AuditLog))
                     self.review(actor, decision=decision, comment='Review evidence',
-                                expected=403 if actor == 'ywsh' else 200)
+                                expected=401 if actor == 'ywsh' else 200)
                     if actor == 'ywsh':
                         self.assert_state('pending_review')
                         self.assertEqual(self.counts(), before)
                         self.assertEqual(len(self.rows(self.m.AuditLog)), audits)
-                        self.request('GET', '/api/products/product', actor=actor)
+                        self.request('GET', '/api/products/product', actor=actor, expected=401)
                         self.assertEqual(self.rows(self.m.User, id=actor)[0].platform_role, 'business_reviewer')
                     else:
                         self.assert_state('quality_review' if decision == 'approve' else 'rejected')

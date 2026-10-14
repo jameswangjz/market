@@ -96,6 +96,8 @@ test("sensitive menus follow platform roles", () => {
   assert.equal(canAccessConsoleView(user("delivery_monitor"), null, "delivery"), true);
   assert.equal(canAccessConsoleView(user("business_reviewer"), null, "audit"), false);
   assert.equal(canAccessConsoleView(user("business_reviewer"), null, "orders"), false);
+  assert.equal(canAccessConsoleView(user("business_reviewer"), null, "products"), false);
+  assert.equal(canManageProductRegistration(user("business_reviewer"), null), false);
   assert.equal(canAccessConsoleView(user("quality_reviewer"), null, "products"), true);
   assert.equal(canAccessConsoleView(user("finance_settlement"), null, "products"), false);
   assert.equal(canAccessConsoleView(user("super_admin"), null, "settings"), true);

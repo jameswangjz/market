@@ -1580,7 +1580,7 @@ def notify_settlement_event(db: Session, action: str, target_type: str, target_i
 
 
 def notify_platform_role(db: Session, role: str, title: str, content: str, target_type: str, target_id: str, *, event_key: str | None = None) -> None:
-    roles = [role, "super_admin"] + (["product_manager"] if role == "business_reviewer" else [])
+    roles = [role, "super_admin"]
     tenant_id = ""
     if target_type == "product":
         product = db.get(Product, target_id)
@@ -1720,7 +1720,8 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
         user = db.get(User, payload.get("sub"))
     except (jwt.PyJWTError, TypeError):
         user = None
-    if not user or not user.is_active or user.activation_status == "deleted":
+    if (not user or not user.is_active or user.activation_status in {"disabled", "deleted", "expired"}
+            or user.username == "ywsh" or user.platform_role == "business_reviewer"):
         raise HTTPException(401, "登录已失效")
     return user
 
@@ -1791,7 +1792,6 @@ def require_audit_viewer(user: User):
 PLATFORM_ROLES = {
     "platform_operator": "平台运营人员",
     "product_manager": "数据产品经理",
-    "business_reviewer": "业务审核人员",
     "quality_reviewer": "质量审核人员",
     "security_compliance": "安全合规人员",
     "delivery_monitor": "交付监控人员",
@@ -1801,7 +1801,6 @@ PLATFORM_ROLES = {
 PLATFORM_ROLE_ACCOUNTS = {
     "ptyy": ("平台运营人员", "platform_operator"),
     "sjcp": ("数据产品经理", "product_manager"),
-    "ywsh": ("业务审核人员", "business_reviewer"),
     "zlsh": ("质量审核人员", "quality_reviewer"),
     "aqsh": ("安全合规人员", "security_compliance"),
     "jfsh": ("交付监控人员", "delivery_monitor"),
@@ -1810,9 +1809,25 @@ PLATFORM_ROLE_ACCOUNTS = {
 
 
 def ensure_platform_role_accounts(db: Session):
-    """Keep the seven operational roles as fixed platform accounts."""
+    """Retire legacy business reviewers and keep the six fixed role accounts."""
+    # Preserve identities and their history; never promote a retired reviewer.
+    retired = db.scalars(select(User).where(or_(User.username == "ywsh", User.platform_role == "business_reviewer"))).all()
+    retired_ids = {account.id for account in retired}
+    for account in retired:
+        before = {"is_active": account.is_active, "activation_status": account.activation_status,
+                  "platform_role": account.platform_role}
+        account.is_active = False
+        if account.activation_status != "deleted":
+            account.activation_status = "disabled"
+        after = {"is_active": account.is_active, "activation_status": account.activation_status,
+                 "platform_role": account.platform_role}
+        if before != after:
+            audit(db, "system:retire_business_reviewer", "retire_business_review_account", "user", account.id,
+                  "Retired business-review account disabled without role reassignment", before=before, after=after)
     for username, (name, role) in PLATFORM_ROLE_ACCOUNTS.items():
         account = db.scalar(select(User).where(User.username == username))
+        if account and account.id in retired_ids:
+            continue
         if not account:
             account = User(username=username, email=f"{username}@market.local", name=name, password_hash=hash_password("Admin123!"), verified_status="verified", platform_role=role, email_verified=True)
             db.add(account)
@@ -1829,14 +1844,20 @@ def ensure_platform_role_accounts(db: Session):
     # Platform administrators and specialist accounts are tenant-less. Repair
     # historical invitations or seed data that attached them to an enterprise.
     for account in db.scalars(select(User).where(User.platform_role != "")).all():
+        if account.id in retired_ids:
+            continue
         for membership in db.scalars(select(Membership).where(Membership.user_id == account.id)).all():
             db.delete(membership)
     # Invitations create membership immediately. Normalize legacy rows created
     # with the old pending_activation membership state.
     for membership in db.scalars(select(Membership).where(Membership.status == "pending_activation")).all():
+        if membership.user_id in retired_ids:
+            continue
         invitee = db.get(User, membership.user_id)
         membership.status = "active" if invitee and invitee.is_active and invitee.activation_status != "deleted" else "expired"
     for membership in db.scalars(select(Membership).where(Membership.department_id != "")).all():
+        if membership.user_id in retired_ids:
+            continue
         if not db.scalar(select(MembershipDepartment.id).where(MembershipDepartment.membership_id == membership.id, MembershipDepartment.department_id == membership.department_id)):
             db.add(MembershipDepartment(membership_id=membership.id, department_id=membership.department_id))
 
@@ -2429,6 +2450,9 @@ def metrics():
 def login(body: LoginBody, db: Session = Depends(db_session)):
     identifier = (body.identifier or body.email or "").lower().strip()
     user = db.scalar(select(User).where(or_(User.username == identifier, User.email == identifier, User.phone == identifier)))
+    if user and (not user.is_active or user.activation_status in {"disabled", "deleted", "expired"}
+                 or user.username == "ywsh" or user.platform_role == "business_reviewer"):
+        raise HTTPException(401, "登录已失效")
     if user and user.activation_status == "pending_activation" and user.temporary_password_expires_at and user.temporary_password_expires_at <= now():
         user.activation_status = "expired"
         user.is_active = False
@@ -3195,14 +3219,14 @@ def update_notification_settings(body: NotificationSettingsBody, user: User = De
 @app.get("/api/admin/platform-roles")
 def platform_roles(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    items = db.scalars(select(User).where(User.username.in_(PLATFORM_ROLE_ACCOUNTS)).order_by(User.username)).all()
+    items = db.scalars(select(User).where(User.username.in_(PLATFORM_ROLE_ACCOUNTS), User.platform_role.in_(PLATFORM_ROLES)).order_by(User.username)).all()
     return {"roles": PLATFORM_ROLES, "fixed": True, "initial_password": "Admin123!", "items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "role": x.platform_role, "role_name": PLATFORM_ROLES.get(x.platform_role, x.platform_role)} for x in items]}
 
 
 @app.post("/api/admin/platform-roles")
 def assign_platform_role(body: PlatformRoleAssignmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    raise HTTPException(410, "平台角色已改为七个固化账号，不再支持动态分配；请使用固定用户名登录")
+    raise HTTPException(410, "平台角色已改为六个固化账号，不再支持动态分配；请使用固定用户名登录")
 
 
 @app.get("/api/dashboard")
@@ -3249,7 +3273,7 @@ def unverified_product_out(product: Product) -> dict[str, Any]:
 
 
 def product_for_enterprise(product_id: str, user: User, db: Session, enterprise_id: str = "") -> Product:
-    if user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+    if user.platform_role in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}:
         product = db.get(Product, product_id)
     else:
         membership = resolve_enterprise_membership(db, user, Membership, enterprise_id)
@@ -3284,7 +3308,7 @@ def product_directories(user: User = Depends(current_user)):
 @app.get("/api/products")
 def products(request: Request, enterprise_id: str = Query(default=""), q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
     stmt = select(Product)
-    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}:
         if user.platform_role:
             raise HTTPException(403, "当前平台角色无权访问产品管理")
         selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
@@ -3830,7 +3854,7 @@ def review_product(product_id: str, body: ProductReviewBody, user: User = Depend
 
 @app.get("/api/products/{product_id}/security-report")
 def product_security_report(product_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}:
         raise HTTPException(403, "当前角色无权查看产品安全报告")
     product = db.get(Product, product_id)
     if not product:
@@ -7217,7 +7241,7 @@ def download_scan_report(file_id: str, request: Request, enterprise_id: str = Qu
     item = db.get(FileObject, file_id)
     if not item:
         raise HTTPException(404, "文件不存在")
-    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}:
+    if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}:
         if item.product_id:
             product = db.get(Product, item.product_id)
             selected_id = enterprise_id or request.headers.get("X-Enterprise-Id", "")
@@ -7438,7 +7462,7 @@ def download_file(file_id: str, request: Request, order_id: str = "", enterprise
     item = db.get(FileObject, file_id)
     if not item or item.status == "deleted":
         raise HTTPException(404, "文件不存在")
-    reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"}
+    reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
     if item.product_id and item.file_role not in {"product_data", "delivery_attachment"} and not reviewer:
         product = db.get(Product, item.product_id)

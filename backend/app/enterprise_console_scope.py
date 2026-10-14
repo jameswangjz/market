@@ -32,7 +32,7 @@ def require_enterprise_super_admin(membership):
 
 def require_enterprise_editor(db, user, membership_model, enterprise_id):
     if user.platform_role in {
-        "super_admin", "platform_operator", "product_manager", "business_reviewer",
+        "super_admin", "platform_operator", "product_manager",
         "quality_reviewer", "security_compliance",
     }:
         return

@@ -234,7 +234,7 @@ def install(ns):
         if not row:
             raise HTTPException(404, '产品不存在')
         allowed = user.platform_role in {'super_admin', 'platform_operator', 'product_manager',
-            'business_reviewer', 'quality_reviewer', 'security_compliance'}
+            'quality_reviewer', 'security_compliance'}
         if not allowed:
             membership = db.scalar(select(ns['Membership']).where(
                 ns['Membership'].user_id == user.id,

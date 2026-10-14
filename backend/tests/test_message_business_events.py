@@ -98,13 +98,13 @@ class BusinessHelperMockTests(unittest.TestCase):
         product = SimpleNamespace(id="p", enterprise_id="a", status="pending_review", updated_at=self.ns["now"]())
         self.db.get.return_value = product
         for _ in range(2):
-            self.ns["notify_platform_role"](self.db, "business_reviewer", "title", "body", "product", "p")
+            self.ns["notify_platform_role"](self.db, "product_manager", "title", "body", "product", "p")
         first, second = (call.kwargs["event_key"] for call in self.notify.call_args_list)
         self.assertEqual(first, second)
         product.updated_at += timedelta(seconds=1)
-        self.ns["notify_platform_role"](self.db, "business_reviewer", "title", "body", "product", "p")
+        self.ns["notify_platform_role"](self.db, "product_manager", "title", "body", "product", "p")
         self.assertNotEqual(first, self.notify.call_args.kwargs["event_key"])
-        self.assertEqual(self.notify.call_args.kwargs["platform_roles"], ["business_reviewer", "super_admin", "product_manager"])
+        self.assertEqual(self.notify.call_args.kwargs["platform_roles"], ["product_manager", "super_admin"])
         self.db.commit.assert_not_called()
 
     def test_explicit_platform_key_requires_no_flush(self):
@@ -265,7 +265,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
         m.Base.metadata.create_all(m.engine)
         self.Message, self.Receipt, self.Outbox = (m.message_center[key] for key in ("Message", "Receipt", "Outbox"))
         with m.SessionLocal() as db:
-            accounts = [("buyer", ""), ("buyer_admin", ""), ("provider", ""), ("outsider", ""), ("inactive", ""), ("platform", "super_admin"), ("ops", "platform_operator"), ("finance", "finance_settlement"), ("reviewer", "business_reviewer"), ("quality", "quality_reviewer"), ("disabled_ops", "platform_operator")]
+            accounts = [("buyer", ""), ("buyer_admin", ""), ("provider", ""), ("outsider", ""), ("inactive", ""), ("platform", "super_admin"), ("ops", "platform_operator"), ("finance", "finance_settlement"), ("reviewer", "product_manager"), ("quality", "quality_reviewer"), ("disabled_ops", "platform_operator")]
             db.add_all([m.User(id=uid, name=uid, password_hash="unused", email=uid + "@example.invalid", phone="13800000000" if uid == "buyer" else None, platform_role=role, verified_status="verified", is_active=uid != "disabled_ops", activation_status="pending_activation" if uid == "inactive" else "active") for uid, role in accounts])
             db.add_all([m.Enterprise(id=eid, name=eid, credit_code=eid) for eid in ("buyer_tenant", "provider_tenant", "other_tenant")])
             db.flush()

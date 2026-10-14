@@ -2100,7 +2100,7 @@ async function openProductDetail(product, review = false) {
   showProductForm.value = true;
 }
 function isPlatformRole() {
-  return ["super_admin", "platform_operator", "product_manager", "business_reviewer", "quality_reviewer", "security_compliance"].includes(user.value?.platform_role);
+  return ["super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"].includes(user.value?.platform_role);
 }
 async function downloadProductFile(file, reportType = "") {
   try {
