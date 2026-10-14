@@ -2223,7 +2223,7 @@ function canReviewProduct(product) {
   const role = user.value?.platform_role;
   if (!["pending_review", "quality_review", "security_review", "operation_review"].includes(product.status)) return false;
   if (role === "super_admin") return true;
-  if (product.status === "pending_review") return ["product_manager", "business_reviewer"].includes(role);
+  if (product.status === "pending_review") return role === "product_manager";
   if (product.status === "quality_review") return role === "quality_reviewer";
   if (product.status === "security_review") return ["super_admin", "security_compliance"].includes(role);
   if (product.status === "operation_review") return ["super_admin", "platform_operator"].includes(role);

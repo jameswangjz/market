@@ -1703,7 +1703,7 @@ def notification_scheduled_events(db: Session) -> dict[str, int | bool]:
 
 def require_product_review_role(user: User, stage: str) -> None:
     allowed = {
-        "business": {"super_admin", "business_reviewer", "product_manager"},
+        "business": {"super_admin", "product_manager"},
         "quality": {"super_admin", "quality_reviewer"},
         "security": {"super_admin", "security_compliance"},
         "operation": {"super_admin", "platform_operator"},
@@ -3563,7 +3563,7 @@ def submit_product(product_id: str, request: Request, enterprise_id: str = Query
     trading_policy["validate_submission"](db, product)
     product.status = "pending_review"
     product.review_comment = ""
-    notify_platform_role(db, "business_reviewer", "产品待业务审核", f"产品“{product.name}”已提交审核，请进行业务审核。", "product", product.id)
+    notify_platform_role(db, "product_manager", "产品待业务审核", f"产品“{product.name}”已提交审核，请进行业务审核。", "product", product.id)
     audit(db, user.email, "submit_product_review", "product", product.id, after={"status": product.status})
     db.commit()
     return product_out(product)

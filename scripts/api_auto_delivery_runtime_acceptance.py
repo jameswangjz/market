@@ -213,6 +213,37 @@ def unwrap(value):
     return value
 
 
+def message_edge_ownership(message_id, user_id, owned_messages, fixture_users):
+    if message_id in owned_messages:
+        return 'owned_message'
+    check(user_id in fixture_users, 'Transport edge belongs to an unowned message and user')
+    return 'fixture_user_external_message'
+
+
+def validate_health_message(row, ids, observation, slots, observation_ids, slot_ids):
+    check(row.target_type == 'product' and row.target_id in ids['products'] and
+          row.category == 'system' and row.tenant_id == ids['enterprises'][1],
+          'Health message lacks exact fixture product/seller ownership')
+    version = ids['versions'][ids['products'].index(row.target_id)]
+    prefix = f'application-health:{row.target_id}:{version}:'
+    match = re.fullmatch(re.escape(prefix) + r'(incident|recovered):([0-9]{14})', row.event_key)
+    check(match is not None, 'Health message event pattern mismatch')
+    check(observation is not None and observation.id in observation_ids and
+          observation.product_id == row.target_id and observation.version_id == version,
+          'Health message lacks owned observation proof')
+    # The event embeds the incident start, including recovery events. Slots retain it
+    # after the current observation clears incident_started_at on recovery.
+    incident = next((slot for slot in slots if slot.id in slot_ids and
+        slot.product_id == row.target_id and slot.version_id == version and slot.status == 'failed' and
+        slot.completed_at is not None and slot.claimed_at.strftime('%Y%m%d%H%M%S') == match[2]), None)
+    check(incident is not None and observation.last_slot >= incident.slot,
+          'Health message lacks exact failed incident slot proof')
+    if match[1] == 'recovered':
+        check(any(slot.id in slot_ids and slot.product_id == row.target_id and
+                  slot.version_id == version and slot.status == 'healthy' and slot.completed_at is not None and
+                  slot.slot > incident.slot for slot in slots), 'Health recovery lacks owned successful slot proof')
+
+
 def owned_scopes(m, db, saved):
     """Exact parent validation, then FK descendants and polymorphic audit/messages."""
     from sqlalchemy import or_, select
@@ -305,6 +336,18 @@ def owned_scopes(m, db, saved):
     task_ids = new_keys.get(m.DeliveryTask.__table__.c.id, set())
     if message_table in predicates:
         for row in db.scalars(select(message_model).where(predicates[message_table])):
+            if row.target_type == 'product':
+                health = getattr(m, 'application_health', {})
+                check('Observation' in health and 'Slot' in health, 'Health ownership models unavailable')
+                Observation, Slot = health['Observation'], health['Slot']
+                version = ids['versions'][ids['products'].index(row.target_id)] if row.target_id in ids['products'] else ''
+                observation = db.scalar(select(Observation).where(Observation.product_id == row.target_id,
+                                                                 Observation.version_id == version))
+                slots = db.scalars(select(Slot).where(Slot.product_id == row.target_id, Slot.version_id == version)).all()
+                validate_health_message(row, ids, observation, slots,
+                    new_keys.get(Observation.__table__.c.id, set()), new_keys.get(Slot.__table__.c.id, set()))
+                message_ids.add(row.id)
+                continue
             target_ids = {'order': order_ids, 'delivery_task': task_ids}
             check(row.target_type in target_ids and row.target_id in target_ids[row.target_type] and
                   row.tenant_id == ids['enterprises'][0] and row.category == 'order',
@@ -328,8 +371,14 @@ def owned_scopes(m, db, saved):
             check(row.event_key.startswith(prefix), 'Message business event ownership mismatch')
             action, separator, version = row.event_key[len(prefix):].partition(':')
             if row.target_type == 'order':
-                check(action == 'confirm_payment' and separator and version == 'paid',
+                check(separator and (action, version) in {('confirm_payment', 'paid'), ('start_payment', 'paying')},
                       'Unexpected fixture order message event')
+                if action == 'start_payment':
+                    check(db.scalar(select(m.OrderStateLog.id).where(m.OrderStateLog.order_id == row.target_id,
+                        m.OrderStateLog.domain == 'payment', m.OrderStateLog.action == 'start_payment',
+                        m.OrderStateLog.from_status == 'unpaid', m.OrderStateLog.to_status == 'paying',
+                        m.OrderStateLog.operator == ids['users']['buyer'] + '@example.invalid')) is not None,
+                        'Start-payment message lacks exact owned buyer transition proof')
             else:
                 match = re.fullmatch(re.escape(row.target_id) + r':(completed|retrying|exception):[0-9]+', version)
                 check(separator and match and action in {'delivery_succeeded', 'delivery_failed'} and
@@ -341,13 +390,16 @@ def owned_scopes(m, db, saved):
         model = m.message_center.get(key)
         if model is not None and model.__table__.name in predicates:
             table = model.__table__
-            check(set(db.scalars(select(table.c.message_id).where(predicates[table.name]))) <= message_ids,
-                  'Recipient or delivery belongs to an unowned message')
+            for row in db.scalars(select(model).where(predicates[table.name])):
+                message_edge_ownership(row.message_id, row.user_id, message_ids, users)
             recipient_tables.add(table.name)
     expired = m.message_center.get('ExpiredUrgent')
     if expired is not None and expired.__table__.name in predicates:
-        check(set(db.scalars(select(expired.message_id).where(
-            predicates[expired.__table__.name]))) <= message_ids, 'Expired receipt belongs to an unowned message')
+        for row in db.scalars(select(expired).where(predicates[expired.__table__.name])):
+            message_edge_ownership(row.message_id, row.user_id, message_ids, users)
+            receipt = db.get(m.message_center['Receipt'], row.receipt_id)
+            check(receipt is not None and receipt.message_id == row.message_id and receipt.user_id == row.user_id,
+                  'Expired transport does not match its exact receipt')
     legacy_table = m.PlatformNotification.__table__.name
     if legacy_table in predicates:
         for row in db.scalars(select(m.PlatformNotification).where(predicates[legacy_table])):
@@ -469,10 +521,11 @@ def prepare(m, saved):
         for role, index in (('buyer', 0), ('seller', 1)):
             db.add(m.Membership(user_id=saved['users'][role], enterprise_id=saved['enterprises'][index],
                                 role='super_admin', status='active', business_roles='provider,user'))
-        for index, method in enumerate(('api', 'model_api')):
+        for index, method in enumerate(('api', 'api')):
             db.add(m.Product(id=saved['products'][index], name=saved['products'][index],
                 enterprise_id=saved['enterprises'][1], provider_name=saved['enterprises'][1],
-                product_type='api' if method == 'api' else 'model', delivery_method=method, status='pending_integration',
+                product_type='api', delivery_method=method, status='pending_integration',
+                description='API service' if index == 0 else 'Model-serving API application',
                 settlement_rule_mode='custom', settlement_rule_json=json.dumps({
                     'platform_rate': 20, 'provider_rate': 80, 'service_rate': 0,
                     'expert_rate': 0, 'channel_rate': 0})))
@@ -740,7 +793,7 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60, brows
                 with m.SessionLocal() as db:
                     browser_orders.append({'id': oid, 'order_no': db.get(m.Order, oid).order_no,
                         'product_id': saved['products'][index], 'credential_id': credential['id'],
-                        'method': 'api' if index == 0 else 'model_api'})
+                        'method': 'api'})
             else:
                 request('POST', '/api/orders/' + oid + '/api-credentials/' + credential['id'] + '/revoke')
                 renew(oid)
@@ -752,7 +805,7 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60, brows
                 check(response.status_code in {401, 403}, 'Revoked credential still invokes APISIX')
                 check(redis.get(month_key) == '2', 'Revoked invocation changed usage')
             raw_key = None
-            checks.append(('api' if index == 0 else 'model_api') + ': manual, negative, credential, renewal' +
+            checks.append(('API service' if index == 0 else 'Model-serving API application (canonical api)') + ': manual, negative, credential, renewal' +
                           ('' if browser_fixture else ', revoke'))
             if worker:
                 worker_oid = buy(index, hold=False)
@@ -770,7 +823,7 @@ def exercise(m, saved, path, gateway_url, worker=False, worker_timeout=60, brows
                           'Worker success lacks subscription term')
                     check(db.get(m.ApiCredential, credential['id']).status == ('active' if browser_fixture else 'revoked'),
                           'Worker delivery changed shared credential lifecycle')
-                checks.append(('api' if index == 0 else 'model_api') + ': deployed worker')
+                checks.append(('API service' if index == 0 else 'Model-serving API application (canonical api)') + ': deployed worker')
         if browser_fixture:
             write_manifest(browser_fixture, {'run_id': saved['run_id'], 'token': tokens['buyer'],
                 'orders': browser_orders, 'enterprise_id': saved['enterprises'][0]}, create=True)

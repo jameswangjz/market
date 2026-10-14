@@ -165,7 +165,7 @@ class OwnershipTests(unittest.TestCase):
         Message = model('Message', 'messages', ('target_id', 'target_type', 'tenant_id', 'category', 'event_key'))
         Recipient = model('Recipient', 'recipients', (), {'message_id': 'messages.id', 'user_id': 'users.id'})
         Outbox = model('Outbox', 'outbox', (), {'message_id': 'messages.id', 'user_id': 'users.id'})
-        Expired = model('Expired', 'expired', ('message_id', 'user_id'))
+        Expired = model('Expired', 'expired', ('message_id', 'user_id'), {'receipt_id': 'recipients.id'})
         self.m.DeliveryTask = model('Task', 'tasks', (), {'order_id': 'orders.id'})
         self.m.OAuthClient = model('OAuth', 'oauth', ('client_id',), {'product_id': 'products.id'})
         Combo = model('Combo', 'combinations', ('version_id',), {
@@ -213,8 +213,11 @@ class OwnershipTests(unittest.TestCase):
             self.message(),
             self.m.message_center['Recipient'](id='recipient', message_id='message', user_id='staff'),
             self.m.message_center['Outbox'](id='outbox', message_id='message', user_id='staff'),
-            self.m.message_center['ExpiredUrgent'](id='expired', message_id='message', user_id='staff'),
-            self.m.message_center['ExpiredUrgent'](id='outside-expired', message_id='outside', user_id='staff')])
+            self.m.message_center['ExpiredUrgent'](id='expired', receipt_id='recipient', message_id='message', user_id='staff'),
+            self.message(id='outside', target_type='development_task', target_id='outside',
+                         tenant_id='', category='ops', event_key='external-global'),
+            self.m.message_center['Recipient'](id='outside-recipient', message_id='outside', user_id='staff'),
+            self.m.message_center['ExpiredUrgent'](id='outside-expired', receipt_id='outside-recipient', message_id='outside', user_id='staff')])
         self.db.commit()
         scopes = self.scopes()
         for table, expected in (('audit', {'audit'}), ('messages', {'message'}),
@@ -347,11 +350,66 @@ class OwnershipTests(unittest.TestCase):
                 self.db.delete(row)
                 self.db.commit()
 
-    def test_recipient_link_to_unowned_message_is_rejected_even_for_fixture_user(self):
-        self.db.add(self.m.message_center['Receipt'](id='unexpected-receipt',
-            message_id='production-message', user_id=self.saved['users']['buyer']))
+    def test_fixture_user_transport_preserves_external_message_and_other_recipients(self):
+        from sqlalchemy import delete, select
+        Message, Receipt, Delivery, Expired = (self.m.message_center[key] for key in
+                                               ('Message', 'Receipt', 'Delivery', 'ExpiredUrgent'))
+        external = self.message(id='production-message', target_type='development_task', target_id='production-task',
+                                tenant_id='production-tenant', category='ops', event_key='external-global')
+        self.db.add_all([external, self.m.User(id='staff', name='Staff', email='staff@example.invalid'),
+            Receipt(id='fixture-receipt', message_id=external.id, user_id=self.saved['users']['buyer']),
+            Receipt(id='staff-receipt', message_id=external.id, user_id='staff'),
+            Delivery(id='fixture-delivery', message_id=external.id, user_id=self.saved['users']['buyer']),
+            Delivery(id='staff-delivery', message_id=external.id, user_id='staff'),
+            Expired(id='fixture-expired', receipt_id='fixture-receipt', message_id=external.id,
+                    user_id=self.saved['users']['buyer']),
+            Expired(id='staff-expired', receipt_id='staff-receipt', message_id=external.id, user_id='staff')])
         self.db.commit()
-        with self.assertRaisesRegex(acceptance.AcceptanceFailure, 'unowned message'):
+        before = {c.name: getattr(external, c.name) for c in Message.__table__.columns}
+        scopes = self.scopes()
+        self.assertNotIn(external.id, set(self.db.scalars(select(Message.id).where(scopes['messages']))))
+        for model, expected in ((Receipt, {'fixture-receipt'}), (Delivery, {'fixture-delivery'}),
+                                (Expired, {'fixture-expired'})):
+            self.assertEqual(set(self.db.scalars(select(model.id).where(scopes[model.__tablename__]))), expected)
+        self.assertNotIn('staff', set(self.db.scalars(select(self.m.User.id).where(scopes['users']))))
+        for table in reversed(self.m.Base.metadata.sorted_tables):
+            if table.name in scopes:
+                self.db.execute(delete(table).where(scopes[table.name]))
+        self.db.commit()
+        self.db.expire_all()
+        preserved = self.db.get(Message, 'production-message')
+        self.assertEqual({c.name: getattr(preserved, c.name) for c in Message.__table__.columns}, before)
+        self.assertIsNotNone(self.db.get(self.m.User, 'staff'))
+        for model, removed, preserved_id in ((Receipt, 'fixture-receipt', 'staff-receipt'),
+                                             (Delivery, 'fixture-delivery', 'staff-delivery'),
+                                             (Expired, 'fixture-expired', 'staff-expired')):
+            self.assertIsNone(self.db.get(model, removed))
+            self.assertIsNotNone(self.db.get(model, preserved_id))
+
+    def test_unowned_transport_is_excluded_and_cannot_be_adopted(self):
+        from sqlalchemy import select
+        self.db.add_all([self.message(),
+            self.m.User(id='staff', name='Staff', email='staff@example.invalid'),
+            self.m.message_center['Receipt'](id='fixture-receipt', message_id='message',
+                                             user_id=self.saved['users']['buyer']),
+            self.m.message_center['ExpiredUrgent'](id='unexpected-expired', receipt_id='fixture-receipt',
+                                                   message_id='production-message', user_id='staff')])
+        self.db.commit()
+        scopes = self.scopes()
+        Expired = self.m.message_center['ExpiredUrgent']
+        self.assertNotIn('unexpected-expired', set(self.db.scalars(select(Expired.id).where(scopes['expired']))))
+        with self.assertRaisesRegex(acceptance.AcceptanceFailure, 'unowned message and user'):
+            acceptance.message_edge_ownership('production-message', 'staff', {'message'},
+                                              set(self.saved['users'].values()))
+
+    def test_expired_transport_requires_exact_receipt_message_and_user_linkage(self):
+        self.db.add_all([self.message(),
+            self.m.message_center['Receipt'](id='fixture-receipt', message_id='message',
+                                             user_id=self.saved['users']['buyer']),
+            self.m.message_center['ExpiredUrgent'](id='unexpected-expired', receipt_id='fixture-receipt',
+                message_id='production-message', user_id=self.saved['users']['buyer'])])
+        self.db.commit()
+        with self.assertRaisesRegex(acceptance.AcceptanceFailure, 'exact receipt'):
             self.scopes()
 
     def test_fixture_message_with_unrecognized_event_is_rejected(self):

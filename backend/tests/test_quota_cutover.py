@@ -285,9 +285,12 @@ return clock[1] * 1000 + math.floor(clock[2] / 1000) + ttl
         self.assertEqual(self.client.hgetall(decoy), {"wrong": "type"})
 
     def test_scope_inactive_and_ambiguous_periods_reject_without_writes(self):
+        # Keep the inactive fixture's start deadline well ahead of real Redis TIME
+        # validation, even when the full suite delays this test.
         cases = [dict(quota_scope="elsewhere"), dict(mode="legacy"),
                  dict(subscription_periods=json.dumps([dict(self.period, end_at=self.now)])),
-                 dict(subscription_periods=json.dumps([dict(self.period, start_at=self.now + 1)])),
+                 dict(subscription_periods=json.dumps([dict(
+                     self.period, start_at=self.now + 3600, end_at=self.now + 7200)])),
                  dict(subscription_periods=json.dumps([self.period, dict(self.period, period_key="other")]))]
         for changes in cases:
             with self.subTest(changes=changes):

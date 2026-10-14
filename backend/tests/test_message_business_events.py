@@ -360,7 +360,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             db.get(self.m.Product, "product").status = "draft"
             db.commit()
         self.request("POST", "/api/products/product/submit", actor="provider")
-        self.request("POST", "/api/products/product/review", actor="reviewer", json={"decision": "approve"})
+        self.request("POST", "/api/products/product/review", actor="platform", json={"decision": "approve"})
         self.assertEqual(self.recipients(title="产品待质量审核"), {"platform", "quality"})
         self.request("POST", "/api/products/product/review", actor="quality", json={"decision": "reject", "comment": "Revise"})
         self.request("POST", "/api/products/product/submit", actor="provider")
