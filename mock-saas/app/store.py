@@ -27,6 +27,31 @@ def hashed(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def assigned_external_id(db, table, platform_field, external_field, prefix, tenant_id, platform_id, body):
+    rows = db.execute(f'SELECT {platform_field}, payload FROM {table} WHERE tenant_id = ?',
+                      (tenant_id,)).fetchall()
+    previous = next((json.loads(row['payload']) for row in rows
+                     if row[platform_field] == platform_id), None)
+    # Preexisting rows without an external field used the legacy truncated identity.
+    external = (previous.get(external_field) or prefix + platform_id[:12]) if previous is not None else None
+    supplied = body.get(external_field)
+    if external_field in body:
+        if (not isinstance(supplied, str) or not supplied.strip() or supplied != supplied.strip()
+                or len(supplied) > 180):
+            raise MachineOperationError(400, 'invalid_external_identity')
+        if external is not None and supplied != external:
+            raise MachineOperationError(409, 'external_identity_immutable')
+    if external is None:
+        external = supplied or prefix + hashed(json.dumps([tenant_id, platform_id], separators=(',', ':')))
+    if previous is None:
+        if any(row[platform_field] != platform_id and
+               (row[platform_field] == external or
+                json.loads(row['payload']).get(external_field) in (external, platform_id))
+               for row in rows):
+            raise MachineOperationError(409, 'external_identity_conflict')
+    return external
+
+
 class Store:
     def __init__(self, path):
         self.path = Path(path)
@@ -246,15 +271,23 @@ class Store:
             elif operation in {'USER_ASSIGN', 'USER_UNASSIGN'}:
                 uid = body.get('user_id', '')
                 status = 'active' if operation == 'USER_ASSIGN' else 'deleted'
-                external = 'mock-user-' + uid[:12]
+                external = None
+                previous = db.execute('SELECT payload FROM users WHERE tenant_id=? AND user_id=?',
+                                      (tenant_id, uid)).fetchone()
+                if previous:
+                    external = json.loads(previous['payload']).get('external_user_id') or 'mock-user-' + uid[:12]
                 if operation == 'USER_UNASSIGN':
                     matches = db.execute('SELECT user_id, payload FROM users WHERE tenant_id = ?',
                                          (tenant_id,)).fetchall()
-                    resolved = next((r for r in matches if r['user_id'] == uid
-                        or json.loads(r['payload']).get('external_user_id') == uid), None)
+                    resolved = next((r for r in matches if r['user_id'] == uid), None)
+                    if resolved is None:
+                        aliases = [r for r in matches if json.loads(r['payload']).get('external_user_id') == uid]
+                        if len(aliases) > 1:
+                            raise MachineOperationError(409, 'ambiguous_external_identity')
+                        resolved = aliases[0] if aliases else None
                     if resolved:
                         uid = resolved['user_id']
-                        external = json.loads(resolved['payload'])['external_user_id']
+                        external = json.loads(resolved['payload']).get('external_user_id') or 'mock-user-' + uid[:12]
                     elif uid.startswith('mock-user-'):
                         result = {'ret': 0, 'tenant_id': tenant_id, 'user_id': uid, 'status': status}
                         if idem:
@@ -262,7 +295,10 @@ class Store:
                                        (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
                         return result
                 if operation == 'USER_ASSIGN':
-                    external = body.get('external_user_id', external)
+                    external = assigned_external_id(db, 'users', 'user_id', 'external_user_id',
+                                                    'mock-user-', tenant_id, uid, body)
+                elif external is None:
+                    external = 'mock-user-' + hashed(json.dumps([tenant_id, uid], separators=(',', ':')))
                 payload = {**body, 'user_id': uid, 'external_user_id': external, 'status': status}
                 db.execute('INSERT INTO users VALUES (?, ?, ?) ON CONFLICT(tenant_id, user_id) '
                            'DO UPDATE SET payload = excluded.payload', (tenant_id, uid, json.dumps(payload)))
@@ -279,26 +315,38 @@ class Store:
             elif operation in {'DEPT_CREATE', 'DEPT_REMOVE'}:
                 did = body.get('department_id', '')
                 status = 'active' if operation == 'DEPT_CREATE' else 'deleted'
+                previous = db.execute('SELECT payload FROM departments WHERE tenant_id=? AND department_id=?',
+                                      (tenant_id, did)).fetchone()
+                external = (json.loads(previous['payload']).get('external_department_id') or
+                            'mock-dept-' + did[:12]) if previous else None
                 if operation == 'DEPT_REMOVE':
                     found = db.execute('SELECT department_id, payload FROM departments WHERE tenant_id=?', (tenant_id,)).fetchall()
-                    resolved = next((r for r in found if r['department_id'] == did or
-                                     json.loads(r['payload']).get('external_department_id') == did), None)
+                    resolved = next((r for r in found if r['department_id'] == did), None)
+                    if resolved is None:
+                        aliases = [r for r in found if json.loads(r['payload']).get('external_department_id') == did]
+                        if len(aliases) > 1:
+                            raise MachineOperationError(409, 'ambiguous_external_identity')
+                        resolved = aliases[0] if aliases else None
                     if resolved:
                         did = resolved['department_id']
+                        external = json.loads(resolved['payload']).get('external_department_id') or 'mock-dept-' + did[:12]
                     elif did.startswith('mock-dept-'):
                         result = {'ret': 0, 'tenant_id': tenant_id, 'department_id': body['department_id'], 'status': status}
                         if idem:
                             db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
                                        (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
                         return result
-                department_payload = {**body, 'status': status}
                 if operation == 'DEPT_CREATE':
-                    department_payload['external_department_id'] = body.get(
-                        'external_department_id', 'mock-dept-' + did[:12])
+                    external = assigned_external_id(db, 'departments', 'department_id', 'external_department_id',
+                                                    'mock-dept-', tenant_id, did, body)
+                elif external is None:
+                    external = 'mock-dept-' + hashed(json.dumps([tenant_id, did], separators=(',', ':')))
+                department_payload = {**body, 'department_id': did, 'status': status,
+                                      'external_department_id': external}
                 db.execute('INSERT INTO departments VALUES (?, ?, ?) ON CONFLICT(tenant_id, department_id) '
                            'DO UPDATE SET payload = excluded.payload',
                            (tenant_id, did, json.dumps(department_payload)))
-                result = {'ret': 0, 'tenant_id': tenant_id, 'department_id': 'mock-dept-' + did[:12]
+                result = {'ret': 0, 'tenant_id': tenant_id, 'department_id': external
                           if status == 'active' else body['department_id'], 'status': status}
                 if idem:
                     db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
