@@ -56,6 +56,8 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=N
         if row is None:
             db.rollback(); return False
         # Recheck after acquiring the request lock using a fresh PG statement.
+        if fixture_scope is None and not registered and registry_present(db):
+            filters.append(registry_exclusion(Request))
         if db.scalar(select(Request.id).where(Request.id == row.id, *filters)) is None:
             db.rollback(); return False
         if fixture_scope is not None:

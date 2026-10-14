@@ -60,6 +60,31 @@ class ReservationTests(unittest.TestCase):
         with self.sessions() as db:
             self.assertFalse(facility.registry_present(db))
 
+    def test_registry_activation_before_selection_excludes_reserved_fixture(self):
+        original_presence = facility.registry_present
+        observed_presence = []
+        def provision_after_absent_lookup(db):
+            present = original_presence(db)
+            observed_presence.append(present)
+            if len(observed_presence) == 1:
+                self.assertFalse(present)
+                # Another transaction commits ownership before candidate selection.
+                self.provision()
+                self.reserve()
+            return present
+        with patch.object(facility, 'registry_present', side_effect=provision_after_absent_lookup):
+            self.assertFalse(self.process())
+        self.assertEqual(observed_presence, [False, True])
+        self.prepare.assert_not_called()
+        with self.sessions() as db:
+            row = db.get(Request, self.scope.change_id)
+            self.assertEqual(row.lease_owner, '')
+            self.assertIsNone(row.lease_expires_at)
+            self.assertEqual(row.resource_plan_json, '{}')
+            self.assertEqual(row.retries, 0)
+            self.assertEqual(db.scalar(select(facility.reservations.c.change_id)),
+                             self.scope.change_id)
+
     def test_competing_owner_renewal_and_release(self):
         self.provision()
         self.reserve()
