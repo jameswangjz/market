@@ -35,7 +35,7 @@ try {
     Cdp 'Page.setDownloadBehavior' @{behavior='deny'}|Out-Null
     Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=900;deviceScaleFactor=1;mobile=$false}|Out-Null
     Set-Actor $fixture.tenantToken
-    Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=orders'}|Out-Null
+    Cdp 'Page.navigate' @{url=('http://192.168.10.10:30080/console?view=orders&enterprise_id='+$fixture.buyerEnterpriseId)}|Out-Null
     $order=ConvertTo-Json -InputObject $fixture.orderNo -Compress
     WaitJs "[...document.querySelectorAll('.order-no')].some(n=>n.textContent.trim()===$order)"
     $cell="[...document.querySelectorAll('.order-no')].find(n=>n.textContent.trim()===$order).closest('tr').querySelectorAll('td')[1]"
@@ -49,7 +49,7 @@ try {
     Shot 'saas-session'
     $result.checks+= 'Paid order -> authenticated launch -> OIDC consent -> real mock SaaS session'
     Set-Actor $fixture.providerToken
-    Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=products'}|Out-Null
+    Cdp 'Page.navigate' @{url=('http://192.168.10.10:30080/console?view=products&enterprise_id='+$fixture.providerEnterpriseId)}|Out-Null
     WaitJs 'document.body.textContent.includes("SaaS-APP1")&&document.body.textContent.includes("\u4e0b\u8f7d\u63a5\u5165\u914d\u7f6e")'
     Shot 'provider-credentials'
     $product=ConvertTo-Json -InputObject $fixture.productId -Compress
@@ -60,6 +60,9 @@ try {
     $result.checks+= 'Provider UI shows one unified configuration action; live download authorized, independent credentials, no-store'
     Set-Actor $fixture.adminToken
     Cdp 'Page.navigate' @{url='http://192.168.10.10:30080/console?view=settings'}|Out-Null
+    WaitJs 'Number(document.querySelector(".sidebar .nav-badge")?.textContent)>0 && !document.querySelector(".loading-line")'
+    Start-Sleep -Milliseconds 1500
+    Js '[...document.querySelectorAll(".sidebar button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e").click();true'|Out-Null
     WaitJs '[...document.querySelectorAll("button")].some(b=>b.textContent.trim()==="\u5e94\u7528\u63a5\u5165")'
     Js '[...document.querySelectorAll("button")].find(b=>b.textContent.trim()==="\u5e94\u7528\u63a5\u5165").click();true'|Out-Null
     WaitJs 'document.body.textContent.includes("\u5141\u8bb8\u5e94\u7528\u63a5\u5165\u5730\u5740\u4f7f\u7528HTTP")&&!!document.querySelector(".checkbox-line input:checked")'
