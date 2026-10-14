@@ -43,7 +43,7 @@ def rehearse(backup, image='postgres:16-alpine', engine=None, compatibility_hook
         started = True
         for _ in range(60):
             try:
-                command('exec', name, 'pg_isready', '-U', 'postgres', stdout=subprocess.DEVNULL,
+                command('exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL)
                 break
             except subprocess.CalledProcessError:

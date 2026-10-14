@@ -74,8 +74,9 @@ try {
     Cdp 'Page.navigate' @{url=('http://192.168.10.10:30080/console?view=products&enterprise_id='+$fixture.providerEnterpriseId)}|Out-Null
     WaitJs 'document.body.textContent.includes("SaaS-APP1")'
     $result.checks+='Provider catalog contains SaaS-APP1 under validated enterprise context'
-    WaitJs 'Number(document.querySelector(".sidebar .nav-badge")?.textContent)>0 && !document.querySelector(".loading-line")'
+    WaitJs '!document.querySelector(".loading-line") && [...document.querySelectorAll(".sidebar button")].some(b=>b.textContent.trim()==="\u6e05\u7b97\u5206\u8d26")'
     Start-Sleep -Milliseconds 1500
+    $result.stage='provider settlements'
     Js '[...document.querySelectorAll(".sidebar button")].find(b=>b.textContent.trim()==="\u6e05\u7b97\u5206\u8d26").click();true'|Out-Null
     WaitJs 'document.querySelector("h1")?.textContent.includes("\u4f01\u4e1a\u6e05\u7b97") && !document.querySelector(".loading-line")'
     Assert-Browser '!!document.querySelector("main .data-table") && ![...document.querySelectorAll("main button")].some(b=>/\u751f\u6210\u6307\u5b9a\u6708\u4efd|\u652f\u4ed8\u6279\u6b21/.test(b.textContent))' 'Provider must not receive platform batch funding actions'

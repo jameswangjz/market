@@ -672,12 +672,30 @@ def install(ns):
         attachment = db.get(Attachment, aid)
         if not attachment:
             raise HTTPException(404, "附件不存在")
-        authorized = attachment.owner_id == user.id and (scope is None or attachment.tenant_id == scope["enterprise_id"])
-        if not authorized and attachment.owner_id == user.id and scope is not None:
-            from .console_business_scope import message_predicate
-            authorized = db.scalar(select(Message.id).join(MessageAttachment, MessageAttachment.message_id == Message.id).where(
-                MessageAttachment.attachment_id == aid, Message.sender_id == user.id,
-                Message.tenant_id == scope["enterprise_id"], message_predicate(Message, ns, scope)).limit(1))
+        authorized = False
+        if attachment.owner_id == user.id:
+            if scope is not None and attachment.tenant_id == scope["enterprise_id"]:
+                try:
+                    can_send(db, user, scope["enterprise_id"])
+                except HTTPException as exc:
+                    if exc.status_code != 403:
+                        raise
+                else:
+                    linked = db.scalar(select(MessageAttachment.message_id).where(MessageAttachment.attachment_id == aid).limit(1))
+                    if not linked:
+                        authorized = True
+                    else:
+                        from .console_business_scope import message_predicate
+                        authorized = db.scalar(select(Message.id).join(MessageAttachment, MessageAttachment.message_id == Message.id).where(
+                            MessageAttachment.attachment_id == aid, Message.sender_id == user.id,
+                            Message.tenant_id == scope["enterprise_id"], Message.status.in_(["draft", "sent", "recalled"]),
+                            message_predicate(Message, ns, scope)).limit(1))
+            elif scope is None:
+                corporate_link = db.scalar(select(Message.id).join(MessageAttachment, MessageAttachment.message_id == Message.id).where(
+                    MessageAttachment.attachment_id == aid, Message.tenant_id != "").limit(1))
+                if not platform_admin(user) and (attachment.tenant_id or corporate_link):
+                    raise HTTPException(404, "附件不存在或没有访问权限")
+                authorized = True
         if not authorized:
             authorized = db.execute(base_query(user.id, scope).join(MessageAttachment,
                     MessageAttachment.message_id == Message.id).where(MessageAttachment.attachment_id == aid,

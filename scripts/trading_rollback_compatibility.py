@@ -20,6 +20,18 @@ PROTECTED_TABLES = ('orders', 'products', 'product_release_versions', 'payments'
 FINANCE_FIELDS = ('id', 'order_id', 'status', 'gross_amount', 'net_amount',
                   'cost_amount', 'profit_amount', 'provider_share')
 PROVIDER_FIELDS = ('id', 'order_id', 'status', 'provider_share')
+PROBE_FAILURES = {
+    'restored business rows required': 'missing_business_rows',
+    'restored finance and provider actors required': 'missing_scoped_actors',
+    'owned restored settlements required; provide an isolated schema fixture': 'missing_owned_settlements',
+    'nonempty business response required': 'empty_business_response',
+    'business response shape mismatch': 'response_shape',
+    'finance numeric shape mismatch': 'numeric_shape',
+    'provider response escaped owned restored scope': 'provider_scope',
+    'restored public category rows required': 'missing_categories',
+    'read/auth HTTP status mismatch': 'http_status',
+    'protected restored business fingerprint changed': 'business_data_changed',
+}
 
 
 def canonical_hash(value):
@@ -179,12 +191,22 @@ def run_images(old_image, new_image, engine, container, ensure_category_schema=F
         name = 'market-read-rollback-' + uuid.uuid4().hex
         try:
             with Path(__file__).open('rb') as source:
-                result = command('run', '-i', '--pull=never', '--name', name,
+                try:
+                    result = command('run', '-i', '--pull=never', '--name', name,
                     '--network=container:' + container, '--memory=1g', '--cpus=1', '--pids-limit=256',
                     '-e', 'DATABASE_URL=' + DATABASE_URL, '-e', 'MESSAGE_CENTER_DISABLE_BACKGROUND=true',
                     '-e', 'REHEARSAL_ENSURE_CATEGORY_SCHEMA=' + str(side == 'new' and ensure_category_schema).lower(),
                     '-e', 'REHEARSAL_NEW_DETAIL_CHECKS=' + str(side == 'new' and new_detail_checks).lower(),
                     '--entrypoint', 'python', image_id, '-', '--probe', stdin=source, timeout=180)
+                except subprocess.CalledProcessError as exc:
+                    try:
+                        failure = json.loads(exc.stderr)
+                    except (ValueError, TypeError):
+                        failure = {}
+                    code = failure.get('failure_code')
+                    if code in {*PROBE_FAILURES.values(), 'internal_probe_failure'}:
+                        print(json.dumps({'side': side, 'failure_code': code}), file=sys.stderr)
+                    raise
             report = json.loads(result.stdout)
             extra = 2 if side == 'new' and new_detail_checks else 0
             if (report.get('protected_unchanged') is not True or report.get('http_get_checks') != 7 + extra or
@@ -213,7 +235,9 @@ def main():
                 result = probe(os.environ.get('REHEARSAL_ENSURE_CATEGORY_SCHEMA') == 'true',
                                os.environ.get('REHEARSAL_NEW_DETAIL_CHECKS') == 'true')
             print(json.dumps(result, sort_keys=True))
-        except Exception:
+        except Exception as exc:
+            code = PROBE_FAILURES.get(str(exc), 'internal_probe_failure')
+            print(json.dumps({'failure_code': code}), file=sys.stderr)
             sys.exit(1)
         return
     parser = argparse.ArgumentParser(description=__doc__)

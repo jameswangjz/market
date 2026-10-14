@@ -470,6 +470,40 @@ return clock[1] * 1000 + math.floor(clock[2] / 1000) + ttl
                          [str(expected[k]) for k in ['minute', 'day', 'month']])
         self.assertEqual(self.execute(prepared), receipt)
 
+    def pagination_preflight_and_execute(self):
+        before = self.snapshot()
+        for attempt in range(3):
+            prepared = self.prepare()
+            try:
+                checked = cutover.execute(self.client, prepared, preflight_only=True)
+                self.assertEqual(self.snapshot(), before)
+                receipt = self.execute(prepared)
+                return prepared, before, checked, receipt
+            except runtime.redis.ResponseError as exc:
+                # Real previews end at the next Redis minute. Retake only a
+                # verified expiry with no writes; all other failures stay fatal.
+                if (str(exc) != 'migration preview expired'
+                        or int(self.client.time()[0]) < prepared['plan']['valid_until']
+                        or attempt == 2):
+                    raise
+                self.assertEqual(self.snapshot(), before)
+        self.fail('Pagination preview retry budget exhausted')
+
+    def test_pagination_retake_requires_real_expiry_and_preserves_usage(self):
+        self.client.set(self.old(), 23)
+        clock = self.client.time()
+        with patch.object(self.client, 'time', return_value=(int(clock[0]) - 60, clock[1])):
+            expired = self.prepare()
+        before = self.snapshot()
+        with patch.object(self, 'prepare', side_effect=[expired, self.prepare()]) as prepare:
+            prepared, baseline, checked, receipt = self.pagination_preflight_and_execute()
+        self.assertEqual(prepare.call_count, 2)
+        self.assertEqual(baseline, before)
+        self.assertEqual(checked['before'], dict(minute=0, day=0, month=0))
+        self.assertEqual(receipt['after'], dict(minute=0, day=23, month=23))
+        self.assertEqual(self.client.get(self.old()), '23')
+        self.assertEqual(self.execute(prepared), receipt)
+
     def test_real_scan_pagination_preserves_counts_and_replay(self):
         with self.client.pipeline() as pipe:
             for i in range(1300):
@@ -478,13 +512,9 @@ return clock[1] * 1000 + math.floor(clock[2] / 1000) + ttl
                 pipe.set(f'unrelated:{i}', 'untouched')
             pipe.set(self.old(), 23)
             pipe.execute()
-        prepared = self.prepare()
+        prepared, before, checked, receipt = self.pagination_preflight_and_execute()
         self.assertEqual(len(prepared['plan']['sources'][0]['counter_indices']), 1301)
-        before = self.snapshot()
-        checked = cutover.execute(self.client, prepared, preflight_only=True)
         self.assertGreater(checked['scan_pages'], 2)
-        self.assertEqual(self.snapshot(), before)
-        receipt = self.execute(prepared)
         self.assertGreater(receipt['scan_pages'], 2)
         self.assertEqual(receipt['after'], dict(minute=0, day=23, month=23))
         after = self.snapshot()

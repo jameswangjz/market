@@ -456,3 +456,66 @@ class ConsoleBusinessScopeTests(harness.AcceptanceHTTPCase):
             hidden = db.scalar(self.select(self.Message.id).where(self.Message.title == "Foreign company"))
             self.assertIsNone(db.scalar(self.select(self.Receipt.first_read_at).where(self.Receipt.message_id == hidden,
                 self.Receipt.user_id == "buyer_admin")))
+
+    def test_company_sender_can_preview_uploaded_draft_sent_and_recalled_attachments(self):
+        from types import SimpleNamespace
+        m = self.m
+        stored = SimpleNamespace(stream=lambda _: [b"notice"], close=lambda: None, release_conn=lambda: None)
+        query = "?enterprise_id=buyer_tenant&business_view=provider"
+        with patch.object(m, "MINIO_ENDPOINT", "isolated.invalid"), patch.object(m, "Minio") as storage, \
+                patch.object(m, "clamav_scan_stream", return_value=("clean", "isolated")):
+            storage.return_value.get_object.return_value = stored
+            uploaded = self.request("POST", "/api/notifications/attachments" + query, actor="buyer_admin",
+                files={"upload": ("notice.txt", b"notice", "text/plain")})
+            aid = uploaded["id"]
+            download = "/api/notifications/attachments/" + aid + "/download"
+            self.request("GET", download + query, actor="buyer_admin")
+            body = {"title": "Company draft", "content": "Owner preview", "tenant_id": "buyer_tenant",
+                "recipient_ids": ["buyer"], "attachment_ids": [aid], "draft": True}
+            draft = self.request("POST", "/api/notifications/send" + query, actor="buyer_admin", json=body)
+            self.request("GET", download + query, actor="buyer_admin")
+            self.request("POST", "/api/notifications/sent/" + draft["id"] + "/publish" + query, actor="buyer_admin")
+            self.request("GET", download + query, actor="buyer_admin")
+            self.request("GET", download + "?enterprise_id=buyer_tenant&business_view=buyer", actor="buyer")
+            with m.SessionLocal() as db:
+                self.assertFalse(db.scalar(self.select(self.Receipt.id).where(self.Receipt.message_id == draft["id"],
+                    self.Receipt.user_id == "buyer_admin")))
+                db.add(m.Membership(user_id="buyer_admin", enterprise_id="other_tenant", role="enterprise_admin"))
+                db.commit()
+            self.request("GET", download + "?enterprise_id=other_tenant&business_view=provider", actor="buyer_admin", expected=404)
+            self.request("POST", "/api/notifications/sent/" + draft["id"] + "/recall" + query, actor="buyer_admin",
+                json={"reason": "Owner recalls notice"})
+            self.request("GET", download + query, actor="buyer_admin")
+            self.request("GET", download + "?enterprise_id=buyer_tenant&business_view=buyer", actor="buyer", expected=404)
+            with m.SessionLocal() as db:
+                membership = db.scalar(self.select(m.Membership).where(m.Membership.user_id == "buyer_admin",
+                    m.Membership.enterprise_id == "buyer_tenant"))
+                membership.role = "member"
+                db.commit()
+            self.request("GET", download + query, actor="buyer_admin", expected=404)
+            with m.SessionLocal() as db:
+                for membership in db.scalars(self.select(m.Membership).where(m.Membership.user_id == "buyer_admin")):
+                    membership.status = "inactive"
+                db.commit()
+            self.request("GET", download, actor="buyer_admin", expected=404)
+            self.request("GET", download + query, actor="buyer_admin", expected=403)
+
+    def test_linked_owner_preview_requires_current_message_author_and_business_view(self):
+        from types import SimpleNamespace
+        m = self.m
+        Attachment = m.message_center["Attachment"]
+        Link = next(x.class_ for x in m.Base.registry.mappers if x.local_table.name == "notification_message_attachments")
+        with m.SessionLocal() as db:
+            for key, sender, target in (("buyer-link", "buyer_admin", "lens-buy"), ("foreign-author", "outsider", "lens-sell")):
+                message = m.message_center["create"](db, [], key, "safe notice", "order", target,
+                    sender_id=sender, tenant_id="buyer_tenant", event_key="owner:" + key, status="draft", delivery=False)
+                db.add(Attachment(id=key, owner_id="buyer_admin", tenant_id="buyer_tenant", name="x.txt", object_name=key, size=1))
+                db.flush()
+                db.add(Link(message_id=message.id, attachment_id=key))
+            db.commit()
+        stored = SimpleNamespace(stream=lambda _: [b"x"], close=lambda: None, release_conn=lambda: None)
+        with patch.object(m, "MINIO_ENDPOINT", "isolated.invalid"), patch.object(m, "Minio") as storage:
+            storage.return_value.get_object.return_value = stored
+            self.request("GET", "/api/notifications/attachments/buyer-link/download?business_view=buyer", actor="buyer_admin")
+            self.request("GET", "/api/notifications/attachments/buyer-link/download?business_view=provider", actor="buyer_admin", expected=404)
+            self.request("GET", "/api/notifications/attachments/foreign-author/download?business_view=provider", actor="buyer_admin", expected=404)
