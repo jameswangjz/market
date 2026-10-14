@@ -530,7 +530,7 @@ class OrderFulfillmentTests(unittest.TestCase):
                 patch.object(self.m, "clamav_scan_stream", return_value=("clean", "clean")) as scan:
             before = self.counts()
             for actor in ("buyer", "buyer_admin", "platform", "ops", "outsider"):
-                self.request("POST", path, actor, expected=403,
+                self.request("POST", path, actor, expected=404 if actor == "outsider" else 403,
                              files={"upload": ("evidence.txt", b"Evidence", "text/plain")})
             self.assertEqual(before, self.counts())
             scan.assert_not_called()
@@ -616,8 +616,10 @@ class OrderFulfillmentTests(unittest.TestCase):
                 self.assertEqual(response.content, b"Evidence")
             storage.get_object.reset_mock()
             for actor in ("outsider", "finance", "reviewer", "quality"):
-                self.request("GET", f"/api/delivery-tasks/{tid}/attachments", actor, expected=403)
-                self.request("GET", "/api/files/delivery_file/download", actor, expected=403)
+                self.request("GET", f"/api/delivery-tasks/{tid}/attachments", actor,
+                             expected=404 if actor == "outsider" else 403)
+                self.request("GET", "/api/files/delivery_file/download", actor,
+                             expected=404 if actor == "outsider" else 403)
             for field, value in (("role", "member"), ("status", "disabled")):
                 with self.m.SessionLocal() as db:
                     member = db.scalar(self.select(self.m.Membership).where(self.m.Membership.user_id == "provider"))
