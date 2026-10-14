@@ -410,3 +410,49 @@ class ConsoleBusinessScopeTests(harness.AcceptanceHTTPCase):
         self.assertEqual({row.id for row in rows}, {"legacy-before-migration", "legacy-after-migration"})
         self.assertTrue(all(row.tenant_id == "" and row.owner_id == "buyer_admin" for row in rows))
         self.request("GET", "/api/notifications/attachments/legacy-before-migration/download", actor="buyer_admin", expected=404)
+
+    def test_platform_global_manual_notices_are_shared_only_with_their_recipients(self):
+        from types import SimpleNamespace
+        m = self.m
+        Attachment = m.message_center["Attachment"]
+        with m.SessionLocal() as db:
+            db.add(Attachment(id="global-notice-attachment", owner_id="platform", name="notice.txt",
+                object_name="global-notice", size=1, tenant_id=""))
+            for title, tenant, sender, target in (
+                ("Current company", "buyer_tenant", "buyer_admin", ""),
+                ("Foreign company", "other_tenant", "platform", ""),
+                ("Ambiguous global business", "", "system", "order"),
+                ("Untrusted global manual", "", "buyer_admin", ""),
+            ):
+                m.message_center["create"](db, ["buyer_admin"], title, "safe notice", target, "unknown" if target else "",
+                    event_key="shared:" + title, category="announcement", tenant_id=tenant, sender_id=sender, delivery=False)
+            db.commit()
+        for category in ("announcement", "system"):
+            self.request("POST", "/api/notifications/send", actor="platform", json={
+                "title": "Global " + category, "content": "Platform manual notice", "category": category,
+                "recipient_ids": ["buyer_admin"], "attachment_ids": ["global-notice-attachment"]})
+        self.request("POST", "/api/notifications/send", actor="platform", json={
+            "title": "Someone else's global notice", "content": "Not addressed to buyer admin", "recipient_ids": ["outsider"]})
+        expected = {"Current company", "Global announcement", "Global system"}
+        for mode in ("", "provider", "buyer"):
+            query = "?enterprise_id=buyer_tenant" + ("&business_view=" + mode if mode else "")
+            inbox = self.request("GET", "/api/notifications" + query, actor="buyer_admin")
+            self.assertEqual({x["title"] for x in inbox["items"]}, expected)
+            self.assertEqual((inbox["total"], inbox["unread"]), (3, 3))
+            rid = next(x["id"] for x in inbox["items"] if x["title"] == "Global system")
+            detail = self.request("GET", "/api/notifications/" + rid + query, actor="buyer_admin")
+            self.assertEqual(detail["attachments"][0]["id"], "global-notice-attachment")
+            stored = SimpleNamespace(stream=lambda _: [b"x"], close=lambda: None, release_conn=lambda: None)
+            with patch.object(m, "MINIO_ENDPOINT", "isolated.invalid"), patch.object(m, "Minio") as storage:
+                storage.return_value.get_object.return_value = stored
+                self.request("GET", "/api/notifications/attachments/global-notice-attachment/download" + query, actor="buyer_admin")
+        self.request("GET", "/api/notifications/" + rid + "?business_view=buyer", actor="buyer", expected=404)
+        self.request("GET", "/api/notifications/attachments/global-notice-attachment/download?business_view=buyer", actor="buyer", expected=404)
+        result = self.request("POST", "/api/notifications/read-all?enterprise_id=buyer_tenant&business_view=provider",
+            actor="buyer_admin", json={"cutoff": m.now().isoformat()})
+        self.assertEqual(result["processed"], 3)
+        self.assertEqual(self.request("GET", "/api/notifications/summary?business_view=buyer", actor="buyer_admin")["unread"], 0)
+        with m.SessionLocal() as db:
+            hidden = db.scalar(self.select(self.Message.id).where(self.Message.title == "Foreign company"))
+            self.assertIsNone(db.scalar(self.select(self.Receipt.first_read_at).where(self.Receipt.message_id == hidden,
+                self.Receipt.user_id == "buyer_admin")))

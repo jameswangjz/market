@@ -98,7 +98,10 @@ def message_predicate(message, ns, scope):
     clauses.append(and_(message.tenant_id == scope["enterprise_id"],
         message.target_type.notin_(["order", "order_state", "settlement", "settlement_batch",
             "settlement_proposal", "product", "saas_subscription", "api_credential", *links])))
-    clauses.append(and_(message.tenant_id == "", message.target_type.in_(["", "user", "identity", "identity_verification", "membership"]),
+    sender = ns["User"]
+    clauses.append(and_(message.tenant_id == "", message.target_type == "", message.sender_id.in_(
+        select(sender.id).where(sender.platform_role.in_(["super_admin", "platform_operator"])))))
+    clauses.append(and_(message.tenant_id == "", message.target_type.in_(["user", "identity", "identity_verification", "membership"]),
         message.category.in_(["announcement", "auth", "identity", "enterprise", "review"])))
     clauses.append(and_(message.tenant_id == scope["enterprise_id"], message.target_type.in_(["order", "order_state"]),
         ~message.target_id.in_(select(order.id)), ~message.target_id.in_(select(order.order_no))))

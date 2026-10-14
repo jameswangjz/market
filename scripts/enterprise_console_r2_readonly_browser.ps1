@@ -74,6 +74,21 @@ try {
     Cdp 'Page.navigate' @{url=('http://192.168.10.10:30080/console?view=products&enterprise_id='+$fixture.providerEnterpriseId)}|Out-Null
     WaitJs 'document.body.textContent.includes("SaaS-APP1")'
     $result.checks+='Provider catalog contains SaaS-APP1 under validated enterprise context'
+    WaitJs 'Number(document.querySelector(".sidebar .nav-badge")?.textContent)>0 && !document.querySelector(".loading-line")'
+    Start-Sleep -Milliseconds 1500
+    Js '[...document.querySelectorAll(".sidebar button")].find(b=>b.textContent.trim()==="\u6e05\u7b97\u5206\u8d26").click();true'|Out-Null
+    WaitJs 'document.querySelector("h1")?.textContent.includes("\u4f01\u4e1a\u6e05\u7b97") && !document.querySelector(".loading-line")'
+    Assert-Browser '!!document.querySelector("main .data-table") && ![...document.querySelectorAll("main button")].some(b=>/\u751f\u6210\u6307\u5b9a\u6708\u4efd|\u652f\u4ed8\u6279\u6b21/.test(b.textContent))' 'Provider must not receive platform batch funding actions'
+    Shot 'provider-settlements-desktop'
+    Cdp 'Emulation.setDeviceMetricsOverride' @{width=390;height=844;deviceScaleFactor=1;mobile=$true}|Out-Null
+    Shot 'provider-settlements-mobile'
+    $result.checks+='Provider settlement navigation and read-only list inspected; proposals and locking not mutated'
+    Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=1000;deviceScaleFactor=1;mobile=$false}|Out-Null
+    Js '[...document.querySelectorAll(".sidebar button")].find(b=>b.textContent.trim().startsWith("\u6d88\u606f\u4e2d\u5fc3")).click();true'|Out-Null
+    WaitJs '!!document.querySelector(".message-center") && document.querySelector(".message-center [aria-busy]")?.getAttribute("aria-busy")==="false"'
+    Assert-Browser '!document.querySelector(".message-center [role=alert]")' 'Scoped message center must load without errors'
+    Shot 'provider-messages-desktop'
+    $result.checks+='Current-enterprise provider message center loaded without reading or deleting individual messages'
     if($script:nativeDialogs -or $script:blockedRequests){throw 'Unexpected browser mutation or native dialog'}
     $result.status='passed'
 }catch{
