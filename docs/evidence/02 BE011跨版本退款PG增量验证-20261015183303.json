@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "coverage": [],
+  "incremental_scope": "BE011 cross-version API store, watermark and funding transactions only",
+  "captured_at": "2026-10-15T10:31:24.790410+00:00",
+  "completed_at": "2026-10-15T10:31:42.134701+00:00",
+  "source_kind": "workingtree",
+  "deployed": false,
+  "source_package_sha256": "da9202f19fbb5af759769caf7a9724b691b48324905078513920f1421306a7d8",
+  "source_sha256": {
+    "main.py": "c12c464b362c4d3d6795450e87399230b3a28fcf1241171bd3af38cf850829a7",
+    "refund_segment_store.py": "66e75444ceaa8d665d20f1ecc0f1700f1f8ff4695d1975aa266ffcfbe25a875c",
+    "refund_funding_store.py": "440d25c485ce28b4b5e189e5392909c8e8678a050a323a37b6076dda44ea74ea",
+    "refund_workflow.py": "d3e972f9df4e25fe279dfd4db2c6f06250f1e570cf2acea0bdea3276dea16a08",
+    "refund_planning.py": "0034e588bc576b2ecb1346242ba133045f8f2be1bfa3cd459836b38f93ab592a",
+    "api_charge_ledger.py": "01a866cd99bb4a7b703b93618a514b8498c34bd94d7e7cfdbbf10476e5b225b2",
+    "subscription_terms.py": "ee021723cc49b9b59f4d42e8008d886eb1f32c182457bfd69ec0ce77c3555fcc",
+    "version_change_resources.py": "37f924ffd5ebf2d6ce74722bf0aa08392c90a4870ec09ddf64dfcc55f852b268",
+    "refund_segment_boundary.py": "eed7ad0ac5a3ec04d0fff994ff6b333f21bd6b7aec7ed00de1c2a3cbe2989d1f",
+    "refund_economic_segments.py": "0cc81d67be0e1b215b0e8b1d283fb50132dee83d18115651c7bfe10f40ccba10",
+    "refund_funding.py": "c8e660d6f90f55fc635fb3a9a257a325ac7f4b5d657e481795f7679311b7be90",
+    "version_change_saga.py": "e7684975ac987821c0af864686f9585c4a39a48cc01ddfd1c382c4857604bc6e",
+    "version_change_worker.py": "bc8fc76c88808c3e92e763b0ddb59a16c8b10742221eb6fed7554d2c8789f329"
+  },
+  "cases": {
+    "asgi_admin": {"status": "passed", "quote": 200, "request": 200, "approval": 200, "finance": 403, "lifo_preserved": true},
+    "asgi_ops": {"status": "passed", "quote": 200, "request": 200, "approval": 200, "finance": 403, "lifo_preserved": true},
+    "cross_root_shared_pool_two_connections": {"status": "passed", "http_equivalent_statuses": [200, 409], "independent_pg_connections": 2, "reserved_before_release": "60.00", "reserved_after_reject": "0.00"},
+    "approval_version_two_connections": {"status": "passed", "http_equivalent_statuses": [200, 409], "independent_pg_connections": 2, "version": 2},
+    "all_sources_wave_cap": {"status": "passed", "sources": 3, "waves": 4, "reserved": "90.97", "overflow": 409},
+    "receipt_window_transaction_rollback_idempotency": {"status": "passed", "receipt_and_window_rollback": true, "repeat_materialize_same_ids": true},
+    "request_audit_rollback": {"status": "passed", "real_flush": true, "allocations_caseplan_windows_audit_outbox_unchanged": true},
+    "request_outbox_rollback": {"status": "passed", "real_flush": true, "allocations_caseplan_windows_audit_outbox_unchanged": true},
+    "review_audit_rollback": {"status": "passed", "real_flush": true, "allocations_caseplan_windows_audit_outbox_unchanged": true},
+    "review_outbox_rollback": {"status": "passed", "real_flush": true, "allocations_caseplan_windows_audit_outbox_unchanged": true},
+    "numeric_streamid_real_pg_execution": {"status": "passed", "pg_sql_executed": true, "boundary": "1-2", "after": "1-10", "charged_calls": 1},
+    "protected_count_only": {"status": "passed", "before": 1, "after": 1}
+  },
+  "cleanup": "owned schema removed",
+  "public_write_operations": 0,
+  "task_status_changes": 0,
+  "protected_order_content_read": false,
+  "limits": [
+    "Synthetic external receipts and MockRedis, not a full APISIX network chain",
+    "No bank, resource recovery execution, notification delivery or browser E2E",
+    "Worker source is packaged and hashed but not executed by this script",
+    "SaaS revised windows require trusted actual switch-time evidence and are not covered",
+    "This evidence does not complete all BE011 acceptance requirements"
+  ]
+}

@@ -703,7 +703,7 @@ def install(ns):
              'validate_purchase': validate_purchase, 'on_delivery_success': on_delivery_success,
              'current_entitlement': current_entitlement, 'lock_combination': lock_combination,
              'quota_periods': quota_periods, 'effective_snapshot': effective_snapshot,
-             'apply_version_change': apply_version_change}
+             'apply_version_change': apply_version_change, 'verified_revision': verified_revision}
     ns.update({key: hooks[key] for key in ('SubscriptionCombination', 'SubscriptionTerm', 'SubscriptionRenewal',
                                          'Combination', 'Term', 'SubscriptionTermRevision')})
     ns['subscription_terms'] = hooks

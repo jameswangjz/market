@@ -60,6 +60,11 @@ def create_app(*, transport=None):
         body = await request.json()
         if not isinstance(body, dict):
             raise HTTPException(400, "invalid_operation")
+        request_id = request.headers.get('X-Request-Id')
+        if request_id:
+            if body.get('idempotency_key', request_id) != request_id:
+                raise HTTPException(409, 'idempotency_key_mismatch')
+            body = {**body, 'idempotency_key': request_id}
         try:
             return store.machine_operation(body, claims)
         except MachineOperationError as exc:

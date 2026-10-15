@@ -80,7 +80,7 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 请求：
 
 ```json
-{"type":"OPEN","enterprise_id":"platform-enterprise-id","enterprise_name":"天地奔牛示范企业","product_id":"platform-product-id","subscription_id":"platform-subscription-id","version":"professional","billing_cycle":"annual","contact":{"name":"管理员","email":"admin@example.com","phone":"13800000000"}}
+{"type":"OPEN","enterprise_id":"platform-enterprise-id","enterprise_name":"天地奔牛示范企业","product_id":"platform-product-id","subscription_id":"platform-subscription-id","version":"professional","billing_cycle":"annual","starts_at":"2026-10-15T08:00:00+00:00","expires_at":"2027-10-15T08:00:00+00:00","admin_user_id":"platform-admin-user-id","oidc_client_id":"product-oidc-client-id","contact":{"name":"管理员","email":"admin@example.com","phone":"13800000000"}}
 ```
 
 成功至少返回：
@@ -90,6 +90,8 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 ```
 
 平台保存 `tenant_id` 和 `app_id`，后续租户操作使用 `tenant_id`。一个企业可以多次开通形成多个独立租户。
+
+平台自动交付会传入上述产品、企业、订阅、管理员、OIDC 客户端及订阅时间配置。第三方必须保留身份及到期时间；`oidc_client_id` 必须使用统一接入配置中 `oidc_sso` 的客户端标识，不能使用 `oauth2_api` 的机器客户端标识。`admin_user_id` 是平台用户 ID，必须与后续 USER_ASSIGN 的平台用户及活跃管理员映射一致，不得用第三方用户 ID 替换。完成管理员同步和应用启用后，STATUS 必须按下述完整字段证明交付状态。
 
 ### 3.2 关闭租户 `CLOSE`
 
@@ -116,14 +118,38 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 升级或降级请求：
 
 ```json
-{"type":"CHANGE","tenant_id":"tenant-10001","subscription_id":"platform-subscription-id","from_version":"basic","to_version":"professional","change_type":"upgrade","billing_cycle":"annual"}
+{"type":"CHANGE","tenant_id":"tenant-10001","subscription_id":"platform-subscription-id","from_version":"basic","to_version":"professional","change_type":"upgrade","billing_cycle":"annual","change_id":"change-10001","direction":"target","idempotency_key":"change-10001-target"}
 ```
 
-升级在平台差价订单支付确认后调用；降级按剩余周期比例退款并调用。成功返回：
+升级在平台差价订单支付确认后调用；降级切换及退款核定分别留证，不表示自动执行退款。成功返回：
 
 ```json
-{"ret":0,"tenant_id":"tenant-10001","version":"professional","status":"active"}
+{"ret":0,"tenant_id":"tenant-10001","version":"professional","status":"active","change_id":"change-10001","direction":"target","effective_at":"2026-10-15T08:00:00.123456+00:00"}
 ```
+
+`change_id` 是平台版本切换标识，响应必须原样返回；`direction` 必须是 `target`（切换目标版本）或 `original`（补偿恢复原版本），响应必须原样返回。`effective_at` 为第三方实际完成该方向版本切换的首次生效时间，必须是带 UTC 时区的 ISO 8601 时间（`Z` 或 `+00:00`），不能使用重试时间或平台请求时间。
+
+CHANGE 必须携带幂等键，可使用请求体 `idempotency_key` 或请求头 `X-Request-Id`；两者同时存在时必须一致。相同幂等键和相同 payload 必须始终返回首次成功结果及首次 `effective_at`，包括应用重启后或发生后续切换后重试；相同键但不同 payload 返回 HTTP 409，不得再次切换。target 和 original 使用不同幂等键。
+
+同一产品内的同一 `change_id + direction` 必须始终使用首次绑定的幂等键，即使重启或发生后续版本切换也不得更换。更换键返回 HTTP 409，不得再次切换或重写 `effective_at`；该身份与幂等结果必须持久化，并与版本状态在同一事务内提交。
+
+### 3.5 状态及最后版本切换回执 `STATUS`
+
+```json
+{"type":"STATUS","tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","admin_user_id":"platform-admin-user-id","oidc_client_id":"product-oidc-client-id","change_id":"change-10001","direction":"target"}
+```
+
+版本切换后的完整成功响应示例（以下字段均必须返回，必须位于业务响应根节点）：
+
+```json
+{"ret":0,"tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","version":"professional","status":"active","admin_user_id":"platform-admin-user-id","admin_active":true,"application_ready":true,"oidc_client_id":"product-oidc-client-id","expires_at":"2027-10-15T08:00:00+00:00","change_id":"change-10001","direction":"target","effective_at":"2026-10-15T08:00:00.123456+00:00"}
+```
+
+STATUS 请求中的 `tenant_id/product_id/enterprise_id/subscription_id/admin_user_id/oidc_client_id` 必须与 OPEN、管理员同步及平台登记的配置一致；版本切换验证还发送 `change_id/direction`。响应必须反映第三方实际状态，不得仅原样回显请求。平台严格核对上述六项身份、目标 `version`、`status="active"`、布尔值 `admin_active=true` 和 `application_ready=true`；字符串 `"true"` 不合格。管理员未激活、应用未就绪或客户端不匹配时必须如实返回失败状态，平台将拒绝自动验证。
+
+`expires_at` 字段必须返回，表示 OPEN 或最近一次 RENEW 确认的真实订阅到期时间，使用带时区的 ISO 8601 时间；必须与平台冻结的订阅到期时刻一致，CHANGE 不得延长或缩短它。只有平台订阅本身无到期时间时才允许返回 `null`，不能用缺字段或 `null` 替代未知到期时间。缺少任何必需证明字段均不能完成版本切换验证。
+
+STATUS 必须返回最后一次实际版本切换的 `change_id/direction/effective_at`。尚未发生版本切换时三项为 `null`；OPEN、RENEW、CLOSE、用户及部门操作均不得覆盖版本回执。重放旧 CHANGE 只返回旧结果，不得将 STATUS 的最后回执回退。无法提供可信回执的应用走人工核定，不能将缺失时间视为零消费或据此宣称自动退款执行。平台统一 OAuth/OIDC 登录与机器鉴权协议保持不变。
 
 ## 4. 用户和部门接口
 
@@ -173,7 +199,7 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 2. 企业购买某个版本，平台生成 `subscription_id`，调用 `OPEN`。
 3. 平台保存第三方 `tenant_id/app_id`，并按需调用部门和用户同步接口。
 4. 续费调用 `RENEW`，到期时间顺延。
-5. 升级先生成差价订单，支付确认后调用 `CHANGE`；降级调用 `CHANGE` 并生成比例退款记录。
+5. 升级先生成差价订单，支付确认后调用 `CHANGE`；降级调用 `CHANGE` 并留存切换回执及退款核定记录，不代表自动执行退款；无可信回执时人工核定。
 6. 关闭调用 `CLOSE`，30 天内恢复调用 `OPEN` 并携带原租户标识。
 7. 所有调用在平台操作台账中可查询，失败可以重试且不会重复产生业务结果。
 

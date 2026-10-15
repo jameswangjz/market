@@ -1,6 +1,6 @@
 """Bounded ordinary-refund planning. No funds or entitlement execution.
 
-Only an unrevised original subscription segment is auto-planned. A missing or
+Original and verified revised economic windows can be auto-planned. A missing or
 unallocated charge ledger is unavailable, never zero. Manual determinations are
 audited human decisions, not a substitute automatic usage ledger.
 """
@@ -246,7 +246,160 @@ def install(ns):
                 evidence.append(row.id)
         return prior, pending, recovery, evidence
 
+    def revised_reservations(db, order, window, economic, delivery, refund_id):
+        prior, pending, recovered, evidence = Decimal('0'), Decimal('0'), 0, []
+        rows = list(db.scalars(select(Refund).where(Refund.order_id == order.id,
+            Refund.id != (refund_id or ''))))
+        completed = sum((cents(r.amount) for r in rows if r.status == 'completed'), Decimal('0'))
+        if cents(order.refunded_amount) > completed:
+            raise PlanUnavailable('historical_refund_allocation_missing')
+        for row in rows:
+            case = db.get(Case, row.id)
+            source = workflow['controlled_source'](db, row, case)
+            if source == 'version_change':
+                continue
+            if row.status in {'rejected', 'cancelled'}:
+                continue
+            if source != 'ordinary' or case is None:
+                raise PlanUnavailable('prior_refund_plan_missing')
+            if row.status == 'requested':
+                pending += cents(row.amount)
+                continue
+            if row.status not in {'pending', 'approved', 'executing', 'failed', 'completed'}:
+                raise PlanUnavailable('prior_refund_state_unknown')
+            if (not case.plan_json or not case.plan_hash
+                    or hashlib.sha256(case.plan_json.encode()).hexdigest() != case.plan_hash):
+                raise PlanUnavailable('prior_refund_plan_invalid')
+            try:
+                envelope = json.loads(case.plan_json)
+                plan = envelope['economic_plan']
+                if (envelope['refund_id'] != row.id or envelope['order_id'] != order.id
+                        or envelope['payment_id'] != row.payment_id
+                        or cents(envelope['amount']) != cents(row.amount)
+                        or cents(plan['refund_amount']) != cents(row.amount)
+                        or plan['window_hash'] != window.payload_hash or plan['segment_id'] != window.id
+                        or plan['source_order_id'] != order.id or plan['change_id'] != window.change_id
+                        or plan['basis'] not in {'calls', 'time'}
+                        or plan['economic_snapshot'] != economic or plan['delivery_snapshot'] != delivery
+                        or plan['starts_at'] != utc(window.starts_at).isoformat()
+                        or plan['original_ends_at'] != utc(window.ends_at).isoformat()):
+                    raise ValueError
+                delta = count(plan['recovery_delta'])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PlanUnavailable('prior_refund_recovery_unavailable') from exc
+            prior += cents(row.amount)
+            recovered += delta
+            evidence.append(row.id)
+        return prior, pending, recovered, evidence
+
+    def revised(db, order, amount, refund_id, terms):
+        from .refund_economic_segments import EconomicSegment, plan_economic_segment
+        if len(terms) != 1 or terms[0].status != 'active':
+            raise PlanUnavailable('original_subscription_segment_unavailable')
+        term = terms[0]
+        combo = db.get(ns['subscription_terms']['Combination'], term.combination_id)
+        if (combo is None or combo.status != 'active' or combo.enterprise_id != order.buyer_enterprise_id
+                or combo.product_id != order.product_id or combo.generation != term.generation):
+            raise PlanUnavailable('revised_segment_ownership_mismatch')
+        saga = ns['version_change_saga']
+        Change = saga['VersionChangeRequest']
+        if db.scalar(select(Change.id).where(Change.combination_id == combo.id,
+                Change.status.in_(saga['OPEN_STATUSES'])).limit(1)):
+            raise PlanUnavailable('version_change_in_progress')
+        store = ns.get('refund_segment_store', {})
+        latest = store.get('latest')
+        window = latest(db, order) if callable(latest) else None
+        if window is None:
+            raise PlanUnavailable('revised_economic_segments_require_reconciliation')
+        if window.order_id != order.id or window.term_id != term.id:
+            raise PlanUnavailable('revised_segment_ownership_mismatch')
+        receipt = db.get(store['Receipt'], window.receipt_id)
+        if (receipt is None or receipt.change_id != window.change_id
+                or hashlib.sha256(receipt.receipt_json.encode()).hexdigest() != receipt.receipt_hash):
+            raise PlanUnavailable('revised_receipt_unavailable')
+        raw = json.loads(receipt.receipt_json)
+        if raw['scope'] != combo.id or raw['change_id'] != window.change_id:
+            raise PlanUnavailable('revised_receipt_unavailable')
+        economic = json.loads(window.economic_snapshot_json)
+        delivery = json.loads(window.delivery_snapshot_json)
+        if receipt.kind == 'saas':
+            change = db.get(Change, window.change_id)
+            subscription = db.get(ns['SaaSSubscription'], receipt.subscription_id)
+            try:
+                effective = datetime.fromisoformat(raw['effective_at'].replace('Z', '+00:00'))
+                resource = json.loads(change.resource_plan_json)
+                if (effective.utcoffset() != timedelta(0) or raw['kind'] != 'saas' or resource['kind'] != 'saas'
+                        or receipt.direction != 'target' or raw['direction'] != 'target'
+                        or not subscription or subscription.status != 'active'
+                        or raw['subscription_id'] != subscription.id
+                        or resource['subscription_id'] != subscription.id
+                        or resource['tenant_id'] != subscription.external_tenant_id
+                        or raw['tenant_id'] != subscription.external_tenant_id
+                        or raw['enterprise_id'] != subscription.enterprise_id
+                        or subscription.enterprise_id != order.buyer_enterprise_id
+                        or raw['product_id'] != subscription.product_id
+                        or subscription.product_id != order.product_id
+                        or raw['version_id'] != change.target_version_id
+                        or raw['version_code'] != change.target_version_code
+                        or subscription.version_id != change.target_version_id
+                        or utc(effective) != utc(receipt.cutover_at) or utc(effective) > utc(ns['now']())
+                        or window.starts_at != max(utc(term.starts_at), utc(effective))
+                        or delivery['method'] != 'tenant_access' or window.available_quota is not None
+                        or any(value is not None for value in (receipt.source_run_id,
+                            receipt.boundary_id, receipt.target_fingerprint))):
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise PlanUnavailable('revised_saas_receipt_unavailable') from exc
+        elif (receipt.kind != 'api' or delivery['method'] not in {'api', 'model_api'}
+                or raw['source_run_id'] != receipt.source_run_id or raw['boundary_id'] != receipt.boundary_id):
+            raise PlanUnavailable('revised_receipt_unavailable')
+        evidence = (window.id, 'window:' + window.payload_hash,
+                    'receipt:' + receipt.id + ':' + receipt.receipt_hash)
+        segment = EconomicSegment(window.id, order.id, window.change_id, window.revenue, window.cost,
+            delivery['method'], window.available_quota, window.starts_at, window.ends_at,
+            economic, delivery, evidence)
+        prior, pending, recovered, prior_ids = revised_reservations(
+            db, order, window, economic, delivery, refund_id)
+        at = utc(ns['now']())
+        used, charge_evidence = None, None
+        evidence = (*evidence, *prior_ids)
+        if segment.method in {'api', 'model_api'} and segment.available_quota is not None:
+            adapter = ns.get('api_charge_ledger', {}).get('window_summary')
+            if not callable(adapter):
+                raise PlanUnavailable('charge_ledger_unavailable')
+            end = segment.starts_at if at < segment.starts_at else min(at, segment.ends_at)
+            try:
+                summary = adapter(db, order_id=order.id, segment_id=term.id, start=segment.starts_at,
+                    end=end, as_of=at, source_run_id=receipt.source_run_id,
+                    boundary_id=receipt.boundary_id, scope=combo.id, periods=raw['periods'],
+                    receipt_evidence=('receipt:' + receipt.id + ':' + receipt.receipt_hash,))
+            except Exception as exc:
+                raise PlanUnavailable('charge_ledger_adapter_unavailable') from exc
+            if (not isinstance(summary, ChargeSummary) or summary.complete is not True
+                    or summary.order_id != order.id or summary.segment_id != term.id
+                    or utc(summary.start) != segment.starts_at or utc(summary.end) != end
+                    or utc(summary.as_of) != at or not summary.policy_version
+                    or not summary.evidence_ids
+                    or any(not isinstance(v, str) or not v for v in summary.evidence_ids)):
+                raise PlanUnavailable('charge_ledger_incomplete_or_unallocated')
+            used = count(summary.charged_calls)
+            if at < segment.starts_at and used:
+                raise PlanUnavailable('charge_ledger_incomplete_or_unallocated')
+            evidence = (*evidence, *summary.evidence_ids)
+            charge_evidence = dict(order_id=order.id, segment_id=term.id,
+                start=segment.starts_at.isoformat(), end=end.isoformat(), as_of=at.isoformat(),
+                charged_calls=used, complete=True, policy_version=summary.policy_version,
+                evidence_ids=list(summary.evidence_ids))
+        plan = plan_economic_segment(segment, amount, at=at, used_calls=used,
+            prior_amount=prior, prior_recovery=recovered, other_pending=pending)
+        plan.update(window_hash=window.payload_hash, receipt_hash=receipt.receipt_hash,
+                    charge_policy=POLICY if plan['basis'] == 'calls' else None, charge_ledger=charge_evidence)
+        return plan, tuple(evidence)
+
     def automatic(db, order, amount, refund_id=None):
+        terms = list(db.scalars(select(Term).where(Term.order_id == order.id)))
+        if any(db.scalar(select(Revision.id).where(Revision.term_id == term.id).limit(1)) for term in terms):
+            return revised(db, order, amount, refund_id, terms)
         segment = original(db, order)
         at = ns['now']()
         future = utc(at) < utc(segment.starts_at)
@@ -312,6 +465,12 @@ def install(ns):
                 ns['now'](), (manual.id,), plan, 'manual')
         try:
             plan, evidence_ids = automatic(db, order, refund.amount, refund.id)
+            if plan.get('window_hash'):
+                freeze = ns.get('refund_funding_store', {}).get('freeze')
+                allocations = freeze(db, order, refund) if callable(freeze) else None
+                if not allocations:
+                    raise PlanUnavailable('funding_reservation_unavailable')
+                plan['funding_allocations'] = list(allocations)
         except (PlanUnavailable, KeyError, TypeError, ValueError) as exc:
             raise HTTPException(409, 'Refund planning unavailable: ' + str(exc)) from exc
         return PreparedRefundPlan(refund.id, order.id, refund.payment_id, cents(refund.amount), VERSION,

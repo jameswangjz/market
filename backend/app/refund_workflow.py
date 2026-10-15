@@ -6,7 +6,6 @@ No executor, entitlement recovery, external payment, or settlement is invoked.
 """
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from decimal import Decimal
 import hashlib
 import json
 import re
@@ -18,6 +17,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import mapped_column
 
 from .refund_schema import PreparedRefundPlan, RefundRequestBody, RefundReviewBody
+from .refund_funding_store import cents
+from .refund_funding import _money
 
 
 RESERVED = ('pending', 'requested', 'approved', 'executing', 'failed')
@@ -29,10 +30,7 @@ def canonical(value):
 
 
 def money(value):
-    result = Decimal(str(value))
-    if not result.is_finite() or result < 0 or result != result.quantize(Decimal('0.01')):
-        raise HTTPException(409, 'Invalid recorded payment amount')
-    return result
+    return _money(cents(value))
 
 
 def install(ns):
@@ -110,6 +108,14 @@ def install(ns):
                           .execution_options(populate_existing=True))
         if order is None:
             raise HTTPException(404, 'Order not found')
+        terms = ns.get('subscription_terms')
+        if terms and order.delivery_method_snapshot in {'api', 'model_api', 'tenant_access'}:
+            combo = terms['lock_combination'](db, order.buyer_enterprise_id, order.product_id)
+            saga = ns.get('version_change_saga', {})
+            Change = saga.get('VersionChangeRequest')
+            if combo and Change is not None and db.scalar(select(Change.id).where(
+                    Change.combination_id == combo.id, Change.status.in_(saga['OPEN_STATUSES'])).limit(1)):
+                raise HTTPException(409, 'Version change in progress')
         return order
 
     def replay(db, user, body, target):
@@ -136,13 +142,21 @@ def install(ns):
         return rows[0]
 
     def cap(db, order, payment, amount, exclude=None):
+        store = ns.get('refund_funding_store')
+        if store and store['validate'](db, order, payment, amount, exclude) is True:
+            return
+        payment = db.scalar(select(Payment).where(Payment.id == payment.id).with_for_update()
+            .execution_options(populate_existing=True))
+        if payment is None or payment.order_id != order.id or payment.status not in {'paid', 'refunding', 'refunded'}:
+            raise HTTPException(409, 'Recorded payment changed')
         rows = list(db.scalars(select(Refund).where(Refund.order_id == order.id)))
-        completed = sum((money(row.amount) for row in rows if row.status == 'completed'), Decimal('0.00'))
-        recorded = max(money(order.refunded_amount), completed)
-        held = sum((money(row.amount) for row in rows if row.id != exclude and row.status in RESERVED), Decimal('0.00'))
-        payment_held = sum((money(row.amount) for row in rows if row.payment_id == payment.id
-            and row.id != exclude and row.status in (*RESERVED, 'completed')), Decimal('0.00'))
-        if amount + recorded + held > money(order.paid_amount) or amount + payment_held > money(payment.amount):
+        completed = sum(cents(row.amount) for row in rows if row.status == 'completed')
+        recorded = max(cents(order.refunded_amount), completed)
+        held = sum(cents(row.amount) for row in rows if row.id != exclude and row.status in RESERVED)
+        payment_held = cents(store['payment_reserved_total'](db, payment.id, exclude)) if store else sum(
+            cents(row.amount) for row in rows if row.payment_id == payment.id
+            and row.id != exclude and row.status in (*RESERVED, 'completed'))
+        if cents(amount) + recorded + held > cents(order.paid_amount) or cents(amount) + payment_held > cents(payment.amount):
             raise HTTPException(409, 'Requested amount exceeds paid balance including in-flight reservations')
 
     def planning(order, case=None):
@@ -202,6 +216,12 @@ def install(ns):
 
     def record(db, user, order, refund, case, body, action, before, key, payload_hash):
         after = {'status': refund.status, 'version': case.version, 'amount': format(money(refund.amount), '.2f')}
+        store = ns.get('refund_funding_store')
+        allocations = store['frozen'](db, refund) if store else ()
+        if allocations:
+            after.update(funding_allocations=list(allocations),
+                funding_hash=hashlib.sha256(canonical(list(allocations)).encode()).hexdigest(),
+                funding_state='released' if refund.status == 'rejected' else 'held')
         role = user.platform_role or member_role(db, user, order.buyer_enterprise_id)
         db.add(RefundEvent(refund_id=refund.id, operation_key=key, payload_hash=payload_hash, action=action,
             actor_id=user.id, actor_role=role, actor_enterprise_id='' if user.platform_role else order.buyer_enterprise_id,
@@ -221,6 +241,9 @@ def install(ns):
         if peek is None:
             raise HTTPException(404, 'Order not found')
         scope(db, user, request, peek, buyer=True)
+        prior, _, _ = replay(db, user, body, 'create:' + order_id)
+        if prior:
+            return db.get(Refund, prior.refund_id)
         order = lock_order(db, order_id)
         scope(db, user, request, order, buyer=True)
         if order.business_type in FUNDING:
@@ -240,12 +263,15 @@ def install(ns):
             requested_by=user.name, created_at=ns['now']())
         db.add(refund)
         db.flush()
+        store = ns.get('refund_funding_store')
+        if store:
+            store['reserve'](db, order, refund)
         case = RefundCase(refund_id=refund.id, ticket_id=body.ticket_id, requested_by_id=user.id, source='ordinary', version=1)
         db.add(case)
         record(db, user, order, refund, case, body, 'request', {}, key, payload_hash)
         return refund
 
-    def freeze_plan(db, order, refund):
+    def freeze_plan(db, order, refund, funding_allocations=None):
         prepare = ns.get('prepare_refund_plan')
         if not callable(prepare):
             raise HTTPException(409, 'Trusted frozen economic plan unavailable; approval is disabled')
@@ -264,11 +290,14 @@ def install(ns):
                 or order.delivery_method_snapshot == 'tenant_access' and plan.basis not in {'time', 'manual'}):
             raise HTTPException(409, 'Frozen plan basis does not match the delivery method')
         try:
-            document = canonical({'schema_version': 1, 'refund_id': refund.id, 'order_id': order.id,
+            envelope = {'schema_version': 1, 'refund_id': refund.id, 'order_id': order.id,
                 'payment_id': refund.payment_id, 'amount': format(money(refund.amount), '.2f'),
                 'calculation_version': plan.calculation_version, 'as_of': plan.as_of.astimezone(timezone.utc).isoformat(),
                 'basis': plan.basis,
-                'evidence_ids': list(plan.evidence_ids), 'economic_plan': plan.economic_plan})
+                'evidence_ids': list(plan.evidence_ids), 'economic_plan': plan.economic_plan}
+            if funding_allocations:
+                envelope['funding_allocations'] = list(funding_allocations)
+            document = canonical(envelope)
         except (ValueError, TypeError) as exc:
             raise HTTPException(409, 'Frozen economic plan must be finite JSON') from exc
         return document, hashlib.sha256(document.encode()).hexdigest()
@@ -278,6 +307,9 @@ def install(ns):
         peek = db.get(Refund, refund_id)
         if peek is None:
             raise HTTPException(404, 'Refund not found')
+        prior, _, _ = replay(db, user, body, 'review:' + refund_id)
+        if prior:
+            return peek
         order = lock_order(db, peek.order_id)
         refund = db.scalar(select(Refund).where(Refund.id == refund_id).with_for_update()
                            .execution_options(populate_existing=True))
@@ -293,7 +325,9 @@ def install(ns):
         if body.decision == 'approve':
             payment = payment_for(db, order, refund.payment_id)
             cap(db, order, payment, money(refund.amount), exclude=refund.id)
-            case.plan_json, case.plan_hash = freeze_plan(db, order, refund)
+            store = ns.get('refund_funding_store')
+            allocations = store['freeze'](db, order, refund) if store else None
+            case.plan_json, case.plan_hash = freeze_plan(db, order, refund, allocations)
         refund.status = 'approved' if body.decision == 'approve' else 'rejected'
         case.version += 1
         case.reviewed_by_id, case.review_reason, case.reviewed_at = user.id, body.reason, ns['now']()

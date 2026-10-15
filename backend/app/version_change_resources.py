@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy import select
 from .subscription_calendar import CalendarAnchor
+from .refund_segment_boundary import freeze_policy_switch
+from .refund_segment_store import boundary_periods, saas_switch_evidence
 
 
 def _quota_period_plan(combination, terms, snapshots, old_route_key, target_route_key, at):
@@ -233,6 +235,12 @@ def install(ns):
                     old[3].route_key, target[3].route_key, change.created_at)
             except (TypeError, ValueError) as exc:
                 fail(str(exc))
+            if ns.get('refund_segment_store'):
+                client = ns['apisix_policy_redis']()
+                try:
+                    plan['charge_boundary'] = ns['refund_segment_store']['descriptor'](db, change, plan, client)
+                finally:
+                    client.close()
         elif delivery == 'tenant_access':
             subscription = db.scalar(select(ns['SaaSSubscription']).where(
                 ns['SaaSSubscription'].enterprise_id == change.enterprise_id,
@@ -321,6 +329,10 @@ def install(ns):
 
     def api_apply(db, change, direction, plan, redis):
         target = direction == 'target'
+        descriptor = plan.get('charge_boundary', {})
+        strict = descriptor.get('mode') == 'strict'
+        receipts = {}
+        receipt_ids = []
         route_id = plan['target_route_id'] if target else plan['old_route_id']
         route_key = plan['target_route_key'] if target else plan['old_route_key']
         Route = ns['ApiGatewayRoute']
@@ -417,7 +429,16 @@ def install(ns):
                 status=credential.status, daily_quota=credential.daily_quota or 0,
                 monthly_quota=credential.monthly_quota or 0,
                 total_quota=credential.total_quota or 0)
-            redis.hset('market:apisix:credential:' + item['consumer'], mapping=mapping)
+            if strict:
+                if not ns.get('refund_segment_store') or item['id'] != descriptor['credential_id']:
+                    fail('Strict charge boundary store is unavailable')
+                receipts[item['id']] = freeze_policy_switch(redis,
+                    credential_key='market:apisix:credential:' + item['consumer'],
+                    change_id=change.id, direction=direction,
+                    expected_policy=descriptor['original' if target else 'target'],
+                    target_policy=descriptor[direction], periods=boundary_periods(descriptor[direction]))
+            else:
+                redis.hset('market:apisix:credential:' + item['consumer'], mapping=mapping)
         final_route = unwrap(ns['apisix_admin_request']('GET', f'/routes/{route_key}'))
         if not authored_route_matches(final_route, payload):
             fail('APISIX route readback failed')
@@ -465,8 +486,15 @@ def install(ns):
                 fail('Redis subscription policy readback failed')
             if policy.get('generation') != expected_policy.get('generation'):
                 fail('API subscription generation changed')
-        return {'route_id': route_id, 'route_key': route_key,
-                'credential_ids': [item['id'] for item in plan['credentials'] if item['status'] == 'active']}
+            if strict:
+                saved_receipt = ns['refund_segment_store']['record_receipt'](db, change, credential, direction,
+                    receipts[item['id']], client=redis)
+                receipt_ids.append(saved_receipt.id)
+        evidence = {'route_id': route_id, 'route_key': route_key,
+                    'credential_ids': [item['id'] for item in plan['credentials'] if item['status'] == 'active']}
+        if strict:
+            evidence['receipt_ids'] = receipt_ids
+        return evidence
 
     def saas_apply(db, change, direction, plan):
         target = direction == 'target'
@@ -496,13 +524,13 @@ def install(ns):
             'product_id': plan['product_id'], 'enterprise_id': plan['enterprise_id'],
             'subscription_id': subscription.id, 'to_version': version_code,
             'admin_user_id': plan['admin_user_id'], 'oidc_client_id': plan['oidc_client_id'],
-            'idempotency_key': idem})
+            'idempotency_key': idem, 'change_id': change.id, 'direction': direction})
         if not isinstance(result, dict) or result.get('ret') != 0:
             fail('SaaS CHANGE was rejected')
         status = ns['saas_call'](config, 'STATUS', {'tenant_id': plan['tenant_id'],
             'product_id': plan['product_id'], 'enterprise_id': plan['enterprise_id'],
             'subscription_id': subscription.id, 'admin_user_id': plan['admin_user_id'],
-            'oidc_client_id': plan['oidc_client_id']})
+            'oidc_client_id': plan['oidc_client_id'], 'change_id': change.id, 'direction': direction})
         if (not isinstance(status, dict) or status.get('ret') != 0
                 or status.get('tenant_id') != plan['tenant_id']
                 or status.get('product_id') != plan['product_id']
@@ -517,8 +545,18 @@ def install(ns):
                 or datetime_identity(status.get('expires_at')) != plan.get('expires_at')
                 or datetime_identity(subscription.expires_at) != plan.get('expires_at')):
             fail('SaaS STATUS does not verify requested subscription version')
+        try:
+            saas_switch_evidence(change.id, direction, result, status)
+        except (ValueError, TypeError, KeyError, AttributeError):
+            fail('SaaS CHANGE/STATUS effective evidence is incomplete or mismatched')
+        evidence = {'subscription_id': subscription.id, 'tenant_id': plan['tenant_id'], 'version_id': version_id}
+        if ns.get('refund_segment_store'):
+            receipt = ns['refund_segment_store']['record_receipt'](db, change, None, direction,
+                {'change': result, 'status': status}, subscription=subscription)
+            if receipt is not None:
+                evidence['receipt_ids'] = [receipt.id]
         subscription.version_id = version_id
-        return {'subscription_id': subscription.id, 'tenant_id': plan['tenant_id'], 'version_id': version_id}
+        return evidence
 
     def apply(db, change, direction='target'):
         if direction not in {'target', 'original'}:

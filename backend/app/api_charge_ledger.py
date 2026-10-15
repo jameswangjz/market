@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import re
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, func, select, text
+from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String, cast, func, select, text, tuple_
 from sqlalchemy.orm import mapped_column
 
 from .refund_planning import ChargeSummary, PlanUnavailable
@@ -13,6 +13,26 @@ from .subscription_terms import UTCDateTime
 STREAM = 'market:apisix:charges:v1'
 EPOCH = 'market:apisix:charges:source'
 POLICY = 'gateway_actual_charge_v1'
+
+
+def stream_position(value):
+    if not isinstance(value, str) or not re.fullmatch(r'(0|[1-9]\d{0,19})-(0|[1-9]\d{0,19})', value):
+        raise ValueError('Invalid stream watermark')
+    parts = tuple(map(int, value.split('-')))
+    if any(part > 18446744073709551615 for part in parts):
+        raise ValueError('Invalid stream watermark')
+    return parts
+
+
+def stream_position_sql(column, dialect):
+    if dialect == 'postgresql':
+        parts = (func.split_part(column, '-', 1), func.split_part(column, '-', 2))
+    elif dialect == 'sqlite':
+        separator = func.instr(column, '-')
+        parts = (func.substr(column, 1, separator - 1), func.substr(column, separator + 1))
+    else:
+        raise ValueError('Unsupported charge ledger dialect')
+    return tuple_(*(cast(part, Numeric(20, 0)) for part in parts))
 
 
 def bounded_client(ns):
@@ -210,7 +230,128 @@ def install(ns):
         return ChargeSummary(order_id, segment_id, start, end, as_of, int(used), True,
                              POLICY, tuple(evidence))
 
+    def window_summary(db, *, order_id, segment_id, start, end, as_of,
+                       source_run_id, boundary_id, scope, periods, receipt_evidence):
+        """Receipt arguments must be DB-verified by the caller; no execution occurs.
+
+        periods are the complete receipt period mappings (start_at/end_at Unix
+        seconds, period_key, order_id, segment_id, used_at_switch). receipt_evidence
+        contains durable receipt ID/hash evidence strings. end is the observation
+        endpoint, not a historical timestamp filter on the stream facts.
+        """
+        def unavailable():
+            raise PlanUnavailable('charge_window_incomplete_or_unallocated')
+
+        client = None
+        try:
+            boundary = stream_position(boundary_id)
+            if not re.fullmatch(r'[a-f0-9]{40}', source_run_id):
+                unavailable()
+            term = db.get(Term, segment_id)
+            if term is None or term.order_id != order_id or term.combination_id != scope:
+                unavailable()
+            if any(not isinstance(v, datetime) or v.tzinfo is None or v.utcoffset() is None
+                   for v in (start, end, as_of)):
+                unavailable()
+            future = start == end and as_of < start
+            if (start < term.starts_at or start >= term.ends_at or end < start
+                    or end > term.ends_at or (not future and end != min(as_of, term.ends_at))):
+                unavailable()
+            if (not isinstance(receipt_evidence, (tuple, list)) or not receipt_evidence
+                    or any(not isinstance(v, str) or not v for v in receipt_evidence)):
+                unavailable()
+            cursor = db.get(Cursor, STREAM)
+            if cursor is None or cursor.redis_run_id != source_run_id or cursor.activated_at > start:
+                unavailable()
+            watermark = stream_position(cursor.last_id)
+            if watermark < boundary:
+                unavailable()
+            anchor = calendar(db, term)
+            expected = {f'{scope}:{term.generation}:{i}': anchor.period(i)
+                        for i in range(term.start_month, term.start_month + term.months)}
+            if not isinstance(periods, (list, tuple)) or not periods:
+                unavailable()
+            selected = {}
+            for row in periods:
+                key = row['period_key']
+                owner = db.get(Term, row['segment_id'])
+                if (owner is None or owner.order_id != row['order_id']
+                        or owner.combination_id != scope or key in selected):
+                    unavailable()
+                owner_anchor = calendar(db, owner)
+                owner_periods = {f'{scope}:{owner.generation}:{i}': owner_anchor.period(i)
+                                 for i in range(owner.start_month, owner.start_month + owner.months)}
+                if key not in owner_periods:
+                    unavailable()
+                period = owner_periods[key]
+                if (row['start_at'] != int(period.start.timestamp())
+                        or row['end_at'] != int(period.end.timestamp())
+                        or type(row['used_at_switch']) is not int or row['used_at_switch'] < 0):
+                    unavailable()
+                selected[key] = row
+            required = {key for key, p in expected.items() if p.end > start}
+            if not required.issubset(selected) or not selected:
+                unavailable()
+            client = bounded_client(ns)
+
+            def source_tail():
+                if run_id(client) != source_run_id or client.hget(EPOCH, 'run_id') != source_run_id:
+                    unavailable()
+                rows = client.xrevrange(STREAM, count=1)
+                if not isinstance(rows, list):
+                    unavailable()
+                tail = rows[0][0] if rows else '0-0'
+                if stream_position(tail) != watermark:
+                    unavailable()
+                if not rows and (boundary != (0, 0) or watermark != (0, 0)):
+                    unavailable()
+                return tail
+
+            tail = source_tail()
+            position = stream_position_sql(Charge.id, db.bind.dialect.name)
+            evidence = list(receipt_evidence) + ['charge-boundary:' + boundary_id,
+                'charge-cursor:' + cursor.last_id, 'charge-source:' + source_run_id]
+            calls = 0
+            for key, row in selected.items():
+                bucket = (Charge.scope == scope, Charge.period_key == key)
+                def total(*conditions):
+                    return int(db.scalar(select(func.coalesce(func.sum(Charge.quantity), 0)).where(
+                        *bucket, *conditions)))
+                owned = (Charge.order_id == row['order_id'], Charge.segment_id == row['segment_id'],
+                         Charge.source_run_id == source_run_id, Charge.policy == POLICY)
+                stored = total()
+                if stored != total(*owned) or total(position > watermark):
+                    unavailable()
+                before = total(*owned, position <= boundary)
+                if before != row['used_at_switch']:
+                    unavailable()
+                counter, coverage = period_keys(scope, key)
+                current = client.get(counter)
+                if (client.hget(coverage, 'baseline') != '0'
+                        or (current is not None and (not isinstance(current, str)
+                            or not re.fullmatch(r'\d+', current)))
+                        or stored != int(current or 0)):
+                    unavailable()
+                after = total(*owned, position > boundary)
+                if row['segment_id'] == segment_id and future and stored:
+                    unavailable()
+                if row['segment_id'] == segment_id:
+                    calls += after
+                evidence.append(f'charge-period:{key}:{stored}')
+            if source_tail() != tail:
+                unavailable()
+            return ChargeSummary(order_id, segment_id, start, end, as_of, calls, True,
+                                 POLICY, tuple(evidence))
+        except PlanUnavailable:
+            raise
+        except Exception as exc:
+            raise PlanUnavailable('charge_window_incomplete_or_unallocated') from exc
+        finally:
+            if client is not None:
+                client.close()
+
     ns['refund_charge_summary'] = summary
-    hooks = dict(Charge=Charge, Cursor=Cursor, ingest=ingest, summary=summary)
+    hooks = dict(Charge=Charge, Cursor=Cursor, ingest=ingest, summary=summary,
+                 window_summary=window_summary)
     ns['api_charge_ledger'] = hooks
     return hooks

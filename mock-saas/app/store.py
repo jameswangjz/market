@@ -96,6 +96,9 @@ class Store:
             CREATE TABLE IF NOT EXISTS machine_operations (
                 product_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL,
                 response TEXT NOT NULL, PRIMARY KEY(product_id, idempotency_key));
+            CREATE UNIQUE INDEX IF NOT EXISTS machine_change_identity
+                ON machine_operations(product_id, json_extract(response, '$.change_id'),
+                                      json_extract(response, '$.direction'));
         ''')
         try:
             yield db
@@ -177,6 +180,9 @@ class Store:
                 return {'ret': 0, 'tenant_id': tenant['tenant_id'], 'product_id': product_id,
                         'enterprise_id': tenant['enterprise_id'], 'subscription_id': tenant['subscription_id'],
                         'version': tenant.get('version'), 'status': tenant.get('status'),
+                        'change_id': tenant.get('version_receipt', {}).get('change_id'),
+                        'direction': tenant.get('version_receipt', {}).get('direction'),
+                        'effective_at': tenant.get('version_receipt', {}).get('effective_at'),
                         'expires_at': tenant.get('expires_at'), 'admin_user_id': admin_id if admin_active else None,
                         'admin_active': admin_active, 'application_ready': bool(tenant.get('login_open')
                         and tenant.get('status') != 'closed' and matches),
@@ -262,12 +268,27 @@ class Store:
                               retention_until=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
                 result = {'ret': 0, 'tenant_id': tenant_id, 'status': 'closed'}
             elif operation == 'CHANGE':
+                change_id = body.get('change_id')
+                direction = body.get('direction')
+                if (not isinstance(change_id, str) or not change_id.strip()
+                        or change_id != change_id.strip() or len(change_id) > 180
+                        or direction not in ('target', 'original') or not idem):
+                    raise MachineOperationError(400, 'invalid_change_receipt_request')
+                previous = db.execute('SELECT idempotency_key FROM machine_operations '
+                    "WHERE product_id=? AND json_extract(response, '$.change_id')=? "
+                    "AND json_extract(response, '$.direction')=?",
+                    (product_id, change_id, direction)).fetchone()
+                if previous is not None:
+                    raise MachineOperationError(409, 'change_idempotency_key_mismatch')
                 version = body.get('to_version')
                 if (not isinstance(version, (str, int)) or isinstance(version, bool) or
                         not str(version).strip() or isinstance(version, int) and version <= 0):
                     raise MachineOperationError(400, 'invalid_version')
-                tenant.update(version=version)
-                result = {'ret': 0, 'tenant_id': tenant_id, 'version': tenant['version'], 'status': 'active'}
+                receipt = dict(change_id=change_id, direction=direction,
+                               effective_at=datetime.now(timezone.utc).isoformat())
+                tenant.update(version=version, version_receipt=receipt)
+                result = {'ret': 0, 'tenant_id': tenant_id, 'version': tenant['version'],
+                          'status': 'active', **receipt}
             elif operation in {'USER_ASSIGN', 'USER_UNASSIGN'}:
                 uid = body.get('user_id', '')
                 status = 'active' if operation == 'USER_ASSIGN' else 'deleted'

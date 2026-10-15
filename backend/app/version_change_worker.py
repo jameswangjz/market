@@ -134,6 +134,9 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=N
                         row.target_version_id, row.target_version_code,
                         ns['json'].loads(row.target_snapshots_json), activation_at, row.id)
                     row.status = 'completed'; row.completed_at = activation_at
+                materialize = ns.get('refund_segment_store', {}).get('materialize')
+                if callable(materialize):
+                    materialize(db, row, proof)
                 ns['audit'](db, 'version-change-worker', 'apply_version_change_resource',
                     'version_change', row.id, category='version_change', business_domain='version_change',
                     order_id=getattr(row, 'source_order_id', ''), before={'status': phase},

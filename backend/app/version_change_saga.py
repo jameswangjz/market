@@ -7,17 +7,20 @@ from datetime import timedelta
 from decimal import Decimal
 import hashlib
 import hmac
+import importlib
 import json
 import re
 import secrets
 
 from fastapi import Body, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Boolean, CheckConstraint, Column, ForeignKey, Index, Integer, Numeric, String, Text, func, select, text
+from sqlalchemy import Boolean, CheckConstraint, Column, ForeignKey, Index, Integer, Numeric, String, Text, select, text
 from sqlalchemy.exc import IntegrityError
 
 from .order_economics import money
 from .subscription_terms import UTCDateTime
+from .refund_funding_store import cents
+from .refund_funding import _money
 
 
 OPEN_STATUSES = ('pending_payment', 'resource_pending', 'retrying', 'compensating', 'refund_pending', 'exception')
@@ -195,6 +198,7 @@ def install(ns):
             if not existing or existing.source_order_id != order_id or existing.created_by != user.id:
                 fail('幂等请求与当前用户或订单不匹配', 403)
             return public(existing, db)
+        assert_no_ordinary_refunds(db, locked_combo)
         quotes = ns['version_change_quotes']
         if not callable(quotes.get('validate')) or not callable(quotes.get('prepare')):
             raise RuntimeError('version quote adapter is incomplete')
@@ -244,6 +248,22 @@ def install(ns):
         ns['version_change_ledger']['stage'](db, change_id, prepared, user)
         db.flush()
         return public(change, db)
+
+    def assert_no_ordinary_refunds(db, combo):
+        Term, Refund = ns['subscription_terms']['Term'], ns['Refund']
+        order_ids = select(Term.order_id).where(Term.combination_id == combo.id, Term.generation == combo.generation)
+        statuses = ('pending', 'requested', 'approved', 'executing', 'failed', 'completed')
+        Case = ns.get('refund_workflow', {}).get('Case')
+        Allocation = ns.get('refund_funding_store', {}).get('FundingAllocation')
+        for refund in db.scalars(select(Refund).where(Refund.order_id.in_(order_ids), Refund.status.in_(statuses))):
+            case = db.get(Case, refund.id) if Case is not None else None
+            allocated = Allocation is not None and db.scalar(select(Allocation.rowid).where(
+                Allocation.refund_id == refund.id).limit(1)) is not None
+            ordinary = bool(case and case.source == 'ordinary') or allocated
+            controlled = db.scalar(select(VersionChangeFund.id).where(
+                VersionChangeFund.refund_id == refund.id).limit(1)) is not None
+            if ordinary or not controlled and refund.status != 'completed':
+                fail('普通退款占用或已完成权益调整需要重核，不能发起版本变更')
 
     def assert_no_pending(db, enterprise_id, product_id):
         if enterprise_id is None or product_id is None:
@@ -329,8 +349,29 @@ def install(ns):
                 change.next_retry_at = ns['now']()
         return True
 
+    def lock_funding_payments(db, payment_ids):
+        Payment = ns['Payment']
+        rows = list(db.scalars(select(Payment).where(Payment.id.in_(set(payment_ids)))
+            .order_by(Payment.id).with_for_update().execution_options(populate_existing=True)))
+        if {row.id for row in rows} != set(payment_ids):
+            fail('退款来源支付记录不存在')
+        return {row.id: row for row in rows}
+
+    def occupied(db, payment, *, include_funds=False):
+        store = ns.get('refund_funding_store')
+        if store:
+            return cents(store['payment_reserved_total'](db, payment.id))
+        Refund = ns['Refund']
+        total = sum(cents(row.amount) for row in db.scalars(select(Refund).where(
+            Refund.payment_id == payment.id, Refund.status.in_(['pending', 'completed']))))
+        if include_funds:
+            total += sum(cents(row.amount) for row in db.scalars(select(VersionChangeFund).where(
+                VersionChangeFund.payment_id == payment.id, VersionChangeFund.kind == 'refund',
+                VersionChangeFund.refund_id.is_(None))))
+        return total
+
     def reserve_downgrade_refunds(db, change):
-        requested = money(Decimal(str(json.loads(change.quote_json)['refund_amount'])))
+        requested = cents(json.loads(change.quote_json)['refund_amount'])
         if requested <= 0:
             return
         Term = ns['subscription_terms']['Term']
@@ -340,31 +381,34 @@ def install(ns):
         Payment = ns['Payment']
         rows = db.execute(select(Payment, Order).join(Order, Order.id == Payment.order_id)
             .where(Order.id.in_(term_order_ids), Payment.status.in_(['paid','refunding','refunded']))
-            .order_by(Payment.created_at, Payment.id).with_for_update()).all()
+            .order_by(Payment.created_at, Payment.id)).all()
         sources = {payment.id: (payment, order) for payment, order in rows}
-        prior = db.execute(select(VersionChangeFund, Order).join(VersionChangeRequest,
+        prior_statement = (select(VersionChangeFund, Order).join(VersionChangeRequest,
             VersionChangeRequest.id == VersionChangeFund.change_id).join(Payment,
             Payment.id == VersionChangeFund.payment_id).join(Order, Order.id == Payment.order_id)
             .where(VersionChangeRequest.combination_id == combo.id, VersionChangeRequest.kind == 'upgrade',
-                   VersionChangeFund.kind == 'payment', Payment.status.in_(['paid','refunding','refunded']))
-            .with_for_update()).all()
+                   VersionChangeFund.kind == 'payment', Payment.status.in_(['paid','refunding','refunded'])))
+        if ns.get('refund_funding_store'):
+            Revision = ns['subscription_terms']['Revision']
+            generation_changes = select(Revision.change_id).join(Term, Term.id == Revision.term_id).where(
+                Term.combination_id == combo.id, Term.generation == combo.generation)
+            prior_statement = prior_statement.where(VersionChangeRequest.status == 'completed',
+                VersionChangeRequest.resource_applied.is_(True), VersionChangeRequest.id.in_(generation_changes))
+        prior = db.execute(prior_statement).all()
         for fund, order in prior:
             payment = db.get(Payment, fund.payment_id)
             sources[payment.id] = (payment, order)
+        locked = lock_funding_payments(db, sources)
         remaining = requested
         for payment, order in sources.values():
-            reserved_funds = db.scalar(select(func.coalesce(func.sum(VersionChangeFund.amount), 0)).where(
-                VersionChangeFund.payment_id == payment.id, VersionChangeFund.kind == 'refund',
-                VersionChangeFund.refund_id.is_(None))) or 0
-            refunds = db.scalars(select(ns['Refund']).where(ns['Refund'].payment_id == payment.id,
-                ns['Refund'].status.in_(['pending','completed']))).all()
-            reserved = money(reserved_funds) + sum((money(item.amount) for item in refunds), Decimal('0.00'))
-            room = max(Decimal('0.00'), money(payment.amount) - reserved)
+            payment = locked[payment.id]
+            reserved = occupied(db, payment, include_funds=True)
+            room = max(0, cents(payment.amount) - reserved)
             portion = min(room, remaining)
             if portion <= 0:
                 continue
             db.add(VersionChangeFund(change_id=change.id, kind='refund', payment_id=payment.id,
-                amount=portion, idempotency_key=f'{change.id}:refund:{payment.id}'))
+                amount=_money(portion), idempotency_key=f'{change.id}:refund:{payment.id}'))
             remaining -= portion
             if remaining == 0:
                 break
@@ -372,30 +416,30 @@ def install(ns):
             fail('可退款已支付余额不足，版本变更未启动')
 
     def create_refund_links(db, change, payment_rows, amount, *, actor='version-change-worker'):
-        remaining = money(amount)
+        remaining = cents(amount)
         Refund = ns['Refund']
+        locked = lock_funding_payments(db, [payment.id for payment, order in payment_rows])
         for payment, order in payment_rows:
+            payment = locked[payment.id]
             if remaining <= 0:
                 break
             key = f'{change.id}:refund:{payment.id}'
             prior = db.scalar(select(VersionChangeFund).where(VersionChangeFund.idempotency_key == key))
             if prior:
-                remaining -= money(prior.amount)
+                remaining -= cents(prior.amount)
                 continue
-            refunds = db.scalars(select(Refund).where(Refund.payment_id == payment.id,
-                Refund.status.in_(['pending', 'completed']))).all()
-            reserved = sum((money(item.amount) for item in refunds), Decimal('0.00'))
-            available = max(Decimal('0.00'), money(payment.amount) - reserved)
+            reserved = occupied(db, payment)
+            available = max(0, cents(payment.amount) - reserved)
             allocated = min(remaining, available)
             if allocated <= 0:
                 continue
             refund = Refund(refund_no='REF-' + secrets.token_hex(6).upper(), order_id=order.id,
-                payment_id=payment.id, amount=allocated, status='completed',
+                payment_id=payment.id, amount=_money(allocated), status='completed',
                 reason=f'Version change {change.id}', requested_by=actor, completed_by=actor,
                 completed_at=ns['now']())
             db.add(refund); db.flush()
             db.add(VersionChangeFund(change_id=change.id, kind='refund', payment_id=payment.id,
-                refund_id=refund.id, amount=allocated, idempotency_key=key))
+                refund_id=refund.id, amount=_money(allocated), idempotency_key=key))
             remaining -= allocated
         if remaining != 0:
             raise ValueError('insufficient paid balance for version change refund')
@@ -403,15 +447,20 @@ def install(ns):
     def process_downgrade_refunds(db, change):
         reservations = db.scalars(select(VersionChangeFund).where(VersionChangeFund.change_id == change.id,
             VersionChangeFund.kind == 'refund').with_for_update()).all()
-        requested = money(Decimal(str(json.loads(change.quote_json)['refund_amount'])))
+        requested = cents(json.loads(change.quote_json)['refund_amount'])
         if requested and not reservations:
             fail('降级退款余额预留记录不存在')
-        if sum((money(item.amount) for item in reservations), Decimal('0.00')) != requested:
+        if sum(cents(item.amount) for item in reservations) != requested:
             fail('降级退款余额预留金额不一致')
+        locked = lock_funding_payments(db, [row.payment_id for row in reservations])
+        if ns.get('refund_funding_store'):
+            for payment in locked.values():
+                if occupied(db, payment) > cents(payment.amount):
+                    fail('退款占用超过支付金额')
         for reservation in reservations:
             if reservation.refund_id:
                 continue
-            payment = db.get(ns['Payment'], reservation.payment_id)
+            payment = locked.get(reservation.payment_id)
             order = db.get(Order, payment.order_id) if payment else None
             if not payment or not order:
                 fail('退款来源支付记录不存在')
@@ -420,6 +469,7 @@ def install(ns):
                 reason=f'Version change {change.id}', requested_by='version-change-worker',
                 completed_by='version-change-worker', completed_at=ns['now']())
             db.add(refund); db.flush(); reservation.refund_id = refund.id
+            db.flush()
 
     def refund_upgrade_funding(db, change, proof):
         if not isinstance(proof, dict) or proof.get('request_change_id') != change.id:
@@ -429,7 +479,7 @@ def install(ns):
         if len(funds) != 1:
             fail('升级资金支付关联无效')
         fund = funds[0]
-        payment = db.get(ns['Payment'], fund.payment_id)
+        payment = lock_funding_payments(db, [fund.payment_id]).get(fund.payment_id)
         order = db.get(Order, payment.order_id) if payment else None
         if not payment or not order or payment.status not in {'paid','refunding','refunded'}:
             fail('升级资金尚未支付，不能退款')
@@ -438,16 +488,16 @@ def install(ns):
         refund_links = db.scalars(select(VersionChangeFund).where(
             VersionChangeFund.change_id == change.id, VersionChangeFund.kind == 'refund',
             VersionChangeFund.payment_id == payment.id, VersionChangeFund.refund_id.is_not(None))).all()
-        refunded = Decimal('0.00')
+        refunded = 0
         for link in refund_links:
             refund = db.get(ns['Refund'], link.refund_id)
             if (not refund or refund.payment_id != payment.id or refund.status != 'completed'
                     or money(refund.amount) != money(link.amount)):
                 fail('升级资金退款凭据无效')
-            refunded += money(refund.amount)
-        if money(refunded) != money(fund.amount):
+            refunded += cents(refund.amount)
+        if refunded != cents(fund.amount):
             fail('升级资金退款金额不匹配')
-        order.refunded_amount = money(refunded)
+        order.refunded_amount = _money(refunded)
         order.payment_status = 'refunded'; payment.status = 'refunded'
 
     def require_order_transition(db, user, order, action):

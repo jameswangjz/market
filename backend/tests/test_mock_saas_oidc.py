@@ -1,5 +1,6 @@
 """Independent RP tests: mocked OP HTTP, real RSA; no deployed browser evidence."""
 import base64
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
@@ -390,6 +391,74 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertNotIn('<script>', page.text)
         self.assertIn('&lt;script&gt;', page.text)
 
+    def test_change_receipt_replay_status_and_other_operations(self):
+        status_body = dict(enterprise_id='fixture-enterprise', subscription_id='fixture-subscription')
+        initial = self.machine('STATUS', **status_body)
+        self.assertEqual([initial[k] for k in ('change_id', 'direction', 'effective_at')], [None] * 3)
+        body = dict(to_version='2', change_id='change-1', direction='target', idempotency_key='target-1')
+        clock = datetime(2026, 10, 15, 8, tzinfo=timezone.utc)
+        store_module = sys.modules[self.package + '.store']
+        with patch.object(store_module, 'datetime') as mocked:
+            mocked.now.return_value = clock
+            first = self.machine('CHANGE', **body)
+            mocked.now.return_value = clock + timedelta(hours=1)
+            self.assertEqual(self.machine('CHANGE', **body), first)
+        self.assertEqual(first['effective_at'], clock.isoformat())
+        self.assertEqual(datetime.fromisoformat(first['effective_at']).utcoffset(), timedelta(0))
+        for changes in (dict(to_version='3'), dict(direction='original'), dict(change_id='other')):
+            self.assertEqual(self.raw_machine('CHANGE', **{**body, **changes}).status_code, 409)
+        for operation, values in (('RENEW', {}), ('USER_ASSIGN', {'user_id': 'receipt-user'}),
+                                  ('DEPT_CREATE', {'department_id': 'receipt-dept'}), ('CLOSE', {}),
+                                  ('OPEN', {'version': '2'})):
+            self.machine(operation, **values)
+            status = self.machine('STATUS', **status_body)
+            self.assertEqual({k: status[k] for k in ('change_id', 'direction', 'effective_at')},
+                             {k: first[k] for k in ('change_id', 'direction', 'effective_at')})
+        second = self.machine('CHANGE', **{**body, 'direction': 'original',
+                              'to_version': '1', 'idempotency_key': 'original-1'})
+        restarted = self.module.create_app(transport=self.transport)
+        with TestClient(restarted, base_url=PUBLIC) as client:
+            replay = client.post('/isv.php', json=dict(type='CHANGE', tenant_id='fixture-tenant', **body),
+                                 headers={'Authorization': 'Bearer fixture-machine-token'})
+            self.assertEqual(replay.json(), first)
+        status = self.machine('STATUS', **status_body)
+        self.assertEqual((status['change_id'], status['direction'], status['effective_at']),
+                         (second['change_id'], second['direction'], second['effective_at']))
+
+    def test_change_identity_cannot_use_new_key_after_restart_or_later_change(self):
+        body = dict(type='CHANGE', tenant_id='fixture-tenant', to_version='2',
+                    change_id='fixed-change', direction='target', idempotency_key='first-key')
+        headers = {'Authorization': 'Bearer fixture-machine-token'}
+        first = self.client.post('/isv.php', json=body, headers=headers).json()
+        latest = self.machine('CHANGE', to_version='1', change_id='fixed-change',
+                              direction='original', idempotency_key='restore-key')
+        restarted = self.module.create_app(transport=self.transport)
+        with TestClient(restarted, base_url=PUBLIC) as client:
+            for changes in (dict(idempotency_key='new-key'),
+                            dict(idempotency_key='another-key', to_version='3')):
+                response = client.post('/isv.php', json={**body, **changes}, headers=headers)
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()['detail'], 'change_idempotency_key_mismatch')
+            self.assertEqual(client.post('/isv.php', json=body, headers=headers).json(), first)
+        status = self.machine('STATUS', enterprise_id='fixture-enterprise',
+                              subscription_id='fixture-subscription')
+        self.assertEqual((status['version'], status['direction'], status['effective_at']),
+                         ('1', 'original', latest['effective_at']))
+
+    def test_change_receipt_fields_and_header_idempotency(self):
+        body = dict(to_version='2', change_id='header-change', direction='target')
+        for changes in (dict(change_id=None), dict(change_id=' '), dict(direction='invalid')):
+            self.assertEqual(self.raw_machine('CHANGE', **{**body, 'idempotency_key': 'invalid',
+                                                         **changes}).status_code, 400)
+        self.assertEqual(self.raw_machine('CHANGE', **body).status_code, 400)
+        headers = {'Authorization': 'Bearer fixture-machine-token', 'X-Request-Id': 'header-key'}
+        payload = dict(type='CHANGE', tenant_id='fixture-tenant', **body)
+        first = self.client.post('/isv.php', json=payload, headers=headers)
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(self.client.post('/isv.php', json=payload, headers=headers).json(), first.json())
+        self.assertEqual(self.client.post('/isv.php', json={**payload, 'idempotency_key': 'other'},
+                                         headers=headers).status_code, 409)
+
     def test_legacy_health_machine_oauth_and_operations(self):
         self.assertEqual(self.client.get('/health').json()['service'], 'mock-saas')
         response = self.client.post('/oauth/token', data={'grant_type': 'client_credentials',
@@ -397,7 +466,8 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertEqual(response.json()['access_token'], 'mock-token')
         self.assertEqual(self.client.post('/oauth/token', data={}).status_code, 401)
         self.assertEqual(self.machine('RENEW')['status'], 'active')
-        self.assertEqual(self.machine('CHANGE', to_version='2')['version'], '2')
+        self.assertEqual(self.machine('CHANGE', to_version='2', change_id='change-1',
+            direction='target', idempotency_key='change-1-target')['version'], '2')
         user = self.machine('USER_ASSIGN', user_id='fixture-user')
         expected_user = 'mock-user-' + hashlib.sha256(json.dumps(
             ['fixture-tenant', 'fixture-user'], separators=(',', ':')).encode()).hexdigest()
