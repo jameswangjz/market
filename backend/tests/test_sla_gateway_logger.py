@@ -45,7 +45,7 @@ ngx={is_subrequest=false, status=200, header={}, worker={pid=function() return 7
  var={uri="/gateway/route/health",args="",request_time="0.125",upstream_status="200"},
  req={get_method=function() return METHOD end,
       set_header=function(k,v) HEADERS[k]=v end, clear_header=function(k) HEADERS[k]=nil end},
- timer={every=function(_,cb) TICK=cb;return true end}}
+ timer={every=function(_,cb) TIMER_COUNT=(TIMER_COUNT or 0)+1;TICK=cb;return true end}}
 local manager={wrap_schema=function(_,s) return s end,
  wrap_metadata_schema=function(_,s) s.properties.max_pending_entries={};return s end,
  add_entry=function() return false end,
@@ -75,7 +75,7 @@ package.preload["resty.http"]=function() return {new=function() return {
                                      "SLA_PROBE_SECRET": PROBE_SECRET, "HOSTNAME": "owned-apisix"})
         self.plugin = self.lua.execute(Path("k8s/market-sla-logger.lua").read_text())
         self.conf = self.lua.table_from({})
-        self.plugin.init_worker()
+        self.plugin.init()
 
     def convert(self, value):
         if hasattr(value, "items"):
@@ -145,6 +145,15 @@ package.preload["resty.http"]=function() return {new=function() return {
 
 @unittest.skipIf(LuaRuntime is None, "LuaJIT binding required for executable plugin tests")
 class GatewayLoggerTests(unittest.TestCase):
+    def test_apisix_loader_init_hook_starts_drainer_without_request(self):
+        h = Harness()
+        self.assertIsNone(h.plugin.init_worker)
+        self.assertIsNotNone(h.lua.globals().TICK)
+        h.plugin.init()
+        self.assertEqual(h.lua.globals().TIMER_COUNT, 1)
+        h.tick()
+        self.assertTrue(h.shared["hashes"].get("market:sla:terminal:producers"))
+
     def test_server_id_overwrites_client_and_log_is_terminal_once(self):
         h = Harness(); ctx = h.context(); g = h.lua.globals()
         g.HEADERS["X-Request-Id"] = "caller-controlled"

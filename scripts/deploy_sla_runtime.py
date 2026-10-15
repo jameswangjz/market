@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import ipaddress
 import os
+import re
 from pathlib import Path
 import secrets
 import subprocess
@@ -135,6 +136,9 @@ def main():
     api_spec = json.loads(json.dumps(originals['api']['spec']))
     container_env(api_spec, 'api', ('SLA_GATEWAY_INGEST_SECRET', 'SLA_PROBE_SECRET'))
     api_container = next(item for item in api_spec['template']['spec']['containers'] if item['name'] == 'api')
+    runtime_image = api_container['image']
+    if not re.fullmatch(r'(?:[A-Za-z0-9._:/-]+/)?market-api:\d{14}-[a-f0-9]{7,40}', runtime_image):
+        raise ValueError('Workers require the immutable deployed timestamp-SHA API image')
     hosts = originals['runtime']['data'].get('UPSTREAM_ALLOWED_HOSTS', '')
     explicit_hosts = next((item.get('value', '') for item in api_container.get('env', [])
                            if item['name'] == 'UPSTREAM_ALLOWED_HOSTS'), '')
@@ -167,8 +171,7 @@ def main():
             input=Path('scripts/sla_gateway_labels.py').read_bytes())
         (directory / 'label-refresh.json').write_bytes(label_report)
         for manifest in ('k8s/ticket-sla-monitor.yaml', 'k8s/sla-online-monitor.yaml'):
-            rendered = Path(manifest).read_text().replace('market-api:REPLACE_WITH_DEPLOYED_TAG',
-                                                        'market-api:' + args.tag)
+            rendered = Path(manifest).read_text().replace('market-api:REPLACE_WITH_DEPLOYED_TAG', runtime_image)
             subprocess.run(['kubectl', '-n', 'market', 'apply', '-f', '-'],
                            input=rendered.encode(), check=True, capture_output=True)
         retired = producer_registry({'snapshot': producer_snapshot, 'tag': args.tag})
@@ -195,7 +198,7 @@ def main():
         patch('deployment', 'market-api', {'spec': originals['api']['spec']})
         raise
     print(json.dumps({'status': 'configured', 'tag': args.tag, 'backup': str(directory),
-                      'routes_rewritten': False, 'business_credentials_changed': False}))
+                      'runtime_image': runtime_image, 'routes_rewritten': False, 'business_credentials_changed': False}))
 
 
 if __name__ == '__main__':

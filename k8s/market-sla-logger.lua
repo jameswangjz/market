@@ -31,6 +31,7 @@ local producer_started_at_ms
 local window_counts = {}
 local last_sealed_slot
 local draining = false
+local timer_started = false
 local failure_reports = {}
 local QUEUE = "market:sla:terminal:pending"
 local FAILURES = "market:sla:terminal:delivery_failures"
@@ -227,10 +228,16 @@ local function drain(premature)
     draining = false
 end
 
-function _M.init_worker()
+-- APISIX invokes plugin.init() while loading plugins in worker initialization.
+function _M.init()
+    if timer_started then return end
     producer_id()
     local ok = ngx.timer.every(2, drain)
-    if not ok then core.log.error("market-sla-logger queue_timer_failed") end
+    if ok then
+        timer_started = true
+    else
+        core.log.error("market-sla-logger queue_timer_failed")
+    end
 end
 
 function _M.log(conf, ctx)

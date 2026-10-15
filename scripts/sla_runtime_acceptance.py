@@ -6,6 +6,7 @@ historical order mutation. Evidence never contains bearer tokens/API keys.
 import argparse
 import importlib.util
 import json
+import math
 from pathlib import Path
 import time
 
@@ -69,6 +70,14 @@ def run(args):
             quota = sorted({key for window in saved['quota_windows']
                 for epoch in range(window['start'], window['end'] + 1)
                 for key in fixture.quota_keys(window['scope'], window['period'], epoch)})
+            # A newly delivered service does not own the earlier boundary of
+            # the current slot. Wait for a real slot, never insert future facts.
+            first_slot = math.ceil(max(row.verified_at.timestamp() for row in contracts) / 300) * 300
+            delay = max(0, first_slot + 1 - m.now().timestamp())
+            fixture.check(delay <= 310, 'Real probe wait exceeds one bounded slot')
+            if delay:
+                print(json.dumps({'phase': 'waiting_for_real_probe_slot', 'seconds': round(delay)}), flush=True)
+                time.sleep(delay)
             before = {key: redis.get(key) for key in quota}
             results = []
             for cid in contract_ids:
@@ -78,6 +87,13 @@ def run(args):
             fixture.check(all(redis.get(key) == value for key, value in before.items()),
                           'Dedicated SLA probes changed buyer quota')
             report['probe_results'] = results
+            with m.SessionLocal() as db:
+                Slot = m.sla_probe_collector['Slot']
+                healthy = list(db.scalars(select(Slot).where(Slot.product_id.in_(saved['products']),
+                    Slot.status == 'healthy', Slot.scope == 'business_entry')))
+                fixture.check({row.product_id for row in healthy} == set(saved['products']),
+                              'Both real business-entry probes must be healthy')
+                report['healthy_probe_rows'] = len(healthy)
         finally:
             redis.close()
         deadline = time.monotonic() + 30
@@ -140,6 +156,7 @@ def run(args):
         if browser.exists():
             browser.unlink()
         report['cleanup'] = 'exact fixture roots, facts and probe consumers removed'
+        Path(args.evidence).write_text(json.dumps(report, ensure_ascii=False, indent=2))
     Path(args.evidence).write_text(json.dumps(report, ensure_ascii=False, indent=2))
     print(json.dumps(report, ensure_ascii=False))
 
