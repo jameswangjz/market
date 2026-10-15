@@ -41,6 +41,25 @@ test("shared controls emit validated page/size events, synchronize jump, and blo
   assert.match(text, /本地分页/);
 });
 
+test("empty pagination blocks jumps but retains page-size selection", () => {
+  const text = source("PaginationControls.vue");
+  const props = ref({ page: 2, pageSize: 20, total: 0, busy: false });
+  const events = [];
+  const context = vm.createContext({ computed, ref, watch, pageCount, pageSizes, validPage,
+    defineProps: () => props.value, defineEmits: () => (...args) => events.push(args) });
+  const script = text.split("<script setup>")[1].split("</script>")[0].replace(/^import .*;$/gm, "");
+  vm.runInContext(script, context);
+  context.go(1); context.go("0");
+  assert.deepEqual(events, []);
+  context.resize({ target: { value: "50" } });
+  assert.deepEqual(events, [["size", 50]]);
+  assert.match(text, /aria-label="跳转页码"[^>]*:disabled="!canJump"/);
+  assert.match(text, /aria-label="跳转到指定页"[^>]*:disabled="!canJump"/);
+  props.value.total = 21;
+  context.go(1);
+  assert.deepEqual(events.at(-1), ["page", 1]);
+});
+
 function storefront(search, get) {
   const paths = [];
   const context = { URLSearchParams, AbortController, registrationProductTypes, pageCount, pageSizeValue, props: { search, productId: "" }, api: { get }, navigate: path => paths.push(path), controller: undefined };

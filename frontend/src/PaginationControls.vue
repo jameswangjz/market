@@ -5,11 +5,12 @@ import { pageCount, pageSizes, validPage } from "./pagination.js";
 const props = defineProps({ page: { type: Number, default: 1 }, pageSize: { type: Number, default: 20 }, total: { type: Number, default: 0 }, busy: Boolean, local: Boolean, label: { type: String, default: "分页" } });
 const emit = defineEmits(["page", "size"]);
 const pages = computed(() => pageCount(props.total, props.pageSize));
+const canJump = computed(() => !props.busy && props.total > 0);
 const jump = ref(String(props.page));
 const error = ref("");
 watch(() => [props.page, props.pageSize, props.total], () => { jump.value = String(props.page); error.value = ""; });
 function go(value) {
-  if (props.busy) return;
+  if (!canJump.value) return;
   const next = validPage(value, pages.value);
   if (next === null) { error.value = `请输入 1 至 ${pages.value} 的整数页码`; return; }
   error.value = "";
@@ -24,9 +25,9 @@ function resize(event) {
   <nav class="pagination-controls" :aria-label="label" :aria-busy="busy">
     <span class="pagination-total">{{ local ? '本地分页 · ' : '' }}共 {{ total }} 条</span>
     <label>每页<select :value="pageSize" :disabled="busy" aria-label="每页条数" @change="resize"><option v-if="!pageSizes.includes(pageSize)" :value="pageSize">{{ pageSize }}</option><option v-for="size in pageSizes" :key="size" :value="size">{{ size }}</option></select></label>
-    <div class="pagination-navigation"><button type="button" class="icon-btn" title="上一页" aria-label="上一页" :disabled="busy || page <= 1" @click="go(page - 1)"><ArrowLeft :size="16" /></button><span class="pagination-position">{{ page }} / {{ pages }}</span><button type="button" class="icon-btn" title="下一页" aria-label="下一页" :disabled="busy || page >= pages" @click="go(page + 1)"><ArrowRight :size="16" /></button></div>
-    <label>跳至<input v-model="jump" type="text" inputmode="numeric" aria-label="跳转页码" :aria-invalid="!!error" :disabled="busy" @input="error = ''" @keydown.enter.prevent="go(jump)" /></label>
-    <button type="button" class="icon-btn" title="跳转到指定页" aria-label="跳转到指定页" :disabled="busy" @click="go(jump)"><CornerDownLeft :size="16" /></button>
+    <div class="pagination-navigation"><button type="button" class="icon-btn" title="上一页" aria-label="上一页" :disabled="!canJump || page <= 1" @click="go(page - 1)"><ArrowLeft :size="16" /></button><span class="pagination-position">{{ page }} / {{ pages }}</span><button type="button" class="icon-btn" title="下一页" aria-label="下一页" :disabled="!canJump || page >= pages" @click="go(page + 1)"><ArrowRight :size="16" /></button></div>
+    <label>跳至<input v-model="jump" type="text" inputmode="numeric" aria-label="跳转页码" :aria-invalid="!!error" :disabled="!canJump" @input="error = ''" @keydown.enter.prevent="go(jump)" /></label>
+    <button type="button" class="icon-btn" title="跳转到指定页" aria-label="跳转到指定页" :disabled="!canJump" @click="go(jump)"><CornerDownLeft :size="16" /></button>
     <span class="pagination-error" role="alert">{{ error }}</span>
   </nav>
 </template>
