@@ -421,7 +421,9 @@ def install(ns):
                     row.authorized if row.scope_resolved else None, row.published_route,
                     traffic=row.traffic, trusted_evidence=bool(row.evidence_id or row.traffic_evidence_id),
                     reason=row.reason, responsibility=row.responsibility,
-                    redirect_allowed=row.redirect_allowed, policy_version=row.policy_version)
+                    redirect_allowed=row.redirect_allowed, policy_version=row.policy_version,
+                    occurred_at=row.completed_at.replace(tzinfo=timezone.utc) if row.completed_at.tzinfo is None
+                        else _aware(row.completed_at))
         return aggregate_requests(facts(), source_available=source_available is True and unresolved is None and integrity_complete)
 
     hooks = {"Model": GatewayFact, "SourceWindow": SourceWindow, "aggregate": aggregate, "ingest": ingest,

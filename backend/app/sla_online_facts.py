@@ -45,8 +45,12 @@ class RequestFact:
     maintenance_contract_exclusion: bool = False
     maintenance_preapproved: bool = False
     policy_version: str = POLICY_VERSION
+    occurred_at: datetime | None = None
 
     def __post_init__(self):
+        if (self.occurred_at is not None and (not isinstance(self.occurred_at, datetime)
+                or self.occurred_at.tzinfo is None or self.occurred_at.utcoffset() is None)):
+            raise ValueError("request occurrence requires an aware timestamp")
         if (not isinstance(self.request_id, str) or not self.request_id.strip()
                 or not isinstance(self.policy_version, str) or not self.policy_version.strip()):
             raise ValueError("request identity and policy version required")

@@ -18,6 +18,7 @@ from sqlalchemy.orm import mapped_column
 from .sla_metrics import BEIJING, DeliveryFact, Threshold, month_bounds
 from .sla_online_facts import aggregate_deliveries
 from .sla_order_assessment import _number, _snapshot, assess_order_metric
+from .sla_evidence import FactBuffer, bundle
 
 
 METRICS = ('availability', 'request_error_rate', 'latency_p95', 'delivery_timeliness')
@@ -144,8 +145,20 @@ def install(ns):
         month = start.astimezone(BEIJING)
         # Without a frozen deadline, historical payments cannot safely be assigned
         # to or excluded from this deadline-month cohort. Never drop them as met.
-        return aggregate_deliveries(facts, missing_frozen_facts=len(unknown), source_available=True,
-            year=month.year, month=month.month, as_of=at)
+        captured = FactBuffer(start=start, end=end)
+        for item, fact in zip(contracts, facts):
+            included = fact.deadline <= at
+            captured.add({'kind': 'delivery', 'fact_id': item.id, 'order_id': item.order_id,
+                'paid_at': item.paid_at, 'deadline_at': item.deadline_at,
+                'verified_at': item.verified_at if item.verified_at and utc(item.verified_at) <= at else None,
+                'included': included, 'on_time': fact.first_verified_success_at is not None
+                    and fact.first_verified_success_at <= fact.deadline if included else None,
+                'reason': 'deadline_cohort' if included else 'deadline_not_elapsed'})
+        for order_id in unknown:
+            captured.add({'kind': 'missing_contract', 'order_id': order_id, 'included': False,
+                          'reason': 'missing_frozen_contract'})
+        return (aggregate_deliveries(facts, missing_frozen_facts=len(unknown), source_available=True,
+            year=month.year, month=month.month, as_of=at), captured.data)
 
     def evaluate(db, actor='system', *, year=None, month=None, at=None):
         at = utc(at or ns['now']())
@@ -181,7 +194,7 @@ def install(ns):
             cohort = order.product_id, order.buyer_enterprise_id
             if cohort not in cohorts:
                 cohorts[cohort] = deliveries(db, order, start, end, min(at, end))
-            measurements['delivery_timeliness'] = cohorts[cohort]
+            measurements['delivery_timeliness'], delivery_evidence = cohorts[cohort]
             available['delivery_timeliness'] = contract is not None
             values = {metric: asdict(assess_order_metric(snapshot, metric, measurements.get(metric),
                 buyer_enterprise_id=order.buyer_enterprise_id, source_available=available.get(metric) is True))
@@ -198,7 +211,28 @@ def install(ns):
             evidence = {'source_version': collected.get('source_version', 'missing'),
                         'request_source_cutoff': collected.get('request_source_cutoff'),
                         'evidence_digest': collected.get('evidence_digest', ''), 'source_available': available}
-            signature = hashlib.sha256(canonical([snapshot, values, evidence]).encode()).hexdigest()
+            captured = dict(collected.get('evidence', {}))
+            captured['delivery_timeliness'] = delivery_evidence
+            if contract is not None:
+                duration = values['delivery_duration']
+                verified_at = duration.get('verified_at')
+                duration_status = ('verified' if verified_at else 'overdue' if duration['status'] == 'breached'
+                                   else 'pending' if duration.get('value') is not None else 'unknown')
+                captured['delivery_duration'] = bundle([{'kind': 'delivery', 'fact_id': contract.id,
+                    'order_id': order.id, 'paid_at': contract.paid_at, 'deadline_at': contract.deadline_at,
+                    'verified_at': verified_at, 'included': duration_status != 'unknown', 'status': duration_status,
+                    'reason': 'first_verified_delivery' if verified_at else 'delivery_overdue'
+                        if duration_status == 'overdue' else 'delivery_pending'}], start=contract.paid_at,
+                    end=min(at, end, utc(contract.verified_at)) if contract.verified_at else min(at, end))
+            legacy_signature = hashlib.sha256(canonical([snapshot, values, evidence]).encode()).hexdigest()
+            signature = hashlib.sha256(canonical([snapshot, values, evidence, captured]).encode()).hexdigest()
+            evidence_hooks = ns.get('sla_evidence', {})
+            # Unchanged pre-evidence assessments stay unknown; do not attach
+            # today's facts to a historical version merely because GET needs it.
+            if (row is not None and row.input_hash == legacy_signature
+                    and not evidence_hooks['has_version'](db, row)):
+                result.append(row)
+                continue
             if row is None:
                 row = Assessment(order_id=order_id, contract_id=contract.id if contract else None,
                     snapshot_json=snapshot, period_start=start, period_end=end, version=0)
@@ -209,6 +243,7 @@ def install(ns):
                 row.input_hash, row.metrics_json, row.source_json = signature, canonical(values), canonical(evidence)
                 row.status, row.calculated_at = status, at
                 db.flush()
+                evidence_hooks['save'](db, row, captured)
                 ns['audit'](db, actor, 'evaluate_order_sla', 'sla_online_assessment', row.id,
                     'Evaluate recorded sources against frozen order thresholds', category='sla', business_domain='sla',
                     order_id=order.id, before=previous, after={'version': row.version, 'status': status,

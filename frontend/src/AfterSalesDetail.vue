@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Download, RefreshCw, Upload, Send } from "lucide-vue-next";
 import AfterSalesModalShell from "./AfterSalesModalShell.vue";
+import TicketSlaEvidence from "./TicketSlaEvidence.vue";
 import { afterSalesActions, ticketStatus, ticketActions, canCollaborate, createAfterSalesSession, timelineActor, timelineFrom, evidenceAuthor } from "./afterSales.js";
 const props = defineProps({ ticketId: String, api: Object, params: Object, user: Object, enterpriseId: String });
 const emit = defineEmits(["close", "changed"]);
@@ -10,6 +11,7 @@ let session;
 let lifecycle = 0;
 const reason = ref(""), comment = ref(""), action = ref(""), selectedAttachments = ref([]);
 const fileInput = ref(null);
+const slaExpanded = ref(false);
 const allowed = computed(() => ticketActions(state.ticket, props.user));
 const collaborate = computed(() => canCollaborate(state.ticket, props.user, props.enterpriseId));
 const terminal = computed(() => ["completed", "withdrawn", "force_closed", "resolved", "closed"].includes(state.ticket?.status));
@@ -61,6 +63,7 @@ async function download(item) {
     <template v-if="state.ticket">
       <dl class="after-sales-meta"><div><dt>状态</dt><dd>{{ ticketStatus(state.ticket.status) }}</dd></div><div><dt>订单</dt><dd>{{ state.ticket.order_no || state.ticket.order_id }}</dd></div><div><dt>类别</dt><dd>{{ state.ticket.type }}</dd></div><div><dt>版本 / 冻结等级</dt><dd>{{ state.ticket.version }} / {{ state.ticket.service_level_code || '—' }}</dd></div></dl>
       <p>{{ state.ticket.description }}</p>
+      <details class="ticket-sla-expander" @toggle="slaExpanded = $event.target.open"><summary>工单 SLA 指标与来源（只读）</summary><TicketSlaEvidence v-if="slaExpanded" :key="`${ticketId}:${JSON.stringify(params)}`" :api="api" :ticket-id="ticketId" :params="params" /></details>
       <fieldset :disabled="state.busy || state.loading"><legend>工单处理</legend>
         <div class="after-sales-actions"><button v-for="name in allowed" :key="name" type="button" class="secondary-btn" :aria-pressed="action === name" @click="action = name">{{ afterSalesActions[name] }}</button></div>
         <p v-if="!allowed.length" class="muted">当前状态或身份无可用处理动作。</p>

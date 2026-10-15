@@ -10,6 +10,8 @@ import AfterSalesDetail from "./AfterSalesDetail.vue";
 import AfterSalesCreate from "./AfterSalesCreate.vue";
 import { ticketStatus, canCreateAfterSales } from "./afterSales.js";
 import SlaEvidencePanel from "./SlaEvidencePanel.vue";
+import SlaEnterpriseAdjustment from "./SlaEnterpriseAdjustment.vue";
+import SlaTicketEvidence from "./SlaTicketEvidence.vue";
 import { reviewSlaPayload } from "./slaEvidence.js";
 import { pageCount, validPage } from "./pagination.js";
 import { slaResultState, slaMetric, slaResultReason } from "./slaResultDisplay.js";
@@ -3370,7 +3372,7 @@ onUnmounted(() => {
             <div><div class="eyebrow">SERVICE ASSURANCE · SLA</div><h1>平台服务与 SLA 保障</h1><p>统一配置服务等级目标，按 API 调用质量和交付及时率进行周期考核。</p></div>
             <button class="primary-btn" @click="evaluateSla"><RefreshCw :size="15" />立即考核</button>
           </div>
-          <SlaEvidencePanel :results="slaOverview.results" :assignments="slaOverview.service_level_assignments" />
+          <SlaEvidencePanel :results="slaOverview.results" :assignments="slaOverview.service_level_assignments" :api="api" :params="afterSalesScope" />
           <div class="metric-grid">
             <div class="metric-card"><div class="metric-icon blue"><Activity :size="17" /></div><span>启用规则</span><strong>{{ slaOverview.summary.active_profiles || 0 }}</strong><small>共 {{ slaOverview.summary.profiles || 0 }} 条规则</small></div>
             <div class="metric-card"><div class="metric-icon green"><CheckCircle2 :size="17" /></div><span>达标结果</span><strong>{{ slaOverview.summary.met || 0 }}</strong><small>最近考核周期</small></div>
@@ -5557,6 +5559,8 @@ onUnmounted(() => {
           <button v-if="!enterpriseManageReadOnly" :class="{ active: enterpriseManageTab === 'departments' }" @click="enterpriseManageTab = 'departments'">部门管理</button>
           <button v-if="!enterpriseManageReadOnly" :class="{ active: enterpriseManageTab === 'members' }" @click="enterpriseManageTab = 'members'">成员管理</button>
         </div>
+        <SlaEnterpriseAdjustment v-if="enterpriseManageTab === 'details'" :key="enterpriseManageModal.id" :api="api" :enterprise="enterpriseManageModal" :user="user" />
+        <SlaTicketEvidence v-if="enterpriseManageTab === 'details' && !user?.platform_role && ['super_admin', 'enterprise_admin'].includes(user?.enterprise_role)" :key="`sla:${enterpriseManageModal.id}:${businessView}`" :api="api" :params="{ enterprise_id: enterpriseManageModal.id, business_view: businessView }" />
         <div v-if="enterpriseManageTab === 'details'" class="enterprise-detail-grid">
           <div><small>企业名称</small><strong>{{ enterpriseManageModal.name }}</strong></div><div><small>统一社会信用代码</small><strong>{{ enterpriseManageModal.credit_code }}</strong></div><div><small>企业类型</small><strong>{{ enterpriseManageModal.enterprise_type || '-' }}</strong></div><div><small>法定代表人</small><strong>{{ enterpriseManageModal.legal_representative || '-' }}</strong></div><div><small>注册资本/出资额</small><strong>{{ enterpriseManageModal.registered_capital || '-' }}</strong></div><div><small>成立日期</small><strong>{{ enterpriseManageModal.establishment_date || '-' }}</strong></div><div><small>经营场所</small><strong>{{ enterpriseManageModal.business_address || '-' }}</strong></div><div><small>认证状态</small><strong>已认证</strong></div><div><small>认证时间</small><strong>{{ fmtDate(enterpriseManageModal.verified_at) }}</strong></div><div class="enterprise-detail-wide"><small>经营范围</small><strong>{{ enterpriseManageModal.business_scope || '-' }}</strong></div>
         </div>

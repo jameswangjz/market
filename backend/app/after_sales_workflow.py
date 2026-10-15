@@ -3,7 +3,7 @@ import hashlib
 import json
 import secrets
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -294,7 +294,12 @@ def install(ns):
             return output(ticket, db, user)
 
     @app.get("/api/after-sales/{ticket_id}/timeline")
-    def timeline(ticket_id: str, request: Request, user=Depends(ns["current_user"]), db=Depends(ns["db_session"])):
+    def timeline(ticket_id: str, request: Request,
+            page: int | None = Query(default=None, ge=1),
+            page_size: int | None = Query(default=None, ge=1, le=100),
+            user=Depends(ns["current_user"]), db=Depends(ns["db_session"])):
+        if page is not None or page_size is not None:
+            return ns["sla_evidence"]["timeline_page"](db, user, ticket_id, request, page or 1, page_size or 20)
         ticket = db.get(Ticket, ticket_id)
         order = db.get(Order, ticket.order_id) if ticket else None
         if not order:

@@ -7240,8 +7240,12 @@ def evaluate_sla(year: int | None = Query(default=None, ge=2000, le=9998), month
 
 
 @app.get("/api/sla/results")
-def sla_results(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def sla_results(page: int | None = Query(default=None, ge=1),
+                page_size: int | None = Query(default=None, ge=1, le=100),
+                user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
+    if page is not None or page_size is not None:
+        return sla_evidence["results_page"](db, page or 1, page_size or 20)
     items = sla_online_assessments["results"](db)
     legacy = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc(), SLAResult.id).limit(100)).all()
     items.extend(sla_result_out(row, db.get(SLAProfile, row.profile_id)) for row in legacy)
@@ -7819,3 +7823,7 @@ after_sales_workflow = install_after_sales_workflow(globals())
 from .ticket_sla_monitor import install as install_ticket_sla_monitor
 
 ticket_sla_monitor = install_ticket_sla_monitor(globals())
+
+from .sla_evidence import install as install_sla_evidence
+
+sla_evidence = install_sla_evidence(globals())

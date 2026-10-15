@@ -10,7 +10,8 @@ import { slaMetric, slaResultState, slaResultReason } from "../src/slaResultDisp
 const component = readFileSync(new URL("../src/SlaEvidencePanel.vue", import.meta.url), "utf8");
 const { descriptor } = parse(component);
 async function html(results = [], assignments = []) {
-  return renderToString(createSSRApp({ setup: () => ({ results, assignments, metricRows,
+  return renderToString(createSSRApp({ setup: () => ({ results, displayResults: results, assignments, metricRows,
+    api: null, state: { data: null, busy: false, error: "" }, selectedSource: null, activeTab: "results",
     slaMetric, slaResultState, slaResultReason, date: value => value || "—" }),
     render: compile(descriptor.template.content) }));
 }
@@ -45,7 +46,7 @@ test("actual template preserves P95, frozen identity and escaped evidence withou
   }, source_summary: { source_version: "probe-v1", evidence_digest: "<script>unsafe</script>" } }]);
   assert.match(output, /P95/); assert.match(output, /3200 ms/); assert.doesNotMatch(output, /平均延迟|<script>|href=/);
   assert.match(output, /frozen-rule/); assert.match(output, /strategic/); assert.match(output, /&lt;script&gt;/);
-  assert.match(output, /逐条证据未由此接口提供/);
+  assert.match(output, /历史未保存的逐条证据不以当前数据补造/);
 });
 
 test("empty and legacy results do not infer compliance or manufacture evidence", async () => {

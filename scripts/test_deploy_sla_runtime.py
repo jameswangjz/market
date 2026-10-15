@@ -13,6 +13,14 @@ spec.loader.exec_module(deploy)
 
 
 class DeploymentGuardTests(unittest.TestCase):
+    def test_runtime_deployment_updates_both_sla_writers(self):
+        script = Path(__file__).resolve().parents[1] / 'scripts' / 'deploy_trading_runtime.sh'
+        content = script.read_text()
+        for template in ('ticket-sla-monitor.yaml', 'sla-online-monitor.yaml'):
+            self.assertIn('if [[ -f k8s/' + template + ' ]]; then', content)
+            self.assertIn('k8s/' + template + ' | kubectl apply -f -', content)
+        self.assertIn('market-api:${TAG}', content)
+
     def test_bad_provenance_never_accesses_cluster(self):
         args = ['deploy', '--commit', 'a' * 40, '--tag', '20261015070000-aaaaaaa',
                 '--manifest-sha256', 'b' * 64, '--probe-source-cidrs', '10.244.0.0/16']

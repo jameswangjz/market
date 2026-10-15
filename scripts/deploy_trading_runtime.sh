@@ -43,5 +43,8 @@ kubectl -n market rollout status deployment/market-web --timeout=240s
 if [[ -f k8s/ticket-sla-monitor.yaml ]]; then
   sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/ticket-sla-monitor.yaml | kubectl apply -f -
 fi
+if [[ -f k8s/sla-online-monitor.yaml ]]; then
+  sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/sla-online-monitor.yaml | kubectl apply -f -
+fi
 echo "Deployed: $TAG"
 kubectl -n market get deployment market-api market-web message-center-worker -o wide
