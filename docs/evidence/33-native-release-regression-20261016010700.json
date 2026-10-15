@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "error": "runtime_cleanup_failed:{\"error_type\": \"AcceptanceFailure\", \"safe_detail\": \"cleanup_graph_changed\", \"stage\": \"cleanup\"}",
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "bcdf128df1bbaabef2acf7382757de7be50c3b1af1dc9c952651b2a25065a96e",
+    "r3_native_refund_runtime_acceptance": "e04c1ac06feca65022b423ffa708fc71cc174a32a37df75e0586f1d61b3a9c42",
+    "r3_native_refund_flow": "7e862f26a5495aafe0b0e6a984cdd581c9e789f421429beb84020f2c289e696b"
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "actor": "admin@market.local",
+  "captured_at": "2026-10-15T17:15:47.169620+00:00",
+  "changed": 3,
+  "changes": [
+    {
+      "after": "review",
+      "before": "in_progress",
+      "code": "TRD-R3-BE-012"
+    },
+    {
+      "after": "review",
+      "before": "in_progress",
+      "code": "TRD-R3-QA-005"
+    },
+    {
+      "after": "review",
+      "before": "in_progress",
+      "code": "TRD-R3-QA-006"
+    }
+  ],
+  "counts": {
+    "blocked": 5,
+    "done": 142,
+    "in_progress": 0,
+    "review": 70,
+    "todo": 3
+  },
+  "evidence": {
+    "file": {
+      "path": "/tmp/36-file-refund-pg-20261016011200.json",
+      "sha256": "cd0a17d06039fdbd8f9a745973f3c3b021725e58b30a538a97ae5419d3f6d1c9"
+    },
+    "monthly": {
+      "path": "/tmp/37-monthly-final-20261016011210.json",
+      "sha256": "bd0afb7bfe36eae8387b2d7ab957a12599c69a1c4ffa53aabf0438d2a249ef8d"
+    },
+    "native": {
+      "path": "/tmp/35-native-release-final-20261016011200.json",
+      "sha256": "97a095c97a24380904e431062761f7430d87d0f682af36053fbf38730f58aa73"
+    },
+    "saas": {
+      "path": "/tmp/32-saas-refund-live-20261016010230.json",
+      "sha256": "45b3536aa5e6f95e4b5e256725ba0849f724415ddd8f8f0f3f68ace0562280fa"
+    }
+  },
+  "evidence_bundle_sha256": "33c6c997d7bef4fecc69ce6b95f4aee32f05195a9e88d83ecadc02b4cb2a28c3",
+  "protected_after": {
+    "count": 1,
+    "sha256": "9bafc16202b3eb1df076b3cbff21f108907992b0dd2fba5352b2704bdbaced07"
+  },
+  "protected_before": {
+    "count": 1,
+    "sha256": "9bafc16202b3eb1df076b3cbff21f108907992b0dd2fba5352b2704bdbaced07"
+  },
+  "status": "submitted_for_review",
+  "total": 220
+}

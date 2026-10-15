@@ -1,0 +1,80 @@
+{
+  "status": "passed",
+  "proof": {
+    "charges": 2,
+    "refunded_amount": 16,
+    "monthly_quota": 2,
+    "monthly_used": 2,
+    "next_http_status": 429,
+    "simulated_payment_legs": 1,
+    "negative_settlement": {
+      "gross_amount": -16.0,
+      "cost_amount": -4.0,
+      "profit_amount": -12.0,
+      "platform_fee": -2.4,
+      "provider_share": -6.0,
+      "service_share": -1.2,
+      "expert_fee": -1.2,
+      "channel_fee": -1.2
+    },
+    "negative_settlement_source": "flow_invoked_production_adapter",
+    "cross_month_coverage_claim": false,
+    "report_csv_verified": 1,
+    "delivery_audit_identity_verified": 1,
+    "resource_failures_before_funds": 1,
+    "idempotent_retry_completed": 1,
+    "retained_sla_count": 3,
+    "not_tested": [
+      "SLA metrics, completeness, attribution and window sealing"
+    ]
+  },
+  "cleanup": {
+    "deleted_tablecounts": {
+      "api_credentials": 1,
+      "api_financial_charges": 2,
+      "api_gateway_routes": 1,
+      "audit_logs": 24,
+      "delivery_tasks": 1,
+      "enterprises": 2,
+      "gateway_config_revisions": 1,
+      "gateway_publish_records": 1,
+      "memberships": 2,
+      "notification_preferences": 4,
+      "oauth_clients": 2,
+      "order_sla_contracts": 1,
+      "order_state_logs": 5,
+      "orders": 1,
+      "ordinary_refund_cases": 1,
+      "ordinary_refund_events": 10,
+      "ordinary_refund_executions": 1,
+      "ordinary_refund_local_completions": 1,
+      "ordinary_refund_payment_legs": 1,
+      "ordinary_refund_settlement_links": 1,
+      "payments": 1,
+      "product_release_versions": 4,
+      "products": 2,
+      "refund_resource_recoveries": 1,
+      "refunds": 1,
+      "settlement_measurements": 4,
+      "settlements": 1,
+      "subscription_combinations": 1,
+      "subscription_terms": 1,
+      "users": 4,
+      "version_gateway_configs": 1
+    },
+    "retained_sla_count": 3,
+    "not_tested": [
+      "SLA metrics, completeness, attribution and window sealing"
+    ]
+  },
+  "protected_preserved": true,
+  "manifest": "/tmp/qa-native-20261016-release-final2.json",
+  "manifest_mode": "0600",
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "bcdf128df1bbaabef2acf7382757de7be50c3b1af1dc9c952651b2a25065a96e",
+    "r3_native_refund_runtime_acceptance": "e04c1ac06feca65022b423ffa708fc71cc174a32a37df75e0586f1d61b3a9c42",
+    "r3_native_refund_flow": "7e862f26a5495aafe0b0e6a984cdd581c9e789f421429beb84020f2c289e696b"
+  }
+}
