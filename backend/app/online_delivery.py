@@ -199,6 +199,7 @@ def install(ns):
 
     def require_download(db, user, order, item):
         require_buyer(db, user, order)
+        ns['refund_file_resources']['require_download'](db, order)
         eligible(order)
         if order.delivery_status != 'accepted' or order.main_status != 'completed':
             raise HTTPException(409, '文件交付尚未完成')
@@ -206,6 +207,7 @@ def install(ns):
             raise HTTPException(403, '文件不属于订单冻结的交付版本')
 
     def access_order(db, order):
+        ns['refund_file_resources']['require_download'](db, order)
         eligible(order)
         if order.main_status != 'completed' or order.delivery_status != 'accepted':
             raise HTTPException(409, '订单交付尚未完成')
@@ -281,7 +283,8 @@ def install(ns):
 
     @ns['app'].get('/api/orders/{order_id}/delivery-access')
     def access(order_id: str, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
-        order = db.get(Order, order_id)
+        order = db.scalar(select(Order).where(Order.id == order_id).with_for_update()
+                          .execution_options(populate_existing=True))
         if not order:
             return JSONResponse({'detail': '订单不存在'}, status_code=404, headers=NO_STORE)
         try:

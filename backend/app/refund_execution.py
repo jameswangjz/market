@@ -152,13 +152,17 @@ def install(ns):
                 or document["order_id"] != order.id
                 or document["payment_id"] != refund.payment_id
                 or cents(document["amount"]) != cents(refund.amount)
-                or document["basis"] not in {"calls", "time"}
+                or document["basis"] not in {"calls", "time", "manual"}
             ):
                 raise ValueError
             if utc(document["as_of"]) > utc(ns["now"]()):
                 fail("approved_plan_timestamp_invalid")
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise HTTPException(409, "frozen_refund_plan_invalid") from exc
+        if document['basis'] == 'manual':
+            if order.delivery_method_snapshot != 'file':
+                fail('manual_refund_execution_unavailable')
+            ns['refund_file_resources']['validate_economic'](db, order, refund, document)
         return case, document
 
     def funding(db, order, refund, document, *, fresh=True):
@@ -191,7 +195,7 @@ def install(ns):
 
     def recheck(db, order, refund, *, fresh=True):
         case, document = envelope(db, order, refund, fresh=fresh)
-        if fresh:
+        if fresh and not (order.delivery_method_snapshot == 'file' and document['basis'] == 'manual'):
             current = ns["prepare_refund_plan"](db, order, refund)
             previous = document["economic_plan"]
             # Ignore observational timestamps; every money/usage/recovery and
@@ -234,11 +238,14 @@ def install(ns):
         try:
             adapter()
             envelope(db, order, refund, fresh=False)
-            if order.delivery_method_snapshot not in {"api", "model_api", "tenant_access"}:
+            if order.delivery_method_snapshot not in {"api", "model_api", "tenant_access", "file"}:
                 return False
             execution = db.scalar(select(Execution).where(Execution.refund_id == refund.id))
             if execution:
                 return execution.status == "failed"
+            if order.delivery_method_snapshot == 'file':
+                prepare(db, order, refund)
+                return refund.status == 'approved'
             if order.delivery_method_snapshot in {"api", "model_api"}:
                 Credential, Route = ns["ApiCredential"], ns["ApiGatewayRoute"]
                 credentials = list(

@@ -281,6 +281,7 @@ def install(ns):
         Term = ns['subscription_terms']['Term']
         later = db.scalars(select(Term).where(Term.combination_id == combo.id,
             Term.generation == combo.generation, Term.status == 'active', Term.id != term.id,
+            Term.starts_at >= term.ends_at,
             Term.ends_at > term.starts_at)).all()
         for later_term in later:
             reason = '请先完成后续续费订单的退款，再对当前订单退款'
@@ -337,6 +338,8 @@ def install(ns):
         return plan
 
     def prepare(db, order, refund, frozen_envelope):
+        if order.delivery_method_snapshot == 'file':
+            return ns['refund_file_resources']['prepare'](db, order, refund, frozen_envelope)
         try:
             economic = approved(db, order, refund, frozen_envelope)
             term, combo = context(db, order, economic)
@@ -375,6 +378,11 @@ def install(ns):
             raise HTTPException(409, 'Refund resource plan evidence is unavailable') from exc
 
     def apply(db, execution):
+        try:
+            if strict_json(execution.resource_plan_json).get('kind') == 'file':
+                return ns['refund_file_resources']['apply'](db, execution)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise HTTPException(409, 'Refund resource plan evidence is unavailable') from exc
         try:
             plan = strict_json(execution.resource_plan_json)
             unsigned = {k: v for k, v in plan.items() if k != 'plan_hash'}

@@ -531,6 +531,21 @@ class ExecutionResourcesTests(unittest.TestCase):
         return self.resources['prepare'](db, db.get(self.m.Order, oid),
             db.get(self.m.Refund, 'execution-refund'), json.loads(case.plan_json))
 
+    def test_saas_latest_renewal_ignores_earlier_unrecovered_term(self):
+        oid, other, plan = self.later_saas_refund(completed=False)
+        with self.m.SessionLocal() as db:
+            terms = db.scalars(select(self.T).where(self.T.combination_id == plan['combination_id'],
+                self.T.status == 'active')).all()
+            self.assertEqual({oid, other}, {term.order_id for term in terms})
+            recoveries = db.scalars(select(self.resources['Recovery'])).all()
+            self.assertEqual([other], [row.order_id for row in recoveries])
+            self.assertEqual(db.get(self.m.Refund, 'execution-refund').status, 'approved')
+            # The latest renewal can recover first. Its unfinished financial
+            # proof still prevents the earlier term from being shortened.
+            with self.assertRaises(self.m.HTTPException):
+                self.prepare_earlier_saas(db, oid)
+        self.assertEqual(1, len(self.renew_calls))
+
     def test_saas_completed_full_later_refund_allows_earlier_tail(self):
         from app.refund_execution_resources import canonical, digest
         oid, other, later = self.later_saas_refund()

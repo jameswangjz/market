@@ -38,7 +38,7 @@ def money(value):
 def segment_values(plan):
     snapshot = plan['economic_snapshot']
     version = plan['calculation_version']
-    if version not in ('ordinary-refund-plan-v1', 'economic-segment-refund-v1'):
+    if version not in ('ordinary-refund-plan-v1', 'economic-segment-refund-v1', 'ordinary-file-refund-plan-v1'):
         raise ValueError('unsupported economic plan')
     revised = version == 'economic-segment-refund-v1'
     revenue = money(plan['refund_amount'])
@@ -49,7 +49,8 @@ def segment_values(plan):
     if revised and money(plan['revenue']) != original:
         raise ValueError('window revenue mismatch')
     cumulative = money(plan['cumulative_refund_amount'])
-    if (not plan['segment_id'] or plan['basis'] not in ('calls', 'time')
+    valid_basis = ('manual',) if version == 'ordinary-file-refund-plan-v1' else ('calls', 'time')
+    if (not plan['segment_id'] or plan['basis'] not in valid_basis
             or original <= 0 or revenue <= 0 or cost > original
             or not revenue <= cumulative <= original):
         raise ValueError('invalid segment')
@@ -137,13 +138,17 @@ def install(ns):
                     or resource['plan_hash'] != digest({k: v for k, v in resource.items() if k != 'plan_hash'})
                     or proof['refund_id'] != refund.id or proof['resource_plan_hash'] != digest(resource)):
                 raise ValueError('completion mismatch')
-            Recovery = ns['refund_execution_resources']['Recovery']
+            Recovery = (ns['refund_file_resources']['Recovery'] if resource.get('kind') == 'file'
+                        else ns['refund_execution_resources']['Recovery'])
             recovery = db.scalar(select(Recovery).where(Recovery.refund_id == refund.id))
             if (not recovery or recovery.execution_id != execution.id or recovery.order_id != refund.order_id
                     or recovery.stage != 'resources_applied' or strict_json(recovery.plan_json) != resource
                     or strict_json(recovery.proof_json) != proof
                     or recovery.payload_hash != digest(dict(plan=resource, proof=proof))):
                 raise ValueError('recovery mismatch')
+            if resource.get('kind') == 'file':
+                order = db.get(ns['Order'], refund.order_id)
+                ns['refund_file_resources']['validate_economic'](db, order, refund, envelope)
             Leg = execution_hooks['PaymentLeg']
             legs = db.scalars(select(Leg).where(Leg.refund_id == refund.id)).all()
             allocations = {r['payment_id']: r for r in funding}

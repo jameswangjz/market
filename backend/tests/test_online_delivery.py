@@ -180,7 +180,7 @@ class OnlineDeliveryTests(unittest.TestCase):
             refund = db.get(self.m.Refund, rid)
             self.assertEqual(refund.status, 'approved')
             self.assertEqual(order.refunded_amount, 0)
-        self.assertFalse(approved['execution_available'])
+        self.assertTrue(approved['execution_available'])
 
     def test_completed_partial_refund_fixture_revokes_file_access_not_funds(self):
         oid, task = self.paid_order()
@@ -192,8 +192,8 @@ class OnlineDeliveryTests(unittest.TestCase):
         with self.m.SessionLocal() as db:
             order = db.get(self.m.Order, oid)
             refund = db.get(self.m.Refund, row['id'])
-            # File resources have no automatic refund executor. This completed
-            # state is a fixture for access guards, not evidence of funds execution.
+            # This legacy completed state only exercises access guards;
+            # real FILE execution and receipts are tested separately.
             refund.status, refund.completed_at = 'completed', self.m.now()
             refund.completed_by = 'test:manual-file-refund'
             order.refunded_amount = refund.amount

@@ -461,7 +461,27 @@ def install(ns):
                 'evidence_refs': json.loads(manual.evidence_refs_json),
                 'source_trust': 'manual_determination', 'automatic_usage_trusted': False,
                 'resource_recovery_status': 'unavailable', 'cost_basis_status': 'unavailable'}
-            return PreparedRefundPlan(refund.id, order.id, refund.payment_id, cents(refund.amount), VERSION,
+            if order.delivery_method_snapshot == 'file' and order.snapshot_version == 1:
+                from .refund_file_resources import VERSION as FILE_VERSION
+                economic = ns['order_economics']['economic_snapshot'](order)
+                delivery = ns['order_economics']['delivery_snapshot'](order)
+                completed = list(db.scalars(select(Refund).where(Refund.order_id == order.id,
+                    Refund.id != refund.id, Refund.status == 'completed')))
+                prior = sum((cents(row.amount) for row in completed), Decimal('0'))
+                if prior != cents(order.refunded_amount):
+                    raise HTTPException(409, 'File refund history requires reconciliation')
+                amount, original = cents(refund.amount), cents(economic['amount'])
+                if not 0 < amount <= original - prior:
+                    raise HTTPException(409, 'File refund exceeds frozen order revenue')
+                plan.update(calculation_version=FILE_VERSION, segment_id=order.id,
+                    manual_assessment_case_version=manual.case_version,
+                    prior_completed_refund_ids=sorted(row.id for row in completed),
+                    source_order_id=order.id, original_amount=str(original),
+                    cumulative_refund_amount=str(prior + amount),
+                    economic_snapshot=economic, delivery_snapshot=delivery,
+                    resource_recovery_status='revoke_order_downloads', cost_basis_status='frozen_order')
+            return PreparedRefundPlan(refund.id, order.id, refund.payment_id, cents(refund.amount),
+                plan.get('calculation_version', VERSION),
                 ns['now'](), (manual.id,), plan, 'manual')
         try:
             plan, evidence_ids = automatic(db, order, refund.amount, refund.id)

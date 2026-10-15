@@ -7659,6 +7659,7 @@ def download_file(file_id: str, request: Request, order_id: str = "", enterprise
             if not order or order.product_id != item.product_id or order.product_version_id != item.version_id or order.payment_status != "paid" or user.platform_role or (order.buyer_user_id != user.id and not member):
                 raise HTTPException(403, "当前用户没有该订单文件的下载权限")
             settlement_metering["require_order_access"](db, user, order)
+            refund_file_resources['require_download'](db, order)
             if order.buyer_enterprise_id:
                 trading_policy["require_buyer"](db, user, order.buyer_enterprise_id)
             if online_delivery["handles"](order):
@@ -7713,7 +7714,8 @@ def download_file(file_id: str, request: Request, order_id: str = "", enterprise
 
 @app.get("/api/orders/{order_id}/product-files")
 def order_product_files(order_id: str, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    order = db.get(Order, order_id)
+    order = db.scalar(select(Order).where(Order.id == order_id).with_for_update()
+                      .execution_options(populate_existing=True))
     if not order or order.payment_status != "paid":
         raise HTTPException(404, "订单不存在或尚未支付")
     reviewer = user.platform_role in {"super_admin", "platform_operator"}
@@ -7721,6 +7723,8 @@ def order_product_files(order_id: str, user: User = Depends(current_user), db: S
     if not reviewer and (user.platform_role or (order.buyer_user_id != user.id and not member)):
         raise HTTPException(403, "无权查看该订单文件")
     settlement_metering["require_order_access"](db, user, order)
+    if not reviewer:
+        refund_file_resources['require_download'](db, order)
     items = db.scalars(select(FileObject).where(FileObject.product_id == order.product_id, FileObject.version_id == order.product_version_id, FileObject.file_role == "product_data", FileObject.status != "deleted")).all()
     product = db.get(Product, order.product_id)
     limit = order_economics["delivery_snapshot"](order)["download_limit"] if order.snapshot_version == 1 else int(product.download_limit or 0) if product else 0
@@ -7886,9 +7890,11 @@ refund_funding_store = install_refund_funding_store(globals())
 
 from .refund_execution_resources import install as install_refund_execution_resources
 from .refund_execution import install as install_refund_execution
+from .refund_file_resources import install as install_refund_file_resources
 
 refund_execution_resources = install_refund_execution_resources(globals())
 refund_execution = install_refund_execution(globals())
+refund_file_resources = install_refund_file_resources(globals())
 
 from .refund_settlement import install as install_refund_settlement
 
