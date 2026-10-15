@@ -276,16 +276,40 @@ def install(ns):
         return {key: plan[key] for key in ('tenant_id', 'product_id', 'enterprise_id', 'subscription_id')} | dict(
             refund_id=refund_id, action='refund_shorten', protocol='refund_shorten_v1')
 
-    def saas_plan(db, order, refund, economic, term, combo):
-        if economic['basis'] != 'time':
-            fail('SaaS requires time-based recovery')
+    def saas_later_completed(db, term, combo):
         # Shared tenant expiry cannot represent a hole before an unrelated renewal.
         Term = ns['subscription_terms']['Term']
         later = db.scalars(select(Term).where(Term.combination_id == combo.id,
             Term.generation == combo.generation, Term.status == 'active', Term.id != term.id,
             Term.ends_at > term.starts_at)).all()
-        if later:
-            fail('SaaS shortening would overwrite unrelated subscription terms')
+        for later_term in later:
+            reason = '请先完成后续续费订单的退款，再对当前订单退款'
+            later_order = db.get(ns['Order'], later_term.order_id)
+            recovery = db.scalar(select(Recovery).where(Recovery.term_id == later_term.id)
+                .order_by(Recovery.recovery_number.desc()).limit(1))
+            Execution, Refund = ns['refund_execution']['Execution'], ns['Refund']
+            execution = db.get(Execution, recovery.execution_id) if recovery else None
+            refunded = db.get(Refund, recovery.refund_id) if recovery else None
+            completion = db.get(ns['refund_execution']['Completion'], recovery.refund_id) if recovery else None
+            open_refund = db.scalar(select(Refund.id).where(Refund.order_id == later_term.order_id,
+                Refund.status.notin_(('completed', 'rejected', 'cancelled'))).limit(1))
+            open_execution = db.scalar(select(Execution.id).join(Refund, Refund.id == Execution.refund_id).where(
+                Refund.order_id == later_term.order_id, Execution.status != 'completed').limit(1))
+            if (not later_order or not recovery or not execution or execution.status != 'completed'
+                    or not refunded or refunded.status != 'completed' or not completion
+                    or open_refund or open_execution):
+                fail(reason)
+            try:
+                verified = entitlement(db, later_order, later_term)
+            except (HTTPException, ValueError, KeyError, TypeError, AttributeError):
+                fail(reason)
+            if not verified or verified['periods'] != [] or verified['payment_compatible'] is not True:
+                fail(reason)
+
+    def saas_plan(db, order, refund, economic, term, combo):
+        if economic['basis'] != 'time':
+            fail('SaaS requires time-based recovery')
+        saas_later_completed(db, term, combo)
         Model = ns['SaaSSubscription']
         subscriptions = db.scalars(select(Model).where(Model.enterprise_id == combo.enterprise_id,
             Model.product_id == combo.product_id, Model.status == 'active')).all()
@@ -299,7 +323,7 @@ def install(ns):
             stored_expiry = stored_expiry.replace(tzinfo=timezone.utc)
         cutoff = aware(economic['effective_ends_at'])
         prior = entitlement(db, order, term)
-        expected_expiry = (max(aware(row['ends_at']) for row in prior['periods']) if prior and prior['periods'] else stored_expiry)
+        expected_expiry = (max(aware(row['ends_at']) for row in prior['periods']) if prior and prior['periods'] else term.ends_at)
         if (cutoff < ns['now']() or cutoff > expected_expiry
                 or (prior is None and stored_expiry != term.ends_at)
                 or (prior is not None and stored_expiry not in (term.ends_at, expected_expiry))):
@@ -417,6 +441,7 @@ def install(ns):
                 finally:
                     client.close()
             elif plan['kind'] == 'saas':
+                saas_later_completed(db, term, combo)
                 config = db.get(ns['SaaSIntegrationConfig'], plan['config_id'])
                 if not config or config_hash(config) != plan['config_fingerprint']:
                     fail('Frozen SaaS shortening configuration changed')

@@ -276,10 +276,10 @@ class ExecutionResourcesTests(unittest.TestCase):
             db.commit()
         self.assertFalse(any(p['order_id'] == oid for p in self.periods()))
 
-    def complete(self, db, payment_id='execution-payment'):
+    def complete(self, db, payment_id='execution-payment', execution_id='owned-execution', refund_id='execution-refund'):
         from app.refund_execution_resources import canonical, digest
-        execution = db.get(self.m.refund_execution['Execution'], 'owned-execution')
-        refund = db.get(self.m.Refund, 'execution-refund')
+        execution = db.get(self.m.refund_execution['Execution'], execution_id)
+        refund = db.get(self.m.Refund, refund_id)
         case = db.get(self.m.refund_workflow['Case'], refund.id)
         payment = db.get(self.m.Payment, payment_id)
         allocation = dict(payment_id=payment.id, source_order_id=payment.order_id, amount=str(refund.amount), currency='CNY')
@@ -418,7 +418,7 @@ class ExecutionResourcesTests(unittest.TestCase):
         self.assertEqual(plan['entitlement_periods'][0]['end_at'], self.entitlement(self.at)['period_ends_at'].timestamp())
         self.assertTrue(any(p['order_id'] == other for p in self.periods()))
 
-    def saas_fixture(self, *, retain_future=False):
+    def saas_fixture(self, *, retain_future=False, setup_only=False):
         from app.refund_execution_resources import canonical, digest
         import hashlib
         oid, other, _plan = self.fixture(months=1, amount='50.00', used=0, unlimited=True, persist_execution=False)
@@ -433,6 +433,10 @@ class ExecutionResourcesTests(unittest.TestCase):
             delivery = json.loads(order.delivery_snapshot_json)
             delivery['method'] = 'tenant_access'
             order.delivery_snapshot_json = json.dumps(delivery)
+            later_order = db.get(self.m.Order, other)
+            later_order.delivery_method_snapshot = 'tenant_access'
+            later_order.delivery_snapshot_json = json.dumps(delivery)
+            later_term = db.scalar(select(self.T).where(self.T.order_id == other))
             if not retain_future:
                 db.scalar(select(self.T).where(self.T.order_id == other)).status = 'revoked'
             db.add(self.m.SaaSSubscription(id='owned-sub', enterprise_id='buyer_tenant', product_id='product',
@@ -466,6 +470,12 @@ class ExecutionResourcesTests(unittest.TestCase):
             self.saas_patch = patch.object(self.m, 'saas_call', side_effect=call)
             self.saas_patch.start()
             self.addCleanup(self.saas_patch.stop)
+            if setup_only:
+                sub = db.get(self.m.SaaSSubscription, 'owned-sub')
+                sub.expires_at = later_term.ends_at
+                self.saas_state['expires_at'] = later_term.ends_at.isoformat()
+                db.commit()
+                return oid, other
             resource = self.resources['prepare'](db, order, refund, envelope)
             execution = self.m.refund_execution['Execution'](id='owned-execution', refund_id=refund.id,
                 status='resources_pending', resume_status='resources_pending', plan_hash=case.plan_hash,
@@ -474,6 +484,153 @@ class ExecutionResourcesTests(unittest.TestCase):
             db.add(execution)
             db.commit()
             return oid, resource
+
+    def later_saas_refund(self, amount='100.00', completed=True):
+        import hashlib
+        from app.refund_execution_resources import canonical, digest
+        oid, other = self.saas_fixture(retain_future=True, setup_only=True)
+        with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, other)
+            term = db.scalar(select(self.T).where(self.T.order_id == other))
+            economic = plan_segment(OriginalSegment(term.id, other, Decimal(order.amount), 'tenant_access', 0, 1,
+                term.starts_at, term.ends_at, self.m.order_economics['economic_snapshot'](order),
+                self.m.order_economics['delivery_snapshot'](order)), amount, at=self.at)
+            db.add(self.m.Payment(id='later-payment', order_id=other, payment_no='later-payment',
+                amount=order.amount, status='paid', paid_at=self.at))
+            db.flush()
+            refund = self.m.Refund(id='later-refund', refund_no='later-refund', order_id=other,
+                payment_id='later-payment', amount=Decimal(amount), status='approved', reason='Later SaaS refund')
+            db.add(refund)
+            db.flush()
+            envelope = dict(schema_version=1, refund_id=refund.id, order_id=other, payment_id='later-payment',
+                amount=amount, basis='time', evidence_ids=['later-proof'], economic_plan=economic)
+            encoded = canonical(envelope)
+            case = self.m.refund_workflow['Case'](refund_id=refund.id, requested_by_id='buyer', source='ordinary',
+                version=2, plan_json=encoded, plan_hash=hashlib.sha256(encoded.encode()).hexdigest())
+            db.add(case)
+            db.commit()
+            resource = self.resources['prepare'](db, order, refund, envelope)
+            db.add(self.m.refund_execution['Execution'](id='later-execution', refund_id=refund.id,
+                status='resources_pending', resume_status='resources_pending', plan_hash=case.plan_hash,
+                resource_plan_json=canonical(resource), resource_plan_hash=digest(resource), requested_by='ops',
+                funding_json=canonical([dict(payment_id='later-payment', source_order_id=other, amount=amount, currency='CNY')])))
+            db.commit()
+        self.apply(execution_id='later-execution')
+        if completed:
+            with self.m.SessionLocal() as db:
+                db.get(self.m.Refund, 'later-refund').status = 'completed'
+                order = db.get(self.m.Order, other)
+                order.refunded_amount = Decimal(amount)
+                order.payment_status = 'refunded' if amount == '100.00' else 'refunding'
+                self.complete(db, 'later-payment', 'later-execution', 'later-refund')
+                db.commit()
+        return oid, other, resource
+
+    def prepare_earlier_saas(self, db, oid):
+        case = db.get(self.m.refund_workflow['Case'], 'execution-refund')
+        return self.resources['prepare'](db, db.get(self.m.Order, oid),
+            db.get(self.m.Refund, 'execution-refund'), json.loads(case.plan_json))
+
+    def test_saas_completed_full_later_refund_allows_earlier_tail(self):
+        from app.refund_execution_resources import canonical, digest
+        oid, other, later = self.later_saas_refund()
+        self.assertEqual([], later['entitlement_periods'])
+        with self.m.SessionLocal() as db:
+            earlier = self.prepare_earlier_saas(db, oid)
+            term = db.scalar(select(self.T).where(self.T.order_id == oid))
+            self.assertEqual(term.ends_at, aware_time(earlier['expected_expires_at']))
+            self.assertEqual(later['expires_at'], earlier['expected_expires_at'])
+            db.add(self.m.refund_execution['Execution'](id='owned-execution', refund_id='execution-refund',
+                status='resources_pending', resume_status='resources_pending', plan_hash=earlier['case_plan_hash'],
+                resource_plan_json=canonical(earlier), resource_plan_hash=digest(earlier), requested_by='ops', funding_json='[]'))
+            db.commit()
+        self.apply()
+        self.assertEqual(2, len(self.renew_calls))
+        self.assertEqual(earlier['expires_at'], self.saas_state['expires_at'])
+        with self.m.SessionLocal() as db:
+            term = db.scalar(select(self.T).where(self.T.order_id == other))
+            self.assertEqual('active', term.status)
+            self.assertEqual([], self.resources['entitlement'](db, db.get(self.m.Order, other), term)['periods'])
+
+    def test_saas_partial_later_refund_blocks_earlier(self):
+        oid, other, later = self.later_saas_refund(amount='50.00')
+        before = dict(self.saas_state)
+        with self.m.SessionLocal() as db:
+            with self.assertRaisesRegex(self.m.HTTPException, '请先完成后续续费订单的退款'):
+                self.prepare_earlier_saas(db, oid)
+        self.assertEqual(before, self.saas_state)
+        self.assertEqual(1, len(self.renew_calls))
+
+    def test_saas_incomplete_later_full_recovery_blocks_earlier(self):
+        oid, other, later = self.later_saas_refund(completed=False)
+        with self.m.SessionLocal() as db:
+            for status in ('resources_applied', 'failed', 'resources_pending'):
+                execution = db.get(self.m.refund_execution['Execution'], 'later-execution')
+                execution.status = status
+                execution.resume_status = 'resources_pending'
+                db.commit()
+                with self.assertRaisesRegex(self.m.HTTPException, '请先完成后续续费订单的退款'):
+                    self.prepare_earlier_saas(db, oid)
+        self.assertEqual(1, len(self.renew_calls))
+
+    def test_saas_later_completion_requires_valid_payment_evidence(self):
+        oid, other, later = self.later_saas_refund()
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Order, other).paid_amount = Decimal('99.00')
+            db.commit()
+            with self.assertRaisesRegex(self.m.HTTPException, '请先完成后续续费订单的退款'):
+                self.prepare_earlier_saas(db, oid)
+        self.assertEqual(1, len(self.renew_calls))
+
+    def test_saas_completed_status_without_completion_blocks_earlier(self):
+        oid, other, later = self.later_saas_refund(completed=False)
+        with self.m.SessionLocal() as db:
+            db.get(self.m.refund_execution['Execution'], 'later-execution').status = 'completed'
+            db.get(self.m.Refund, 'later-refund').status = 'completed'
+            db.get(self.m.Order, other).refunded_amount = Decimal('100.00')
+            db.commit()
+            with self.assertRaisesRegex(self.m.HTTPException, '请先完成后续续费订单的退款'):
+                self.prepare_earlier_saas(db, oid)
+        self.assertEqual(1, len(self.renew_calls))
+
+    def test_saas_apply_rechecks_later_prerequisite_after_prepare(self):
+        from app.refund_execution_resources import canonical, digest
+        oid, other, later = self.later_saas_refund()
+        with self.m.SessionLocal() as db:
+            earlier = self.prepare_earlier_saas(db, oid)
+            db.add(self.m.refund_execution['Execution'](id='owned-execution', refund_id='execution-refund',
+                status='resources_pending', resume_status='resources_pending', plan_hash=earlier['case_plan_hash'],
+                resource_plan_json=canonical(earlier), resource_plan_hash=digest(earlier), requested_by='ops', funding_json='[]'))
+            db.add(self.m.Refund(id='new-later-refund', refund_no='new-later-refund', order_id=other,
+                payment_id='later-payment', amount=1, status='requested', reason='Unresolved later request'))
+            db.commit()
+        before = dict(self.saas_state)
+        with self.assertRaisesRegex(self.m.HTTPException, '请先完成后续续费订单的退款') as raised:
+            self.apply()
+        self.assertEqual(409, raised.exception.status_code)
+        self.assertEqual(before, self.saas_state)
+        self.assertEqual(1, len(self.renew_calls))
+
+    def test_saas_apply_blocks_later_renewal_activated_after_prepare(self):
+        oid, earlier = self.saas_fixture()
+        with self.m.SessionLocal() as db:
+            later = db.scalar(select(self.T).where(self.T.combination_id == earlier['combination_id'],
+                self.T.id != earlier['term_id']))
+            later.status = 'active'
+            db.commit()
+        before = dict(self.saas_state)
+        with self.assertRaisesRegex(self.m.HTTPException, '请先完成后续续费订单的退款'):
+            self.apply()
+        self.assertEqual(before, self.saas_state)
+        self.assertEqual([], self.renew_calls)
+
+    def test_saas_restored_tail_requires_matching_provider_status(self):
+        oid, other, later = self.later_saas_refund()
+        self.saas_state['expires_at'] = later['expected_expires_at']
+        with self.m.SessionLocal() as db:
+            with self.assertRaises(self.m.HTTPException):
+                self.prepare_earlier_saas(db, oid)
+        self.assertEqual(1, len(self.renew_calls))
 
     def test_saas_exact_microseconds_replay_and_sso_cutoff(self):
         oid, plan = self.saas_fixture()
