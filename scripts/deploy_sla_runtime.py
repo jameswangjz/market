@@ -39,6 +39,29 @@ print(json.dumps(None if r.status_code == 404 else r.json()))
         input=json.dumps({'method': method, 'body': payload}).encode()))
 
 
+def producer_registry(retire=None):
+    code = """import redis,json,os,sys
+from datetime import datetime,timezone
+payload=json.load(sys.stdin)
+c=redis.Redis.from_url(os.getenv('REDIS_URL','redis://market-redis:6379/0'),decode_responses=True)
+key='market:sla:terminal:producers'
+if payload is None: print(json.dumps(c.hgetall(key)))
+else:
+ count=0
+ for identity, original in payload['snapshot'].items():
+  if c.hget(key,identity) != original: continue
+  value=json.loads(original)
+  if isinstance(value,int): value={'started_at_ms':value}
+  if 'stopped_at_ms' in value: continue
+  value.update(stopped_at_ms=int(datetime.now(timezone.utc).timestamp()*1000),retirement_evidence_id='deployment:'+payload['tag'])
+  c.hset(key,identity,json.dumps(value)); count+=1
+ print(json.dumps({'retired':count}))
+c.close()
+"""
+    return json.loads(subprocess.check_output(['kubectl', '-n', 'market', 'exec', '-i',
+        'deployment/market-api', '--', 'python', '-c', code], input=json.dumps(retire).encode()))
+
+
 def container_env(spec, name, keys):
     containers = spec['template']['spec']['containers']
     container = next(value for value in containers if value['name'] == name)
@@ -76,6 +99,9 @@ def main():
         (directory / (key + '.json')).write_text(json.dumps(value))
     previous_rule = global_rule('GET')
     (directory / 'global-rule.json').write_text(json.dumps(previous_rule))
+    producer_snapshot = producer_registry()
+    old_pods = json.loads(kubectl('get', 'pods', '-l', 'app=market-apisix', '-o', 'json'))
+    (directory / 'producer-snapshot.json').write_text(json.dumps(producer_snapshot))
     secret_check = subprocess.run(['kubectl', '-n', 'market', 'get', 'secret',
         'market-sla-telemetry', '--ignore-not-found', '-o', 'json'], check=True, capture_output=True)
     secret = json.loads(secret_check.stdout) if secret_check.stdout.strip() else {
@@ -95,7 +121,7 @@ def main():
         plugins.append('market-sla-logger')
     nginx = configuration.setdefault('nginx_config', {})
     envs = nginx.setdefault('envs', [])
-    for key in ('SLA_GATEWAY_INGEST_SECRET', 'SLA_PROBE_SECRET'):
+    for key in ('HOSTNAME', 'SLA_GATEWAY_INGEST_SECRET', 'SLA_PROBE_SECRET'):
         if key not in envs:
             envs.append(key)
     spec = json.loads(json.dumps(originals['apisix']['spec']))
@@ -131,6 +157,9 @@ def main():
         kubectl('rollout', 'status', 'deployment/market-api', '--timeout=240s')
         patch('deployment', 'market-apisix', {'spec': spec})
         kubectl('rollout', 'status', 'deployment/market-apisix', '--timeout=300s')
+        if old_pods['items']:
+            kubectl('wait', '--for=delete', *('pod/' + item['metadata']['name'] for item in old_pods['items']),
+                    '--timeout=120s')
         global_rule('PUT', {'plugins': {'market-sla-logger': {}}})
         rule_changed = True
         label_report = subprocess.check_output(['kubectl', '-n', 'market', 'exec', '-i',
@@ -142,6 +171,8 @@ def main():
                                                         'market-api:' + args.tag)
             subprocess.run(['kubectl', '-n', 'market', 'apply', '-f', '-'],
                            input=rendered.encode(), check=True, capture_output=True)
+        retired = producer_registry({'snapshot': producer_snapshot, 'tag': args.tag})
+        (directory / 'producer-retirement.json').write_text(json.dumps(retired))
     except Exception:
         # Restore only this operation's saved configuration, never reset etcd/routes.
         if rule_changed:

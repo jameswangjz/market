@@ -90,6 +90,7 @@ data:
       - market-sla-logger
     nginx_config:
       envs:
+        - HOSTNAME
         - SLA_GATEWAY_INGEST_SECRET
         - SLA_PROBE_SECRET
       error_log: "/dev/stderr"
