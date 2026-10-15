@@ -35,15 +35,36 @@ class SegmentPlanningTests(unittest.TestCase):
             with self.assertRaises(PlanUnavailable):
                 plan_segment(self.segment, '1', at=self.start, used_calls=value)
 
-    def test_unlimited_api_and_saas_use_real_calendar_span_and_reject_future_terms(self):
+    def test_future_finite_api_keeps_usage_unknown_and_pending_amount_reserved(self):
+        at = self.start - timedelta(days=1)
+        with self.assertRaisesRegex(PlanUnavailable, 'charge_ledger_unavailable'):
+            plan_segment(self.segment, '100', at=at)
+        with self.assertRaisesRegex(PlanUnavailable, 'refund_exceeds_unconsumed_balance_with_reservations'):
+            plan_segment(self.segment, '80.01', at=at, used_calls=0, other_pending='20')
+        plan = plan_segment(self.segment, '80', at=at, used_calls=0, other_pending='20')
+        self.assertEqual(plan['original_quota'], 200)
+        self.assertEqual(plan['recovery_delta'], 160)
+
+    def test_future_finite_api_rejects_nonzero_usage_in_pure_planner(self):
+        for method in ('api', 'model_api'):
+            with self.subTest(method=method):
+                segment = replace(self.segment, method=method)
+                with self.assertRaisesRegex(PlanUnavailable, 'charge_ledger_incomplete_or_unallocated'):
+                    plan_segment(segment, '1', at=self.start - timedelta(days=1), used_calls=1)
+                plan = plan_segment(segment, '100', at=self.start - timedelta(days=1), used_calls=0)
+                self.assertEqual(plan['recovery_delta'], 200)
+
+    def test_unlimited_api_and_saas_use_real_calendar_span_and_full_future_tail(self):
         for method in ('api', 'tenant_access'):
             segment = replace(self.segment, method=method, monthly_quota=0)
             at = self.start + timedelta(days=14)
             plan = plan_segment(segment, '50', at=at)
             self.assertEqual((plan['basis'], plan['refundable_balance_before']), ('time', '50.00'))
             self.assertEqual(plan['effective_ends_at'], at.isoformat())
-            with self.assertRaisesRegex(PlanUnavailable, 'future_renewal_segment_not_supported'):
-                plan_segment(segment, '100', at=self.start - timedelta(days=1))
+            future = plan_segment(segment, '100', at=self.start - timedelta(days=1))
+            self.assertEqual(future['refundable_balance_before'], '100.00')
+            self.assertEqual(future['effective_ends_at'], self.start.isoformat())
+            self.assertEqual(future['recovery_delta'], 28 * 86400 * 1000000)
 
     def test_cumulative_partial_recovery_and_last_cent_residue(self):
         segment = replace(self.segment, original_amount=Decimal('3'), monthly_quota=5, months=1)
@@ -198,17 +219,86 @@ class RefundPlanningHTTPTests(unittest.TestCase):
         row = self.create()
         self.review(row, decision='approve', expected=409)
 
-    def test_future_segment_quote_and_approval_are_controlled_unavailable(self):
-        self.monthly('tenant_access', 0)
+    def future(self, method='api', quota=100):
+        self.monthly(method, quota)
         with self.m.SessionLocal() as db:
             Term = self.m.subscription_terms['Term']
             term = db.get(Term, 'refund-segment')
             term.starts_at, term.ends_at = self.at + timedelta(days=1), self.at + timedelta(days=29)
             db.commit()
-        self.assertEqual(self.quote()['reason'], 'future_renewal_segment_not_supported')
+
+    def test_future_finite_api_requires_exact_trusted_zero_window_and_reserves_original_quota(self):
+        self.future()
+        windows = []
+        def ledger(db, **window):
+            windows.append(window)
+            self.assertEqual(window['start'], self.at + timedelta(days=1))
+            self.assertEqual(window['end'], window['start'])
+            self.assertEqual(window['as_of'], self.at)
+            return replace(self.ledger(db, **window), charged_calls=0)
+        with patch.dict(vars(self.m), refund_charge_summary=ledger):
+            quote = self.quote('100')
+            self.assertEqual(quote['item']['refundable_balance_before'], '100.00')
+            self.assertEqual(quote['item']['charged_calls'], 0)
+            first = self.review(self.create('20'), decision='approve')
+            second = self.review(self.create('80', idempotency_key='future-second-refund'),
+                                 decision='approve', idempotency_key='future-second-approval')
+        self.assertTrue(windows)
+        with self.m.SessionLocal() as db:
+            plans = [json.loads(db.get(self.Case, row['id']).plan_json)['economic_plan']
+                     for row in (first, second)]
+        self.assertEqual([plan['recovery_delta'] for plan in plans], [20, 80])
+        self.assertEqual(plans[1]['original_quota'], 100)
+        self.assertEqual(plans[1]['remaining_total_quota'], 0)
+        self.assertEqual(plans[1]['charge_ledger']['start'], plans[1]['charge_ledger']['end'])
+        self.assertFalse(second['execution_available'])
+
+    def future_time_refund_without_api_ledger(self, method):
+        self.future(method, 0)
+        with patch.dict(vars(self.m), refund_charge_summary=None):
+            result = self.quote('100')
+            self.assertEqual(result['item']['basis'], 'time')
+            self.assertEqual(result['item']['refundable_balance_before'], '100.00')
+            self.assertEqual(result['item']['effective_ends_at'],
+                             (self.at + timedelta(days=1)).isoformat())
+            first = self.review(self.create('40'), decision='approve')
+        with patch.dict(vars(self.m), refund_charge_summary=None):
+            with patch.object(self.m, 'refund_charge_summary',
+                              side_effect=AssertionError('Time refunds must not call API ledger')) as ledger:
+                self.assertEqual(self.quote('60')['item']['refundable_balance_before'], '60.00')
+                approved = self.review(self.create('60', idempotency_key='future-time-second-refund'),
+                                       decision='approve', idempotency_key='future-time-second-approval')
+                ledger.assert_not_called()
+        with self.m.SessionLocal() as db:
+            plans = [json.loads(db.get(self.Case, row['id']).plan_json)['economic_plan']
+                     for row in (first, approved)]
+        self.assertEqual(sum(plan['recovery_delta'] for plan in plans), 28 * 86400 * 1000000)
+        self.assertEqual(plans[1]['effective_ends_at'], (self.at + timedelta(days=1)).isoformat())
+        for plan in plans:
+            self.assertIsNone(plan['charge_ledger'])
+            self.assertIsNone(plan['charge_policy'])
+        self.assertFalse(approved['execution_available'])
+
+    def test_future_saas_full_time_refund_without_api_ledger(self):
+        self.future_time_refund_without_api_ledger('tenant_access')
+
+    def test_future_unlimited_api_full_time_refund_without_api_ledger(self):
+        self.future_time_refund_without_api_ledger('api')
+
+    def test_future_missing_or_invalid_ledger_denies_quote_and_approval(self):
+        self.future()
         row = self.create()
+        self.assertEqual(self.quote()['status'], 'unavailable')
         self.review(row, decision='approve', expected=409)
-        self.assertFalse(row['execution_available'])
+        for change in ({'complete': False}, {'charged_calls': None}, {'charged_calls': 1},
+                       {'evidence_ids': ()}, {'order_id': 'foreign'},
+                       {'segment_id': 'foreign'}, {'end': self.at}, {'as_of': self.at + timedelta(seconds=1)}):
+            with self.subTest(change=change):
+                def ledger(db, **window):
+                    return replace(self.ledger(db, **window), **{'charged_calls': 0, **change})
+                with patch.dict(vars(self.m), refund_charge_summary=ledger):
+                    self.assertEqual(self.quote()['status'], 'unavailable')
+                    self.review(row, decision='approve', expected=409)
 
     def test_cumulative_approved_plan_reserves_quantity_and_old_snapshots(self):
         self.monthly()

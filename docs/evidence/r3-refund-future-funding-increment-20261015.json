@@ -1,0 +1,27 @@
+{
+  "status": "partial",
+  "coverage": [],
+  "scope": "BE011 unrevised future renewal planning plus pure multi-source funding allocation; FE008 preview basis",
+  "confirmed_policy": "Newest confirmed payment first, oldest later; same-instant payment_id ascending. Each source deducts completed refunds and reserved amounts. Economic segment cost/split snapshots are independent of this order.",
+  "tests": {
+    "affected_backend": {"passed": 63, "failed": 0, "skipped": 0, "seconds": 22.509, "log": "/tmp/market-refund-future-affected-final-20261015-a.log", "sha256": "b04b957d9094174cadf589e5d0510953b040780070784b94e902ca3d4744d000"},
+    "pure_funding": {"passed": 9, "seconds": 0.003, "log": "/tmp/market-refund-funding-verified-20261015-a.log", "sha256": "19ed83d5ea0305320738eb66d21858c1ddabba5b7251dcb7642d5fa033c2ca23"},
+    "existing_refund_frontend": {"passed": 20, "failed": 0},
+    "new_quote_basis_frontend": {"passed": 2, "failed": 0},
+    "web_build": {"exit_code": 0, "elapsed_seconds": 95.784, "entry": "index-DJVD49xr.js"}
+  },
+  "source_sha256": {
+    "backend/app/refund_planning.py": "409ae92e4755b1167776735ab9123da467f6b0b794655f2d583610370d4562d9",
+    "backend/app/api_charge_ledger.py": "6c01df2e934cf941ed737ea32df1f69b38f391d85622be6d914791f1a3dfa666",
+    "backend/app/refund_funding.py": "c8e660d6f90f55fc635fb3a9a257a325ac7f4b5d657e481795f7679311b7be90",
+    "frontend/src/RefundRequestForm.vue": "3fb01d64cfa34d3801616f1a68b9c2233625943f9ea6884d0add3ad60ac5f670"
+  },
+  "boundaries": [
+    "Future finite API requires trusted exact empty window and zero tracked actual counters; absent evidence rejects automatic planning",
+    "SaaS and unlimited API use frozen original time bounds, do not require an API-only charge ledger",
+    "Fractional microsecond boundaries use integer arithmetic",
+    "Pure funding allocator does not discover trusted sources, authorize enterprises, persist reservations, execute payment or calculate profit",
+    "Revised economic segments, multi-payment transactional integration and BE012 execution remain incomplete",
+    "No task-level completion or real-bank success inferred"
+  ]
+}

@@ -29,6 +29,11 @@ def token(value):
     return value.replace('%', '%25').replace(':', '%3A')
 
 
+def microseconds(value):
+    delta = value - datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds
+
+
 def period_keys(scope, period):
     suffix = token(scope) + ':' + token(period)
     return ('market:apisix:quota:subscription:month:' + suffix,
@@ -161,7 +166,11 @@ def install(ns):
         combo = db.get(Combo, term.combination_id) if term else None
         if not combo or term.order_id != order_id:
             unavailable()
-        if any(value.tzinfo is None for value in (start, end, as_of)) or end > as_of:
+        if any(not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None
+               for value in (start, end, as_of)):
+            unavailable()
+        future = end == start and as_of < start
+        if end < start or (end > as_of and not future) or start != term.starts_at:
             unavailable()
         cursor = db.get(Cursor, STREAM)
         if cursor is None or start < cursor.activated_at:
@@ -174,7 +183,7 @@ def install(ns):
                 unavailable()
             for index in range(term.start_month, term.start_month + term.months):
                 period = anchor.period(index)
-                if period.start >= end or period.end <= start:
+                if not future and (period.start >= end or period.end <= start):
                     continue
                 period_key = f'{combo.id}:{term.generation}:{index}'
                 count_key, coverage_key = period_keys(combo.id, period_key)
@@ -185,7 +194,7 @@ def install(ns):
                     unavailable()
                 stored = db.scalar(select(func.coalesce(func.sum(Charge.quantity), 0)).where(
                     Charge.scope == combo.id, Charge.period_key == period_key))
-                if stored != int(current or 0):
+                if stored != int(current or 0) or (future and stored != 0):
                     unavailable()
                 evidence.append('charge-period:' + period_key + ':' + str(stored))
             if run_id(client) != cursor.redis_run_id or client.hget(EPOCH, 'run_id') != cursor.redis_run_id:
@@ -194,7 +203,7 @@ def install(ns):
             client.close()
         if not evidence:
             unavailable()
-        low, high = int(start.timestamp() * 1000000), int(end.timestamp() * 1000000)
+        low, high = microseconds(start), microseconds(end)
         used = db.scalar(select(func.coalesce(func.sum(Charge.quantity), 0)).where(
             Charge.order_id == order_id, Charge.segment_id == segment_id,
             Charge.charged_at_us >= low, Charge.charged_at_us < high))

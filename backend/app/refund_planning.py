@@ -93,13 +93,13 @@ def plan_segment(segment, amount, *, at, used_calls=None, prior_amount='0', prio
         raise PlanUnavailable('invalid_original_segment')
     if segment.method not in {'api', 'model_api', 'tenant_access'}:
         raise PlanUnavailable('manual_assessment_required')
-    if at < start:
-        raise PlanUnavailable('future_renewal_segment_not_supported')
     finite = segment.method in {'api', 'model_api'} and quota > 0
     if finite:
         if used_calls is None:
             raise PlanUnavailable('charge_ledger_unavailable')
         base, used = quota * months, count(used_calls)
+        if at < start and used > 0:
+            raise PlanUnavailable('charge_ledger_incomplete_or_unallocated')
         if used > base:
             raise PlanUnavailable('usage_exceeds_original_allocation')
         remaining = base - used
@@ -249,16 +249,15 @@ def install(ns):
     def automatic(db, order, amount, refund_id=None):
         segment = original(db, order)
         at = ns['now']()
-        if utc(at) < utc(segment.starts_at):
-            raise PlanUnavailable('future_renewal_segment_not_supported')
+        future = utc(at) < utc(segment.starts_at)
         prior, pending, recovered, prior_ids = reservations(db, order, refund_id, segment)
         used, evidence_ids, charge_evidence = None, [segment.segment_id, *prior_ids], None
         if segment.method in {'api', 'model_api'} and segment.monthly_quota > 0:
             adapter = ns.get('refund_charge_summary')
             if not callable(adapter):
                 raise PlanUnavailable('charge_ledger_unavailable')
-            end = min(at, segment.ends_at)
-            if end <= segment.starts_at:
+            end = segment.starts_at if future else min(at, segment.ends_at)
+            if not future and end <= segment.starts_at:
                 raise PlanUnavailable('charge_window_not_started')
             try:
                 summary = adapter(db, order_id=order.id, segment_id=segment.segment_id,
@@ -272,6 +271,8 @@ def install(ns):
                     or not summary.evidence_ids or summary.charged_calls is None):
                 raise PlanUnavailable('charge_ledger_incomplete_or_unallocated')
             used = count(summary.charged_calls)
+            if future and used != 0:
+                raise PlanUnavailable('charge_ledger_incomplete_or_unallocated')
             if any(not isinstance(value, str) or not value for value in summary.evidence_ids):
                 raise PlanUnavailable('charge_evidence_missing')
             evidence_ids.extend(summary.evidence_ids)
@@ -288,7 +289,7 @@ def install(ns):
     def public(plan):
         keys = ('basis', 'refund_amount', 'refundable_balance_before', 'cumulative_refund_amount',
             'cumulative_recovery', 'recovery_delta', 'recovery_unit', 'original_quota', 'charged_calls',
-            'remaining_total_quota', 'effective_ends_at', 'as_of', 'charge_policy')
+            'remaining_total_quota', 'effective_ends_at', 'starts_at', 'original_ends_at', 'as_of', 'charge_policy')
         return {key: plan[key] for key in keys if key in plan}
 
     def prepare(db, order, refund):

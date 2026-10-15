@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-BE-010"],
+  "scope": "Independent ordinary refund request/review permissions, identity, reservations, idempotency and audit/message transactions; no refund executor acceptance",
+  "deployment": {
+    "tag": "20261015085300-3895262",
+    "commit": "3895262bc04663d7acfef9a52cfbdfa05cfaa18a",
+    "provenance_sha256": "c9c783dd69ec4dc623384c99b07dc65f36922783a465df159cf1e3387fb1f46c",
+    "api_pod": "market-api-7479d9fbdd-48fm2",
+    "web_entry": "index-C65PpKp0.js",
+    "readiness": {"api": "1/1", "web": "1/1", "charge_worker": "1/1", "apisix": "3/3"},
+    "health_status": 200,
+    "installed_workflow_sha256": "4513e4d40c65bf9c0cb7ea87542327421c2c10b11a8756187c156c8c1646760a",
+    "installed_main_sha256": "91fcd2210e7af823e71bd4660f74b94d666dba6bb945d59c667bfe5d269684d0"
+  },
+  "evidence": [
+    "r3-be010-refund-pg-workingtree-20261015.json",
+    "r3-be011-refund-planning-pg-workingtree-20261015.json",
+    "r3-refund-group-local-integration-20261015.json"
+  ],
+  "verification_boundaries": {
+    "isolated_http": "Actual production routes in disposable fixtures test request/review identity, scopes, finance403, validation, idempotency and rollback",
+    "real_pg": "Eight concurrency/reservation/rollback cases on earlier BE010 source; six subsequent manual/approval integration cases have workflow/main hashes matching installed files; synthetic economics explicitly identified",
+    "actual_ingress": "GET through market-web: admin/operator200 with empty paginated list; finance/monitor403; no private fields; charge source registered",
+    "browser": "Read-only deployed admin list and buyer request entry checked separately; buyer run blocked sensitive auto-fetch and records SaaS sync-tree409, not claimed wholly passed",
+    "protected_order": "COUNT1 only, no full-row hash equality claim"
+  },
+  "not_accepted": ["BE011 full cross-segment planning", "BE012 funds/resources executor", "FE008 whole runtime", "QA005 full funds fault matrix", "Real bank refund"],
+  "user_acceptance": "not performed"
+}

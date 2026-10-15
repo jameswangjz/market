@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch
 
 from sqlalchemy import select
 
-from app.api_charge_ledger import STREAM, EPOCH, POLICY, event_values, period_keys
+from app.api_charge_ledger import STREAM, EPOCH, POLICY, event_values, period_keys, microseconds
 import test_refund_planning as planning
 import test_subscription_quota as native
 
@@ -102,6 +102,10 @@ class ChargeLedgerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             event_values('1-0', dict(self.event, secret='forbidden'))
 
+    def test_financial_time_boundaries_preserve_single_microseconds(self):
+        self.assertEqual(microseconds(self.at + timedelta(microseconds=1)) - microseconds(self.at), 1)
+        self.assertEqual(microseconds(self.at) - microseconds(self.at - timedelta(microseconds=1)), 1)
+
     def test_redis_restart_cannot_make_missing_usage_look_like_zero(self):
         self.ledger_client.info.return_value = {'run_id': 'b' * 40}
         self.ledger_client.get.return_value = None
@@ -118,6 +122,41 @@ class ChargeLedgerTests(unittest.TestCase):
             db.commit()
             with self.assertRaises(self.module.PlanUnavailable):
                 self.summary(db)
+
+    def test_future_empty_window_requires_zero_tracked_counters_and_no_facts(self):
+        with self.m.SessionLocal() as db:
+            term = db.get(self.m.subscription_terms['Term'], 'refund-segment')
+            term.starts_at = self.at + timedelta(days=1)
+            term.ends_at = self.at + timedelta(days=32)
+            db.commit()
+            self.ledger_client.get.return_value = None
+            window = dict(order_id=self.order_id, segment_id=term.id, start=term.starts_at,
+                          end=term.starts_at, as_of=self.at)
+            value = self.hooks['summary'](db, **window)
+            self.assertEqual((value.complete, value.charged_calls), (True, 0))
+            self.ledger_client.get.return_value = '1'
+            with self.assertRaises(self.module.PlanUnavailable):
+                self.hooks['summary'](db, **window)
+            self.ledger_client.get.return_value = None
+            self.ledger_client.hget.return_value = None
+            with self.assertRaises(self.module.PlanUnavailable):
+                self.hooks['summary'](db, **window)
+
+    def test_future_quote_uses_real_adapter_not_an_invented_zero_usage_stub(self):
+        with self.m.SessionLocal() as db:
+            term = db.get(self.m.subscription_terms['Term'], 'refund-segment')
+            term.starts_at = self.at + timedelta(days=1)
+            term.ends_at = self.at + timedelta(days=32)
+            db.commit()
+        self.ledger_client.get.return_value = None
+        with patch.object(self.m, 'refund_charge_summary', self.hooks['summary']):
+            quote = self.request('POST', f'/api/orders/{self.order_id}/refund-quote', json={'amount': '100'})
+            self.assertEqual(quote['status'], 'available')
+            self.assertEqual(quote['item']['charged_calls'], 0)
+            self.assertEqual(quote['item']['recovery_delta'], 100)
+            self.ledger_client.hget.return_value = None
+            missing = self.request('POST', f'/api/orders/{self.order_id}/refund-quote', json={'amount': '100'})
+            self.assertEqual(missing['status'], 'unavailable')
 
     def test_deleted_source_marker_requires_review_even_without_redis_restart(self):
         self.ledger_client.hget.side_effect = lambda key, field: None if field == 'run_id' else '0'
