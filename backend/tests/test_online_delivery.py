@@ -137,11 +137,67 @@ class OnlineDeliveryTests(unittest.TestCase):
         self.assertFalse(self.request('GET', f'/api/orders/{oid}/delivery-access')['ready'])
         self.request('GET', f'/api/files/product_data/download?order_id={oid}', expected=409)
 
-    def test_partial_refund_revokes_file_access(self):
+    def test_legacy_refund_transitions_reject_finance_and_admin_without_mutation(self):
         oid, task = self.paid_order()
         self.process(task)
-        self.request('POST', f'/api/orders/{oid}/transition', actor='finance', json={'action': 'approve_refund', 'refund_amount': 20})
-        self.request('POST', f'/api/orders/{oid}/transition', actor='finance', json={'action': 'complete_refund'})
+        def snapshot():
+            with self.m.SessionLocal() as db:
+                order = db.get(self.m.Order, oid)
+                payment = db.scalar(self.m.select(self.m.Payment).where(self.m.Payment.order_id == oid))
+                return ((order.main_status, order.payment_status, order.delivery_status,
+                         order.paid_amount, order.refunded_amount, payment.status, payment.amount),
+                        tuple(db.query(model).count() for model in (
+                            self.m.Refund, self.m.refund_workflow['Case'], self.m.AuditLog,
+                            self.m.refund_execution['Execution'], self.m.refund_execution['PaymentLeg'])),
+                        self.counts())
+        before = snapshot()
+        for action in ('approve_refund', 'complete_refund'):
+            for actor, status in (('finance', 403), ('ops', 409), ('platform', 409)):
+                self.request('POST', f'/api/orders/{oid}/transition', actor=actor, expected=status,
+                             json={'action': action, 'refund_amount': 20})
+                self.assertEqual(snapshot(), before)
+
+    def test_partial_file_refund_manual_assessment_and_admin_approval_not_funds(self):
+        oid, task = self.paid_order()
+        self.process(task)
+        refund = self.request('POST', f'/api/orders/{oid}/refund-requests', json={
+            'amount': '20.00', 'reason': 'Partial file delivery refund',
+            'idempotency_key': 'file-partial-refund-request'})
+        rid = refund['id']
+        review = {'decision': 'approve', 'reason': 'Reviewed partial file refund',
+                  'expected_version': refund['version'], 'idempotency_key': 'file-partial-refund-approval'}
+        self.request('POST', f'/api/refunds/{rid}/review', actor='finance', expected=403, json=review)
+        refund = self.request('POST', f'/api/refunds/{rid}/manual-assessments', actor='ops', json={
+            'amount': '20.00', 'refundable_limit': '100.00', 'used_calls': 0,
+            'reason': 'Documented assessment of partial file refund',
+            'evidence_refs': ['file-refund-assessment'], 'expected_version': refund['version'],
+            'idempotency_key': 'file-partial-refund-assessment'})
+        review['expected_version'] = refund['version']
+        approved = self.request('POST', f'/api/refunds/{rid}/review', actor='ops', json=review)
+        self.assertEqual((approved['status'], approved['amount']), ('approved', '20.00'))
+        with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, oid)
+            refund = db.get(self.m.Refund, rid)
+            self.assertEqual(refund.status, 'approved')
+            self.assertEqual(order.refunded_amount, 0)
+        self.assertFalse(approved['execution_available'])
+
+    def test_completed_partial_refund_fixture_revokes_file_access_not_funds(self):
+        oid, task = self.paid_order()
+        self.process(task)
+        self.assertTrue(self.request('GET', f'/api/orders/{oid}/delivery-access')['ready'])
+        row = self.request('POST', f'/api/orders/{oid}/refund-requests', json={
+            'amount': '20.00', 'reason': 'Completed file refund access-guard fixture',
+            'idempotency_key': 'completed-file-refund-fixture'})
+        with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, oid)
+            refund = db.get(self.m.Refund, row['id'])
+            # File resources have no automatic refund executor. This completed
+            # state is a fixture for access guards, not evidence of funds execution.
+            refund.status, refund.completed_at = 'completed', self.m.now()
+            refund.completed_by = 'test:manual-file-refund'
+            order.refunded_amount = refund.amount
+            db.commit()
         self.assertFalse(self.request('GET', f'/api/orders/{oid}/delivery-access')['ready'])
         self.request('GET', f'/api/files/product_data/download?order_id={oid}', expected=409)
 
