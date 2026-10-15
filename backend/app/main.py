@@ -5650,6 +5650,7 @@ def transition_order(order_id: str, body: TransitionBody, request: Request, user
         raise HTTPException(404, "订单不存在")
     if body.action == "submit_after_sales":
         from .after_sales_workflow import TicketCreate
+        trading_policy["require_buyer"](db, user, order.buyer_enterprise_id)
         after_sales_workflow["require_scope"](request, db, user, order)
         after_sales_workflow["create"](db, user, TicketCreate(order_id=order.id,
             description=body.reason or "客户提交售后申请",
