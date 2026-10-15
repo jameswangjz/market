@@ -668,7 +668,37 @@ class AfterSalesTicket(Base):
     owner: Mapped[str] = mapped_column(String(180), default="售后团队")
     service_level_code: Mapped[str] = mapped_column(String(30), default="standard")
     response_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    buyer_enterprise_id: Mapped[str] = mapped_column(String(36), default="")
+    provider_enterprise_id: Mapped[str] = mapped_column(String(36), default="")
+    created_by: Mapped[str] = mapped_column(String(36), default="")
+    previous_status: Mapped[str] = mapped_column(String(30), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    sla_snapshot_json: Mapped[str] = mapped_column(Text, default="{}")
+    evidence_status: Mapped[str] = mapped_column(String(30), default="historical_unknown")
+    first_response_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_resolution_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    close_reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AfterSalesEvent(Base):
+    __tablename__ = "after_sales_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("after_sales_tickets.id"), index=True)
+    operation_key: Mapped[str] = mapped_column(String(64), unique=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(40))
+    from_status: Mapped[str] = mapped_column(String(30), default="")
+    to_status: Mapped[str] = mapped_column(String(30))
+    actor_id: Mapped[str] = mapped_column(String(36))
+    actor_role: Mapped[str] = mapped_column(String(40))
+    actor_enterprise_id: Mapped[str] = mapped_column(String(36), default="")
+    request_id: Mapped[str] = mapped_column(String(100), default="")
+    reason: Mapped[str] = mapped_column(Text)
+    before_json: Mapped[str] = mapped_column(Text, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, default="{}")
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Settlement(Base):
@@ -1040,6 +1070,11 @@ class VerificationReviewBody(BaseModel):
     comment: str = ""
 
 
+class EnterpriseVerificationReviewBody(VerificationReviewBody):
+    service_level_id: str = ""
+    sla_reason: str = Field(default="", max_length=2000)
+
+
 class EnterpriseVerificationBody(BaseModel):
     license_file_id: str
     enterprise_name: str
@@ -1350,6 +1385,7 @@ class ServiceLevelAssignmentBody(BaseModel):
     service_level_id: str
     user_id: str = ""
     expires_at: datetime | None = None
+    reason: str = Field(default="", max_length=2000)
 
 
 class SettlementRuleBody(BaseModel):
@@ -2153,6 +2189,17 @@ def ensure_review_and_file_schema():
         "after_sales_tickets": {
             "service_level_code": "VARCHAR(30) DEFAULT 'standard'",
             "response_due_at": "TIMESTAMP WITH TIME ZONE",
+            "buyer_enterprise_id": "VARCHAR(36) DEFAULT ''",
+            "provider_enterprise_id": "VARCHAR(36) DEFAULT ''",
+            "created_by": "VARCHAR(36) DEFAULT ''",
+            "previous_status": "VARCHAR(30) DEFAULT ''",
+            "version": "INTEGER DEFAULT 1",
+            "sla_snapshot_json": "TEXT DEFAULT '{}'",
+            "evidence_status": "VARCHAR(30) DEFAULT 'historical_unknown'",
+            "first_response_at": "TIMESTAMP WITH TIME ZONE",
+            "submitted_resolution_at": "TIMESTAMP WITH TIME ZONE",
+            "closed_at": "TIMESTAMP WITH TIME ZONE",
+            "close_reason": "TEXT DEFAULT ''",
         },
         "saas_integration_configs": {
             "credentials_revealed_at": "TIMESTAMP WITH TIME ZONE",
@@ -2809,15 +2856,19 @@ def enterprise_verifications(user: User = Depends(current_user), db: Session = D
 
 
 @app.post("/api/admin/verifications/enterprise/{enterprise_id}/review")
-def review_enterprise_verification(enterprise_id: str, body: VerificationReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def review_enterprise_verification(enterprise_id: str, body: EnterpriseVerificationReviewBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    enterprise = db.get(Enterprise, enterprise_id)
+    enterprise = db.scalar(select(Enterprise).where(Enterprise.id == enterprise_id).with_for_update()
+                           .execution_options(populate_existing=True))
     if not enterprise:
         raise HTTPException(404, "企业认证申请不存在")
     if body.decision not in {"approve", "reject"}:
         raise HTTPException(400, "审核结论必须是 approve 或 reject")
     if body.decision == "reject" and not body.comment.strip():
         raise HTTPException(400, "驳回时必须填写原因")
+    if body.decision == "approve" and body.service_level_id:
+        enterprise_sla["review_binding"](db, user, enterprise, body.decision,
+                                         body.service_level_id, body.sla_reason or body.comment)
     enterprise.verification_status = "verified" if body.decision == "approve" else "rejected"
     enterprise.verified_by = user.email or user.phone or user.id
     enterprise.verified_at = now()
@@ -5582,7 +5633,7 @@ def create_order(body: OrderBody, user: User = Depends(current_user), db: Sessio
 
 
 @app.post("/api/orders/{order_id}/transition")
-def transition_order(order_id: str, body: TransitionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
+def transition_order(order_id: str, body: TransitionBody, request: Request, user: User = Depends(current_user), db: Session = Depends(db_session)):
     order_peek = db.get(Order, order_id)
     if not order_peek:
         raise HTTPException(404, "订单不存在")
@@ -5597,6 +5648,16 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
     order = db.scalar(select(Order).where(Order.id == order_id).with_for_update().execution_options(populate_existing=True))
     if not order:
         raise HTTPException(404, "订单不存在")
+    if body.action == "submit_after_sales":
+        from .after_sales_workflow import TicketCreate
+        after_sales_workflow["require_scope"](request, db, user, order)
+        after_sales_workflow["create"](db, user, TicketCreate(order_id=order.id,
+            description=body.reason or "客户提交售后申请",
+            idempotency_key="legacy-submit-" + secrets.token_hex(16)))
+        db.commit()
+        return order_out(order)
+    if body.action == "close_after_sales":
+        raise HTTPException(409, "请在售后工单中由买方确认或由平台执行有原因的强制关闭")
     if (order.delivery_method_snapshot in {"api", "model_api", "tenant_access"}
             and order.buyer_enterprise_id
             and body.action in {"start_payment", "confirm_payment", "cancel_order", "approve_refund", "complete_refund"}):
@@ -5707,23 +5768,12 @@ def transition_order(order_id: str, body: TransitionBody, user: User = Depends(c
         if refund_target == "refunded" or order.refunded_amount > 0:
             for route in db.scalars(select(ApiGatewayRoute).where(ApiGatewayRoute.product_id == order.product_id)).all():
                 refresh_enterprise_api_credentials(db, order.buyer_enterprise_id, route)
-        if order.after_sales_status == "processing":
-            old_after_sales = order.after_sales_status
-            order.after_sales_status = "resolved"
-            log_state(db, order, "after_sales", old_after_sales, "resolved", "退款完成", user, body.reason)
         log_state(db, order, "payment", current, refund_target, body.action, user, body.reason)
     elif body.action == "create_task":
         if order.delivery_status != "not_started":
             raise HTTPException(400, "当前交付状态不能生成任务")
         create_delivery_task(db, order, user.email or user.name)
         log_state(db, order, "delivery", current, target, body.action, user, body.reason)
-    elif body.action == "submit_after_sales":
-        if order.after_sales_status != "none":
-            raise HTTPException(400, "当前订单已有售后事项")
-        order.after_sales_status = "processing"
-        level = current_service_level(db, order.buyer_enterprise_id, order.buyer_user_id or "")
-        db.add(AfterSalesTicket(ticket_no="AS-" + secrets.token_hex(5).upper(), order_id=order.id, type="质量异议", description=body.reason or "客户提交售后申请", service_level_code=level.code if level else "standard", response_due_at=now() + timedelta(minutes=(level.initial_response_minutes if level else 2880)), owner="专属技术支持经理" if level and level.dedicated_manager else "售后团队"))
-        log_state(db, order, "after_sales", current, target, body.action, user, body.reason)
     elif current != expected:
         raise HTTPException(409, f"当前状态为 {current}，不能执行“{label}”")
     else:
@@ -5922,18 +5972,22 @@ def delivery_tasks(request: Request, enterprise_id: str = Query(default=""), bus
 
 @app.get("/api/after-sales")
 def after_sales(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if user.verified_status != "verified":
+        raise HTTPException(403, "仅已实名用户可查看售后工单")
     scope = resolve_business_scope(request, db, user, Membership, business_view)
+    if scope is None and user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
+        raise HTTPException(403, "仅平台管理员、运营人员和交付监控人员可查看平台售后")
     if scope is not None and scope["membership"].role not in {"super_admin", "enterprise_admin"}:
         raise HTTPException(403, "普通企业成员无权查看售后工单")
+    if scope is not None:
+        selected_enterprise = db.get(Enterprise, scope["enterprise_id"])
+        if not selected_enterprise or selected_enterprise.verification_status != "verified":
+            raise HTTPException(403, "仅已认证企业可查看售后工单")
     stmt = select(AfterSalesTicket)
     if scope is not None:
         stmt = stmt.where(AfterSalesTicket.order_id.in_(select(Order.id).where(order_predicate(Order, scope))))
     items = db.scalars(stmt.order_by(AfterSalesTicket.created_at.desc())).all()
-    if scope is not None:
-        return {"items": [{"id": x.id, "ticket_no": x.ticket_no, "order_id": x.order_id,
-            "type": x.type, "status": x.status, "priority": x.priority, "service_level_code": x.service_level_code,
-            "response_due_at": x.response_due_at, "created_at": x.created_at} for x in items]}
-    return {"items": [{"id": x.id, "ticket_no": x.ticket_no, "order_id": x.order_id, "type": x.type, "status": x.status, "priority": x.priority, "description": x.description, "owner": x.owner, "service_level_code": x.service_level_code, "response_due_at": x.response_due_at, "created_at": x.created_at} for x in items]}
+    return {"items": [after_sales_workflow["output"](x) for x in items]}
 
 
 @app.get("/api/enterprise-settlements")
@@ -7067,19 +7121,9 @@ def list_service_level_assignments(user: User = Depends(current_user), db: Sessi
 @app.post("/api/sla/service-level-assignments")
 def assign_service_level(body: ServiceLevelAssignmentBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    if not db.get(Enterprise, body.enterprise_id):
-        raise HTTPException(404, "企业不存在")
-    level = db.get(ServiceLevel, body.service_level_id)
-    if not level or level.status != "active":
-        raise HTTPException(404, "服务级别不存在或未启用")
-    existing = db.scalars(select(ServiceLevelAssignment).where(ServiceLevelAssignment.enterprise_id == body.enterprise_id, ServiceLevelAssignment.user_id == body.user_id, ServiceLevelAssignment.expires_at.is_(None))).all()
-    for assignment in existing:
-        assignment.expires_at = now()
-    item = ServiceLevelAssignment(service_level_id=level.id, enterprise_id=body.enterprise_id, user_id=body.user_id, source="manual", expires_at=body.expires_at, created_by=user.email)
-    db.add(item)
-    audit(db, user.email, "assign_service_level", "service_level_assignment", item.id, f"绑定{level.name}服务级别", category="sla", business_domain="service_level", tenant_id=body.enterprise_id)
+    item, level, enterprise = enterprise_sla["adjust_assignment"](db, user, body)
     db.commit()
-    return {"item": service_level_assignment_out(item, level, db.get(Enterprise, body.enterprise_id))}
+    return {"item": service_level_assignment_out(item, level, enterprise)}
 
 
 @app.get("/api/sla/my-service-level")
@@ -7667,3 +7711,19 @@ install_application_health(globals())
 from .saas_sync_management import install as install_saas_sync_management
 
 saas_sync_management = install_saas_sync_management(globals())
+
+from .holiday_calendar import install as install_holiday_calendar
+
+holiday_calendar = install_holiday_calendar(globals())
+
+from .ticket_calendar import install as install_ticket_calendar
+
+ticket_calendar = install_ticket_calendar(globals())
+
+from .enterprise_sla import install as install_enterprise_sla
+
+enterprise_sla = install_enterprise_sla(globals())
+
+from .after_sales_workflow import install as install_after_sales_workflow
+
+after_sales_workflow = install_after_sales_workflow(globals())

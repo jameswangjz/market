@@ -1,0 +1,35 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sla-calendar-sync
+  namespace: market
+spec:
+  schedule: '15 3 * * *'
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - name: sla-calendar-sync
+              image: market-api:REPLACE_WITH_DEPLOYED_TAG
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command: [python, -m, app.holiday_calendar]
+              envFrom:
+                - configMapRef: {name: market-config}
+              env:
+                - {name: PYTHONPATH, value: /app}
+                - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+                - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 500m, memory: 512Mi}
