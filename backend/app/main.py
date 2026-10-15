@@ -36,7 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, and_, case, create_engine, func, inspect, or_, select, text, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from .enterprise_console_scope import resolve_enterprise_membership, require_enterprise_super_admin, require_enterprise_editor
@@ -966,6 +966,7 @@ class ServiceLevel(Base):
     dedicated_manager: Mapped[bool] = mapped_column(Boolean, default=False)
     technical_support: Mapped[bool] = mapped_column(Boolean, default=False)
     initial_response_minutes: Mapped[int] = mapped_column(Integer, default=2880)
+    urgent_initial_response_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     problem_response_hours: Mapped[int] = mapped_column(Integer, default=48)
     quarterly_report: Mapped[bool] = mapped_column(Boolean, default=False)
     annual_optimization: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -1373,11 +1374,23 @@ class ServiceLevelBody(BaseModel):
     online_customer_service: bool = True
     dedicated_manager: bool = False
     technical_support: bool = False
-    initial_response_minutes: int = Field(default=2880, ge=1, le=525600)
+    initial_response_minutes: int | None = Field(default=None, ge=1, le=525600, description="普通首次响应分钟，按支持时间累计")
+    urgent_initial_response_minutes: int | None = Field(default=None, ge=1, le=525600, description="紧急首次响应分钟，按自然时间累计")
     problem_response_hours: int = Field(default=48, ge=1, le=8760)
     quarterly_report: bool = False
     annual_optimization: bool = False
     status: str = Field(default="active", pattern="^(active|disabled)$")
+
+
+    @model_validator(mode="after")
+    def response_defaults(self):
+        from .enterprise_sla import response_defaults
+        normal, urgent = response_defaults(self.code)
+        if self.initial_response_minutes is None:
+            object.__setattr__(self, "initial_response_minutes", normal)
+        if self.urgent_initial_response_minutes is None:
+            object.__setattr__(self, "urgent_initial_response_minutes", urgent)
+        return self
 
 
 class ServiceLevelAssignmentBody(BaseModel):
@@ -2160,6 +2173,7 @@ def ensure_review_and_file_schema():
             "after_json": "TEXT DEFAULT '{}'",
         },
         "notification_attachments": {"tenant_id": "VARCHAR(36) DEFAULT ''"},
+        "service_levels": {"urgent_initial_response_minutes": "INTEGER"},
         "orders": {
             "buyer_user_id": "VARCHAR(36)",
             "product_version_id": "VARCHAR(36)",
@@ -2426,14 +2440,15 @@ def startup():
                 db.add(DevelopmentTask(code=task[0], owner=task[1], title=task[2], area=task[3], priority=task[4], status=task[5], dependencies=task[6], acceptance=task[7], progress=task[8]))
         if not db.scalar(select(SLAProfile.id).limit(1)):
             db.add(SLAProfile(name="平台默认服务等级", service_scope="platform", evaluation_period="daily", availability_target=99.9, latency_target_ms=1000, error_rate_target=1, delivery_hours=24, recovery_minutes=60, warning_margin=0.5, description="覆盖平台 API 可用性、调用质量和交付及时率的默认规则", status="active", created_by="system"))
+        from .enterprise_sla import STRATEGIC_DESCRIPTION, response_defaults
         service_level_seeds = [
             ("standard", "标准级", "面向所有注册用户，提供在线文档、知识库、标准 API、5×8 在线客服和 48 小时问题响应。", "all", 5, 8, 2880, 48, False, False, False),
             ("enterprise", "企业级", "面向付费客户，在标准级基础上提供专属技术支持经理、7×8 技术支持和 24 小时问题响应。", "paid", 7, 8, 1440, 24, True, False, False),
-            ("strategic", "战略级", "面向核心合作伙伴和重要客户，提供 7×24 专属支持、15 分钟紧急响应、季度报告和年度优化建议。", "strategic", 7, 24, 15, 24, True, True, True),
+            ("strategic", "战略级", STRATEGIC_DESCRIPTION, "strategic", 7, 24, response_defaults("strategic")[0], 24, True, True, True),
         ]
         for code, name, description, scope, days, hours, response_minutes, response_hours, manager, quarterly, annual in service_level_seeds:
             if not db.scalar(select(ServiceLevel.id).where(ServiceLevel.code == code)):
-                db.add(ServiceLevel(code=code, name=name, description=description, customer_scope=scope, support_days_per_week=days, support_hours_per_day=hours, online_docs=True, knowledge_base=True, standard_api=True, online_customer_service=True, dedicated_manager=manager, technical_support=code != "standard", initial_response_minutes=response_minutes, problem_response_hours=response_hours, quarterly_report=quarterly, annual_optimization=annual, status="active", created_by="system"))
+                db.add(ServiceLevel(code=code, name=name, description=description, customer_scope=scope, support_days_per_week=days, support_hours_per_day=hours, online_docs=True, knowledge_base=True, standard_api=True, online_customer_service=True, dedicated_manager=manager, technical_support=code != "standard", initial_response_minutes=response_minutes, urgent_initial_response_minutes=response_defaults(code)[1], problem_response_hours=response_hours, quarterly_report=quarterly, annual_optimization=annual, status="active", created_by="system"))
         db.flush()
         standard_level = db.scalar(select(ServiceLevel).where(ServiceLevel.code == "standard"))
         if standard_level:
@@ -6996,12 +7011,16 @@ def sla_profile_out(item: SLAProfile) -> dict[str, Any]:
 
 
 def service_level_out(item: ServiceLevel) -> dict[str, Any]:
-    return {"id": item.id, "code": item.code, "name": item.name, "description": item.description, "customer_scope": item.customer_scope,
+    from .enterprise_sla import STRATEGIC_DESCRIPTION, response_configuration
+    response = response_configuration(item)
+    return {"id": item.id, "code": item.code, "name": item.name,
+            "description": STRATEGIC_DESCRIPTION if response["legacy_seed_migration_required"] else item.description,
+            "customer_scope": item.customer_scope,
             "support_days_per_week": item.support_days_per_week, "support_hours_per_day": item.support_hours_per_day,
             "support_schedule": f"{item.support_days_per_week}×{item.support_hours_per_day}", "online_docs": item.online_docs,
             "knowledge_base": item.knowledge_base, "standard_api": item.standard_api, "online_customer_service": item.online_customer_service,
             "dedicated_manager": item.dedicated_manager, "technical_support": item.technical_support,
-            "initial_response_minutes": item.initial_response_minutes, "problem_response_hours": item.problem_response_hours,
+            **response, "problem_response_hours": item.problem_response_hours,
             "quarterly_report": item.quarterly_report, "annual_optimization": item.annual_optimization, "status": item.status,
             "created_by": item.created_by, "created_at": item.created_at, "updated_at": item.updated_at}
 
@@ -7100,6 +7119,8 @@ def update_service_level(level_id: str, body: ServiceLevelBody, user: User = Dep
         raise HTTPException(404, "服务级别不存在")
     before = service_level_out(item)
     for key, value in body.model_dump().items():
+        if key == "urgent_initial_response_minutes" and key not in body.model_fields_set:
+            continue
         setattr(item, key, value)
     audit(db, user.email, "update_service_level", "service_level", item.id, f"更新服务级别：{item.name}", category="sla", business_domain="service_level", before=before, after=service_level_out(item))
     db.commit()

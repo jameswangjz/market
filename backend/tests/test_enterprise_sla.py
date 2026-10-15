@@ -31,7 +31,8 @@ class EnterpriseSLATests(unittest.TestCase):
         self.addCleanup(self.time.stop)
         with self.m.SessionLocal() as db:
             db.add_all([self.m.ServiceLevel(id=code, code=code, name=code, status='active',
-                initial_response_minutes=15 if code == 'strategic' else 2880,
+                initial_response_minutes={'standard': 2880, 'enterprise': 1440, 'strategic': 720}[code],
+                urgent_initial_response_minutes={'standard': 1440, 'enterprise': 720, 'strategic': 360}[code],
                 problem_response_hours=48) for code in ('standard', 'enterprise', 'strategic')])
             db.commit()
 
@@ -245,6 +246,87 @@ class EnterpriseSLATests(unittest.TestCase):
             self.assertEqual(error.exception.status_code, 409)
             self.assertEqual(cached_enterprise.verification_status, 'pending_review')
 
+    def test_custom_response_values_are_frozen_without_overwriting_old_snapshot(self):
+        self.adjust(level='strategic')
+        old = json.dumps(self.snapshot(), sort_keys=True)
+        with self.m.SessionLocal() as db:
+            level = db.get(self.m.ServiceLevel, 'strategic')
+            level.initial_response_minutes = 777
+            level.urgent_initial_response_minutes = 333
+            db.commit()
+        snapshot = self.snapshot()
+        self.assertEqual(snapshot['metrics']['first_response']['target'], 777)
+        self.assertEqual(snapshot['metrics']['urgent_first_response']['target'], 333)
+        self.assertEqual(json.loads(old)['metrics']['first_response']['target'], 720)
+
+    def test_exact_seed_migration_dry_run_apply_audit_and_idempotence(self):
+        from sla_first_response_migration import migrate
+        module = importlib.import_module(self.m.__package__ + '.enterprise_sla')
+        order_id = fixture.BusinessRoutesHTTPTests.create_order(self)
+        historical = '{ "service_level_code": "strategic", "response_minutes": 15 }'
+        with self.m.SessionLocal() as db:
+            db.add(self.m.AfterSalesTicket(id='old-promise', ticket_no='OLD-PROMISE',
+                order_id=order_id, type='issue', description='Historical promise',
+                service_level_code='strategic', sla_snapshot_json=historical))
+            level = db.get(self.m.ServiceLevel, 'strategic')
+            values = dict(name='战略级', description=module.LEGACY_STRATEGIC_DESCRIPTION,
+                customer_scope='strategic', support_days_per_week=7, support_hours_per_day=24,
+                initial_response_minutes=15, urgent_initial_response_minutes=None,
+                problem_response_hours=24, created_by='system', status='active',
+                online_docs=True, knowledge_base=True, standard_api=True,
+                online_customer_service=True, dedicated_manager=True, technical_support=True,
+                quarterly_report=True, annual_optimization=True)
+            for key, value in values.items():
+                setattr(level, key, value)
+            db.commit()
+            self.assertTrue(module.is_legacy_strategic_seed(level))
+            report = migrate(db, vars(self.m))
+            self.assertEqual(report['matched_ids'], ['strategic'])
+            self.assertEqual(level.initial_response_minutes, 15)
+            self.assertEqual(db.query(self.m.AuditLog).filter_by(action='migrate_strategic_first_response').count(), 0)
+            report = migrate(db, vars(self.m), apply=True, actor='platform')
+            db.commit()
+            self.assertEqual(report['snapshot_hash_before'], report['snapshot_hash_after'])
+            self.assertEqual(report['snapshot_count'], 1)
+            self.assertEqual(db.get(self.m.AfterSalesTicket, 'old-promise').sla_snapshot_json, historical)
+            self.assertEqual((level.initial_response_minutes, level.urgent_initial_response_minutes), (720, 360))
+            self.assertEqual(db.query(self.m.AuditLog).filter_by(action='migrate_strategic_first_response').count(), 1)
+            audit = db.query(self.m.AuditLog).filter_by(action='migrate_strategic_first_response').one()
+            audited = json.loads(audit.after_json)
+            self.assertEqual(audited['snapshot_hash_before'], report['snapshot_hash_before'])
+            self.assertEqual(audited['snapshot_hash_after'], report['snapshot_hash_after'])
+            self.assertEqual(migrate(db, vars(self.m), apply=True, actor='platform')['matched_ids'], [])
+            for key, value in values.items():
+                setattr(level, key, value)
+            level.initial_response_minutes = 16
+            db.flush()
+            self.assertEqual(migrate(db, vars(self.m), apply=True, actor='platform')['matched_ids'], [])
+            self.assertEqual(level.initial_response_minutes, 16)
+
+    def test_service_level_body_defaults_and_custom_values(self):
+        body = self.m.ServiceLevelBody(code='strategic', name='Strategic')
+        self.assertEqual((body.initial_response_minutes, body.urgent_initial_response_minutes), (720, 360))
+        self.assertNotIn('urgent_initial_response_minutes', body.model_fields_set)
+        custom = self.m.ServiceLevelBody(code='strategic', name='Custom',
+            initial_response_minutes=777, urgent_initial_response_minutes=333)
+        self.assertEqual((custom.initial_response_minutes, custom.urgent_initial_response_minutes), (777, 333))
+
+    def test_legacy_update_omitting_urgent_preserves_custom_value_and_api_distinguishes_clocks(self):
+        with self.m.SessionLocal() as db:
+            level = db.get(self.m.ServiceLevel, 'strategic')
+            level.urgent_initial_response_minutes = 333
+            db.commit()
+        response = self.request('PATCH', '/api/sla/service-levels/strategic', actor='platform',
+            json={'code': 'strategic', 'name': 'strategic', 'initial_response_minutes': 720})
+        self.assertEqual(response['item']['initial_response_minutes'], 720)
+        self.assertEqual(response['item']['urgent_initial_response_minutes'], 333)
+        listed = self.request('GET', '/api/sla/service-levels', actor='platform')
+        item = next(row for row in listed['items'] if row['code'] == 'strategic')
+        self.assertEqual((item['initial_response_minutes'], item['urgent_initial_response_minutes']), (720, 333))
+        self.assertEqual((item['first_response_clock'], item['urgent_first_response_clock']), ('support', 'natural'))
+        with self.m.SessionLocal() as db:
+            self.assertEqual(db.get(self.m.ServiceLevel, 'strategic').urgent_initial_response_minutes, 333)
+
     def test_snapshot_metrics_match_final_matrix_and_do_not_reinterpret_legacy_units(self):
         path = Path(__file__).resolve().parents[2] / 'docs' / 'SLA级别指标配置矩阵-提前预警修正版-20261014.csv'
         with path.open(encoding='utf-8-sig', newline='') as stream:
@@ -276,7 +358,7 @@ class EnterpriseSLATests(unittest.TestCase):
                 'not_required' if code == 'strategic' and hasattr(self.m, 'holiday_calendar') else 'unconfigured')
         self.assertEqual(snapshot['metrics']['urgent_first_response']['target'], 360)
         self.assertEqual(snapshot['metrics']['delivery']['warning_seconds'], 192)
-        self.assertEqual(snapshot['legacy_level_config']['initial_response_minutes'], 15)
+        self.assertEqual(snapshot['legacy_level_config']['initial_response_minutes'], 720)
         self.assertEqual(snapshot['legacy_level_config']['problem_response_hours'], 48)
         self.assertEqual(snapshot['calendar']['timezone'], 'Asia/Shanghai')
 

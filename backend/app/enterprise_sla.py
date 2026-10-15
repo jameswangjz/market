@@ -29,6 +29,36 @@ QUALITY_RULES = {
     'delivery_timeliness': ('percent', 'lower', (90, 95, 98), (92, 96, 98.4)),
 }
 LEVELS = ('standard', 'enterprise', 'strategic')
+LEGACY_STRATEGIC_DESCRIPTION = '面向核心合作伙伴和重要客户，提供 7×24 专属支持、15 分钟紧急响应、季度报告和年度优化建议。'
+STRATEGIC_DESCRIPTION = '面向核心合作伙伴和重要客户，提供7×24专属支持、普通首次响应720分钟（支持时间）、紧急首次响应360分钟（自然时间）、季度报告和年度优化建议。'
+
+
+def response_defaults(code):
+    if code not in LEVELS:
+        return 2880, None
+    index = LEVELS.index(code)
+    return TIME_RULES['first_response'][2][index], TIME_RULES['urgent_first_response'][2][index]
+
+
+def is_legacy_strategic_seed(level):
+    fingerprint = {'code': 'strategic', 'name': '战略级', 'description': LEGACY_STRATEGIC_DESCRIPTION,
+                   'customer_scope': 'strategic', 'support_days_per_week': 7, 'support_hours_per_day': 24,
+                   'initial_response_minutes': 15, 'problem_response_hours': 24, 'created_by': 'system',
+                   'status': 'active', 'online_docs': True, 'knowledge_base': True, 'standard_api': True,
+                   'online_customer_service': True, 'dedicated_manager': True, 'technical_support': True,
+                   'quarterly_report': True, 'annual_optimization': True}
+    return (all(getattr(level, key) == value for key, value in fingerprint.items())
+            and getattr(level, 'urgent_initial_response_minutes', None) in {None, 360})
+
+
+def response_configuration(level):
+    normal_default, urgent_default = response_defaults(level.code)
+    legacy_seed = is_legacy_strategic_seed(level)
+    urgent = getattr(level, 'urgent_initial_response_minutes', None)
+    return {'initial_response_minutes': normal_default if legacy_seed else level.initial_response_minutes,
+            'urgent_initial_response_minutes': urgent if urgent is not None else urgent_default,
+            'first_response_clock': 'support', 'urgent_first_response_clock': 'natural',
+            'legacy_seed_migration_required': legacy_seed}
 
 
 def _utc(value):
@@ -94,7 +124,20 @@ def install(ns):
     def frozen_rules(level, db=None):
         code = level.code if level is not None else 'standard'
         metrics, calendar = _promise(code)
+        if level is not None:
+            response = response_configuration(level)
+            for key, field in (('first_response', 'initial_response_minutes'),
+                               ('urgent_first_response', 'urgent_initial_response_minutes')):
+                target = response[field]
+                if target is not None:
+                    warning = float(Decimal(str(target)) * Decimal('0.8'))
+                    metrics[key].update(target=target, warning=warning,
+                        target_seconds=float(Decimal(str(target)) * 60),
+                        warning_seconds=float(Decimal(str(warning)) * 60))
         legacy = ns['service_level_out'](level) if level is not None else None
+        if legacy is not None:
+            legacy = {**legacy, 'initial_response_minutes': level.initial_response_minutes,
+                      'description': level.description}
         # JSON round trip detaches ORM data and preserves original legacy units.
         if legacy is not None:
             legacy = json.loads(json.dumps(legacy, default=lambda value: _iso(value)))
