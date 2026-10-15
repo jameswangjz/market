@@ -98,7 +98,7 @@ test("all new components and integrated ConsoleApp compile", () => {
     const script = compileScript(descriptor, { id: name });
     assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: `${name}.vue`, id: name,
       compilerOptions: { bindingMetadata: script.bindings } }).errors, []);
-    if (name.startsWith("AfterSales")) assert.doesNotMatch(source, /\b(?:prompt|confirm)\s*\(|cost_price|provider_cost|cost_amount/);
+    if (name.startsWith("AfterSales")) assert.doesNotMatch(source, /(?:window|globalThis)\.(?:prompt|confirm)|(?<![.\w])(?:prompt|confirm)\s*\(|cost_price|provider_cost|cost_amount/);
   }
 });
 

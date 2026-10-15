@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "scope": "deployed source/schema and real read-only HTTP permission readback, not complete group acceptance",
+  "api_and_web_release": "20261015065428-bc05455",
+  "git_commit": "bc05455eb2416f9c7d53c37c4fe4b6adfe6bf64a",
+  "provenance_sha256": "f361a18e5065461eb49b234d39db24cb6fdcc130442921e885fc7f1e359f8fcf",
+  "database_backup": "/root/market/backups/pre-trd-runtime-20261015065428-bc05455.sql",
+  "source_manifest": "r3-after-sales-installed-source-manifest-20261015.json",
+  "installed_source_matches_tested_source": true,
+  "tables_verified": ["after_sales_comments", "after_sales_attachments", "after_sales_event_attachments"],
+  "http_transport": "actual market-web reverse proxy",
+  "http_checks": [
+    {"role": "super_admin", "status": 200, "rows": 1},
+    {"role": "platform_operator", "status": 200, "rows": 1},
+    {"role": "delivery_monitor", "status": 200, "rows": 1},
+    {"role": "finance_settlement", "status": 403, "rows": 0}
+  ],
+  "allowed_actions_present": true,
+  "monitor_force_close_absent": true,
+  "cost_and_secret_fields_absent": true,
+  "business_writes": false,
+  "note": "Frontend P2 fixes and browser/real storage-scanner checks still pending at this checkpoint; no complete task acceptance claim"
+}

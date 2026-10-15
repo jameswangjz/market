@@ -1,0 +1,113 @@
+{
+  "status": "partial",
+  "coverage": [
+    "TRD-R3-QA-003"
+  ],
+  "scope": "Installed-source external-chain acceptance passed; full task remains partial without browser/ingress acceptance",
+  "actor": "This agent executed the installed-source external probe in the parent-notified API pod",
+  "runtime_independent_observation": "After execution, this agent read the named pod: image market-api:20261015065428-bc05455; ready=true",
+  "guard_tests": {
+    "external": 8,
+    "group": 9,
+    "total_passed": 17,
+    "failed": 0
+  },
+  "source_evidence_sha256": {
+    "/tmp/r3-qa003-real-external-bc05455-20261015.json": "3dd82aaf1b75126f3cfe94fa36b876236820372a3a5f96d019cbc4597b17e222",
+    "scripts/r3_after_sales_external_pg_acceptance.py": "add84be7ee0aa64388ca306cdcfdbe49ec2d726b484fd9151589822b010a1221",
+    "scripts/test_r3_after_sales_external_pg_acceptance.py": "fe0a3ee9c0657c2a3f8cb3826da35ee224d644eca3427a88387b3dfa3b581a60"
+  },
+  "execution": {
+    "status": "passed",
+    "captured_at": "2026-10-15T07:00:11.233809+00:00",
+    "completed_at": "2026-10-15T07:00:17.224429+00:00",
+    "scope": "Installed source; owned PG schema; actual cluster ClamAV and exact owned MinIO objects; ASGI not ingress",
+    "owned_schema": "qa_r3_be_804ef0484fe1049d",
+    "cases": {
+      "normal_real_scan_upload_download": {
+        "status": "passed",
+        "bytes": 44,
+        "sha256": "f73c1ce03c98d45a981afed1b5a922e09659413a127eb66839016383fac518d6",
+        "first_response_unchanged": true
+      },
+      "real_eicar_rejected_before_storage": {
+        "status": "passed",
+        "http_status": 400,
+        "new_objects": 0,
+        "new_files": 0
+      },
+      "terminal_audit_comment_real_storage": {
+        "status": "passed",
+        "normal_evidence": 409,
+        "audit_comment": 200,
+        "bytes_equal": true,
+        "closed_chain_unchanged": true
+      },
+      "exact_owned_object_cleanup": {
+        "status": "passed",
+        "tracked_objects": 2,
+        "removed_and_head_verified": 2
+      }
+    },
+    "gaps": [
+      "No browser/ingress or full QA003 task acceptance; no SMTP/global configuration edits"
+    ],
+    "public_write_operations": 0,
+    "task_status_changes": 0,
+    "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+    "cleanup": "owned schema removed",
+    "protected_order_count_before": 1,
+    "protected_order_count_after": 1,
+    "protected_order_content_read": false,
+    "coverage": [
+      "TRD-R3-QA-003"
+    ],
+    "source_kind": "installed",
+    "deployed": true,
+    "source_sha256": {
+      "main.py": "410ad3bf7e32093cd9e1fd726bf64d8c9f0ff1fd20aafdbdc9e997ad6d2041a7",
+      "after_sales_workflow.py": "56e7b04ad18942cf17037d094463986fd2cc479f9161c72e688209902a59238b",
+      "after_sales_collaboration.py": "658e0e7ac18d3a628dfc36e7b94142630bca0b22b6522659421e6d56a778fc6f",
+      "ticket_sla_clocks.py": "ac7200ca82603552f3f91b9c68e2907274667ee0083f79e2dac9f85ecda04128",
+      "enterprise_sla.py": "f23bced8e70160ed095326fde6474063e86eb56610d77f4f87e8a86f135e5cba"
+    },
+    "external_adapters": {
+      "MinIO": "real SDK with exact-object ownership guard",
+      "ClamAV": "real installed scanner with production timeout"
+    },
+    "object_cleanup": {
+      "status": "passed",
+      "tracked_objects": 2,
+      "removed_and_head_verified": 2,
+      "cleanup_failures": 0,
+      "private_ownership_journal": "/tmp/qa-r3-after-sales-external-977pz_6r.json",
+      "journal_sha256": "acf85aa4572cf65640709e23ee71ea24ae77a880829c8f20ba01639a6524dd1f"
+    },
+    "real_scan_results": [
+      "clean",
+      "infected",
+      "clean"
+    ],
+    "runtime_image": "market-api:20261015065428-bc05455",
+    "runtime_pod": "market-api-6486bcb6c8-t7wrg",
+    "runtime_label_source": "Parent rollout notification; installed source hashes independently verified by child before schema creation"
+  },
+  "safety": {
+    "installed_new_process": true,
+    "source_manifest_verified_before_database_action": true,
+    "app_directory_overwritten": false,
+    "startup_or_seeding": false,
+    "public_business_writes": 0,
+    "smtp_or_global_config_changes": false,
+    "copied_helpers": "Random private /tmp directory removed by TemporaryDirectory after subprocess completion",
+    "retained_journal": "Private 0600 exact owned-object journal retained; no credentials or original business object values in journal",
+    "task_status_changes": false
+  },
+  "limits": [
+    "HTTP is installed ASGI handlers using TestClient, not ingress or a real browser.",
+    "Real cluster MinIO and ClamAV used only for this probe's exact random owned ticket prefixes.",
+    "Standard harmless EICAR test signature assembled in memory and rejected before object creation.",
+    "Only external small-batch cases ran; the prior 13-case PG group and parent's SQLite suite were not repeated.",
+    "Protected-order COUNT existence1 before/after is not a full content-integrity comparison."
+  ]
+}

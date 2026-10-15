@@ -1,0 +1,176 @@
+{
+  "status": "partial",
+  "coverage": [
+    "TRD-R3-QA-003"
+  ],
+  "scope": "Frozen workingtree PostgreSQL/ASGI group passed; not complete deployed/browser/external-service task acceptance",
+  "actor": "This agent executed the isolated PG probe; parent relayed Turing source freeze before this final run",
+  "guard_tests": {
+    "passed": 9,
+    "failed": 0,
+    "command": "PYTHONPATH=backend:scripts /tmp/market-r3-python312/bin/python -B -m unittest scripts.test_r3_after_sales_group_pg_acceptance"
+  },
+  "scripts_sha256": {
+    "scripts/r3_after_sales_group_pg_acceptance.py": "9119b29efa9d36fdcb7cb9135ca60dbea5386f847c11e41604ffe600c7796e2e",
+    "scripts/test_r3_after_sales_group_pg_acceptance.py": "b44b04547160584a781d09195c4d77f4da37a730a9c054934a4f4653c1ead4ed"
+  },
+  "raw_execution_evidence": {
+    "path": "/tmp/r3-qa003-group-pg-final-20261015.json",
+    "sha256": "99d1539995804436c390dc432fea4314d87b91b270cc6e28e8ff777de0bb5107"
+  },
+  "execution": {
+    "status": "passed",
+    "captured_at": "2026-10-15T06:52:29.350893+00:00",
+    "completed_at": "2026-10-15T06:52:40.715739+00:00",
+    "scope": "Actual PostgreSQL owned schema and ASGI handlers; no ingress or real external services",
+    "owned_schema": "qa_r3_be_a5f956d232f1d21f",
+    "cases": {
+      "QA003_state_sequence_event_audit_outbox": {
+        "status": "passed",
+        "events_with_audit_and_outbox": 8,
+        "final_state": "completed"
+      },
+      "QA003_intervention_permissions_force_close": {
+        "status": "passed",
+        "events_with_audit_and_outbox": 5,
+        "monitor_force_close": 403,
+        "blank_reason": 422,
+        "terminal_action": 409,
+        "final_state": "force_closed"
+      },
+      "QA003_comment_attachment_replay_preserves_first_response": {
+        "status": "passed",
+        "replay_unique": true,
+        "changed_payload": 409,
+        "first_response_still_null": true,
+        "ticket_and_event_chain_unchanged": true,
+        "storage_adapter": "in-memory mock",
+        "scanner": "mock clean"
+      },
+      "QA003_evidence_permissions_and_scope": {
+        "status": "passed",
+        "evidence_route_denials": {
+          "member": 404,
+          "outsider": 404,
+          "finance": 404,
+          "inactive": 401
+        },
+        "explicit_scope": 403,
+        "blank_comment": 422
+      },
+      "QA003_terminal_audit_comment_restrictions": {
+        "status": "passed",
+        "normal_evidence_rejected": 409,
+        "preclosed_normal_attachment_reference_rejected": 404,
+        "audit_comment_attachment_allowed": true,
+        "state_chain_unchanged": true,
+        "comment_contract": "Comments remain immutable audit annotations; no separate comment purpose field"
+      },
+      "QA003_action_audit_rollback": {
+        "status": "passed",
+        "real_pg_flush_before_failure": true,
+        "database_snapshot_unchanged": true,
+        "mock_storage_compensated": true,
+        "operation": "action",
+        "injected_at": "audit"
+      },
+      "QA003_action_outbox_rollback": {
+        "status": "passed",
+        "real_pg_flush_before_failure": true,
+        "database_snapshot_unchanged": true,
+        "mock_storage_compensated": true,
+        "operation": "action",
+        "injected_at": "outbox"
+      },
+      "QA003_comment_audit_rollback": {
+        "status": "passed",
+        "real_pg_flush_before_failure": true,
+        "database_snapshot_unchanged": true,
+        "mock_storage_compensated": true,
+        "operation": "comment",
+        "injected_at": "audit"
+      },
+      "QA003_comment_outbox_rollback": {
+        "status": "passed",
+        "real_pg_flush_before_failure": true,
+        "database_snapshot_unchanged": true,
+        "mock_storage_compensated": true,
+        "operation": "comment",
+        "injected_at": "outbox"
+      },
+      "QA003_attachment_audit_rollback": {
+        "status": "passed",
+        "real_pg_flush_before_failure": true,
+        "database_snapshot_unchanged": true,
+        "mock_storage_compensated": true,
+        "operation": "attachment",
+        "injected_at": "audit"
+      },
+      "QA003_attachment_outbox_rollback": {
+        "status": "passed",
+        "real_pg_flush_before_failure": true,
+        "database_snapshot_unchanged": true,
+        "mock_storage_compensated": true,
+        "operation": "attachment",
+        "injected_at": "outbox"
+      },
+      "QA003_concurrent_create_409": {
+        "status": "passed",
+        "statuses": [
+          200,
+          409
+        ],
+        "independent_pg_connections": 2,
+        "unique_state_commit": true
+      },
+      "QA003_concurrent_version_409": {
+        "status": "passed",
+        "statuses": [
+          200,
+          409
+        ],
+        "independent_pg_connections": 2,
+        "unique_state_commit": true
+      }
+    },
+    "gaps": [
+      "No real MinIO/ClamAV, browser, ingress, notification delivery or deployed workingtree claim"
+    ],
+    "public_write_operations": 0,
+    "task_status_changes": 0,
+    "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+    "cleanup": "owned schema removed",
+    "protected_order_count_before": 1,
+    "protected_order_count_after": 1,
+    "protected_order_content_read": false,
+    "coverage": [
+      "TRD-R3-QA-003"
+    ],
+    "source_kind": "workingtree",
+    "deployed": false,
+    "source_sha256": {
+      "main.py": "410ad3bf7e32093cd9e1fd726bf64d8c9f0ff1fd20aafdbdc9e997ad6d2041a7",
+      "after_sales_workflow.py": "56e7b04ad18942cf17037d094463986fd2cc479f9161c72e688209902a59238b",
+      "after_sales_collaboration.py": "658e0e7ac18d3a628dfc36e7b94142630bca0b22b6522659421e6d56a778fc6f",
+      "ticket_sla_clocks.py": "ac7200ca82603552f3f91b9c68e2907274667ee0083f79e2dac9f85ecda04128",
+      "enterprise_sla.py": "f23bced8e70160ed095326fde6474063e86eb56610d77f4f87e8a86f135e5cba"
+    },
+    "external_adapters": {
+      "MinIO": "bounded in-memory mock",
+      "ClamAV": "mock clean scan"
+    },
+    "source_package_sha256": "1bcbfffb0b2e424f8398ef64df71304f1aad203f5e0f1917a9858dc74bd4d7db"
+  },
+  "clarifications": [
+    "ASGI HTTP uses TestClient without entering lifespan. No startup/ensure_schema/public seed is invoked.",
+    "Concurrency calls production hooks using two PG connections; 200/409 are HTTP-equivalent outcomes, not ingress requests.",
+    "MinIO and ClamAV use controlled mocks accepting timeout/constructor kwargs; production timeout code is not changed.",
+    "Terminal immutable comments are audit annotations; the audit_comment purpose restriction applies to attachments. Existing non-audit attachment cannot be referenced by a new closed-ticket comment.",
+    "Before-freeze diagnostic retained at /tmp/r3-qa003-group-pg-20261015.json; its fixture failures are not final product failures.",
+    "No real notification delivery, browser or external object/scan service pass is claimed. No task status changes, deployment or application edits."
+  ],
+  "remaining": [
+    "Actual deployed frozen-source manifest match and ingress/browser FE006 after-sales flow",
+    "Real MinIO upload/download, ClamAV scan/timeout and external cleanup after deployment"
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-BE-006", "TRD-R3-BE-007", "TRD-R3-FE-006", "TRD-R3-QA-003"],
+  "scope": "after-sales group layered functional verification; not one browser write end-to-end transaction",
+  "runtime": {"api": "20261015065428-bc05455", "web": "20261015070313-1d579ab", "entry_asset": "index-BS5NQMfJ.js"},
+  "proofs": [
+    {"path": "docs/evidence/r3-qa003-group-pg-workingtree-20261015-065229.json", "sha256": "da38c2423b9d6ba2b1026ae3ef897425347098862979835fe4366574bff3ca87", "passed_cases": 13},
+    {"path": "docs/evidence/r3-qa003-real-external-bc05455-20261015.json", "sha256": "449603dadc71ce7ba5c96e0e72bcbaece3f3200418372f05def1b91a6032c949", "passed_cases": 4},
+    {"path": "docs/evidence/r3-qa003-readonly-browser-1d579ab-20261015.json", "sha256": "c13334a296797b29c2176ef84bb2988798dcaf564af81d400d1538bf8de4346f", "scope": "deployed desktop GET-only entry and details"},
+    {"path": "frontend/artifacts/r3-fe006-isolated-browser-g/coverage.json", "sha256": "46c644c7586ddf06fac2cf6e40fb48c2fe478519ced27c3be67fef2ceee5dd74", "passed_scenario_runs": 16, "screenshots": 22, "mock_responses": true},
+    {"path": "docs/evidence/r3-after-sales-deployment-readback-20261015.json", "sha256": "74017c563fa9177fe5affbcaed2dc1924bd5c78776732d31ba3a49a13f0b0703", "scope": "source/schema and actual HTTP permission checks"}
+  ],
+  "targeted_test_groups": {"backend_with_adjacent_clocks": 52, "frontend_initial": 66, "frontend_hotfix": 8, "probe_safety_guards": 17, "overlap_not_summed": true},
+  "parent_checks": {"browser_proof_source_and_image_hashes_verified": 30, "mock_screenshots_visually_reviewed": ["mobile-dirty.png", "desktop-admin-actions.png"], "backend_source_matches_pg_and_installed_release": true},
+  "defects_fixed": ["old empty-attachment action hash compatibility", "external scanning/storage outside business locks with bounded timeouts", "generic file API bypass prevention", "closed-ticket evidence restrictions", "HTTP request-key fallback", "draft close confirmation", "identity-switch conflict-response isolation", "named comment and attachment authors"],
+  "cleanup": "owned PostgreSQL schemas, two actual MinIO objects and private browser tokens removed; no public business fixtures or protected order mutation",
+  "limits": ["Desktop deployed browser is GET-only; desktop/mobile mutation scenarios use memory responses", "Actual database mutation cases use isolated PostgreSQL and ASGI, not browser ingress", "No SMTP delivery, real bank payment, full transaction or production-scale/HA claim", "Existing historical ticket has empty evidence sections; no evidence was fabricated"],
+  "user_acceptance_performed": false
+}

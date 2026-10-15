@@ -1,0 +1,55 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-QA-003"],
+  "scope": "Single desktop deployed browser GET-only existing-ticket detail; not browser write E2E",
+  "actor": "This agent executed Windows Chrome CDP, clicked an existing ticket in Delivery/After-sales, inspected both screenshots and removed exact private actor token files",
+  "runtime": {
+    "web_image_observed": "market-web:20261015070313-1d579ab",
+    "entry_asset_observed": "index-BS5NQMfJ.js",
+    "viewport": [1440, 1000],
+    "captured_at": "2026-10-15T07:10:38.7567770Z"
+  },
+  "checks": {
+    "existing_list_ticket_opened_by_click": true,
+    "actual_detail_response_200": true,
+    "ORD_display_matches_response": true,
+    "server_allowed_actions": ["force_close"],
+    "rendered_action_count": 1,
+    "rendered_action_labels_match": true,
+    "comments_attachments_timeline_sections_visible": true,
+    "no_detail_load_error": true,
+    "screenshots_visually_inspected": 2,
+    "blocked_requests": 0,
+    "native_dialogs": 0
+  },
+  "safety": {
+    "GET_HEAD_only_guard": true,
+    "SLA_materialize_endpoint_forbidden": true,
+    "download_endpoint_forbidden": true,
+    "action_or_comment_or_attachment_submission": false,
+    "public_fixtures_created": false,
+    "startup_or_seeding": false,
+    "private_actor_tokens_and_index_removed": true,
+    "private_actor_directory_removed": true,
+    "screenshot_business_record_text_hidden": true,
+    "existing_dirty_generic_browser_script_modified": false
+  },
+  "validation": {
+    "powershell_syntax": "passed",
+    "offline_guard": "POST/DELETE and GET SLA/download rejected; comment GET allowed",
+    "browser_session": 7382,
+    "session_completed": true
+  },
+  "proofs_sha256": {
+    "scripts/r3_after_sales_readonly_browser.ps1": "422840cf7a682bd9238ed4724cb49900df5d385bb536e72057b3e33a0221c2d9",
+    "frontend/artifacts/r3-qa003-readonly-detail-1d579ab-20261015/result.json": "0342302c8525225771a3fedf983c06f54bf8e1c59f0bff27505c6fc6c0357e49",
+    "frontend/artifacts/r3-qa003-readonly-detail-1d579ab-20261015/desktop-detail-top.png": "609c7e4f07fb73236a7b4b1b3f3430b96e9cc32cd213e5f470f98fdf11ce6676",
+    "frontend/artifacts/r3-qa003-readonly-detail-1d579ab-20261015/desktop-detail-sections.png": "08b17308c1d693881d1cdb13b1ed8d46b1c57948ed19e5809807cc970ca1aa31"
+  },
+  "limits": [
+    "Existing historical ticket has no comments/attachments/timeline rows; empty sections verified, not fabricated evidence records",
+    "No mobile run or browser write/whole-transaction claim",
+    "Complements prior isolated PG, actual external-service and parent browser-response-mock evidence; not one shared end-to-end execution",
+    "No task status changes"
+  ]
+}
