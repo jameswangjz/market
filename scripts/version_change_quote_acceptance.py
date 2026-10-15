@@ -91,7 +91,7 @@ def read_scope(path):
           'Ownership manifest must be a regular 0600 file')
     value = json.loads(path.read_text())
     run_id = value.get('run_id', '')
-    check(isinstance(run_id, str) and re.fullmatch(r'qa-vcq-[0-9a-f]{12}', run_id),
+    check(isinstance(run_id, str) and re.fullmatch(r'(?:qa-vcq-|qa-r3-sso-)[0-9a-f]{12}', run_id),
           'Invalid ownership marker')
     expected = fixture_ids(run_id)
     check(all(value.get(key) == item for key, item in expected.items()),

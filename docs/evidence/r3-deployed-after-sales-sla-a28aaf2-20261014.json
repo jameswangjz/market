@@ -1,0 +1,154 @@
+{
+  "status": "passed",
+  "kind": "deployed_after_sales_sla_http_acceptance",
+  "coverage": [
+    "TRD-R3-BE-005",
+    "TRD-R3-BE-008"
+  ],
+  "release_tag": "20261015030550-a28aaf2",
+  "release_commit": "a28aaf2",
+  "source_kind": "deployed_app",
+  "workingtree_package_used": false,
+  "actor": "本部署测试Agent直接读取远端发布目录7文件哈希并导入API Pod内已安装app.main执行HTTP专项",
+  "runtime": {
+    "namespace": "market",
+    "pod": "market-api-7c797456f7-scd4m",
+    "image": "market-api:20261015030550-a28aaf2",
+    "ready_at_start": true,
+    "release_dir": "/root/market/releases/20261015030550-a28aaf2",
+    "manifest_origin": "SHA256 read directly from /root/market/releases/20261015030550-a28aaf2/backend/app; no workingtree source or container-derived expected hashes."
+  },
+  "probe": {
+    "path": "scripts/r3_deployed_after_sales_sla_acceptance.py",
+    "sha256": "f025afab4ec7e144231a34d243275838af31463438daf10578eaf7c79aa46512",
+    "helper": "scripts/r3_backend_acceptance_pg.py",
+    "helper_sha256": "e68318529925998c1e10d97babf183aca8ed887dd5c516ce0349cdcfe6155c6d",
+    "exit_code": 0,
+    "transport": "Only test/helper source transmitted in memory over SSH and kubectl exec stdin; no remote application files written."
+  },
+  "release_source_sha256": {
+    "main.py": "fa72b8aea17483624826b6c1c6484a1f8d3704a31493907b7c016a84d162897c",
+    "after_sales_workflow.py": "6559402ecd5ea02e239238851e8a41700f9901504e4893a4d6d6e0c647d899fb",
+    "enterprise_sla.py": "0a6109936e4b3a0573fb5778551412aa69c5298a08ae3dab3e543c8363ca3cd7",
+    "holiday_calendar.py": "bbfb81aee49b4d4acf0dc831ca21a6bf07cbf9b287aa6ddf911cc41e0ab97283",
+    "ticket_calendar.py": "1779f438578561a862dd18801ad7858044fea4a513183c9dedf273d0ca9296d9",
+    "sla_clock.py": "7c0af81cd737e2b9bdf699aacfa75fcd1fd2b0d96b2ce11c0114929aa51e4683",
+    "sla_metrics.py": "4a01e65026a4527fa0c9e4207bb7eee77c6713f1e11219759c552cfc56a87fb2"
+  },
+  "result": {
+    "status": "passed",
+    "captured_at": "2026-10-15T03:14:12.322283+00:00",
+    "completed_at": "2026-10-15T03:14:18.983185+00:00",
+    "scope": "Installed app.main HTTP routes through TestClient plus actual isolated PG; not ingress",
+    "owned_schema": "qa_r3_be_059b3426877a6ff3",
+    "cases": {
+      "BE005_HTTP_eight_step_happy_path": {
+        "status": "passed",
+        "http_writes": 8,
+        "create_requests": 1,
+        "action_requests": 7,
+        "events": 8,
+        "audits": 8,
+        "final_version": 8,
+        "final_status": "completed",
+        "actions": [
+          "respond",
+          "request_info",
+          "supplement",
+          "submit_resolution",
+          "reject_resolution",
+          "submit_resolution",
+          "confirm"
+        ]
+      },
+      "BE005_HTTP_permissions_replay_and_version": {
+        "status": "passed",
+        "unauthorized_create": 6,
+        "unauthorized_actions": 3,
+        "detail_scope_denials": 4,
+        "create_and_action_replay_idempotent": true,
+        "payload_conflicts": 2,
+        "duplicate_open_ticket_conflict": true,
+        "stale_version_conflict": true,
+        "events_after_replays_and_denials": 2
+      },
+      "BE008_HTTP_assignment_boundaries_and_snapshot": {
+        "status": "passed",
+        "unauthorized_actors": 9,
+        "blank_reason_denials": 4,
+        "personal_override_denied": true,
+        "admin_and_ops_assignments": true,
+        "successful_assignment_audits_before_reset": 2,
+        "assignment_reason_and_actor_roles_audited": true,
+        "new_ticket_level": "strategic",
+        "old_ticket_snapshot_byte_identical": true,
+        "owned_policy_reset_to_standard": true
+      },
+      "BE005_BE008_HTTP_sla_missing_calendar_and_natural_response": {
+        "status": "passed",
+        "calendar_status": "not_ready",
+        "urgent_natural_response_measured": true,
+        "support_resolution_status": "insufficient_data",
+        "foreign_sla_denied": true,
+        "snapshot_byte_identical": true
+      }
+    },
+    "gaps": [
+      "Intervention/remediation SLA materialization and external notification delivery not covered"
+    ],
+    "public_write_operations": 0,
+    "task_status_changes": 0,
+    "fixture_note": "Only owned schema synthetic rows; no original business or secret rows read.",
+    "cleanup": "owned schema removed",
+    "protected_order_count_before": 1,
+    "protected_order_count_after": 1,
+    "protected_order_content_read": false,
+    "kind": "post_rollout_deployed_http_isolated_pg",
+    "source_kind": "deployed_app",
+    "workingtree_package_used": false,
+    "source_sha256": {
+      "main.py": "fa72b8aea17483624826b6c1c6484a1f8d3704a31493907b7c016a84d162897c",
+      "after_sales_workflow.py": "6559402ecd5ea02e239238851e8a41700f9901504e4893a4d6d6e0c647d899fb",
+      "enterprise_sla.py": "0a6109936e4b3a0573fb5778551412aa69c5298a08ae3dab3e543c8363ca3cd7",
+      "holiday_calendar.py": "bbfb81aee49b4d4acf0dc831ca21a6bf07cbf9b287aa6ddf911cc41e0ab97283",
+      "ticket_calendar.py": "1779f438578561a862dd18801ad7858044fea4a513183c9dedf273d0ca9296d9",
+      "sla_clock.py": "7c0af81cd737e2b9bdf699aacfa75fcd1fd2b0d96b2ce11c0114929aa51e4683",
+      "sla_metrics.py": "4a01e65026a4527fa0c9e4207bb7eee77c6713f1e11219759c552cfc56a87fb2"
+    },
+    "expected_source_sha256": {
+      "main.py": "fa72b8aea17483624826b6c1c6484a1f8d3704a31493907b7c016a84d162897c",
+      "after_sales_workflow.py": "6559402ecd5ea02e239238851e8a41700f9901504e4893a4d6d6e0c647d899fb",
+      "enterprise_sla.py": "0a6109936e4b3a0573fb5778551412aa69c5298a08ae3dab3e543c8363ca3cd7",
+      "holiday_calendar.py": "bbfb81aee49b4d4acf0dc831ca21a6bf07cbf9b287aa6ddf911cc41e0ab97283",
+      "ticket_calendar.py": "1779f438578561a862dd18801ad7858044fea4a513183c9dedf273d0ca9296d9",
+      "sla_clock.py": "7c0af81cd737e2b9bdf699aacfa75fcd1fd2b0d96b2ce11c0114929aa51e4683",
+      "sla_metrics.py": "4a01e65026a4527fa0c9e4207bb7eee77c6713f1e11219759c552cfc56a87fb2"
+    },
+    "source_unchanged_during_probe": true,
+    "coverage": [
+      "TRD-R3-BE-005",
+      "TRD-R3-BE-008"
+    ]
+  },
+  "safety": {
+    "public_business_writes": 0,
+    "real_enterprise_changes": 0,
+    "production_task_changes": 0,
+    "deployments": 0,
+    "application_source_replacements": 0,
+    "protected_order_count_before_after": [
+      1,
+      1
+    ],
+    "protected_order_content_read": false,
+    "original_product_details_read": false,
+    "production_secret_rows_read": false,
+    "cleanup": "Owned random schema removed and absence checked; test code only in process memory."
+  },
+  "scope_notes": [
+    "Actual deployed HTTP route dispatch via FastAPI TestClient with real isolated PostgreSQL, not NodePort/ingress E2E.",
+    "create plus seven state actions equals eight HTTP writes and eight events, not eight different transition types.",
+    "Intervention/remediation SLA materialization and external mail/Redis delivery not validated.",
+    "This is evidence for a28aaf2 only, not the later first-response compatibility fix; no wait or claim on that future release."
+  ]
+}

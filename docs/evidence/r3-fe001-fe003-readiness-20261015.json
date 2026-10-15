@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-FE-001", "TRD-R3-FE-003"],
+  "ready_for_review": true,
+  "release_tag": "20261015030550-a28aaf2",
+  "commit": "a28aaf2f6f6300b52cc1365eada3f0e483165301",
+  "expected_asset": "index-s2l2su4F.js",
+  "observed_asset": "/assets/index-s2l2su4F.js",
+  "viewports": [{"width":1440,"height":1000},{"width":390,"height":844}],
+  "scoped_results": {
+    "TRD-R3-FE-001": {
+      "status": "passed",
+      "desktop_mobile_required_checks": "all passed",
+      "covered": ["two-level category selection and reset", "name positive/empty filtering", "product_type filtering", "no delivery filter or retired types", "desktop/mobile control bounds"]
+    },
+    "TRD-R3-FE-003": {
+      "status": "passed",
+      "desktop_mobile_required_browser_checks": "all passed",
+      "browser_covered": ["seven fixed readonly delivery mappings", "report/application removed", "backdrop and Escape retain unsaved editor", "explicit dirty confirmation and cancel preserve editor"],
+      "failure_concurrency": {"status":"passed","tests":6,"mode":"isolated automation executing extracted real save functions","covered":["API create failure", "attachment failure retains draft and retries same product", "successful logo not uploaded twice", "concurrent create/edit single submission"],"real_browser_save":false,"live_backend_writes":false}
+    }
+  },
+  "combined_admin_run": {
+    "status": "failed",
+    "failed_stage": "mobile SLA assignment reason",
+    "required_FE003_desktop_mobile_checks_completed_before_failure": true,
+    "boundary": "This scoped readiness does not mark the combined run passed. Additional mobile SLA wait failed after FE003 checks; standalone SLA later passed. Combined-flow session disappearance remains unexplained."
+  },
+  "excluded_coverage": ["TRD-R3-FE-002", "TRD-R3-FE-004", "TRD-R3-FE-005"],
+  "business_mutations_performed": false,
+  "task_statuses_modified": false,
+  "proof_hash_algorithm": "SHA-256",
+  "proofs": [
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-public/result.json","sha256":"660dc27becd82aa8a10a06cba971bcd66ccc01ea0a637b562fc66537baecaad0"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-public/desktop-storefront.png","sha256":"8f317d71417065c5a1796d1ab1799db94db4ccae12fa887b3266e0bfd4f405dd"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-public/mobile-storefront.png","sha256":"c36dabebfef01206001a23870a1e84afe2d560eba0581ae45151771226c795fd"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-admin/result.json","sha256":"c27560f27e3793e0f8b4a95633ce338b9e8482a31cfa3238811a79a02673a0b8"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-admin/desktop-registration.png","sha256":"7b72e17df6dfcfd5ad0e0996377834510515e08933142c105a0c61c63091ab3f"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-admin/mobile-registration.png","sha256":"944257faf2d630a352c37858580ef3fe75c45ace03635a548de119d012d97750"},
+    {"path":"frontend/artifacts/r3-release-freeze-20261015/product-save-tests.log","sha256":"6242d84273693491f2e88fd4602a56dd585735aa3a733d697382a0d8bda6d89c"},
+    {"path":"frontend/artifacts/r3-release-freeze-20261015/targeted-tests.log","sha256":"62aea2539298a87e52fb3c2c3dd038f566237b4266baac23173e3b846a632550"}
+  ]
+}

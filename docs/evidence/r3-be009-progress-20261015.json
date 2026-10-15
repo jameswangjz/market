@@ -1,0 +1,26 @@
+{
+  "status": "partial",
+  "coverage": ["TRD-R3-BE-009"],
+  "deployed_release": "20261015032611-c8015b2",
+  "deployed_scope": [
+    "frozen first-response and resolution promises",
+    "support and natural time with buyer-wait pauses",
+    "versioned annual holiday cache and daily sync",
+    "append-only ticket annual calendar binding",
+    "strategic urgent 360 and normal 720 minute configuration"
+  ],
+  "new_undeployed_code": {
+    "commit": "3232fa2",
+    "module": "backend/app/sla_milestones.py",
+    "targeted_tests_passed": 13,
+    "scope": "pure rectification/intervention round calculations, not API or persisted clocks"
+  },
+  "remaining": [
+    "persistent intervention and rectification clocks with workflow integration",
+    "platform intervention first-response evidence action",
+    "online source collection and attribution",
+    "delivery deadline source and monthly aggregation integration",
+    "scheduled assessment and deduplicated alerts"
+  ],
+  "not_ready_for_review": true
+}

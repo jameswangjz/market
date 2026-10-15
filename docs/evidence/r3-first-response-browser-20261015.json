@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "coverage": ["SLA strategic response display", "SLA assignment required reason readonly checks"],
+  "release_tag": "20261015032611-c8015b2",
+  "expected_asset": "index-DrtewZtt.js",
+  "observed_asset": "/assets/index-DrtewZtt.js",
+  "viewports": [{"width":1440,"height":1000},{"width":390,"height":844}],
+  "strategic_normal_minutes": 720,
+  "strategic_normal_basis": "support time",
+  "strategic_urgent_minutes": 360,
+  "strategic_urgent_basis": "natural time",
+  "screenshots_visually_inspected": true,
+  "business_mutations_performed": false,
+  "submitted_assignment": false,
+  "proof_hash_algorithm": "SHA-256",
+  "proofs": [
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-sla/result.json","sha256":"59dc5a720d8ab0aae937709885b80416ba18fa7f506c69f98ba71cd3692bcf76"},
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-sla/desktop-strategic-response.png","sha256":"e6efac762ffb07ac35d8c185f684758226541b164a7a815b8f5069cc80210e93"},
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-sla/mobile-strategic-response.png","sha256":"971f777498077d69c12730b17d5419b8883ebe8ba45a57c5b8fa1e4c6a9785bf"}
+  ],
+  "boundary": "Does not mark FE001..005 or combined browser session recovery passed. Independent read-only SLA flow only."
+}

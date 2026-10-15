@@ -1,0 +1,50 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-FE-005"],
+  "ready_for_review": true,
+  "status_recommendation": "review based on combined deployed-browser and isolated-component/function evidence; parent decides acceptance boundary",
+  "acceptance_quote": "授权应用列表、不可用原因、OIDC实际跳转",
+  "runtime_evidence": {
+    "release_tag": "20261015032611-c8015b2",
+    "expected_asset": "index-DrtewZtt.js",
+    "parent_evidence": "docs/evidence/r3-fe005-coverage-readiness-20261015.json",
+    "browser_result": "frontend/artifacts/r3-member-sso-browser-c8015b2-final-20261015/browser-results.json",
+    "browser_status": "passed",
+    "covered": ["actual ordinary granted non-owner member MyApps listing and application click", "real OIDC code/token/RP session desktop/mobile", "revocation invalidates RP session and removes member listing", "admin grant modal", "cross-enterprise denial and rejected consent"]
+  },
+  "supplemental_isolated_evidence": {
+    "tests_passed": 23,
+    "tests_failed": 0,
+    "new_tests": 3,
+    "unavailable_reason_ui": {
+      "mode": "SSR of real ApplicationsCenter template and script, actual createApplicationsSession with in-memory API responses",
+      "covered": ["expired/revoked/disabled reason text", "missing reason fallback", "unavailable primary action disabled", "ordinary member has no member grant control", "unavailable launch helper makes no POST", "reason HTML escaped", "available action remains enabled"],
+      "lifecycle_boundary": "SSR does not run onMounted; test-only onServerPrefetch invokes the real session.load before rendering. No application source changes."
+    },
+    "multi_enterprise_ordinary_member": {
+      "mode": "actual createApplicationsSession execution with two active memberships both role=member",
+      "covered": ["list queries current enterprise_id=e1 then e2 on existing /applications route", "old success/error cannot clear newer pending state or replace items", "new list contains selected enterprise only", "ordinary member remains unable to manage grants"],
+      "existing_regression_tests": ["list sends selected enterprise_id and keeps legacy unfiltered requests without selection", "enterprise switch discards stale list success/error without clearing the new pending list", "selected list rejects another enterprise even when both memberships are active", "component watches the selected enterprise context synchronously"]
+    }
+  },
+  "boundaries": [
+    "Unavailable-reason rendering is isolated SSR, not a deployed Chrome unavailable-entitlement check.",
+    "Switching between two valid ordinary-member enterprise memberships is isolated actual-JS execution, not browser end-to-end switching.",
+    "Real ordinary-member SSO and revocation are credited to the existing parent browser evidence, not rerun by this supplemental batch.",
+    "No production accounts, entitlements, subscriptions, products, orders or billing fixtures were created or changed."
+  ],
+  "frontend_src_modified": false,
+  "business_mutations_performed": false,
+  "task_statuses_modified": false,
+  "build_rerun": false,
+  "proof_hash_algorithm": "SHA-256",
+  "proofs": [
+    {"path":"docs/evidence/r3-fe005-coverage-readiness-20261015.json","sha256":"32e5717cdcb16ed02f2b25575aa14f283cbc9d2f963b12bcd281eaa5f3cbf886"},
+    {"path":"frontend/artifacts/r3-member-sso-browser-c8015b2-final-20261015/browser-results.json","sha256":"d719306c78fa43226a188e58829876b1dc785ab8ede6b97ff03f15fd802ebda6"},
+    {"path":"frontend/artifacts/r3-fe005-isolated-readiness-20261015/targeted-tests.log","sha256":"d5284b3d3eab10e6a47ad20e976983378d57f4c5f0aee350ae17a5073634552b"},
+    {"path":"frontend/tests/applications-center.test.mjs","sha256":"031908ee8e04535d098670342335a80cdbee5ef798b2cc37fc2afe38ad53b452"},
+    {"path":"frontend/tests/r3-applications-readiness.test.mjs","sha256":"1156e4c35d52c881cdb01ebcff9cd884dfa913460c019348d466d43a0c9da049"},
+    {"path":"frontend/src/ApplicationsCenter.vue","sha256":"2e30cb99f48b5e5119fa187868665a026206c8da96d27c12dcc95ba07f399508"},
+    {"path":"frontend/src/consolePermissions.js","sha256":"1c6aae8b221258eaa1a88303049c9922a1288bb0ce7ec183cb1c1ccfb0215bfe"}
+  ]
+}

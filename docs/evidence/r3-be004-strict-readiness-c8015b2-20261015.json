@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-BE-004"],
+  "purpose": "Strict review readiness using c8015b2 installed-app real PG matrix and c8015b2 real Chrome SSO, without relying on f378975 negatives",
+  "acceptance_quote": "非购买人授权可见可登录；禁用退出到期撤销禁止；无Secret",
+  "runtime_tag": "20261015032611-c8015b2",
+  "source_evidence_sha256": {
+    "docs/evidence/r3-backend-be001-be004-installed-c8015b2-20261015.json": "44b4f7390737dea6d14aaa1eef6af832b6808212d325fb4d6bfbf1caa262e66b",
+    "docs/evidence/r3-member-sso-browser-c8015b2-final-20261015.json": "5b51938a65b763a5291d2816ffca1a69e26b271d1572be18769a37e07c68b770",
+    "frontend/artifacts/r3-member-sso-browser-c8015b2-final-20261015/browser-results.json": "d719306c78fa43226a188e58829876b1dc785ab8ede6b97ff03f15fd802ebda6"
+  },
+  "matrix_provenance": {
+    "source_kind": "installed_app",
+    "pod": "market-api-f7455dcdf-q29s2",
+    "image": "market-api:20261015032611-c8015b2",
+    "app_main_sha256": "c0a4612e0557f9ba717e4763357a4c6570327a6e657a21cea4129bd4939a18b1",
+    "app_source_replaced": false,
+    "owned_schema": "qa_r3_be_2ccd1cc78016ba6e",
+    "completed_at": "2026-10-15T03:43:07.608654+00:00",
+    "scope": "Actual installed ASGI handlers with real isolated PostgreSQL, not ingress"
+  },
+  "coverage_items": [
+    {"requirement": "非购买人授权可见可登录", "status": "passed", "proof": "Latest PG fixture member differs from order buyer and sees available application, obtains code. Same-release Chrome independently logs in as ordinary non-owner member, opens MyApps and clicks Access Application, completes actual OIDC code/token/RP session."},
+    {"requirement": "禁用退出到期撤销禁止", "status": "passed", "latest_pg_statuses": {"grant_revoked": 403, "membership_disabled": 403, "membership_removed": 403, "user_disabled": 401, "subscription_expired": 403}, "proof": "MyApps and authorization qualification checked under each isolated state. Same-release Chrome additionally proves grant revoke removes listing and causes existing RP session401."},
+    {"requirement": "无Secret", "status": "passed", "proof": "Latest PG MyApps secret-field assertions pass; fresh isolated signing key. Chrome screenshot privacy checks and six visually reviewed images; no credential/code/token/cookie logging or downloads."}
+  ],
+  "cleanup": {
+    "latest_probe": "owned schema removed, information_schema absence verified; protected order before1 after1; public writes0",
+    "public_sso_fixtures": "Previously cleaned, not recreated in this rerun",
+    "previous_public_cleanup_evidence": "docs/evidence/r3-member-sso-owned-cleanup-20261015.json",
+    "new_probe_private_files": "None: probe injected through stdin/in-memory, no transferred login/password files"
+  },
+  "nonblocking_scope_limits": [
+    "Original probe retains partial because it always lists browser and out-of-scope route gaps; actual five test groups passed, plus one route-gap metadata entry; separate same-release browser proof closes BE004 chain gap",
+    "SaaS mock and paid entitlement are synthetic owned fixtures; no external vendor or real payment claim",
+    "FE005 same ordinary member multi-enterprise switching and unavailable-reason UI remain partial, not asserted here",
+    "Readiness is for parent review, not user acceptance or done"
+  ],
+  "previous_evidence_retained": ["docs/evidence/r3-be004-review-readiness-20261015.json", "docs/evidence/r3-backend-be001-be004-pg-acceptance-20261014.json"],
+  "task_status_changed": false,
+  "application_or_cluster_writes": false
+}

@@ -5,6 +5,7 @@ param(
     [string]$ProxyVm = '192.168.10.10',
     [int]$ProxyVmPort = 30083,
     [switch]$NoProxy,
+    [switch]$DirectRP,
     [switch]$RestoreOwnedGrant
 )
 $ErrorActionPreference = 'Stop'
@@ -41,6 +42,10 @@ function Allowed($request) {
         $authority = $u.GetLeftPart([UriPartial]::Authority)
         if ($u.UserInfo -or $u.Fragment -or $authority -cnotin @($fixture.baseUrl,$fixture.rpPublic)) { return $false }
         if ($method -ceq 'GET') {
+            foreach ($ownedOrderId in @($fixture.ownedOrderIds)) {
+                if ($ownedOrderId -and $authority -ceq $fixture.baseUrl -and
+                    $u.AbsolutePath -ceq ('/api/orders/' + $ownedOrderId + '/delivery-access')) { return $true }
+            }
             if ($authority -ceq $fixture.rpPublic) {
                 return $u.AbsolutePath -ceq '/app' -or $u.AbsolutePath -ceq '/sso/callback' -or
                     $u.AbsolutePath -ceq ('/sso/apps/' + $fixture.clientId) -or $u.AbsolutePath -ceq '/favicon.ico'
@@ -51,7 +56,8 @@ function Allowed($request) {
             return $u.AbsolutePath -match '^/(assets/|console(?:/|$)|oidc/authorize$|favicon.ico$)' -or
                 $u.AbsolutePath -cin @('/api/auth/me','/api/enterprises','/api/applications','/api/storefront/buyer-enterprises',
                     '/api/notifications/summary','/api/notifications/stream','/api/notifications/sender-context',
-                    '/api/dashboard','/api/products','/api/orders','/api/development/tasks') -or
+                    '/api/dashboard','/api/products','/api/orders','/api/development/tasks',
+                    '/api/product-categories','/api/settlement-rules') -or
                 $u.AbsolutePath -ceq ('/api/applications/' + $fixture.subscriptionId + '/members') -or
                 $u.AbsolutePath -ceq '/api/settings/application-address-policy'
         }
@@ -112,6 +118,12 @@ function Cdp([string]$method,$parameters) {
                     $script:blocked++
                     $safePath = '<redacted-path>'
                     if ($u.AbsolutePath -cmatch '^/(?:[A-Za-z_-]{1,32}/)*[A-Za-z_.-]{1,48}$') { $safePath = $u.AbsolutePath }
+                    foreach ($ownedId in @($fixture.ownedOrderIds) + @($fixture.enterpriseId,$fixture.productId,$fixture.subscriptionId,$fixture.clientId,$fixture.memberUserId)) {
+                        if ($ownedId -and $u.AbsolutePath.Contains('/' + $ownedId + '/')) {
+                            $candidate = $u.AbsolutePath.Replace('/' + $ownedId + '/', '/:owned/')
+                            if ($candidate -cmatch '^/(?:[A-Za-z_:-]{1,32}/)*[A-Za-z_.-]{1,48}$') { $safePath = $candidate }
+                        }
+                    }
                     $originKind = 'other'
                     if ($u.GetLeftPart([UriPartial]::Authority) -ceq $fixture.baseUrl) { $originKind = 'OP' }
                     elseif ($u.GetLeftPart([UriPartial]::Authority) -ceq $fixture.rpPublic) { $originKind = 'RP' }
@@ -183,6 +195,15 @@ function ClearSession {
     Cdp 'Network.clearBrowserCookies' @{} | Out-Null
     Cdp 'Storage.clearDataForOrigin' @{origin=$fixture.baseUrl;storageTypes='local_storage'} | Out-Null
 }
+function OpenAdminApplications {
+    # The owned administrator now defaults to provider mode. Explicit buyer
+    # context is necessary before selecting the existing My Applications view.
+    Navigate ($fixture.baseUrl + '/console?view=orders&enterprise_id=' + $fixture.enterpriseId)
+    Login $fixture.adminLogin
+    WaitJs '!!document.querySelector(".app-shell")'
+    Click '.nav-item[title="\6211\7684\5e94\7528"]'
+    WaitJs '!!document.querySelector(".application-row")'
+}
 function Shot([string]$name) {
     if ($script:blocked) { throw 'Browser network guard failed' }
     $secret = Q $fixture.password
@@ -213,7 +234,14 @@ try {
     foreach ($field in @('baseUrl','rpPublic','deploymentTag','runId','productId','enterpriseId','otherEnterpriseId','subscriptionId','clientId','password','memberLogin','adminLogin','memberUserId','launchUrl')) {
         if (-not $fixture.$field) { throw 'Fixture field missing' }
     }
-    if ($fixture.runId -cnotmatch '^qa-vcq-[a-f0-9]{12}$' -or $fixture.clientId -cnotmatch '^oidc_[a-f0-9]{32}$') { throw 'Fixture identity invalid' }
+    if ($fixture.runId -cnotmatch '^(qa-vcq-|qa-r3-sso-)[a-f0-9]{12}$' -or $fixture.clientId -cnotmatch '^oidc_[a-f0-9]{32}$') { throw 'Fixture identity invalid' }
+    if ($DirectRP) {
+        if ($fixture.rpPublic -cne 'http://192.168.10.10:30083' -or $ProxyVm -cne '192.168.10.10' -or $ProxyVmPort -ne 30083) {
+            throw 'Direct RP requires the scoped existing VM origin'
+        }
+        $NoProxy = $true
+        $script:relayEvidence.owned = $false
+    }
     foreach ($base in @($fixture.baseUrl,$fixture.rpPublic)) {
         $u = [Uri]$base
         if ($u.Scheme -notin @('http','https') -or $u.UserInfo -or $u.Query -or $u.Fragment -or $u.AbsolutePath -ne '/') { throw 'Invalid fixture origin' }
@@ -282,7 +310,8 @@ public sealed class MarketOidcRelay : IDisposable {
         [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
         Where-Object {$_.Port -eq $rpAddress.Port -and [Net.IPAddress]::IsLoopback($_.Address)}
     ).Count -gt 0
-    if (-not $script:relayEvidence.loopback_listener_seen) { throw 'Windows RP loopback listener absent' }
+    if (-not $DirectRP -and -not $script:relayEvidence.loopback_listener_seen) { throw 'Windows RP loopback listener absent' }
+    $script:relayEvidence['direct_rp'] = [bool]$DirectRP
     $probe = [Net.Sockets.TcpClient]::new()
     try {
         $connectProbe = $probe.ConnectAsync($rpAddress.Host,$rpAddress.Port)
@@ -337,8 +366,7 @@ public sealed class MarketOidcRelay : IDisposable {
     if ($RestoreOwnedGrant) {
         $script:stage = 'restore owned grant for repeat run'
         ClearSession
-        Navigate ($fixture.baseUrl + '/console?view=applications')
-        Login $fixture.adminLogin
+        OpenAdminApplications
         WaitJs '!!document.querySelector(".application-row")'
         Click '.application-row .application-actions button.secondary-btn'
         $member = Q $fixture.memberUserId
@@ -398,7 +426,7 @@ public sealed class MarketOidcRelay : IDisposable {
     AssertJs '!document.querySelector(".oidc-consent dl")' 'Cross-enterprise consent available'
     $script:checks += 'cross_enterprise_denied'
     $script:stage = 'applications UI'
-    ClearSession; Navigate ($fixture.baseUrl + '/console?view=applications'); Login $fixture.adminLogin
+    ClearSession; OpenAdminApplications
     WaitJs '!!document.querySelector(".application-row")'
     Shot 'applications.png'
     Click '.application-row .application-actions button.secondary-btn'
@@ -437,8 +465,7 @@ horizontal_overflow:m.scrollWidth>m.clientWidth+1};})()
     $script:stage = 'revoke existing RP session'
     # Retain RP cookies while switching the OP login to the fixture administrator.
     Cdp 'Storage.clearDataForOrigin' @{origin=$fixture.baseUrl;storageTypes='local_storage'} | Out-Null
-    Navigate ($fixture.baseUrl + '/console?view=applications')
-    Login $fixture.adminLogin
+    OpenAdminApplications
     WaitJs '!!document.querySelector(".application-row")'
     Click '.application-row .application-actions button.secondary-btn'
     WaitJs "[...document.querySelectorAll('.application-member')].some(r=>r.textContent.includes($member)&&r.querySelector('input')?.checked)"

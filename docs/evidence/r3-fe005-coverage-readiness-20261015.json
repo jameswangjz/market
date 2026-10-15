@@ -1,0 +1,24 @@
+{
+  "status": "partial",
+  "coverage": ["TRD-R3-FE-005"],
+  "acceptance_quote": "授权应用列表、不可用原因、OIDC实际跳转",
+  "source_evidence_sha256": {
+    "frontend/artifacts/r3-member-sso-browser-c8015b2-final-20261015/browser-results.json": "d719306c78fa43226a188e58829876b1dc785ab8ede6b97ff03f15fd802ebda6",
+    "docs/evidence/r3-backend-be001-be004-pg-acceptance-20261014.json": "c3931b00994ae8d2fab985a02c4810fab8e3d25e54f291a237462b7a3949268e"
+  },
+  "passed": [
+    "Actual authorized ordinary non-owner member MyApps listing and Access Application click, not solely direct RP launch URL",
+    "Real OIDC code/token/RP session, desktop/mobile consent and session views",
+    "Administrator member modal grant and layout verification",
+    "Revocation invalidates RP session and removes member listing",
+    "Cross-enterprise unauthorized access denied and rejected consent creates no RP session"
+  ],
+  "gaps": [
+    {"item": "Multi-enterprise ordinary-member switching", "reason": "Fixture member has one active enterprise. Different-enterprise rejection is not equivalent to switching between two valid memberships. Explicit owned buyer context was exercised by the administrator, not a multi-enterprise ordinary member."},
+    {"item": "Unavailable-reason UI", "reason": "Expired entitlement and MyApps unavailable behavior have PG/API evidence; this batch did not render and inspect an unavailable application reason in Chrome."}
+  ],
+  "next_action": "Parent may combine independent FE evidence or plan narrowly scoped additional verification; this batch is frozen and fixtures are cleaned, no automatic rerun",
+  "runtime": "20261015032611-c8015b2, index-DrtewZtt.js",
+  "cleanup_evidence": "docs/evidence/r3-member-sso-owned-cleanup-20261015.json",
+  "task_status_changed": false
+}

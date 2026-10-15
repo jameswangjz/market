@@ -1,0 +1,39 @@
+{
+  "status": "passed",
+  "scope": "deployed_calendar_sync_only_not_complete_BE009_acceptance",
+  "coverage": [],
+  "deployment": "20261015030550-a28aaf2",
+  "namespace": "market",
+  "cronjob": "sla-calendar-sync",
+  "schedule": "15 3 * * *",
+  "timezone": "Asia/Shanghai",
+  "manual_job": "sla-calendar-verify-20261015",
+  "job_completed": true,
+  "observed_at_utc": "2026-10-15T03:13:51.274106+00:00",
+  "results": [
+    {
+      "year": 2026,
+      "sync_status": "updated",
+      "cache_status": "available",
+      "content_hash": "175722ab68aae48a1bbafb37877654c471c1c1e8684759054d889bcc94beb714",
+      "source": "https://raw.githubusercontent.com/cg-zhou/holiday-calendar/main/data/CN/2026.json"
+    },
+    {
+      "year": 2027,
+      "sync_status": "notpublished",
+      "cache_status": "not_ready",
+      "reason": "http_404"
+    }
+  ],
+  "business_safety": {
+    "protected_order": "ORD-261012005144E1B3",
+    "readonly_existence_count_after": 1,
+    "business_order_mutations_performed": false,
+    "snapshot_rewrite_performed": false
+  },
+  "remaining_BE009": [
+    "independent_intervention_and_remediation_clocks",
+    "online_metric_collection_and_attribution",
+    "scheduled_aggregate_assessment_and_alerting"
+  ]
+}

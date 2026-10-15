@@ -1,0 +1,42 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-FE-002"],
+  "ready_for_review": true,
+  "acceptance_quote": "非管理员无开发进度；提供方无我的应用；身份字体统一",
+  "web_release_tag": "20261015034525-c6ba291",
+  "api_release": "c8015b2 (unchanged)",
+  "expected_asset": "index-B1BW2Q86.js",
+  "actual_entry_assets": ["/assets/index-B1BW2Q86.js"],
+  "current_browser_run": {
+    "status": "passed",
+    "mode": "fresh Windows Chrome profile, Provider MenusOnly, desktop 1440x1000 and mobile 390x844",
+    "checks_passed": 24,
+    "blocked_requests": 0,
+    "native_dialogs": 0,
+    "covered": ["provider development menu/panel denied", "development fallback paragraph absent", "provider MyApps absent", "identity uses same font family as navigation with compact 12px", "identity select width at least 78px", "auxiliary label absolute, clipped, overflow hidden, at most 1px by 1px", "both option texts fit available width including native arrow allowance", "provider and buyer identity labels visually inspected in screenshots", "identity select and containing control remain inside viewport"],
+    "screenshots_visually_inspected": ["desktop-provider-identity.png", "desktop-buyer-identity.png", "mobile-provider-identity.png", "mobile-buyer-identity.png"]
+  },
+  "prior_role_matrix_evidence": {
+    "release": "20261015030550-a28aaf2",
+    "covered": ["super_admin development panel visible desktop/mobile", "operator development menu/panel and fallback text absent desktop/mobile", "member development menu/panel and fallback text absent desktop/mobile"],
+    "boundary": "These role checks were not rerun in this web-only context-style batch. Prior combined Admin run failed later during unrelated mobile SLA navigation; only completed role checks are credited."
+  },
+  "acceptance_interpretation": "Coordinated compact typography and complete labels, not exact equality of 12px/400 identity with 13px/600 navigation. Earlier strict equality assertion was not a requirement and is not used as a release gate.",
+  "targeted_tests": {"passed":13,"failed":0,"log":"frontend/artifacts/r3-postdeploy-c8015b2-provider-mobile-remaining/context-select-tests.log"},
+  "business_mutations_performed": false,
+  "frontend_src_modified_during_browser_batch": false,
+  "task_statuses_modified": false,
+  "browser_process_closed": true,
+  "proof_hash_algorithm": "SHA-256",
+  "proofs": [
+    {"path":"frontend/artifacts/r3-postdeploy-c6ba291-provider-context/result.json","sha256":"a13f3a428e638a5ccf20a42bc340c89692171234e8e5c84ab5671c7f658cd4a1"},
+    {"path":"frontend/artifacts/r3-postdeploy-c6ba291-provider-context/desktop-provider-identity.png","sha256":"5af96630df002cecd81a4fb792e8fe5707c915177fa6dde2f6dec112bfe95c56"},
+    {"path":"frontend/artifacts/r3-postdeploy-c6ba291-provider-context/desktop-buyer-identity.png","sha256":"4c3699fe2b8e91199c2e272c35b3196247611c851000954f59306a81a0773287"},
+    {"path":"frontend/artifacts/r3-postdeploy-c6ba291-provider-context/mobile-provider-identity.png","sha256":"d0423534543e8f8f60045b25ece11c07e39f18d4ba1aeb1981aab915439fd57e"},
+    {"path":"frontend/artifacts/r3-postdeploy-c6ba291-provider-context/mobile-buyer-identity.png","sha256":"d74fd7e94eccf087f4126942c5d777ea1927851054900efde2c5d784e58c5858"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-admin/result.json","sha256":"c27560f27e3793e0f8b4a95633ce338b9e8482a31cfa3238811a79a02673a0b8"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-operator-assertions/result.json","sha256":"80548659397c10787f0119de276decc75db12eaed17a0058e49828661aa4eb3c"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-member-assertions/result.json","sha256":"09e829e726b64c8da0f2472e60db04b89caa9346e5dc06620e65b5a79c1dc095"},
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-provider-mobile-remaining/context-select-tests.log","sha256":"6c66049472c472d9455ac0501c1861b89c46e28301d8989ff102099ca10be10e"}
+  ]
+}

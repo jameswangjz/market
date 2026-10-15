@@ -1,0 +1,237 @@
+{
+  "status": "captured",
+  "captured_at": "2026-10-15T03:50:14.851767+00:00",
+  "counts": {
+    "review": 13,
+    "in_progress": 1,
+    "todo": 18
+  },
+  "tasks": [
+    {
+      "code": "TRD-R3-ARC-001",
+      "title": "新版基线与接口权限契约",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 01:20:41.000987+00:00"
+    },
+    {
+      "code": "TRD-R3-ARC-002",
+      "title": "前端验收清单与任务状态复核",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966920+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-001",
+      "title": "开发进度服务端权限收敛",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 02:35:56.876089+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-002",
+      "title": "产品类型禁新增与固定交付校验",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 02:35:56.878534+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-003",
+      "title": "分页接口统一与范围鉴权",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 02:35:56.882077+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-004",
+      "title": "授权成员我的应用与SSO统一鉴权",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:45:59.513218+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-005",
+      "title": "售后数据迁移与状态动作服务",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:17:25.117253+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-006",
+      "title": "售后权限与平台介入强制关闭",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966812+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-007",
+      "title": "工单附件评论消息与审计",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966815+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-008",
+      "title": "企业SLA审核绑定及后续调整",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:17:25.119201+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-009",
+      "title": "三方SLA日历时钟及评估",
+      "status": "in_progress",
+      "progress": 40,
+      "updated_at": "2026-10-15 03:38:09.655877+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-010",
+      "title": "独立退款申请审批与权限",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966873+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-011",
+      "title": "SaaS时长及API额度退款试算",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966880+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-012",
+      "title": "部分退款经济方案与资源补偿",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966884+00:00"
+    },
+    {
+      "code": "TRD-R3-BE-013",
+      "title": "退款负清算及月度报表接入",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966888+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-001",
+      "title": "商城目录名称类型紧凑过滤",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:29:17.460954+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-002",
+      "title": "工作台身份与提供方菜单调整",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:49:46.096325+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-003",
+      "title": "登记类型交付联动及防误关闭",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:29:17.463306+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-004",
+      "title": "全分页页面条数及跳页",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:39:31.311451+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-005",
+      "title": "普通成员我的应用访问入口",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:48:00.165206+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-006",
+      "title": "售后列表详情及动作页面",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966818+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-007",
+      "title": "企业SLA调整及工单指标展示",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966827+00:00"
+    },
+    {
+      "code": "TRD-R3-FE-008",
+      "title": "退款申请审核执行及关联展示",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966891+00:00"
+    },
+    {
+      "code": "TRD-R3-OPS-001",
+      "title": "历史类型及工单退款只读盘点",
+      "status": "review",
+      "progress": 100,
+      "updated_at": "2026-10-15 01:20:41.004727+00:00"
+    },
+    {
+      "code": "TRD-R3-OPS-002",
+      "title": "历史迁移审批及隔离回退演练",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966914+00:00"
+    },
+    {
+      "code": "TRD-R3-OPS-003",
+      "title": "market部署与证据归档",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966917+00:00"
+    },
+    {
+      "code": "TRD-R3-QA-001",
+      "title": "商城分页弹框及菜单浏览器回归",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966894+00:00"
+    },
+    {
+      "code": "TRD-R3-QA-002",
+      "title": "授权SaaS普通成员浏览器SSO",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966897+00:00"
+    },
+    {
+      "code": "TRD-R3-QA-003",
+      "title": "售后全状态权限并发回归",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966902+00:00"
+    },
+    {
+      "code": "TRD-R3-QA-004",
+      "title": "三方SLA日历暂停快照验证",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966905+00:00"
+    },
+    {
+      "code": "TRD-R3-QA-005",
+      "title": "普通退款模拟资金故障测试",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966908+00:00"
+    },
+    {
+      "code": "TRD-R3-QA-006",
+      "title": "退款升降级月度清算完整回归",
+      "status": "todo",
+      "progress": 0,
+      "updated_at": "2026-10-15 01:11:29.966911+00:00"
+    }
+  ],
+  "user_acceptance_performed": false,
+  "protected_order_existence_count": 1
+}

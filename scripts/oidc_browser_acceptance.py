@@ -87,7 +87,7 @@ def prepare(args):
                 'Private artifact path already exists')
     m = scope.load_main()
     scope.check(hasattr(m, 'OIDCBrowserRequest'), 'Browser SSO runtime not deployed')
-    ids = scope.fixture_ids()
+    ids = scope.fixture_ids('qa-r3-sso-' + secrets.token_hex(6))
     scope.preflight(m, ids)
     with httpx.Client(timeout=20, trust_env=False, follow_redirects=False) as client:
         discovery = request(client, 'GET', base + '/.well-known/openid-configuration').json()
@@ -179,7 +179,7 @@ def prepare(args):
                 launchUrl=launch, password=password,
                 memberLogin=ids['users']['member'] + '@example.invalid',
                 adminLogin=ids['users']['admin'] + '@example.invalid',
-                memberUserId=ids['users']['member'])
+                memberUserId=ids['users']['member'], ownedOrderIds=orders['tenant_access'])
             scope.private_json(browser, fixture, create=True)
             retained = True
             return {'status': 'prepared', 'manifest': str(manifest),
@@ -188,10 +188,10 @@ def prepare(args):
                     'payment_delivery': 'synthetic helper fixtures', 'cleanup': 'required: RP then PostgreSQL'}
         finally:
             if not retained:
-                # Keep parents if external mutations might exist so RP ownership can
-                # still be checked and cleanup can safely be retried.
-                if not control.exists():
-                    scope.cleanup(m, ids, manifest)
+                # Preserve exact ownership on failure; never hide a partial run by
+                # deleting rows before the operator can inspect its journal.
+                with m.SessionLocal() as db:
+                    scope.save_owned(m, db, ids, manifest, scope.owned_rows(m, db, ids))
 
 
 def cleanup_rp(args):

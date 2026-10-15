@@ -1,0 +1,22 @@
+{
+  "status": "passed",
+  "run_id": "qa-r3-sso-e50e756eefff",
+  "actor": "This agent executed exact owned RP cleanup, then PG cleanup, then independent read-only verification",
+  "sequence": ["RP exact owned rows and children removed and verified", "startup-created owned release version journaled, zero FK references verified, exact row removed", "PG unchanged ownership guard and exact-ID cleanup passed", "read-only exact manifest IDs and ownership graph verified absent"],
+  "postgresql": {"recorded_tables_checked": 28, "recorded_rows_remaining": 0, "owned_roots_and_children_remaining": 0},
+  "rp": {"owned_client_and_children_remaining": 0, "owned_tenant_and_children_remaining": 0, "shared_config_changed": false, "unrelated_tenant_closed": false},
+  "private_login_file_present": {"local_tmp": false, "vm_backup": false, "api_pod": false, "rp_pod": false},
+  "chrome": "Existing browser harness finally block disposes CDP, stops its owned Chrome process and removes its temporary profile",
+  "retained_private_ownership_records": {
+    "directory": "/root/market/.ops-backups/qa-r3-sso-current",
+    "scope.json": {"sha256": "e175b56543f10ae95e99a7b036ca4108acb4e858c685fb96bf6d1358bc3c2aa1", "mode": "0600"},
+    "scope.oidc.json": {"sha256": "b5ee55af1b907f37cf5ec266f3f11811082b6b8e74fc83e1a8f360612cae9a7b"},
+    "startup-owned-version-cleanup.json": {"sha256": "981843b0753222aba53605fd0a1841ce6f9d36bc67b144f40d1afa5291d489e4"},
+    "contents_published": false
+  },
+  "protected_order_count_after_cleanup": 1,
+  "protected_product_count_after_cleanup": 1,
+  "protection_limit": "Read-only existence counts, not a field-by-field integrity comparison",
+  "global_cleanup": false,
+  "existing_password_changes": false
+}

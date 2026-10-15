@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-FE-004"],
+  "ready_for_review": true,
+  "status_recommendation": "review with explicit mixed-release and isolated-ledger evidence boundaries",
+  "release_tag": "20261015032611-c8015b2",
+  "expected_asset": "index-DrtewZtt.js",
+  "mobile_browser_run": "passed in a fresh Chrome profile, mobile viewport only, no preceding desktop or registration flow",
+  "surfaces": {
+    "storefront": {"mode":"deployed desktop/mobile browser","release":"20261015030550-a28aaf2","covered":["10/20/50/100", "invalid jump", "empty jump disabled", "filter reset", "out-of-range recovery", "mobile bounds"]},
+    "messages": {"mode":"deployed desktop/mobile browser","release":"20261015032611-c8015b2","covered":["10/20/50/100", "fresh requested page_size HTTP 200", "enabled and idle controls before/after each change"]},
+    "audit_list": {"mode":"deployed desktop/mobile browser","release":"20261015032611-c8015b2","covered":["10/20/50/100 HTTP 200", "mobile valid page 2 has rows and page=2/page_size=10 response 200", "mobile name filter from page 2 issues page=1 response 200"]},
+    "audit_timeline": {"mode":"deployed desktop/mobile browser","release":"20261015032611-c8015b2","covered":["10/20/50/100 HTTP 200 and idle"]},
+    "ledger_items": {"mode":"isolated in-memory real-function and SSR component fixture","covered":["all four local sizes", "valid/invalid jump", "busy blocking", "size/open-report reset", "empty/shrinking data clamp", "real controls render local label and disabled empty jump"],"deployed_report_browser_tested":false,"server_pagination_claimed":false}
+  },
+  "targeted_tests": {"passed":17,"failed":0,"new_ledger_fixture_tests":4,"log":"frontend/artifacts/r3-postdeploy-c8015b2-mobile-pagination/targeted-pagination-tests.log"},
+  "qa_driver_fix": "Wait for enabled select and idle nav BEFORE dispatch; require a fresh page_size HTTP 200 response AFTER dispatch. Earlier message-size failures were a QA race, not a business fix.",
+  "boundary": "No real ledger report was created or tested in deployed Chrome. Valid second-page browser navigation is demonstrated on audit list, not every server surface; shared-control and request-function tests cover remaining generic cases. Previous combined desktop run failed later at mobile session initialization; only completed desktop checks are credited. Session disappearance remains a separate unresolved QA issue.",
+  "app_source_modified": false,
+  "business_mutations_performed": false,
+  "task_statuses_modified": false,
+  "proof_hash_algorithm": "SHA-256",
+  "proofs": [
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-mobile-pagination/result.json","sha256":"f0dd2d8ea0f944d9341e1b283725344805ff2f111c49b28499b373ee91ab3f3f"},
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-mobile-pagination/mobile-audit-page2.png","sha256":"9a9bda468ca81693d021bfc277e2b6f6a3dc1a3e52fa66769b34717ccd1412f9"},
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-pagination-verified/result.json","sha256":"464f87148a1d50c340235cf70824c99cbafa7680971ed67e589c61b7485cf4e0"},
+    {"path":"frontend/artifacts/r3-postdeploy-a28aaf2-public/result.json","sha256":"660dc27becd82aa8a10a06cba971bcd66ccc01ea0a637b562fc66537baecaad0"},
+    {"path":"frontend/artifacts/r3-postdeploy-c8015b2-mobile-pagination/targeted-pagination-tests.log","sha256":"d0d844b95dc483892f0274979bde9d999612f58ff98b06e0734fcd22a87039c6"}
+  ]
+}

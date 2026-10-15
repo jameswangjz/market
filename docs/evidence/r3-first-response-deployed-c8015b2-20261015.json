@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "scope": "first_response_configuration_migration_and_deployed_HTTP",
+  "coverage": [],
+  "commit": "c8015b2cf7ade2c8f393bdf3b5e5ba16e8583607",
+  "release_tag": "20261015032611-c8015b2",
+  "manifest_sha256": "21ef6820b76ad99a6197e25d00bbeac79a78480bba510ee365e88037a8506656",
+  "frontend_asset": "index-DrtewZtt.js",
+  "tests": {
+    "backend_targeted_passed": 32,
+    "frontend_targeted_passed": 6,
+    "frontend_build_passed": true,
+    "clean_committed_rebuild_verified": true,
+    "full_suite_repeated_for_this_small_fix": false
+  },
+  "rollout": {
+    "market_api": "complete",
+    "market_web": "complete",
+    "message_center_worker": "complete",
+    "online_delivery_worker": "complete",
+    "version_change_worker": "complete"
+  },
+  "migration": {
+    "matched_exact_legacy_seed_rows": 1,
+    "customized_rows_overwritten": 0,
+    "audit_count_after_apply": 1,
+    "repeated_apply_matched_rows": 0,
+    "historical_ticket_snapshot_count": 1,
+    "snapshot_hash_before": "1589ad4a5fc4c7666ea7218a10480b285035411028de399d1ed72ba5b4e48a9b",
+    "snapshot_hash_after": "1589ad4a5fc4c7666ea7218a10480b285035411028de399d1ed72ba5b4e48a9b"
+  },
+  "deployed_HTTP": {
+    "endpoint": "/api/sla/service-levels",
+    "transport": "NodePort 192.168.10.10:30080",
+    "status": 200,
+    "strategic_normal_minutes": 720,
+    "normal_clock": "support",
+    "strategic_urgent_minutes": 360,
+    "urgent_clock": "natural",
+    "legacy_seed_migration_required": false
+  },
+  "browser_boundary": "New response-card desktop/mobile screenshot verification is tracked separately, not claimed by this HTTP evidence."
+}

@@ -1,0 +1,86 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-BE-004", "TRD-R3-FE-005"],
+  "scope": "Ordinary non-purchasing member: real browser OIDC code/token/RP session, MyApps and grant revocation; not blanket acceptance of every task requirement",
+  "actor": "This agent executed Windows Chrome, inspected screenshots, and performed exact owned cleanup; parent supplied rollout completion notification",
+  "captured_at": "2026-10-15T03:35:57.555091+00:00",
+  "runtime_tag": "20261015032611-c8015b2",
+  "runtime_verification": "Agent checked API/Web deployment image tags and updated/available replica counts before final browser batch",
+  "frontend_asset": "index-DrtewZtt.js",
+  "frontend_asset_verification": "Agent GET /console observed this script asset",
+  "fixture_preparation_runtime_tag": "20261015030550-a28aaf2",
+  "run_id": "qa-r3-sso-e50e756eefff",
+  "database": "real PostgreSQL public, exclusively new random owned fixture rows and their verified children",
+  "ownership_manifest_written_before_fixture_creation": true,
+  "rp_origin": "http://192.168.10.10:30083",
+  "shared_configuration_changed": false,
+  "existing_business_users_or_passwords_changed": false,
+  "machine_OPEN": "real HTTP using real platform machine token and introspection; only this owned tenant",
+  "payment_delivery": "synthetic fixtures, not real payment or delivery verification",
+  "browser_checks": [
+    "desktop_login_consent_rp_session",
+    "mobile_login_consent_rp_session",
+    "reject_no_rp_session",
+    "cross_enterprise_denied",
+    "mobile_member_row_layout",
+    "applications_listing_members_ui",
+    "applications_launch_ui",
+    "grant_revoke_rp_session_and_listing"
+  ],
+  "browser_sso": "passed",
+  "mock_session": "passed",
+  "application_access": "passed",
+  "negative_cases": "passed within enumerated browser scope",
+  "blocked_requests": 0,
+  "desktop_viewport": [1440, 1000],
+  "mobile_viewport": [390, 844],
+  "mobile_is_emulation": true,
+  "screenshots_visually_reviewed": 6,
+  "mobile_member_layout": {"checkbox_width": 18, "checkbox_height": 18, "inside_modal": true, "horizontal_overflow": false},
+  "source_evidence": "frontend/artifacts/r3-member-sso-browser-c8015b2-final-20261015/browser-results.json",
+  "source_evidence_sha256": "d719306c78fa43226a188e58829876b1dc785ab8ede6b97ff03f15fd802ebda6",
+  "prior_failed_artifacts_preserved": [
+    "frontend/artifacts/r3-member-sso-browser-20261015/browser-results.json",
+    "frontend/artifacts/r3-member-sso-browser-c8015b2-20261015/browser-results.json",
+    "frontend/artifacts/r3-member-sso-browser-c8015b2-buyer-20261015/browser-results.json"
+  ],
+  "harness_fixes": [
+    "Accept exact qa-r3-sso ownership prefix while retaining qa-vcq compatibility",
+    "Explicit allowlisted existing RP direct mode without changing shared origins or backchannel",
+    "Allow two static initialization GETs and exact manifest-owned order delivery-access GETs only",
+    "Select explicit owned enterprise buyer context before opening MyApps through existing UI",
+    "Use ASCII CSS escapes for Chinese selector under Windows PowerShell",
+    "Preserve ownership journal on preparation failure instead of automatic deletion"
+  ],
+  "post_run_diagnostic_only_change": "Blocked-path evidence now substitutes exact known owned path segments with :owned; syntax and offline guards validated, no extra browser rerun claimed",
+  "current_harness_sha256": {
+    "scripts/oidc_browser_cdp.ps1": "28e355ac2969eb54e03b820db283d5939a4a73a733a1e269405acd189f7bbf73",
+    "scripts/oidc_browser_acceptance.py": "42000945980f56f72eca24f7444e2661728f1930024b1bf0c4918c87b7c22e3c",
+    "scripts/version_change_quote_acceptance.py": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551"
+  },
+  "cleanup": {
+    "status": "verified",
+    "rp": "exact owned client, flows, mappings, sessions, tenant and children verified absent",
+    "pg": "exact owned rows and FK children verified absent using existing ownership guard",
+    "startup_backfill_exception": {
+      "table": "product_release_versions",
+      "count": 1,
+      "cause": "API ensure_schema startup backfills a default v1.0 release for products without ProductReleaseVersion rows",
+      "action": "Journaled exact generated ID and exact owned product; locked row; verified all incoming FK reference counts zero; removed that one owned child; then reran unchanged generic ownership guard",
+      "journal": "/root/market/.ops-backups/qa-r3-sso-current/startup-owned-version-cleanup.json"
+    },
+    "core_cleaned_row_counts": {"users": 5, "enterprises": 3, "products": 1, "orders": 2, "saas_subscriptions": 1, "application_access_grants": 1, "saas_product_versions": 4},
+    "global_prefix_cleanup": false,
+    "private_login_copies_removed": true,
+    "ownership_journals_retained_private": "/root/market/.ops-backups/qa-r3-sso-current"
+  },
+  "protected_readonly_counts_after_cleanup": {"order": 1, "product": 1},
+  "protected_observation_limit": "COUNT existence checks, not a full field-integrity comparison; script writes were restricted to owned rows",
+  "local_tests": {"guard_tests_passed": 4, "powershell_syntax": "passed"},
+  "limits": [
+    "No real payment, settlement, delivery worker or external SaaS vendor verification",
+    "No RP restart was requested or performed",
+    "Disabled membership, removed membership, account disable and subscription expiry were not separately rerun through Chrome in this batch",
+    "No task status changes or application deployment by this agent"
+  ]
+}
