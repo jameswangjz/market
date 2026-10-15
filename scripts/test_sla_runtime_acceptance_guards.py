@@ -2,9 +2,22 @@
 import ast
 from pathlib import Path
 import unittest
+from sla_runtime_acceptance import sparse_request_result_valid
 
 
 class RuntimeProofGuardTests(unittest.TestCase):
+    def test_sparse_result_is_not_compliance(self):
+        for status in ('met', 'warning', 'breached', 'not_started'):
+            self.assertFalse(sparse_request_result_valid({'status': status, 'value': None}, future_term=False))
+        self.assertTrue(sparse_request_result_valid({'status': 'insufficient_data', 'value': None}, future_term=False))
+        self.assertFalse(sparse_request_result_valid({'status': 'insufficient_data', 'value': 0}, future_term=False))
+
+    def test_future_term_needs_explicit_not_started_evidence(self):
+        metric = {'status': 'not_started', 'reason': 'service_not_started', 'value': None}
+        self.assertTrue(sparse_request_result_valid(metric, future_term=True))
+        for update in ({'status': 'met'}, {'reason': 'missing_source'}, {'value': 0}):
+            self.assertFalse(sparse_request_result_valid({**metric, **update}, future_term=True))
+
     @classmethod
     def setUpClass(cls):
         cls.path = Path(__file__).with_name('sla_runtime_acceptance.py')

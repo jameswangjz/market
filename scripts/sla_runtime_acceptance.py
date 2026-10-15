@@ -11,6 +11,14 @@ from pathlib import Path
 import time
 
 
+def sparse_request_result_valid(metric, *, future_term):
+    if future_term:
+        return (metric.get('status') == 'not_started'
+                and metric.get('reason') == 'service_not_started'
+                and metric.get('value') is None)
+    return metric.get('status') == 'insufficient_data' and metric.get('value') is None
+
+
 def load_fixture():
     path = Path(__file__).with_name('api_auto_delivery_runtime_acceptance.py')
     spec = importlib.util.spec_from_file_location('sla_fixture', path)
@@ -152,8 +160,17 @@ def run(args):
                           'Replacement endpoint returned legacy statistics')
             fixture.check(all(row['status'] in {'insufficient_data', 'breached'} for row in own),
                           'Fresh sparse source samples falsely reported full compliance')
-            fixture.check(all(row['metrics']['request_error_rate']['status'] == 'insufficient_data'
-                              for row in own), 'Sparse request samples falsely reported compliance')
+            with m.SessionLocal() as db:
+                Term = m.subscription_terms['Term']
+                future_orders = set(db.scalars(select(Term.order_id).where(
+                    Term.order_id.in_([row['order_id'] for row in own]),
+                    Term.starts_at > m.now())))
+            report['assessment_request_states'] = [
+                {'order_id': row['order_id'], 'future_term': row['order_id'] in future_orders,
+                 'metric': row['metrics']['request_error_rate']} for row in own]
+            fixture.check(all(sparse_request_result_valid(row['metrics']['request_error_rate'],
+                future_term=row['order_id'] in future_orders) for row in own),
+                'Sparse requests or future terms falsely reported compliance')
             report['order_assessments'] = len(own)
             overview = client.get('/api/sla/overview', headers={'Authorization': 'Bearer ' + ops_token})
             fixture.check(overview.status_code == 200, 'SLA overview failed after replacement')
