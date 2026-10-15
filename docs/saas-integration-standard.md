@@ -142,14 +142,50 @@ CHANGE 必须携带幂等键，可使用请求体 `idempotency_key` 或请求头
 版本切换后的完整成功响应示例（以下字段均必须返回，必须位于业务响应根节点）：
 
 ```json
-{"ret":0,"tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","version":"professional","status":"active","admin_user_id":"platform-admin-user-id","admin_active":true,"application_ready":true,"oidc_client_id":"product-oidc-client-id","expires_at":"2027-10-15T08:00:00+00:00","change_id":"change-10001","direction":"target","effective_at":"2026-10-15T08:00:00.123456+00:00"}
+{"ret":0,"tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","version":"professional","status":"active","admin_user_id":"platform-admin-user-id","admin_active":true,"application_ready":true,"oidc_client_id":"product-oidc-client-id","expires_at":"2027-10-15T08:00:00+00:00","change_id":"change-10001","direction":"target","effective_at":"2026-10-15T08:00:00.123456+00:00","refund_shorten_protocol":"refund_shorten_v1","refund_shorten_supported":true,"refund_id":null}
 ```
 
 STATUS 请求中的 `tenant_id/product_id/enterprise_id/subscription_id/admin_user_id/oidc_client_id` 必须与 OPEN、管理员同步及平台登记的配置一致；版本切换验证还发送 `change_id/direction`。响应必须反映第三方实际状态，不得仅原样回显请求。平台严格核对上述六项身份、目标 `version`、`status="active"`、布尔值 `admin_active=true` 和 `application_ready=true`；字符串 `"true"` 不合格。管理员未激活、应用未就绪或客户端不匹配时必须如实返回失败状态，平台将拒绝自动验证。
 
-`expires_at` 字段必须返回，表示 OPEN 或最近一次 RENEW 确认的真实订阅到期时间，使用带时区的 ISO 8601 时间；必须与平台冻结的订阅到期时刻一致，CHANGE 不得延长或缩短它。只有平台订阅本身无到期时间时才允许返回 `null`，不能用缺字段或 `null` 替代未知到期时间。缺少任何必需证明字段均不能完成版本切换验证。
+`expires_at` 字段必须返回，表示 OPEN、最近一次普通 RENEW 或下述已确认退款缩期后的真实订阅到期时间，使用带时区的 ISO 8601 时间；必须与平台冻结的订阅到期时刻一致，CHANGE 不得延长或缩短它。只有平台订阅本身无到期时间时才允许返回 `null`，不能用缺字段或 `null` 替代未知到期时间。缺少任何必需证明字段均不能完成版本切换验证。
 
 STATUS 必须返回最后一次实际版本切换的 `change_id/direction/effective_at`。尚未发生版本切换时三项为 `null`；OPEN、RENEW、CLOSE、用户及部门操作均不得覆盖版本回执。重放旧 CHANGE 只返回旧结果，不得将 STATUS 的最后回执回退。无法提供可信回执的应用走人工核定，不能将缺失时间视为零消费或据此宣称自动退款执行。平台统一 OAuth/OIDC 登录与机器鉴权协议保持不变。
+
+### 3.6 退款尾部缩期 `refund_shorten_v1`
+
+普通 RENEW 只允许续期，不得缩短服务时间。退款缩期是独立的显式能力：支持方必须在 STATUS 根节点返回 `refund_shorten_protocol="refund_shorten_v1"`、布尔值 `refund_shorten_supported=true` 及最后成功缩期的 `refund_id`（尚无缩期为 `null`）。不支持方须如实返回 false 或不广告此能力，平台拒绝自动回收，转人工核定；不得把普通续期成功视为退款回收成功。
+
+平台准备与执行时查询示例（版本切换 STATUS 所需的管理员及 OIDC 验证字段仍按 3.5 返回；缩期查询不要求在请求中提供管理员字段）：
+
+```json
+{"type":"STATUS","tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","action":"refund_shorten","refund_id":"refund-10001","protocol":"refund_shorten_v1"}
+```
+
+缩期前回读的关键根节点字段（其余 STATUS 字段沿用 3.5）：
+
+```json
+{"ret":0,"tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","expires_at":"2027-10-15T08:00:00.654321+00:00","refund_shorten_protocol":"refund_shorten_v1","refund_shorten_supported":true,"refund_id":null}
+```
+
+执行请求：
+
+```json
+{"type":"RENEW","action":"refund_shorten","protocol":"refund_shorten_v1","tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","refund_id":"refund-10001","expected_expires_at":"2027-10-15T08:00:00.654321+00:00","expires_at":"2027-09-15T08:00:00.530865+00:00","idempotency_key":"refund-shorten:refund-10001"}
+```
+
+必须完整校验产品、租户、企业及订阅归属。在同一持久事务内，将实际当前到期时间与 `expected_expires_at` 按 UTC 时刻精确比较（CAS），一致才允许改为 `expires_at`；不一致返回 HTTP 409，不能覆盖并发续期或其它退款。新时间必须严格早于原时间且尚未经过；不能延长、不能消费已过去的尾部。两个时间必须为 UTC ISO 8601（`Z` 或 `+00:00`），精度保留至微秒，最多六位小数，不可取整为秒或毫秒。未知、无时区、非 UTC、超过微秒精度或永久订阅的空到期时间不得自动缩期。
+
+成功响应：
+
+```json
+{"ret":0,"tenant_id":"tenant-10001","product_id":"platform-product-id","enterprise_id":"platform-enterprise-id","subscription_id":"platform-subscription-id","refund_id":"refund-10001","protocol":"refund_shorten_v1","expected_expires_at":"2027-10-15T08:00:00.654321+00:00","expires_at":"2027-09-15T08:00:00.530865+00:00","refund_shorten_protocol":"refund_shorten_v1","refund_shorten_supported":true,"idempotency_key":"refund-shorten:refund-10001"}
+```
+
+同一产品内每个 `refund_id` 只绑定一次缩期结果，必须固定使用 `refund-shorten:{refund_id}`。相同键与相同完整 payload（包括 CAS 原时间及新时间）重试，跨进程重启也返回首次结果，不再次应用 CAS 或缩期；同键不同 payload 返回 HTTP 409，更换固定键拒绝执行。退款身份、幂等结果及到期时间变更必须原子持久化。STATUS 必须返回实际最新到期时间与最后成功缩期的 `refund_id`，不得回显查询中未执行的退款 ID；重放旧请求不回退最新状态。
+
+退款缩期不得覆盖 `change_id/direction/effective_at` 版本回执；普通续期、用户和部门操作也不得覆盖最后缩期回执。第三方应用必须在 SSO 回调及每次现有会话访问业务页面时校验最新租户到期时间，到期立即拒绝访问，不能仅等待旧登录会话过期。
+
+本轮只支持可用单一租户到期时间表达的订阅末尾回收。若存在后续无关续费段，平台资源适配器会拒绝中间段回收，不宣称支持保留后段却删除中间段。缩期成功仅证明资源期限回收；BE012 资金执行为本地模拟记录，不代表银行到账或 BE013 清算接入完成。
 
 ## 4. 用户和部门接口
 

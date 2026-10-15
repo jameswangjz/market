@@ -3,6 +3,7 @@ from contextlib import contextmanager
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -25,6 +26,26 @@ OPERATION_SCOPES = {**dict.fromkeys(('OPEN', 'CLOSE', 'RENEW', 'CHANGE'), 'saas.
 
 def hashed(value):
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def utc_expiry(value):
+    if not isinstance(value, str) or not re.fullmatch(
+            r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)', value):
+        raise MachineOperationError(400, 'invalid_utc_expiry')
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        raise MachineOperationError(400, 'invalid_utc_expiry') from None
+
+
+def tenant_expired(tenant):
+    raw = tenant.get('expires_at')
+    if raw is None:
+        return False
+    try:
+        return utc_expiry(raw) <= datetime.now(timezone.utc)
+    except MachineOperationError:
+        return True
 
 
 def assigned_external_id(db, table, platform_field, external_field, prefix, tenant_id, platform_id, body):
@@ -99,6 +120,8 @@ class Store:
             CREATE UNIQUE INDEX IF NOT EXISTS machine_change_identity
                 ON machine_operations(product_id, json_extract(response, '$.change_id'),
                                       json_extract(response, '$.direction'));
+            CREATE UNIQUE INDEX IF NOT EXISTS machine_refund_identity
+                ON machine_operations(product_id, json_extract(response, '$.refund_id'));
         ''')
         try:
             yield db
@@ -183,9 +206,11 @@ class Store:
                         'change_id': tenant.get('version_receipt', {}).get('change_id'),
                         'direction': tenant.get('version_receipt', {}).get('direction'),
                         'effective_at': tenant.get('version_receipt', {}).get('effective_at'),
+                        'refund_shorten_protocol': 'refund_shorten_v1', 'refund_shorten_supported': True,
+                        'refund_id': tenant.get('refund_receipt', {}).get('refund_id'),
                         'expires_at': tenant.get('expires_at'), 'admin_user_id': admin_id if admin_active else None,
                         'admin_active': admin_active, 'application_ready': bool(tenant.get('login_open')
-                        and tenant.get('status') != 'closed' and matches),
+                        and tenant.get('status') != 'closed' and not tenant_expired(tenant) and matches),
                         'oidc_client_id': client_id if matches else None}
         tenant_id = body.get('tenant_id')
         if not tenant_id:
@@ -373,7 +398,34 @@ class Store:
                     db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
                                (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
                 return result
+            elif operation == 'RENEW' and body.get('action') == 'refund_shorten':
+                refund_id = body.get('refund_id')
+                if (not isinstance(refund_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', refund_id)
+                        or idem != 'refund-shorten:' + refund_id or body.get('protocol') != 'refund_shorten_v1'
+                        or any(body.get(k) != tenant.get(k) for k in
+                               ('product_id', 'enterprise_id', 'subscription_id'))):
+                    raise MachineOperationError(400, 'invalid_refund_shorten_request')
+                previous = db.execute('SELECT idempotency_key FROM machine_operations '
+                    "WHERE product_id=? AND json_extract(response, '$.refund_id')=?",
+                    (product_id, refund_id)).fetchone()
+                if previous:
+                    raise MachineOperationError(409, 'refund_identity_reused')
+                expected = utc_expiry(body.get('expected_expires_at'))
+                expiry = utc_expiry(body.get('expires_at'))
+                current = utc_expiry(tenant.get('expires_at'))
+                if current != expected:
+                    raise MachineOperationError(409, 'refund_expiry_cas_mismatch')
+                if expiry >= expected or expiry < datetime.now(timezone.utc):
+                    raise MachineOperationError(409, 'refund_must_shorten_unconsumed_tail')
+                receipt = dict(refund_id=refund_id, expected_expires_at=expected.isoformat(timespec='microseconds'),
+                    expires_at=expiry.isoformat(timespec='microseconds'), protocol='refund_shorten_v1')
+                tenant.update(expires_at=receipt['expires_at'], refund_receipt=receipt)
+                result = dict(ret=0, tenant_id=tenant_id, product_id=product_id,
+                    enterprise_id=tenant['enterprise_id'], subscription_id=tenant['subscription_id'],
+                    refund_shorten_protocol='refund_shorten_v1', refund_shorten_supported=True, **receipt)
             elif operation == 'RENEW':
+                if body.get('action') is not None or any(k in body for k in ('refund_id', 'expected_expires_at', 'protocol')):
+                    raise MachineOperationError(400, 'invalid_refund_shorten_request')
                 if tenant.get('status') == 'closed':
                     raise MachineOperationError(409, 'tenant_closed')
                 requested = body.get('expires_at')

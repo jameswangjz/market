@@ -204,6 +204,13 @@ def install(ns):
             planning_result = readiness(db, order, refund)
             if planning_result['status'] not in {'available', 'manual_ready'}:
                 allowed = [action for action in allowed if action != 'approve']
+        executor = ns.get('refund_execution')
+        execution_available = bool(executor and source == 'ordinary'
+            and executor['eligibility'](db, order, refund, user))
+        if execution_available:
+            allowed.append('retry' if refund.status == 'failed' else 'execute')
+        execution = db.scalar(select(executor['Execution']).where(
+            executor['Execution'].refund_id == refund.id)) if executor else None
         return {'id': refund.id, 'refund_no': refund.refund_no, 'order_id': refund.order_id,
             'order_no': order.order_no, 'payment_id': refund.payment_id, 'ticket_id': case.ticket_id if case else None,
             'amount': format(money(refund.amount), '.2f'), 'currency': 'CNY', 'status': refund.status,
@@ -212,7 +219,11 @@ def install(ns):
             'review_reason': case.review_reason if case else None, 'reviewed_at': case.reviewed_at if case else None,
             'created_at': refund.created_at, 'completed_at': refund.completed_at,
             'planning': planning_result, 'allowed_actions': allowed,
-            'execution_available': False, 'execution_mode': 'unavailable'}
+            'execution_available': execution_available,
+            'execution_mode': 'simulated' if execution_available or execution else 'unavailable',
+            'execution_status': execution.status if execution else None,
+            'execution_error_code': execution.error_code if execution else None,
+            'execution': executor['safe_output'](db, execution) if executor else None}
 
     def record(db, user, order, refund, case, body, action, before, key, payload_hash):
         after = {'status': refund.status, 'version': case.version, 'amount': format(money(refund.amount), '.2f')}

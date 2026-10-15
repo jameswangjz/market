@@ -1,0 +1,42 @@
+# Install only with the exact API image validated for BE012. Funds are simulated.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: refund-execution-worker
+  namespace: market
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: refund-execution-worker}
+  template:
+    metadata:
+      labels: {app: refund-execution-worker}
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: worker
+          image: market-api:REPLACE_WITH_DEPLOYED_TAG
+          imagePullPolicy: IfNotPresent
+          workingDir: /app
+          command: [python, -m, app.refund_execution_worker]
+          envFrom:
+            - configMapRef: {name: market-config}
+          env:
+            - {name: PYTHONPATH, value: /app}
+            - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+            - {name: REFUND_WORKER_INTERVAL, value: '2'}
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+            - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
+            - {name: API_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-api-credentials, key: API_CREDENTIAL_ENCRYPTION_KEY}}}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          readinessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/refund-execution-heartbeat').stat().st_mtime < 120"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/refund-execution-heartbeat').stat().st_mtime < 240"]
+            initialDelaySeconds: 30
+            periodSeconds: 20

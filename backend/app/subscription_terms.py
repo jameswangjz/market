@@ -363,6 +363,33 @@ def install(ns):
             raise HTTPException(409, '订阅须使用已全额支付、未退款且交付成功的新版快照订单')
         return snapshot(order)
 
+    def recovered_entitlement(db, order, term):
+        reader = ns.get('refund_execution_resources', {}).get('entitlement')
+        overlay = reader(db, order, term) if callable(reader) else None
+        if overlay is None:
+            paid_snapshot(order)
+            return None
+        if (not overlay['payment_compatible'] or order.snapshot_version != 1
+                or order.delivery_method_snapshot not in MONTHLY
+                or order.payment_status not in {'paid', 'refunding', 'refunded'}
+                or money(order.paid_amount) != money(order.amount)
+                or money(order.refunded_amount) < 0
+                or order.main_status in {'cancelled', 'closed'}
+                or order.delivery_status not in {'pending_acceptance', 'accepted'}):
+            raise HTTPException(409, 'Refund entitlement recovery is not financially verified')
+        snapshot(order)
+        for row in overlay['periods']:
+            start, end = recovery_bounds(row)
+            if (row['order_id'] != order.id or row['segment_id'] != term.id
+                    or start < term.starts_at.replace(microsecond=0)
+                    or end > term.ends_at or start >= end):
+                raise HTTPException(409, 'Refund entitlement interval is invalid')
+        return overlay
+
+    def recovery_bounds(row):
+        return tuple(datetime.fromisoformat(row[key]) if row.get(key) else datetime.fromtimestamp(row[epoch], timezone.utc)
+                     for key, epoch in (('starts_at', 'start_at'), ('ends_at', 'end_at')))
+
     def expires(combination):
         return CalendarAnchor(combination.anchor_at).boundary(combination.total_months)
 
@@ -489,20 +516,30 @@ def install(ns):
             if term.starts_at != expected.start or term.ends_at != expected.end:
                 continue
             try:
-                paid_snapshot(order)
+                overlay = recovered_entitlement(db, order, term)
                 delivery = effective_snapshot(db, order, term)['delivery']
             except HTTPException:
                 continue
             period = anchor.period_at(instant)
             if period is None or instant >= expires(combination):
                 continue
+            limits = {key: delivery['quota'][key] for key in LIMIT_KEYS}
+            period_end, entitlement_end = period.end, expires(combination)
+            if overlay is not None:
+                current = next((row for row in overlay['periods']
+                    if recovery_bounds(row)[0] <= instant < recovery_bounds(row)[1]), None)
+                if current is None:
+                    continue
+                limits.update({key: current[key] for key in LIMIT_KEYS[:3]})
+                period_end = recovery_bounds(current)[1]
+                entitlement_end = max(recovery_bounds(row)[1] for row in overlay['periods'])
             return {'combination_id': combination.id, 'generation': combination.generation,
                     'delivery_method': combination.delivery_method, 'anchor_at': combination.anchor_at,
                     'version_id': combination.version_id, 'version_code': combination.version_code,
-                    'expires_at': expires(combination), 'term_id': term.id, 'order_id': order.id,
-                    'limits': {key: delivery['quota'][key] for key in LIMIT_KEYS},
+                    'expires_at': entitlement_end, 'term_id': term.id, 'order_id': order.id,
+                    'limits': limits,
                     'period_key': f'{combination.id}:{combination.generation}:{period.index}',
-                    'period_index': period.index, 'period_starts_at': period.start, 'period_ends_at': period.end}
+                    'period_index': period.index, 'period_starts_at': period.start, 'period_ends_at': period_end}
         return None
 
     def require_read(db, user, order):
@@ -540,9 +577,15 @@ def install(ns):
             if term.starts_at != bounds.start or term.ends_at != bounds.end:
                 continue
             try:
-                paid_snapshot(order)
+                overlay = recovered_entitlement(db, order, term)
                 delivery = effective_snapshot(db, order, term)['delivery']
             except HTTPException:
+                continue
+            if overlay is not None:
+                for row in overlay['periods']:
+                    result.append({key: row[key] for key in ('start_at', 'end_at', 'period_key', 'order_id',
+                        'segment_id', *LIMIT_KEYS[:3])} | {'version_id': term.version_id, 'version_code': term.version_code}
+                        | {key: row[key] for key in ('starts_at', 'ends_at') if key in row})
                 continue
             for index in range(term.start_month, term.start_month + term.months):
                 if index >= combination.total_months:
@@ -616,7 +659,7 @@ def install(ns):
                 'product_id': combination.product_id, 'enterprise_id': combination.enterprise_id,
                 'generation': combination.generation, 'anchor_at': combination.anchor_at,
                 'version_id': combination.version_id, 'version_code': combination.version_code,
-                'expires_at': expires(combination), 'status': combination.status,
+                'expires_at': entitlement['expires_at'] if entitlement is not None else expires(combination), 'status': combination.status,
                 'current_period': None if entitlement is None else {
                     'starts_at': entitlement['period_starts_at'], 'ends_at': entitlement['period_ends_at'],
                     'index': entitlement['period_index']},

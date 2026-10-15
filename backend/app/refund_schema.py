@@ -36,6 +36,18 @@ class RefundReviewBody(BaseModel):
         return RefundRequestBody.reason_not_blank(value)
 
 
+class RefundExecutionBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reason: str = Field(min_length=1, max_length=10000, strict=True)
+    expected_version: int = Field(ge=1, strict=True)
+    idempotency_key: str = Field(min_length=8, max_length=100, strict=True)
+
+    @field_validator('reason')
+    @classmethod
+    def reason_not_blank(cls, value):
+        return RefundRequestBody.reason_not_blank(value)
+
+
 @dataclass(frozen=True)
 class PreparedRefundPlan:
     """BE011 server hook result, never parsed from an HTTP request.

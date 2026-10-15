@@ -38,7 +38,17 @@ def main():
                 body = response.json()
                 safe(body)
                 assert body['page'] == 1 and body['page_size'] == 20
-                assert all(item['execution_available'] is False for item in body['items'])
+                for item in body['items']:
+                    commands = {'execute', 'retry'}.intersection(item['allowed_actions'])
+                    if item['execution_available']:
+                        assert role in {'super_admin', 'platform_operator'}
+                        assert item['source'] == 'ordinary' and item['status'] in {'approved', 'failed'}
+                        assert item['execution_mode'] == 'simulated'
+                        assert commands == ({'execute'} if item['status'] == 'approved' else {'retry'})
+                    else:
+                        assert not commands
+                    if item.get('execution'):
+                        assert item['execution']['funds_mode'] == 'simulated'
                 results[role] = {'status': 200, 'rows': len(body['items']), 'private_fields_absent': True}
             else:
                 results[role] = {'status': 403}

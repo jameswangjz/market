@@ -1980,6 +1980,13 @@ def settlement_values_for_order(db: Session, order: Order, fallback: SettlementR
 
 def create_refund_negative_settlement(db: Session, refund: Refund, actor: str = "system") -> Settlement:
     """Create one idempotent negative settlement for a completed refund."""
+    ordinary = globals().get('refund_workflow', {}).get('Case')
+    case = db.get(ordinary, refund.id) if ordinary is not None else None
+    if case is not None and case.source == 'ordinary':
+        adapter = globals().get('refund_execution', {}).get('negative_settlement')
+        if not callable(adapter):
+            raise HTTPException(409, 'Ordinary refund BE013 settlement adapter is unavailable')
+        return adapter(db, refund, actor)
     existing = db.scalar(select(Settlement).where(Settlement.refund_id == refund.id).order_by(Settlement.created_at.desc()))
     if existing:
         return existing
@@ -7849,3 +7856,9 @@ from .refund_funding_store import install as install_refund_funding_store
 
 refund_segment_store = install_refund_segment_store(globals())
 refund_funding_store = install_refund_funding_store(globals())
+
+from .refund_execution_resources import install as install_refund_execution_resources
+from .refund_execution import install as install_refund_execution
+
+refund_execution_resources = install_refund_execution_resources(globals())
+refund_execution = install_refund_execution(globals())

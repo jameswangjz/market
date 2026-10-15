@@ -11,6 +11,12 @@
 .refund-form button svg { flex-shrink: 0; }
 .refund-form p { overflow-wrap: anywhere; }
 .refund-review-actions { margin-top: 12px; }
+.refund-execution { border-top: 1px solid #e5e6eb; margin-top: 16px; padding-top: 4px; min-width: 0; }
+.refund-execution-legs { padding-left: 24px; }
+.refund-execution-legs li { padding: 8px 0; border-bottom: 1px solid #e5e6eb; overflow-wrap: anywhere; }
+.refund-execution-legs li > span { display: inline-block; margin-left: 12px; }
+.refund-execution-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+.refund-execution-actions button { display: inline-flex; gap: 6px; align-items: center; min-height: 36px; max-width: 100%; }
 @media (max-width: 640px) {
   .refund-form .form-grid { grid-template-columns: minmax(0, 1fr); }
   .refund-form .refund-review-actions > button { flex: 1; }

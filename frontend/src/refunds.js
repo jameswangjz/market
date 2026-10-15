@@ -74,9 +74,45 @@ export function refundAllowedActions(item, user) {
     || !Number.isSafeInteger(item.version) || item.version < 1 || !Array.isArray(item.allowed_actions)) return [];
   return item.allowed_actions.filter(value => ["approve", "reject"].includes(value));
 }
-export function createRefundSession(api, state, getContext, makeKey = newRefundRequestKey) {
+export function refundExecutionActions(item, user) {
+  if (!isRefundApprover(user) || item?.source !== "ordinary" || item.execution_available !== true
+    || !Number.isSafeInteger(item.version) || item.version < 1 || !Array.isArray(item.allowed_actions)) return [];
+  const action = item.status === "approved" ? "execute" : item.status === "failed" ? "retry" : null;
+  return action && item.allowed_actions.includes(action) ? [action] : [];
+}
+const executionStates = Object.freeze({ pending: "等待处理", requested: "已提交", executing: "处理中",
+  prepared: "执行已准备", resources_pending: "等待资源回收", resources_applied: "资源已回收", funds_pending: "等待资金处理",
+  pending_be013: "待清算接入", applied: "已回收",
+  processing: "处理中", succeeded: "已完成", completed: "已完成", failed: "失败", unavailable: "不可用", posted: "已入账" });
+export function refundExecutionStatus(value) { return Object.hasOwn(executionStates, value) ? executionStates[value] : "状态待确认"; }
+export function refundExecutionFailure(value) {
+  const reasons = { payment_failed: "资金处理失败", resource_failed: "资源回收失败", timeout: "处理超时，需核对结果",
+    completion_failed: "退款完成确认失败，请由平台核对已完成资金腿后重试",
+    reconciliation_required: "需要人工核对", source_restarted: "执行来源变化，需人工核对" };
+  return Object.hasOwn(reasons, value) ? reasons[value] : value ? "执行未完成，请由平台核对后处理" : "";
+}
+export function refundExecutionProgress(item) {
+  const nested = item?.execution;
+  const value = nested && typeof nested === "object" ? nested : item?.execution_status ? {
+    status: item.execution_status, error_code: item.execution_error_code,
+    resource_status: item.resource_status, ledger_status: item.ledger_status,
+    payment_legs: item.payment_legs, funds_mode: item.execution_mode,
+  } : null;
+  if (!value) return null;
+  const legs = value.payment_legs ?? value.legs;
+  return { status: refundExecutionStatus(value.status), resource: refundExecutionStatus(value.resource_status),
+    ledger: refundExecutionStatus(value.ledger_status), failure: refundExecutionFailure(value.error_code ?? value.last_error),
+    simulated: item.execution_mode === "simulated" || value.funds_mode === "simulated",
+    legsAvailable: Array.isArray(legs),
+    retryable: value.retryable === true, legs: Array.isArray(legs) ? legs.map((leg, index) => ({
+      label: `资金腿 ${index + 1}`, amount: refundMoney(leg?.amount), status: refundExecutionStatus(leg?.status),
+      failure: refundExecutionFailure(leg?.error_code ?? leg?.last_error),
+    })) : [] };
+}
+export function createRefundSession(api, state, getContext, makeKey = newRefundRequestKey, timers = globalThis) {
   let epoch = 0, listSequence = 0, detailSequence = 0, disposed = false, operation;
-  const contextKey = () => { const c = getContext(); return JSON.stringify([c.user?.id, c.enterpriseId, c.order?.id, c.params]); };
+  let pollTimer = null, pollGeneration = 0, pollIdentity = null, pollAttempts = 0;
+  const contextKey = () => { const c = getContext(); return JSON.stringify([c.user?.id, c.user?.platform_role, c.enterpriseId, c.order?.id, c.params]); };
   const capture = () => ({ epoch, key: contextKey() });
   const current = snapshot => !disposed && snapshot.epoch === epoch && snapshot.key === contextKey();
   function failure(error, fallback) { return typeof error.response?.data?.detail === "string" ? error.response.data.detail : fallback; }
@@ -90,20 +126,55 @@ export function createRefundSession(api, state, getContext, makeKey = newRefundR
     } catch (error) { if (current(snapshot) && request === listSequence) { state.items = []; state.total = 0; state.listError = failure(error, "退款列表读取失败"); } }
     finally { if (current(snapshot) && request === listSequence) state.listBusy = false; }
   }
-  async function detail(id) {
-    const snapshot = capture(), request = ++detailSequence, c = getContext();
+  function stopExecutionRefresh() {
+    pollGeneration++;
+    if (pollTimer !== null) timers.clearTimeout(pollTimer);
+    pollTimer = null; pollIdentity = null; pollAttempts = 0;
+  }
+  function observeExecution() {
+    const c = getContext();
+    if (disposed || state.item?.status !== "executing" || !canViewRefunds(c.user, c.enterpriseId)) {
+      stopExecutionRefresh(); return;
+    }
+    const identity = JSON.stringify([contextKey(), state.item.id]);
+    if (pollIdentity === identity) return;
+    stopExecutionRefresh(); pollIdentity = identity;
+    const snapshot = capture(), id = state.item.id, generation = pollGeneration;
+    const valid = () => current(snapshot) && generation === pollGeneration && state.item?.id === id
+      && state.item.status === "executing" && canViewRefunds(getContext().user, getContext().enterpriseId);
+    function schedule() {
+      if (!valid() || pollAttempts >= 40) return;
+      pollTimer = timers.setTimeout(async () => {
+        pollTimer = null;
+        if (!valid()) return;
+        pollAttempts++;
+        if (!state.busy && !state.detailBusy) await detail(id, true);
+        schedule();
+      }, 3000);
+    }
+    schedule();
+  }
+  async function detail(id, quiet = false) {
+    const snapshot = capture(), request = ++detailSequence, c = getContext(), generation = pollGeneration;
     if (!canViewRefunds(c.user, c.enterpriseId)) return;
     if (state.item?.id !== id) state.item = null;
-    state.detailBusy = true; state.error = "";
+    if (!quiet) { state.detailBusy = true; state.error = ""; }
     try {
       const response = await api.get(`/refunds/${encodeURIComponent(id)}`, { params: { ...c.params } });
-      if (current(snapshot) && request === detailSequence) state.item = response.data;
-    } catch (error) { if (current(snapshot) && request === detailSequence) { state.item = null; state.error = failure(error, "退款详情读取失败"); } }
-    finally { if (current(snapshot) && request === detailSequence) state.detailBusy = false; }
+      if (current(snapshot) && request === detailSequence
+        && (!quiet || (generation === pollGeneration && !state.busy && state.item?.id === id))) state.item = response.data;
+    } catch (error) { if (!quiet && current(snapshot) && request === detailSequence) { state.item = null; state.error = failure(error, "退款详情读取失败"); } }
+    finally { if (!quiet && current(snapshot) && request === detailSequence) state.detailBusy = false; }
+  }
+  function closeDetail() { stopExecutionRefresh(); detailSequence++; state.item = null; state.detailBusy = false; }
+  async function refreshDetail() {
+    const id = state.item?.id;
+    if (!id || state.busy || state.detailBusy) return;
+    stopExecutionRefresh(); await detail(id); observeExecution();
   }
   async function send(kind, values) {
-    if (disposed || state.busy || state.detailBusy || !["request", "review", "manual"].includes(kind)) return false;
-    const snapshot = capture(), c = getContext();
+    if (disposed || state.busy || state.detailBusy || !["request", "review", "manual", "execute", "retry"].includes(kind)) return false;
+    const snapshot = capture(), c = getContext(), selectedId = state.item?.id;
     let path, body;
     try {
       if (kind === "request") {
@@ -111,6 +182,10 @@ export function createRefundSession(api, state, getContext, makeKey = newRefundR
         path = `/orders/${encodeURIComponent(c.order.id)}/refund-requests`;
         body = { amount: refundAmount(values.amount), reason: refundReason(values.reason),
           ...(values.ticketId ? { ticket_id: values.ticketId } : {}), ...(values.paymentId ? { payment_id: values.paymentId } : {}) };
+      } else if (["execute", "retry"].includes(kind)) {
+        if (!refundExecutionActions(state.item, c.user).includes(kind)) return false;
+        path = `/refunds/${encodeURIComponent(state.item.id)}/${kind}`;
+        body = { expected_version: state.item.version, reason: refundReason(values.reason) };
       } else if (kind === "manual") {
         if (!canAssessRefund(state.item, c.user)) return false;
         path = `/refunds/${encodeURIComponent(state.item.id)}/manual-assessments`;
@@ -128,7 +203,16 @@ export function createRefundSession(api, state, getContext, makeKey = newRefundR
     try {
       const response = await api.post(path, { ...body, idempotency_key: operation.key }, { params: { ...c.params } });
       if (!current(snapshot)) return false;
+      if (["execute", "retry"].includes(kind) && state.item?.id !== selectedId) return false;
       operation = null; state.item = response.data;
+      if (["execute", "retry"].includes(kind)) {
+        state.message = "执行请求已提交，以最新执行进展为准；不代表银行已到账。";
+        const id = response.data.id;
+        await list(values.page || 1, values.pageSize || 20);
+        if (!current(snapshot) || state.item?.id !== id) return false;
+        await detail(id);
+        return current(snapshot);
+      }
       state.message = kind === "manual" ? "人工核定已记录（manual），不是自动用量证据；尚未退款。" : kind === "request" ? "申请已提交，等待平台审核；尚未退款。" : `审核结果：${refundStatus(response.data.status)}；未执行资金或资源变更。`;
       return true;
     } catch (error) {
@@ -138,7 +222,9 @@ export function createRefundSession(api, state, getContext, makeKey = newRefundR
         if (kind !== "request" && state.item?.id) await detail(state.item.id);
         if (!current(snapshot)) return false;
         state.error = "退款记录或余额已变化，请刷新核对后重新确认；原输入已保留。";
-      } else state.error = failure(error, "提交失败，输入已保留，可重试");
+      } else state.error = ["execute", "retry"].includes(kind)
+        ? "执行请求结果待确认，请刷新核对；再次提交相同内容将复用请求标识。"
+        : failure(error, "提交失败，输入已保留，可重试");
       return false;
     } finally { if (current(snapshot)) state.busy = false; }
   }
@@ -155,6 +241,7 @@ export function createRefundSession(api, state, getContext, makeKey = newRefundR
     } catch { if (current(snapshot) && sequence === quoteSequence) state.quote = { status: "unavailable", reason: "source_reconciliation_required" }; }
     finally { if (current(snapshot) && sequence === quoteSequence) state.quoteBusy = false; }
   }
-  function reset() { epoch++; listSequence++; detailSequence++; operation = null; clearQuote(); Object.assign(state, { items: [], total: 0, item: null, busy: false, listBusy: false, detailBusy: false, error: "", listError: "", message: "" }); }
-  return { list, detail, send, quote, clearQuote, reset, dispose() { disposed = true; epoch++; } };
+  function reset() { stopExecutionRefresh(); epoch++; listSequence++; detailSequence++; operation = null; clearQuote(); Object.assign(state, { items: [], total: 0, item: null, busy: false, listBusy: false, detailBusy: false, error: "", listError: "", message: "" }); }
+  return { list, detail, send, quote, clearQuote, reset, observeExecution, refreshDetail, closeDetail,
+    dispose() { stopExecutionRefresh(); disposed = true; epoch++; } };
 }

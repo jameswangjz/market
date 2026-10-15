@@ -345,7 +345,7 @@ class RefundPlanningHTTPTests(unittest.TestCase):
                         self.assertEqual(db.get(self.m.Refund, second['id']).status, 'requested')
                         self.assertIsNone(db.get(self.Case, second['id']).plan_json)
 
-    def test_manual_determination_is_permissioned_idempotent_and_not_automatic(self):
+    def test_manual_determination_stays_non_executable_and_execute_requires_valid_body(self):
         with self.m.SessionLocal() as db:
             db.get(self.m.Order, self.order_id).snapshot_version = 0
             db.commit()
@@ -363,7 +363,8 @@ class RefundPlanningHTTPTests(unittest.TestCase):
         self.assertEqual(approved['planning']['source_trust'], 'manual_determination')
         self.assertFalse(approved['planning']['automatic_usage_trusted'])
         self.assertEqual(approved['planning']['resource_plan_status'], 'unavailable')
-        self.request('POST', f"/api/refunds/{row['id']}/execute", actor='ops', expected=404, json={})
+        # BE012 registers execute; an empty body fails its request contract.
+        self.request('POST', f"/api/refunds/{row['id']}/execute", actor='ops', expected=422, json={})
         with self.m.SessionLocal() as db:
             plan = json.loads(db.get(self.Case, row['id']).plan_json)['economic_plan']
             self.assertFalse(plan['automatic_usage_trusted'])

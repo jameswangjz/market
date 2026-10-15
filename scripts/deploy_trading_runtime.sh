@@ -25,6 +25,20 @@ else
 fi
 kubectl -n market set image deployment/market-api "api=market-api:${TAG}"
 kubectl -n market rollout status deployment/market-api --timeout=240s
+if [[ -f k8s/refund-execution.yaml ]]; then
+  REFUND_WORKER_MANIFEST=$(sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/refund-execution.yaml)
+  if [[ "$REFUND_WORKER_MANIFEST" == *REPLACE_WITH_* || "$REFUND_WORKER_MANIFEST" != *"image: market-api:${TAG}"* ]]; then
+    echo "Refund worker image substitution failed" >&2
+    exit 1
+  fi
+  printf '%s\n' "$REFUND_WORKER_MANIFEST" | kubectl apply -f -
+  kubectl -n market rollout status deployment/refund-execution-worker --timeout=240s
+  REFUND_WORKER_IMAGE=$(kubectl -n market get deployment refund-execution-worker -o jsonpath='{.spec.template.spec.containers[?(@.name=="worker")].image}')
+  if [[ "$REFUND_WORKER_IMAGE" != "market-api:${TAG}" ]]; then
+    echo "Refund worker deployed image does not match the tested API tag" >&2
+    exit 1
+  fi
+fi
 if [[ -f k8s/api-charge-ledger.yaml ]]; then
   sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/api-charge-ledger.yaml | kubectl apply -f -
   kubectl -n market rollout status deployment/api-charge-ledger-worker --timeout=240s

@@ -459,6 +459,105 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertEqual(self.client.post('/isv.php', json={**payload, 'idempotency_key': 'other'},
                                          headers=headers).status_code, 409)
 
+    def shorten_request(self, refund_id='refund-1'):
+        old = (datetime.now(timezone.utc) + timedelta(days=60)).replace(microsecond=654321)
+        target = old - timedelta(days=10, microseconds=123456)
+        self.machine('RENEW', expires_at=old.isoformat())
+        return dict(action='refund_shorten', protocol='refund_shorten_v1', refund_id=refund_id,
+            idempotency_key='refund-shorten:' + refund_id, product_id='fixture-product',
+            enterprise_id='fixture-enterprise', subscription_id='fixture-subscription',
+            expected_expires_at=old.isoformat(), expires_at=target.isoformat())
+
+    def test_refund_shorten_cas_microseconds_persistent_replay_and_change_receipt(self):
+        version = self.machine('CHANGE', to_version='2', change_id='version-change',
+            direction='target', idempotency_key='version-change-target')
+        body = self.shorten_request()
+        first = self.machine('RENEW', **body)
+        self.assertEqual(first['expires_at'], body['expires_at'])
+        status_args = dict(enterprise_id='fixture-enterprise', subscription_id='fixture-subscription')
+        status = self.machine('STATUS', refund_id='not-yet-executed', **status_args)
+        self.assertEqual((status['refund_shorten_protocol'], status['refund_shorten_supported']),
+                         ('refund_shorten_v1', True))
+        self.assertEqual((status['refund_id'], status['expires_at']), ('refund-1', first['expires_at']))
+        self.assertEqual((status['change_id'], status['direction'], status['effective_at']),
+                         (version['change_id'], version['direction'], version['effective_at']))
+        second = {**body, 'refund_id': 'refund-2', 'idempotency_key': 'refund-shorten:refund-2',
+            'expected_expires_at': first['expires_at'],
+            'expires_at': (datetime.fromisoformat(first['expires_at']) - timedelta(days=1)).isoformat()}
+        latest = self.machine('RENEW', **second)
+        restarted = self.module.create_app(transport=self.transport)
+        with TestClient(restarted, base_url=PUBLIC) as client:
+            response = client.post('/isv.php', json=dict(type='RENEW', tenant_id='fixture-tenant', **body),
+                headers={'Authorization': 'Bearer fixture-machine-token'})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), first)
+        status = self.machine('STATUS', **status_args)
+        self.assertEqual((status['refund_id'], status['expires_at']), ('refund-2', latest['expires_at']))
+        self.assertEqual(status['effective_at'], version['effective_at'])
+
+    def test_refund_shorten_conflicts_do_not_mutate_expiry(self):
+        body = self.shorten_request()
+        for changes in (dict(expected_expires_at=(datetime.fromisoformat(body['expected_expires_at'])
+                                                + timedelta(microseconds=1)).isoformat()),
+                        dict(expires_at=body['expected_expires_at']),
+                        dict(expires_at=(datetime.fromisoformat(body['expected_expires_at']) + timedelta(days=1)).isoformat()),
+                        dict(expires_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat())):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.raw_machine('RENEW', **{**body, **changes}).status_code, 409)
+                self.assertEqual(self.store.tenant('fixture-tenant')['expires_at'], body['expected_expires_at'])
+        self.machine('RENEW', **body)
+        self.assertEqual(self.raw_machine('RENEW', **{**body, 'expires_at': body['expected_expires_at']}).status_code, 409)
+        self.assertEqual(self.raw_machine('RENEW', **{**body, 'idempotency_key': 'wrong-key'}).status_code, 400)
+
+    def test_refund_shorten_requires_utc_identity_and_protocol(self):
+        body = self.shorten_request()
+        for changes in (dict(expires_at='2030-01-01T00:00:00'), dict(expires_at='2030-01-01T00:00:00+08:00'),
+                        dict(expires_at='2030-01-01T00:00:00.1234567Z'), dict(protocol='unknown'),
+                        dict(action='renew'), dict(refund_id=''), dict(product_id=None)):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.raw_machine('RENEW', **{**body, **changes}).status_code, 400)
+        self.assertEqual(self.raw_machine('RENEW', **{**body, 'enterprise_id': 'other'}).status_code, 409)
+        self.assertEqual(self.raw_machine('RENEW', **{**body, 'product_id': 'other'}).status_code, 403)
+        ordinary = dict(body)
+        for key in ('action', 'protocol', 'refund_id', 'expected_expires_at'):
+            ordinary.pop(key)
+        self.assertEqual(self.raw_machine('RENEW', **ordinary).status_code, 409)
+
+    def test_concurrent_refund_shorten_allows_only_one_cas_winner(self):
+        body = self.shorten_request()
+        token = dict(active=True, product_id='fixture-product', scope='saas.tenant')
+        store_module = sys.modules[self.package + '.store']
+        def apply(index):
+            request = {**body, 'type': 'RENEW', 'tenant_id': 'fixture-tenant',
+                'refund_id': 'parallel-' + str(index), 'idempotency_key': 'refund-shorten:parallel-' + str(index)}
+            try:
+                return self.store.machine_operation(request, token)
+            except store_module.MachineOperationError as exc:
+                return exc.status
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(apply, range(2)))
+        self.assertEqual(sum(isinstance(result, dict) for result in results), 1)
+        self.assertEqual(sum(result == 409 for result in results), 1)
+        self.assertEqual(self.store.tenant('fixture-tenant')['expires_at'], body['expires_at'])
+
+    def test_refund_shortened_expiry_denies_existing_session_and_new_sso(self):
+        body = self.shorten_request()
+        body['expires_at'] = (datetime.now(timezone.utc) + timedelta(seconds=10)).isoformat(timespec='microseconds')
+        self.signed_in()
+        self.assertEqual(self.client.get('/app').status_code, 200)
+        self.machine('RENEW', **body)
+        store_module = sys.modules[self.package + '.store']
+        with patch.object(store_module, 'datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime.fromisoformat(body['expires_at'])
+            self.assertEqual(self.client.get('/app').status_code, 401)
+            self.login()
+            self.assertEqual(self.callback().status_code, 401)
+            status = self.machine('STATUS', enterprise_id='fixture-enterprise',
+                subscription_id='fixture-subscription', oidc_client_id='fixture-client')
+            self.assertFalse(status['application_ready'])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM sessions').fetchone()[0], 0)
+
     def test_legacy_health_machine_oauth_and_operations(self):
         self.assertEqual(self.client.get('/health').json()['service'], 'mock-saas')
         response = self.client.post('/oauth/token', data={'grant_type': 'client_credentials',

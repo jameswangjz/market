@@ -22,7 +22,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .store import hashed
+from .store import hashed, tenant_expired
 
 
 FLOW_COOKIE = 'mock_saas_oidc_flow'
@@ -101,7 +101,7 @@ def install(app, store, *, transport=None):
         if claims['enterprise_id'] != flow['enterprise_id']:
             raise ValueError('Enterprise mismatch')
         tenant = store.tenant(claims['tenant_id'])
-        if (not tenant or not tenant.get('login_open') or tenant.get('status') not in {'opened', 'active'}
+        if (not tenant or not tenant.get('login_open') or tenant_expired(tenant) or tenant.get('status') not in {'opened', 'active'}
                 or tenant.get('product_id') != client['product_id']
                 or tenant.get('enterprise_id') != claims['enterprise_id']
                 or tenant.get('subscription_id') != claims['subscription_id']):
