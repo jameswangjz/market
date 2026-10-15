@@ -6,6 +6,11 @@ import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import PaginationControls from "./PaginationControls.vue";
+import AfterSalesDetail from "./AfterSalesDetail.vue";
+import AfterSalesCreate from "./AfterSalesCreate.vue";
+import { ticketStatus, canCreateAfterSales } from "./afterSales.js";
+import SlaEvidencePanel from "./SlaEvidencePanel.vue";
+import { reviewSlaPayload } from "./slaEvidence.js";
 import { pageCount, validPage } from "./pagination.js";
 import { slaResultState, slaMetric, slaResultReason } from "./slaResultDisplay.js";
 import { taskSubtasks, useDevelopmentSubtasks } from "./developmentSubtasks.js";
@@ -449,6 +454,15 @@ const development = ref({
 });
 const deliveryItems = ref([]);
 const afterSalesItems = ref([]);
+const selectedAfterSalesId = ref(null);
+const afterSalesCreateOrderId = ref(null);
+const afterSalesScope = computed(() => businessViewParams(user.value, enterprise.value, businessView.value));
+watch(() => `${user.value?.id}:${JSON.stringify(afterSalesScope.value)}`, () => { selectedAfterSalesId.value = null; afterSalesCreateOrderId.value = null; });
+async function afterSalesCreated(ticket) {
+  afterSalesCreateOrderId.value = null;
+  selectedAfterSalesId.value = ticket.id;
+  try { await loadViewData("delivery"); } catch { notify("工单已创建，列表刷新失败，请刷新列表"); }
+}
 const settlementItems = ref([]);
 const settlementFilterItems = ref([]);
 const settlementFilters = ref({ batch_id: "", settlement_id: "", order_no: "", status: "" });
@@ -555,6 +569,10 @@ const identityReview = ref(null);
 const identityReviewImages = ref({ front: "", back: "", license: "" });
 const personalEditImages = ref({ front: "", back: "" });
 const identityReviewComment = ref("");
+const identityReviewSla = ref({ level_id: "", reason: "" });
+const identityReviewLevels = ref([]);
+const identityReviewSaving = ref(false);
+const identityReviewLevelsLoading = ref(false);
 const identityImagePreview = ref(null);
 const verificationForm = ref({
   id_name: "",
@@ -1800,6 +1818,10 @@ async function uploadOrderDeliveryAttachment(event) {
 }
 async function transition(action) {
   if (!selectedOrder.value || orderActionSubmitting.value || deliveryAttachmentUploading.value) return;
+  if (action === "submit_after_sales" && nextActions(selectedOrder.value.order).some(item => item[0] === action)) {
+    afterSalesCreateOrderId.value = selectedOrder.value.order.id;
+    return;
+  }
   if (action === "provider_review") return openProviderReview();
   if (!nextActions(selectedOrder.value.order).some(item => item[0] === action)) return;
   const order = selectedOrder.value.order;
@@ -2736,21 +2758,33 @@ async function loadPersonalEditImage(fileId, key) {
 async function openEnterpriseReview(item) {
   identityReview.value = { kind: "enterprise", item };
   identityReviewComment.value = "";
+  identityReviewSla.value = { level_id: "", reason: "" };
+  identityReviewLevels.value = [];
+  identityReviewLevelsLoading.value = true;
+  try {
+    const response = await api.get("/sla/service-levels");
+    if (identityReview.value?.kind === "enterprise" && identityReview.value.item.id === item.id)
+      identityReviewLevels.value = response.data.items.filter(level => level.status === "active" && ["standard", "enterprise", "strategic"].includes(level.code));
+  } catch (error) { notify(error.response?.data?.detail || "SLA等级加载失败；未指定时使用标准级"); }
+  finally { identityReviewLevelsLoading.value = false; }
   identityReviewImages.value = { front: "", back: "", license: "" };
   await loadReviewImage(item.license_file_id, "license");
 }
 async function submitIdentityReview(decision) {
-  if (!identityReview.value) return;
+  if (!identityReview.value || identityReviewSaving.value || identityReviewLevelsLoading.value || !canReviewIdentity()) return;
   if (decision === "reject" && !identityReviewComment.value.trim()) return notify("拒绝实名必须填写原因");
+  if (decision === "approve" && identityReview.value.kind === "enterprise" && identityReview.value.item.verification_status === "verified" && identityReviewSla.value.level_id && !identityReviewSla.value.reason.trim()) return notify("调整已认证企业等级必须填写原因");
+  identityReviewSaving.value = true;
   try {
     const path = identityReview.value.kind === "personal" ? `/admin/verifications/personal/${identityReview.value.item.id}/review` : `/admin/verifications/enterprise/${identityReview.value.item.id}/review`;
-    await api.post(path, { decision, comment: identityReviewComment.value.trim() });
+    await api.post(path, { decision, comment: identityReviewComment.value.trim(),
+      ...reviewSlaPayload(identityReview.value.kind, decision, identityReviewSla.value.level_id, identityReviewSla.value.reason) });
     notify(decision === "approve" ? "实名认证已通过" : "实名认证已拒绝");
     identityReview.value = null;
     await loadViewData("users");
   } catch (error) {
     notify(error.response?.data?.detail || "实名认证审核失败");
-  }
+  } finally { identityReviewSaving.value = false; }
 }
 async function submitPersonalVerification() {
   try {
@@ -2856,6 +2890,7 @@ function taskCount(key) {
 }
 function nextActions(order) {
   const actions = orderWorkflowActions(order, user.value, enterprise.value);
+  if (canCreateAfterSales(order, user.value, enterprise.value?.id)) actions.push(["submit_after_sales", "发起售后"]);
   if (isOfflineFulfillmentOrder(order)) return actions;
   if (["pending_provider_review", "pending_payment", "rejected", "cancelled", "closed"].includes(order.main_status)) return actions;
   if (order.main_status === "created")
@@ -2881,11 +2916,6 @@ function nextActions(order) {
     actions.push(["confirm_order", "确认完成"]);
   if (order.delivery_status === "exception")
     actions.push(["retry_delivery", "整改后重试"]);
-  if (
-    order.after_sales_status === "none" &&
-    ["completed", "fulfilling"].includes(order.main_status)
-  )
-    actions.push(["submit_after_sales", "发起售后"]);
   return actions;
 }
 
@@ -3340,6 +3370,7 @@ onUnmounted(() => {
             <div><div class="eyebrow">SERVICE ASSURANCE · SLA</div><h1>平台服务与 SLA 保障</h1><p>统一配置服务等级目标，按 API 调用质量和交付及时率进行周期考核。</p></div>
             <button class="primary-btn" @click="evaluateSla"><RefreshCw :size="15" />立即考核</button>
           </div>
+          <SlaEvidencePanel :results="slaOverview.results" :assignments="slaOverview.service_level_assignments" />
           <div class="metric-grid">
             <div class="metric-card"><div class="metric-icon blue"><Activity :size="17" /></div><span>启用规则</span><strong>{{ slaOverview.summary.active_profiles || 0 }}</strong><small>共 {{ slaOverview.summary.profiles || 0 }} 条规则</small></div>
             <div class="metric-card"><div class="metric-icon green"><CheckCircle2 :size="17" /></div><span>达标结果</span><strong>{{ slaOverview.summary.met || 0 }}</strong><small>最近考核周期</small></div>
@@ -3813,8 +3844,7 @@ onUnmounted(() => {
                   <tbody>
                     <tr v-for="item in deliveryItems" :key="item.id">
                       <td>
-                        <span class="task-code">{{ item.id.slice(0, 10) }}</span
-                        ><small>{{ item.order_id.slice(0, 10) }}</small>
+                        <button class="text-btn task-code" @click="openOrder({ id: item.order_id })">{{ item.id.slice(0, 10) }}</button><small>{{ item.order_id.slice(0, 10) }}</small>
                       </td>
                       <td>{{ item.assignee }}</td>
                       <td>{{ item.method }}</td>
@@ -3848,18 +3878,15 @@ onUnmounted(() => {
                   class="after-sales-item"
                 >
                   <div>
-                    <span class="task-code">{{ item.ticket_no }}</span
-                    ><strong>{{ item.type }}</strong
+                    <button class="text-btn task-code" @click="selectedAfterSalesId = item.id">{{ item.ticket_no }}</button><strong>{{ item.type }}</strong
                     ><small>{{ item.description }}</small>
                   </div>
                   <span
                     :class="[
                       'status-pill',
-                      item.status === 'processing'
-                        ? 'status-in_progress'
-                        : 'status-done',
+                      ['completed', 'resolved'].includes(item.status) ? 'status-done' : ['force_closed', 'withdrawn', 'closed'].includes(item.status) ? 'status-todo' : 'status-in_progress',
                     ]"
-                    >{{ label(item.status) }}</span
+                    >{{ ticketStatus(item.status) }}</span
                   >
                 </div>
               </div>
@@ -5468,6 +5495,8 @@ onUnmounted(() => {
         </button>
       </form>
     </div>
+    <AfterSalesDetail v-if="selectedAfterSalesId" :key="`${selectedAfterSalesId}:${JSON.stringify(afterSalesScope)}`" :ticket-id="selectedAfterSalesId" :api="api" :params="afterSalesScope" :user="user" :enterprise-id="enterprise?.id" @close="selectedAfterSalesId = null" @changed="loadViewData('delivery')" />
+    <AfterSalesCreate v-if="afterSalesCreateOrderId" :key="`${afterSalesCreateOrderId}:${JSON.stringify(afterSalesScope)}`" :order-id="afterSalesCreateOrderId" :api="api" :params="afterSalesScope" @close="afterSalesCreateOrderId = null" @created="afterSalesCreated" />
     <div v-if="identityReview" class="modal-scrim" @click.self="identityReview = null">
       <section class="modal-card verification-review-modal" @click.stop>
         <div class="drawer-head">
@@ -5500,6 +5529,11 @@ onUnmounted(() => {
           <div class="review-long-text"><small>经营范围</small><p>{{ identityReview.item.business_scope || '-' }}</p></div>
           <div class="identity-review-images single"><div><small>营业执照</small><img v-if="identityReviewImages.license" :src="identityReviewImages.license" alt="营业执照" @click="identityImagePreview = { url: identityReviewImages.license, title: '营业执照' }" /><span v-else class="muted">图片加载失败</span></div></div>
         </template>
+        <div v-if="identityReview.kind === 'enterprise'" class="form-grid">
+          <label>认证后服务等级<select v-model="identityReviewSla.level_id"><option value="">默认标准级</option><option v-for="level in identityReviewLevels" :key="level.id" :value="level.id">{{ level.name }}</option></select></label>
+          <label>等级指派原因<textarea v-model="identityReviewSla.reason" maxlength="2000" rows="2"></textarea></label>
+          <p class="muted">仅审核通过时生效；已有工单冻结承诺不变。</p>
+        </div>
         <label class="review-comment">审核意见/拒绝原因<textarea v-model="identityReviewComment" placeholder="拒绝时必须填写原因"></textarea></label>
         <div class="modal-actions"><button class="secondary-btn" @click="identityReview = null">取消</button><button class="text-btn danger-text" @click="submitIdentityReview('reject')">拒绝</button><button class="primary-btn" @click="submitIdentityReview('approve')">通过</button></div>
       </section>

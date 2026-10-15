@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { canCreateAfterSales } from "../src/afterSales.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, offlineDeliveryActions, canUploadDeliveryAttachment, deliveryTransitionPayload } from "../src/orderWorkflow.js";
 
 const enterprise = { id: "provider" };
@@ -110,7 +111,8 @@ function harness() {
     selectedOrder: { value: { order: { ...order } } }, user: { value: { ...admin } }, enterprise: { value: enterprise },
     providerReview: { value: null }, providerReviewForm: { value: { amount: "", cost: "", reason: "" } },
     providerReviewLoading: { value: false }, providerReviewSubmitting: { value: false }, orderActionSubmitting: { value: false },
-    canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload,
+    canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload, canCreateAfterSales,
+    afterSalesCreateOrderId: { value: null },
     deliveryAttachmentUploading: { value: false }, deliveryAttachmentDescription: { value: "" },
     orderDeliveryAttachments: { value: { orderId: "", tasks: [], items: [], loading: false, error: "" } }, FormData,
     calls: [], messages: [], refreshes: [], api: {}, confirmDialog: async () => true, promptDialog: async () => "reason",

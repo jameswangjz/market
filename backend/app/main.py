@@ -4032,22 +4032,34 @@ def clamav_scan(content: bytes) -> tuple[str, str]:
         return "unavailable", str(exc)[:240]
 
 
-def clamav_scan_stream(fileobj, size: int) -> tuple[str, str]:
+def clamav_scan_stream(fileobj, size: int, *, timeout_seconds: float | None = None) -> tuple[str, str]:
     """Scan an UploadFile stream without materializing the whole object."""
     if not CLAMAV_ENABLED:
         return "disabled", "ClamAV scanning is disabled by configuration"
+    deadline = time.monotonic() + timeout_seconds if timeout_seconds is not None else None
+    def budget(connection):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("ClamAV scan deadline exceeded")
+            connection.settimeout(min(30, remaining))
     try:
-        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=30) as connection:
+        with socket.create_connection((CLAMAV_HOST, CLAMAV_PORT), timeout=min(30, timeout_seconds) if deadline else 30) as connection:
+            budget(connection)
             connection.sendall(b"zINSTREAM\0")
             remaining = size
             while remaining:
                 chunk = fileobj.read(min(1024 * 1024, remaining))
                 if not chunk:
                     break
+                budget(connection)
                 connection.sendall(struct.pack("!I", len(chunk)))
+                budget(connection)
                 connection.sendall(chunk)
                 remaining -= len(chunk)
+            budget(connection)
             connection.sendall(struct.pack("!I", 0))
+            budget(connection)
             response = connection.recv(4096).decode("utf-8", errors="replace").replace("\x00", "").strip()
         if remaining:
             return "error", "上传文件流长度与声明大小不一致"
@@ -6054,6 +6066,7 @@ def delivery_tasks(request: Request, enterprise_id: str = Query(default=""), bus
 
 @app.get("/api/after-sales")
 def after_sales(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+    after_sales_workflow["active"](user)
     if user.verified_status != "verified":
         raise HTTPException(403, "仅已实名用户可查看售后工单")
     scope = resolve_business_scope(request, db, user, Membership, business_view)
@@ -6069,7 +6082,7 @@ def after_sales(request: Request, enterprise_id: str = Query(default=""), busine
     if scope is not None:
         stmt = stmt.where(AfterSalesTicket.order_id.in_(select(Order.id).where(order_predicate(Order, scope))))
     items = db.scalars(stmt.order_by(AfterSalesTicket.created_at.desc())).all()
-    return {"items": [after_sales_workflow["output"](x) for x in items]}
+    return {"items": after_sales_workflow["output_list"](db, user, items)}
 
 
 @app.get("/api/enterprise-settlements")
@@ -7347,6 +7360,8 @@ def download_scan_report(file_id: str, request: Request, enterprise_id: str = Qu
     item = db.get(FileObject, file_id)
     if not item:
         raise HTTPException(404, "文件不存在")
+    if item.file_role == "after_sales_attachment":
+        raise HTTPException(404, "售后附件仅通过受控工单接口提供")
     if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}:
         if item.product_id:
             product = db.get(Product, item.product_id)
@@ -7433,6 +7448,8 @@ def upload_file(
     user: User = Depends(current_user),
     db: Session = Depends(db_session),
 ):
+    if file_role == "after_sales_attachment":
+        raise HTTPException(422, "售后附件必须通过工单上传")
     if product_id:
         product = product_for_enterprise(product_id, user, db, request.headers.get("X-Enterprise-Id", ""))
         require_enterprise_editor(db, user, Membership, product.enterprise_id)
@@ -7568,6 +7585,10 @@ def download_file(file_id: str, request: Request, order_id: str = "", enterprise
     item = db.get(FileObject, file_id)
     if not item or item.status == "deleted":
         raise HTTPException(404, "文件不存在")
+    if item.file_role == "after_sales_attachment":
+        collaboration = after_sales_workflow["collaboration"]
+        with collaboration["guarded"](db, user, file_id, "download_attachment"):
+            return collaboration["download_file"](db, user, file_id, request)
     reviewer = user.platform_role in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}
     owner = item.owner_id == user.id
     if item.product_id and item.file_role not in {"product_data", "delivery_attachment"} and not reviewer:
