@@ -1,0 +1,43 @@
+{
+  "status": "partial",
+  "coverage": [],
+  "task": "TRD-R3-BE-011",
+  "scope": "economic segment arithmetic, Redis switch primitive, native gateway race guard and version-change charge attribution",
+  "runtime": "Python 3.12 with isolated Redis 7.4.11 and real Redis EVAL; APISIX transport wrapper uses actual plugin Lua",
+  "group_tests": {
+    "passed": 144,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 45.427,
+    "log": "/tmp/market-be011-economic-boundary-group-20261015-a.log",
+    "sha256": "fef889b0db586078d23af827f70e593fcd21e7ffd39a8bee663a89e20928c477"
+  },
+  "final_attribution_delta": {
+    "passed": 26,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 15.597,
+    "log": "/tmp/market-be011-attribution-final-20261015-a.log",
+    "sha256": "06defff4f8f338e3eaed30ff80368d64a975fcf4965772edfa8f713bd6c2f9e6",
+    "note": "Resource uniqueness and ID validation changed after group run; final resources, revisions and Saga integration were rerun. Counts overlap and must not be summed."
+  },
+  "source_sha256": {
+    "backend/app/refund_economic_segments.py": "0cc81d67be0e1b215b0e8b1d283fb50132dee83d18115651c7bfe10f40ccba10",
+    "backend/app/refund_segment_boundary.py": "eed7ad0ac5a3ec04d0fff994ff6b333f21bd6b7aec7ed00de1c2a3cbe2989d1f",
+    "backend/app/version_change_resources.py": "7189f5a7e6bc90080a1b8328aa3d9d2d2f000838d0eadc2e6ac86775748d893e",
+    "k8s/market-gateway-quota.lua": "84faf646edb68f61518670d37d2aacaf46ad3a2225c9ce1f47deaf32a6ceacc8"
+  },
+  "review_corrections": [
+    "Exact integer-cent arithmetic under low Decimal precision",
+    "Support 36-month schedules larger than 4 KiB and exclude expired periods from refundable boundary",
+    "A persisted intent with failed metadata HSET cannot be auto-recovered using the stale watermark",
+    "A subscription bucket cannot be attributed to multiple orders or duplicate terms"
+  ],
+  "limits": [
+    "Economic planner and policy-switch receipt primitive are not yet connected to the refund database transaction",
+    "No multi-payment reservation persistence or ordinary refund execution",
+    "No business refunds or user orders were mutated by these tests",
+    "Native APISIX deployment checks are separate from isolated Redis tests",
+    "BE-011 is not ready for final acceptance"
+  ]
+}

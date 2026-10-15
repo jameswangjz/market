@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "coverage": [],
+  "scope": "deployment provenance and actual read-only refund GET checks only",
+  "deployment": "20261015091928-11cf21b",
+  "commit": "11cf21b4aae058d098ffd8ce20802fe4743b3cf8",
+  "api_pod": "market-api-7c8dbbbb46-nhxvl",
+  "web_entry": "index-DJVD49xr.js",
+  "installed_source_sha256": {
+    "refund_planning.py": "409ae92e4755b1167776735ab9123da467f6b0b794655f2d583610370d4562d9",
+    "refund_funding.py": "c8e660d6f90f55fc635fb3a9a257a325ac7f4b5d657e481795f7679311b7be90",
+    "api_charge_ledger.py": "6c01df2e934cf941ed737ea32df1f69b38f391d85622be6d914791f1a3dfa666"
+  },
+  "http_roles": {
+    "super_admin": 200,
+    "platform_operator": 200,
+    "finance_settlement": 403,
+    "delivery_monitor": 403
+  },
+  "refund_rows": 0,
+  "charge_worker_source_registered": true,
+  "protected_order_count": 1,
+  "mutating_http_requests": 0,
+  "test_database_writes": 0,
+  "limits": [
+    "Not a complete BE-011 acceptance or refund execution test",
+    "No quote POST, refund approval or funds execution",
+    "Web entry is not an API health endpoint assertion",
+    "Protected order count is not a full row hash assertion"
+  ]
+}

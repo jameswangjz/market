@@ -106,9 +106,9 @@ class VersionChangeResourceTests(unittest.TestCase):
         anchor = CalendarAnchor(anchor_at)
         expired_bounds = anchor.term(1, start_month=0)
         active_bounds = anchor.term(2, start_month=1)
-        expired = SimpleNamespace(id='expired-term', months=1, start_month=0,
+        expired = SimpleNamespace(id='expired-term', order_id='expired-order', months=1, start_month=0,
             starts_at=expired_bounds.start, ends_at=expired_bounds.end)
-        active = SimpleNamespace(id='active-term', months=2, start_month=1,
+        active = SimpleNamespace(id='active-term', order_id='active-order', months=2, start_month=1,
             starts_at=active_bounds.start, ends_at=active_bounds.end)
         combo = SimpleNamespace(id='combo', generation=4, total_months=3, anchor_at=anchor_at)
         old = {'quota': {'rate_limit_per_minute': 3, 'daily_quota': 10, 'monthly_quota': 40}}
@@ -122,6 +122,98 @@ class VersionChangeResourceTests(unittest.TestCase):
         self.assertEqual([p['period_key'] for p in original], [p['period_key'] for p in changed])
         self.assertEqual([p['route_key'] for p in changed], ['route-old', 'route-old', 'route-target'])
         self.assertEqual([p['daily_quota'] for p in changed], [10, 10, 20])
+        for side in ('original', 'target'):
+            self.assertEqual([(p['order_id'], p['segment_id']) for p in result[side]],
+                [('expired-order', 'expired-term'), ('active-order', 'active-term'),
+                 ('active-order', 'active-term')])
+
+    def test_two_period_order_keeps_charge_identity_across_route_change(self):
+        anchor_at = __import__('datetime').datetime(2026, 1, 1,
+            tzinfo=__import__('datetime').timezone.utc)
+        anchor = CalendarAnchor(anchor_at)
+        bounds = anchor.term(2)
+        term = SimpleNamespace(id='term-1', order_id='order-1', months=2, start_month=0,
+            starts_at=bounds.start, ends_at=bounds.end)
+        combo = SimpleNamespace(id='combo', generation=2, total_months=2, anchor_at=anchor_at)
+        old = {'quota': {'rate_limit_per_minute': 3, 'daily_quota': 10, 'monthly_quota': 40}}
+        target = {'delivery': {'quota': {'rate_limit_per_minute': 8,
+            'daily_quota': 20, 'monthly_quota': 90}}}
+        result = _quota_period_plan(combo, [(term, old)], {'term-1': target},
+            'route-old', 'route-target', anchor_at)
+        for side, route in (('original', 'route-old'), ('target', 'route-target')):
+            self.assertEqual(len(result[side]), 2)
+            for row in result[side]:
+                self.assertEqual((row['order_id'], row['segment_id'], row['route_key']),
+                                 ('order-1', 'term-1', route))
+        for original, changed in zip(result['original'], result['target']):
+            for field in ('period_key', 'start_at', 'end_at', 'order_id', 'segment_id'):
+                self.assertEqual(original[field], changed[field])
+
+    def test_overlapping_or_duplicate_terms_reject_ambiguous_bucket_identity(self):
+        anchor_at = __import__('datetime').datetime(2026, 1, 1,
+            tzinfo=__import__('datetime').timezone.utc)
+        anchor = CalendarAnchor(anchor_at)
+        combo = SimpleNamespace(id='combo', generation=2, total_months=3, anchor_at=anchor_at)
+        old = {'quota': {'rate_limit_per_minute': 3, 'daily_quota': 10, 'monthly_quota': 40}}
+        terms, snapshots = [], {}
+        for name, start_month, months in (('first', 0, 2), ('overlap', 1, 1), ('future', 2, 1)):
+            bounds = anchor.term(months, start_month=start_month)
+            term = SimpleNamespace(id=name + '-term', order_id=name + '-order',
+                months=months, start_month=start_month, starts_at=bounds.start, ends_at=bounds.end)
+            terms.append((term, old))
+            snapshots[term.id] = {'delivery': old}
+        for conflicting in (terms, [terms[0], terms[0]]):
+            with self.subTest(terms=conflicting):
+                with self.assertRaisesRegex(ValueError, 'duplicate charge attribution'):
+                    _quota_period_plan(combo, conflicting, snapshots, 'old', 'target', anchor_at)
+
+    def test_nonoverlapping_current_and_future_orders_keep_each_term_identity(self):
+        anchor_at = __import__('datetime').datetime(2026, 1, 1,
+            tzinfo=__import__('datetime').timezone.utc)
+        anchor = CalendarAnchor(anchor_at)
+        combo = SimpleNamespace(id='combo', generation=2, total_months=3, anchor_at=anchor_at)
+        old = {'quota': {'rate_limit_per_minute': 3, 'daily_quota': 10, 'monthly_quota': 40}}
+        terms, snapshots = [], {}
+        for name, start_month, months in (('first', 0, 2), ('future', 2, 1)):
+            bounds = anchor.term(months, start_month=start_month)
+            term = SimpleNamespace(id=name + '-term', order_id=name + '-order',
+                months=months, start_month=start_month, starts_at=bounds.start, ends_at=bounds.end)
+            terms.append((term, old))
+            snapshots[term.id] = {'delivery': old}
+        result = _quota_period_plan(combo, terms, snapshots, 'old', 'target', anchor_at)
+        expected = [('first-order', 'first-term'), ('first-order', 'first-term'),
+                    ('future-order', 'future-term')]
+        for side in ('original', 'target'):
+            self.assertEqual([(row['order_id'], row['segment_id']) for row in result[side]], expected)
+            self.assertEqual(len({row['period_key'] for row in result[side]}), 3)
+        self.assertEqual(result['target'][-1]['period_key'], 'combo:2:2')
+
+    def test_new_period_plan_requires_real_term_charge_identity(self):
+        anchor_at = __import__('datetime').datetime(2026, 1, 1,
+            tzinfo=__import__('datetime').timezone.utc)
+        bounds = CalendarAnchor(anchor_at).term(1)
+        combo = SimpleNamespace(id='combo', generation=1, total_months=1, anchor_at=anchor_at)
+        old = {'quota': {'rate_limit_per_minute': 3, 'daily_quota': 10, 'monthly_quota': 40}}
+        for field in ('id', 'order_id'):
+            for value in (None, '', ' ', 123, 'x' * 37, 'bad:id', 'bad.id', 'id\n', '\u00e9', '\uff21'):
+                with self.subTest(field=field, value=value):
+                    values = dict(id='term', order_id='order', months=1, start_month=0,
+                                  starts_at=bounds.start, ends_at=bounds.end)
+                    values[field] = value
+                    with self.assertRaisesRegex(ValueError, 'charge attribution is missing'):
+                        _quota_period_plan(combo, [(SimpleNamespace(**values), old)],
+                            {'term': {'delivery': old}}, 'old', 'target', anchor_at)
+            values.pop(field)
+            with self.subTest(field=field, missing=True):
+                with self.assertRaisesRegex(ValueError, 'charge attribution is missing'):
+                    _quota_period_plan(combo, [(SimpleNamespace(**values), old)],
+                        {'term': {'delivery': old}}, 'old', 'target', anchor_at)
+        for value in ('A', 'aZ09_-', 'a' * 36):
+            term = SimpleNamespace(id=value, order_id=value, months=1, start_month=0,
+                                   starts_at=bounds.start, ends_at=bounds.end)
+            result = _quota_period_plan(combo, [(term, old)], {value: {'delivery': old}},
+                                       'old', 'target', anchor_at)
+            self.assertEqual(result['target'][0]['segment_id'], value)
 
     def test_saas_change_requires_identity_bound_status_before_local_version_moves(self):
         class SaaSSubscription: pass

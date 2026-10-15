@@ -51,7 +51,22 @@ end
 
 local subscription_script = [[
 -- Redis script errors do not roll back earlier writes; validate before INCR.
-local tracking = #KEYS == 6
+local tracking = #KEYS == 7
+if (#KEYS ~= 4 and #KEYS ~= 7) or #ARGV ~= (tracking and 15 or 9) then
+    return {4}
+end
+local policy_offset = tracking and 11 or 5
+local metadata_key = KEYS[#KEYS]
+-- Compare the exact policy read by access, before any debit or ledger write.
+local fields = {'status', 'mode', 'quota_scope', 'subscription_periods'}
+for i, field in ipairs(fields) do
+    if redis.call('HGET', metadata_key, field) ~= ARGV[policy_offset + i] then
+        return {4}
+    end
+end
+if ARGV[policy_offset + 1] ~= 'active' or ARGV[policy_offset + 2] ~= 'subscription' then
+    return {4}
+end
 local epoch
 if tracking then
     epoch = redis.call('HGET', KEYS[6], 'run_id')
@@ -128,7 +143,7 @@ local function token(value)
     return (value:gsub("%%", "%%25"):gsub(":", "%%3A"))
 end
 
-local function subscription_access(red, conf, ctx, values)
+local function subscription_access(red, conf, ctx, values, metadata_key)
     local function finish(code, message)
         red:set_keepalive(60000, 100)
         return reject(code, message)
@@ -203,6 +218,12 @@ local function subscription_access(red, conf, ctx, values)
         arguments[9], arguments[10] = active.period_key, active.route_key
         arguments[11] = string.format('%.0f', precise_now * 1000000)
     end
+    args[key_count + 1] = metadata_key
+    key_count = key_count + 1
+    arguments[#arguments + 1] = values.status
+    arguments[#arguments + 1] = values.mode
+    arguments[#arguments + 1] = values.quota_scope
+    arguments[#arguments + 1] = values.subscription_periods
     for _, value in ipairs(arguments) do args[#args + 1] = value end
     local result = red:eval(subscription_script, key_count, unpack(args))
     red:set_keepalive(60000, 100)
@@ -263,7 +284,8 @@ function _M.access(conf, ctx)
     local monthly_limit = conf.monthly_quota or 0
     local total_limit = conf.total_quota or 0
     if consumer ~= "" then
-        local metadata = red:hgetall("market:apisix:credential:" .. consumer)
+        local metadata_key = "market:apisix:credential:" .. consumer
+        local metadata = red:hgetall(metadata_key)
         if not metadata then
             red:set_keepalive(60000, 100)
             return reject(503, "API 网关配额服务不可用")
@@ -278,7 +300,7 @@ function _M.access(conf, ctx)
             local values = {}
             for i = 1, #metadata, 2 do values[metadata[i]] = metadata[i + 1] end
             if values.mode or values.quota_scope or values.subscription_periods then
-                return subscription_access(red, conf, ctx, values)
+                return subscription_access(red, conf, ctx, values, metadata_key)
             end
             if conf.lookup_consumer then
                 if values.status and values.status ~= "active" then
@@ -308,7 +330,7 @@ function _M.access(conf, ctx)
         end
         local values = {}
         for i = 1, #metadata, 2 do values[metadata[i]] = metadata[i + 1] end
-        return subscription_access(red, conf, ctx, values)
+        return subscription_access(red, conf, ctx, values, "market:apisix:credential:" .. consumer)
     end
     red:set_keepalive(60000, 100)
     if not result then

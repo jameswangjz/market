@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import json
+import re
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
@@ -13,7 +14,12 @@ def _quota_period_plan(combination, terms, snapshots, old_route_key, target_rout
     anchor = CalendarAnchor(combination.anchor_at)
     instant = at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)
     result = {'original': [], 'target': []}
+    seen_period_keys = set()
     for term, original_delivery in terms:
+        order_id, segment_id = getattr(term, 'order_id', None), getattr(term, 'id', None)
+        if any(not isinstance(value, str) or re.fullmatch(r'[A-Za-z0-9_-]{1,36}', value) is None
+                for value in (order_id, segment_id)):
+            raise ValueError('Subscription term charge attribution is missing or invalid')
         bounds = anchor.term(term.months, start_month=term.start_month)
         if term.starts_at != bounds.start or term.ends_at != bounds.end:
             raise ValueError('Subscription term differs from its frozen calendar')
@@ -23,6 +29,10 @@ def _quota_period_plan(combination, terms, snapshots, old_route_key, target_rout
             raise ValueError('Target subscription quota snapshot is incomplete')
         target_delivery = snapshot['delivery'] if snapshot else original_delivery
         for index in range(term.start_month, min(term.start_month + term.months, combination.total_months)):
+            period_key = f'{combination.id}:{combination.generation}:{index}'
+            if period_key in seen_period_keys:
+                raise ValueError('Subscription quota period has duplicate charge attribution')
+            seen_period_keys.add(period_key)
             period = anchor.period(index)
             active = period.end > instant
             for side, delivery, route_key in (
@@ -31,8 +41,8 @@ def _quota_period_plan(combination, terms, snapshots, old_route_key, target_rout
                      target_route_key if active else old_route_key)):
                 quota = delivery.get('quota', {})
                 row = {'start_at': int(period.start.timestamp()), 'end_at': int(period.end.timestamp()),
-                    'period_key': f'{combination.id}:{combination.generation}:{index}',
-                    'route_key': route_key}
+                    'period_key': period_key,
+                    'route_key': route_key, 'order_id': order_id, 'segment_id': segment_id}
                 for field in ('rate_limit_per_minute', 'daily_quota', 'monthly_quota'):
                     row[field] = int(quota[field])
                 result[side].append(row)
