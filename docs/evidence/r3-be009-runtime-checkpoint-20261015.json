@@ -1,0 +1,18 @@
+{
+  "status": "partial",
+  "coverage": ["TRD-R3-BE-009"],
+  "runtime": {
+    "api_and_web": "20261015055351-ce117ab",
+    "gateway_fix_release": "20261015060512-e4d37c6",
+    "gateway_fix_verification": "in_progress"
+  },
+  "local_tests": {"combined": 255, "gateway_hook_targeted": 35},
+  "real_runtime_first_attempt": {
+    "transactions": "passed",
+    "gateway_ingestion": "failed_before_init_hook_fix",
+    "probe_slot": "not_yet_eligible_at_immediate_collection",
+    "claimed_complete": false
+  },
+  "next": "Verify replay, wait for a real eligible slot, assert healthy persisted probes and unchanged buyer quota, evaluate and verify cleanup",
+  "user_acceptance_performed": false
+}

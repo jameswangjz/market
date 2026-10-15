@@ -1,0 +1,137 @@
+{
+  "status": "passed",
+  "source": "installed app with real PostgreSQL and APISIX",
+  "payment": "simulated",
+  "bank_payment_tested": false,
+  "transaction": {
+    "status": "passed",
+    "checks": [
+      "API service: manual, negative, credential, renewal",
+      "Model-serving API application (canonical api): manual, negative, credential, renewal"
+    ],
+    "worker_exercised": false,
+    "payment": "simulated",
+    "upstream": "mock-api /v1/echo with platform OAuth",
+    "negative_health": "real 404 before publication; delivery health-path evidence tamper; no service outage"
+  },
+  "quota_check": "Buyer day/month counters; expiring minute keys checked by Lua isolation tests",
+  "probe_preflight": [
+    {
+      "product_id": "qa-api-auto-243fe1240af5-p0",
+      "status_code": 200
+    },
+    {
+      "product_id": "qa-api-auto-243fe1240af5-p1",
+      "status_code": 200
+    }
+  ],
+  "probe_results": [
+    {
+      "created": 1,
+      "duplicates": 0,
+      "skipped": 0,
+      "healthy": 1,
+      "failed": 0,
+      "source_missing": 0,
+      "unknown": 0
+    },
+    {
+      "created": 0,
+      "skipped": 1
+    },
+    {
+      "created": 1,
+      "duplicates": 0,
+      "skipped": 0,
+      "healthy": 1,
+      "failed": 0,
+      "source_missing": 0,
+      "unknown": 0
+    },
+    {
+      "created": 0,
+      "skipped": 1
+    }
+  ],
+  "healthy_probe_rows": 2,
+  "real_gateway_events": 6,
+  "real_scoped_business_events": 4,
+  "verified_order_contracts": 4,
+  "assessment_request_states": [
+    {
+      "order_id": "2381f175d30565e0bed124896d1b63eb",
+      "future_term": true,
+      "metric": {
+        "completeness_percent": null,
+        "contract_rule_version": "a1d27c4e9bc2ac3b83f968a8c0a9e698a28ceca4467fd56c4dde278bd8c48819",
+        "coverage_percent": null,
+        "frozen_tier": "standard",
+        "metric": "request_error_rate",
+        "reason": "service_not_started",
+        "rule_version": "d9241e235cb48d8f7b29bff7f85bde460dfd85cdaf1782da6ef784c3f7ae991b",
+        "sample_count": 0,
+        "status": "not_started",
+        "target": 10,
+        "value": null,
+        "warning": 8
+      }
+    },
+    {
+      "order_id": "76462dafe25f7e97dcad909a8c5a31a6",
+      "future_term": true,
+      "metric": {
+        "completeness_percent": null,
+        "contract_rule_version": "a1d27c4e9bc2ac3b83f968a8c0a9e698a28ceca4467fd56c4dde278bd8c48819",
+        "coverage_percent": null,
+        "frozen_tier": "standard",
+        "metric": "request_error_rate",
+        "reason": "service_not_started",
+        "rule_version": "d9241e235cb48d8f7b29bff7f85bde460dfd85cdaf1782da6ef784c3f7ae991b",
+        "sample_count": 0,
+        "status": "not_started",
+        "target": 10,
+        "value": null,
+        "warning": 8
+      }
+    },
+    {
+      "order_id": "b139856875c39b949b3dcab48b83929c",
+      "future_term": false,
+      "metric": {
+        "completeness_percent": null,
+        "contract_rule_version": "a1d27c4e9bc2ac3b83f968a8c0a9e698a28ceca4467fd56c4dde278bd8c48819",
+        "coverage_percent": null,
+        "frozen_tier": "standard",
+        "metric": "request_error_rate",
+        "reason": "source_missing",
+        "rule_version": "d9241e235cb48d8f7b29bff7f85bde460dfd85cdaf1782da6ef784c3f7ae991b",
+        "sample_count": 2,
+        "status": "insufficient_data",
+        "target": 10,
+        "value": null,
+        "warning": 8
+      }
+    },
+    {
+      "order_id": "c4dbdc6a50d8ae19ec61c3c28cab4077",
+      "future_term": false,
+      "metric": {
+        "completeness_percent": null,
+        "contract_rule_version": "a1d27c4e9bc2ac3b83f968a8c0a9e698a28ceca4467fd56c4dde278bd8c48819",
+        "coverage_percent": null,
+        "frozen_tier": "standard",
+        "metric": "request_error_rate",
+        "reason": "source_missing",
+        "rule_version": "d9241e235cb48d8f7b29bff7f85bde460dfd85cdaf1782da6ef784c3f7ae991b",
+        "sample_count": 2,
+        "status": "insufficient_data",
+        "target": 10,
+        "value": null,
+        "warning": 8
+      }
+    }
+  ],
+  "order_assessments": 4,
+  "overview_verified": true,
+  "cleanup": "exact fixture roots, facts and probe consumers removed"
+}

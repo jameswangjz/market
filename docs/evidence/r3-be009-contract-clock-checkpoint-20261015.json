@@ -1,0 +1,35 @@
+{
+  "status": "partial",
+  "coverage": ["TRD-R3-BE-009"],
+  "source_kind": "local_working_tree_not_deployed",
+  "completed_scope": [
+    "Persistent ticket clocks and explicit intervention response",
+    "First effective payment freezes original order SLA and deadline atomically",
+    "First adapter-verified online delivery records immutable success evidence",
+    "Frozen order thresholds remain independent of current enterprise tier",
+    "Transactional deduplicated ticket SLA notifications and paged worker",
+    "Independent probe persistence module with explicit missing-source status",
+    "Frontend neutral insufficient-data and unknown result states"
+  ],
+  "parent_verification": {
+    "backend_combined": {"tests": 110, "failures": 0, "seconds": 21.149},
+    "backend_regression_separate_overlapping": {"tests": 49, "failures": 0, "seconds": 17.544},
+    "frontend_display": {"tests": 6, "failures": 0},
+    "deployment_shell_syntax": "passed",
+    "git_diff_check": "passed"
+  },
+  "prior_pg_verification": {
+    "tests": 5,
+    "scope": "Ticket clocks, concurrency and atomic rollback only; not new payment contracts",
+    "temporary_database_remaining": 0
+  },
+  "remaining": [
+    "Actual business-entry target and ephemeral probe identity resolver",
+    "APISIX canonical terminal request ingestion and attribution",
+    "Online order assessment persistence, incremental watermarks and metric alerts",
+    "Replace legacy evaluator which still uses old statistics and empty-source defaults",
+    "Deployment and deployed regression of this batch"
+  ],
+  "business_data_modified": false,
+  "user_acceptance_performed": false
+}

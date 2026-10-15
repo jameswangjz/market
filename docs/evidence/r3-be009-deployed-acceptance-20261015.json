@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-BE-009"],
+  "scope": "implemented contract clocks, source aggregation, deployed collection, terminal logging, persistent online evaluation and legacy entry replacement",
+  "runtime": {"api_and_web": "20261015055351-ce117ab", "gateway_configuration": "20261015061821-16cd11f", "proof_script_commit": "3fc509a"},
+  "real_runtime_evidence": "r3-be009-real-runtime-20261015.json",
+  "real_runtime_sha256": "dc2cab4696d133eda6e1642deeb9d4de2f19b58370e41379e38ff3cd09b90f65",
+  "live_http_evidence": "r3-be009-live-http-entry-20261015.json",
+  "live_http_sha256": "fcc2f4afd648fee385a308f210850ac0205a361daa4e6b545d1c6aef4ed6465d",
+  "healthy_persisted_probes": 2,
+  "scoped_business_terminal_events": 4,
+  "verified_order_contracts_and_assessments": 4,
+  "buyer_quota_unchanged_by_probes": true,
+  "test_fixture_cleanup": "completed; earlier asynchronous residue of 4 own events also removed",
+  "protected_order_and_dependent_product": "both present and linked; original full-row fingerprint formula unavailable, not asserting bytewise equality",
+  "test_groups": {"combined_previous": 255, "latest_gateway_protocol": 43, "latest_evaluation": 59, "proof_guards": 6, "real_pg_clock_concurrency": 5, "overlap": true},
+  "limitations": ["Real sample thresholds were not manufactured: fresh orders remain insufficient_data; threshold boundaries tested with isolated fixtures", "Future renewal terms remain not_started", "SaaS business telemetry without an authorized source remains source_missing", "No real bank payment, production capacity/HA/retention-duration certification, or full browser transaction claim", "Abnormal producer loss or incomplete closed-window evidence remains insufficient_data; development Redis is not a production durable HA queue"],
+  "user_acceptance_performed": false
+}

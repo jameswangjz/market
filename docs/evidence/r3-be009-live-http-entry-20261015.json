@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "scope": "deployed legacy SLA endpoint replacement and persistence",
+  "transport": "actual HTTP through market-web reverse proxy",
+  "api_image": "market-api:20261015055351-ce117ab",
+  "gateway_configuration": "20261015061821-16cd11f",
+  "legacy_evaluate_status": 200,
+  "new_assessments_persisted": 4,
+  "overview_status": 200,
+  "buyer_evaluate_status": 403,
+  "fixture_manifest": "/tmp/sla-real-16cd11f-r2-owned.json",
+  "credentials_in_evidence": false,
+  "user_acceptance_performed": false
+}
