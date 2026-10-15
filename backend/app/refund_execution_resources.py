@@ -95,8 +95,10 @@ for i, row in ipairs(p.checks) do
         or redis.call('HGET', coverage, 'baseline') ~= '0' then fail('unknown coverage') end
     local used = tonumber(raw or '0')
     observed[i] = raw or '0'
+    if row.minimum_used and used < row.minimum_used then fail('known usage lost') end
     if row.limit and used > row.limit then fail('concurrent usage exceeds reduced quota') end
     if row.future and used ~= 0 then fail('future usage') end
+    if row.expired_end and tonumber(now[1]) < row.expired_end then fail('expired rights are still live') end
     if p.basis == 'time' and row.cutoff > 0 and tonumber(now[1]) >= row.cutoff then fail('refunded tail already consumed') end
 end
 local hset = {'HSET', KEYS[1]}
@@ -201,15 +203,16 @@ def install(ns):
                     fail('Ambiguous refund period ownership')
             changes, checks = {}, []
             rounding = {}
+            accounting = []
             observed_used = 0
             delta = economic['recovery_delta']
             now = ns['now']().timestamp()
             if economic['basis'] == 'calls':
                 if economic.get('recovery_unit') != 'calls' or not economic.get('charge_ledger', {}).get('complete'):
                     fail('Finite refund requires frozen complete charge evidence')
-                for p in reversed(selected):
-                    if p['end_at'] <= now:
-                        continue
+                # Recognize unused expired rights before reducing live grants.
+                # Their counters and zero-baseline coverage remain mandatory.
+                for p in sorted(reversed(selected), key=lambda p: p['end_at'] > now):
                     if p['monthly_quota'] <= 0:
                         fail('Finite recovery cannot use unlimited bucket')
                     counter = 'market:apisix:quota:subscription:month:' + token(combo.id) + ':' + token(p['period_key'])
@@ -217,12 +220,19 @@ def install(ns):
                     if raw is not None and (not raw.isdigit() or str(int(raw)) != raw):
                         fail('Invalid refund usage counter')
                     used = int(raw or '0')
+                    if used > p['monthly_quota']:
+                        fail('Refund usage exceeds owned bucket quota')
                     observed_used += used
                     take = min(delta, max(0, p['monthly_quota'] - used))
                     limit = p['monthly_quota'] - take
                     delta -= take
                     changes[p['period_key']] = None if limit == 0 else dict(p, monthly_quota=limit)
-                    checks.append(dict(period_key=p['period_key'], limit=limit, future=p['start_at'] > now, cutoff=0))
+                    expired = p['end_at'] <= now
+                    checks.append(dict(period_key=p['period_key'], limit=limit, future=p['start_at'] > now,
+                        cutoff=0, minimum_used=used, **({'expired_end': p['end_at']} if expired else {})))
+                    accounting.append(dict(period_key=p['period_key'], quota_before=p['monthly_quota'],
+                        observed_used=used, recovered_calls=take, quota_after=limit,
+                        recognition='expired_unused_rights' if expired else 'live_quota_reduction'))
                 if delta:
                     fail('Usage consumed the frozen refundable calls')
                 if observed_used < economic.get('charged_calls', 0):
@@ -246,7 +256,8 @@ def install(ns):
             target = dict(expected, subscription_periods=json.dumps(target_periods, separators=(',', ':')))
             return dict(kind='api', credential_id=credential.id, consumer=credential.apisix_consumer_name,
                 route_id=route.id, key=key, expected=expected, target=target, checks=checks,
-                run_id=run_id, basis=economic['basis'], target_hash=digest(target), **rounding)
+                run_id=run_id, basis=economic['basis'], target_hash=digest(target),
+                call_recovery_accounting=accounting, **rounding)
         finally:
             client.close()
 

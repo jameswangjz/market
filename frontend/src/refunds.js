@@ -86,7 +86,8 @@ const executionStates = Object.freeze({ pending: "等待处理", requested: "已
   in_batch: "已纳入清算批次", paid: "清算已付款", applied: "已回收",
   processing: "处理中", succeeded: "已完成", completed: "已完成", failed: "失败", unavailable: "不可用", posted: "已入账" });
 export function refundExecutionStatus(value) { return Object.hasOwn(executionStates, value) ? executionStates[value] : "状态待确认"; }
-export function refundExecutionFailure(value) {
+export function refundExecutionFailure(value, status) {
+  if (status === "completed" || status === "succeeded") return "";
   const reasons = { payment_failed: "资金处理失败", resource_failed: "资源回收失败", timeout: "处理超时，需核对结果",
     completion_failed: "退款完成确认失败，请由平台核对已完成资金腿后重试",
     reconciliation_required: "需要人工核对", source_restarted: "执行来源变化，需人工核对" };
@@ -102,12 +103,12 @@ export function refundExecutionProgress(item) {
   if (!value) return null;
   const legs = value.payment_legs ?? value.legs;
   return { status: refundExecutionStatus(value.status), resource: refundExecutionStatus(value.resource_status),
-    ledger: refundExecutionStatus(value.ledger_status), failure: refundExecutionFailure(value.error_code ?? value.last_error),
+    ledger: refundExecutionStatus(value.ledger_status), failure: refundExecutionFailure(value.error_code ?? value.last_error, value.status),
     simulated: item.execution_mode === "simulated" || value.funds_mode === "simulated",
     legsAvailable: Array.isArray(legs),
     retryable: value.retryable === true, legs: Array.isArray(legs) ? legs.map((leg, index) => ({
       label: `资金腿 ${index + 1}`, amount: refundMoney(leg?.amount), status: refundExecutionStatus(leg?.status),
-      failure: refundExecutionFailure(leg?.error_code ?? leg?.last_error),
+      failure: refundExecutionFailure(leg?.error_code ?? leg?.last_error, leg?.status),
     })) : [] };
 }
 export function createRefundSession(api, state, getContext, makeKey = newRefundRequestKey, timers = globalThis) {

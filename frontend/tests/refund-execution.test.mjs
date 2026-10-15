@@ -28,6 +28,43 @@ function fakeTimers() {
       pending.delete(next[0]); await next[1]();
     } };
 }
+test("execution state sequence refreshes progress, blocks duplicate commands and retries latest failed version", async () => {
+  const timers = fakeTimers(), h = harness(timers);
+  let server = { ...approved }, release;
+  h.api.get = async path => ({ data: path === "/refunds" ? { items: [server], total: 1 } : server });
+  h.api.post = async (path, body) => {
+    h.calls.push([path, body]);
+    await new Promise(resolve => { release = resolve; });
+    server = { ...server, version: server.version + 1,
+      status: path.endsWith("retry") ? "completed" : "executing", allowed_actions: [],
+      execution: { status: path.endsWith("retry") ? "completed" : "executing", funds_mode: "simulated" } };
+    return { data: server };
+  };
+  const execute = h.session.send("execute", { reason: "confirmed" });
+  assert.equal(await h.session.send("execute", { reason: "confirmed" }), false);
+  assert.equal(h.calls.length, 1); release(); assert.equal(await execute, true);
+  for (const [status, label] of [["resources_applied", "资源已回收"], ["funds_pending", "等待资金处理"], ["failed", "失败"]]) {
+    server = { ...server, version: server.version + 1, status: status === "failed" ? "failed" : "executing",
+      allowed_actions: status === "failed" ? ["retry"] : [], execution: { status, resource_status: "applied",
+        error_code: status === "failed" ? "payment_failed" : null, last_error: "PRIVATE_SECRET_COST" } };
+    await h.session.refreshDetail();
+    assert.equal(refundExecutionProgress(h.state.item).status, label);
+    assert.doesNotMatch(JSON.stringify(refundExecutionProgress(h.state.item)), /PRIVATE/);
+    assert.deepEqual(refundExecutionActions(h.state.item, admin), status === "failed" ? ["retry"] : []);
+    assert.deepEqual(refundExecutionActions(h.state.item, { id: "buyer", verified_status: "verified",
+      enterprise_memberships: [{ enterprise_id: "enterprise", role: "enterprise_admin", status: "active" }] }), []);
+  }
+  assert.equal(timers.pending.size, 0);
+  const retry = h.session.send("retry", { reason: "checked completed legs" });
+  assert.equal(await h.session.send("retry", { reason: "checked completed legs" }), false);
+  assert.equal(h.calls.length, 2); assert.equal(h.calls[1][0], "/refunds/refund/retry");
+  assert.equal(h.calls[1][1].expected_version, 8);
+  assert.notEqual(h.calls[0][1].idempotency_key, h.calls[1][1].idempotency_key);
+  release(); assert.equal(await retry, true);
+  assert.equal(h.state.item.status, "completed");
+  assert.deepEqual(refundExecutionActions(h.state.item, admin), []);
+  assert.equal(timers.pending.size, 0); h.session.dispose();
+});
 test("bounded execution refresh fetches only selected detail, stops terminal, and manual refresh restarts", async () => {
   const timers = fakeTimers(), h = harness(timers);
   h.state.item.status = "executing"; h.session.observeExecution();
@@ -134,6 +171,29 @@ test("execution projection allowlists progress and never passes cost, secrets or
       { status: "failed", amount: "2.00", last_error: "PRIVATE_TOKEN" }] } });
   assert.doesNotMatch(JSON.stringify(safe), /PRIVATE|secret|cost/); assert.equal(safe.legs.length, 2);
   assert.equal(safe.legs[0].amount, "¥12.50");
+  for (const status of ["completed", "succeeded", "failed", "unknown", undefined]) {
+    for (const error_code of [null, "payment_failed", "PRIVATE_UNKNOWN_CODE"]) {
+      for (const topLevel of [false, true]) {
+        const execution = { status, error_code, last_error: "PRIVATE_STALE_ERROR",
+          payment_legs: [{ status, error_code, last_error: "PRIVATE_STALE_LEG" }] };
+        const progress = refundExecutionProgress(topLevel
+          ? { execution_status: status || "unknown", execution_error_code: error_code || "PRIVATE_STALE_ERROR",
+            payment_legs: execution.payment_legs }
+          : { execution });
+        const successful = status === "completed" || status === "succeeded";
+        const expected = successful ? "" : error_code === "payment_failed"
+          ? "资金处理失败" : "执行未完成，请由平台核对后处理";
+        assert.equal(progress.failure, expected);
+        assert.equal(progress.legs[0].failure, expected);
+        assert.doesNotMatch(JSON.stringify(progress), /PRIVATE/);
+      }
+    }
+  }
+  const mixed = refundExecutionProgress({ execution: { status: "failed", error_code: "payment_failed",
+    payment_legs: [{ status: "completed", last_error: "PRIVATE_STALE_ERROR" },
+      { status: "failed", error_code: "payment_failed" }] } });
+  assert.equal(mixed.failure, "资金处理失败");
+  assert.deepEqual(mixed.legs.map(leg => leg.failure), ["", "资金处理失败"]);
 });
 test("current workflow top-level execution output drives real progress without invented legs", () => {
   const realShape = { ...approved, execution_status: "resources_pending",
@@ -186,7 +246,8 @@ test("BE013 execution DTO projection excludes private financial and source evide
       execution_mode: "simulated", payment_legs: [{ ...privateFields, amount: "12.50", status: "completed" }] }]) {
       const progress = refundExecutionProgress(item);
       assert.doesNotMatch(JSON.stringify(progress), /PRIVATE|cost_reversal|settlement_rule|payment_id|source_order_id|token|resource_plan_json|receipt|last_error/);
-      assert.deepEqual(progress.legs, [{ label: "资金腿 1", amount: "¥12.50", status: "已完成", failure: "执行未完成，请由平台核对后处理" }]);
+      assert.equal(progress.failure, "");
+      assert.deepEqual(progress.legs, [{ label: "资金腿 1", amount: "¥12.50", status: "已完成", failure: "" }]);
     }
   }
 });

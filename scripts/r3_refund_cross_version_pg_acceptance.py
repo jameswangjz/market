@@ -93,9 +93,24 @@ class MockRedis:
         pass
 
 
-def graph(m, db, source, name, *, before_usage=0):
+def graph(m, db, source, name, *, before_usage=0, frozen_rates=None):
     """Real models, verifier, receipt store and materializer; external intent mocked."""
     owned(db)
+    rate_keys = m.order_economics['rate_keys']
+    rates = {key: 0 for key in rate_keys}
+    if frozen_rates is not None:
+        base.check(isinstance(frozen_rates, dict) and set(frozen_rates) == set(rate_keys),
+                   'Frozen rates require exactly the expected rate keys')
+        try:
+            values = {key: Decimal(str(value)) for key, value in frozen_rates.items()
+                      if not isinstance(value, bool)}
+        except (ValueError, ArithmeticError):
+            raise base.AcceptanceFailure('Frozen rates must be finite nonnegative numbers') from None
+        base.check(len(values) == len(rate_keys) and
+                   all(value.is_finite() and value >= 0 for value in values.values()),
+                   'Frozen rates must be finite nonnegative numbers')
+        base.check(sum(values.values()) == Decimal(100), 'Frozen rates must sum to 100')
+        rates = {key: str(value) for key, value in values.items()}
     store = m.refund_segment_store
     terms = m.subscription_terms
     calendar_module = importlib.import_module(m.__package__ + '.subscription_calendar')
@@ -126,7 +141,7 @@ def graph(m, db, source, name, *, before_usage=0):
         generation=1, total_months=2, status='active')
     db.add(combo)
     db.flush()
-    rule = {'version': 'owned-frozen', 'rates': {key: 0 for key in m.order_economics['rate_keys']}}
+    rule = {'version': 'owned-frozen', 'rates': rates}
     quota = dict(rate_limit_per_minute=60, daily_quota=0, monthly_quota=100, quota_amount=0)
     delivery = dict(method='api', quota=quota, download_limit=0, files=[])
     roots, term_rows, snapshots, periods = [], [], {}, []

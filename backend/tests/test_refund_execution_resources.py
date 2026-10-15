@@ -48,12 +48,13 @@ class ExecutionResourcesTests(unittest.TestCase):
         self.addCleanup(self.source_patch.stop)
         # redis.Redis.close releases a connection; this disposable pool reconnects.
 
-    def fixture(self, *, months=2, amount='50.00', used=4, unlimited=False, persist_execution=True, cross=False):
+    def fixture(self, *, months=2, amount='50.00', used=4, unlimited=False, persist_execution=True, cross=False,
+                start_days_ago=0):
         from app.refund_execution_resources import canonical, digest
         oid = self.create(months=months)
-        self.deliver(oid, at=self.at)
+        self.deliver(oid, at=self.at - timedelta(days=start_days_ago))
         other = self.create()
-        self.deliver(other, at=self.at)
+        self.deliver(other, at=self.at - timedelta(days=start_days_ago))
         with self.m.SessionLocal() as db:
             order = db.get(self.m.Order, oid)
             term = db.scalar(select(self.T).where(self.T.order_id == oid))
@@ -154,6 +155,94 @@ class ExecutionResourcesTests(unittest.TestCase):
         self.assertEqual(before_other, [p for p in actual if p['order_id'] == other])
         rebuilt = [p for p in self.periods() if p['order_id'] == oid]
         self.assertEqual([p['monthly_quota'] for p in actual if p['order_id'] == oid], [p['monthly_quota'] for p in rebuilt])
+
+    def test_expired_unused_rights_have_immutable_accounting_and_preserve_live_renewal(self):
+        from app.refund_execution_resources import canonical
+        from app.api_charge_ledger import period_keys
+        oid, other, plan = self.fixture(months=1, start_days_ago=40)
+        before = json.loads(plan['expected']['subscription_periods'])
+        owned = next(p for p in before if p['order_id'] == oid)
+        counter, coverage = period_keys(plan['combination_id'], owned['period_key'])
+        source = (self.redis.get(counter), self.redis.hgetall(coverage))
+        accounting = plan['call_recovery_accounting']
+        self.assertEqual([dict(period_key=owned['period_key'], quota_before=123, observed_used=4,
+            recovered_calls=61, quota_after=62, recognition='expired_unused_rights')], accounting)
+        first = self.apply(rollback=True)
+        self.assertEqual(first, self.apply())
+        self.assertEqual(first, self.apply())
+        actual = json.loads(self.redis.hget(self.key, 'subscription_periods'))
+        self.assertEqual([p for p in before if p['order_id'] == other], [p for p in actual if p['order_id'] == other])
+        self.assertEqual(source, (self.redis.get(counter), self.redis.hgetall(coverage)))
+        self.assertIsNotNone(self.entitlement(self.at))
+        with self.m.SessionLocal() as db:
+            self.assertEqual('active', db.get(self.m.ApiCredential, 'execution-credential').status)
+            recovery = db.scalar(select(self.resources['Recovery']))
+            self.assertEqual(accounting, json.loads(recovery.plan_json)['call_recovery_accounting'])
+            self.assertEqual(canonical(first), recovery.proof_json)
+            recovery.proof_json = '{}'
+            with self.assertRaises(ValueError):
+                db.flush()
+            db.rollback()
+
+    def test_expired_rights_missing_coverage_fails_without_policy_change(self):
+        from app.api_charge_ledger import period_keys
+        oid, other, plan = self.fixture(months=1, start_days_ago=40)
+        _, coverage = period_keys(plan['combination_id'], plan['checks'][0]['period_key'])
+        self.redis.delete(coverage)
+        with self.assertRaises(Exception):
+            self.apply()
+        self.assertEqual(plan['expected'], self.redis.hgetall(self.key))
+
+    def test_expired_rights_concurrent_usage_cannot_exceed_reduced_quota(self):
+        from app.api_charge_ledger import period_keys
+        oid, other, plan = self.fixture(months=1, start_days_ago=40)
+        counter, _ = period_keys(plan['combination_id'], plan['checks'][0]['period_key'])
+        self.redis.set(counter, '63')
+        with self.assertRaises(Exception):
+            self.apply()
+        self.assertEqual(plan['expected'], self.redis.hgetall(self.key))
+
+    def test_expired_rights_lost_known_counter_fails_closed(self):
+        from app.api_charge_ledger import period_keys
+        oid, other, plan = self.fixture(months=1, start_days_ago=40)
+        counter, _ = period_keys(plan['combination_id'], plan['checks'][0]['period_key'])
+        self.redis.delete(counter)
+        with self.assertRaisesRegex(Exception, 'known usage lost'):
+            self.apply()
+        self.assertEqual(plan['expected'], self.redis.hgetall(self.key))
+
+    def test_expired_rights_require_redis_clock_expiry(self):
+        real_at = self.at
+        self.at += timedelta(days=40)
+        self.m.now.return_value = self.at
+        oid, other, plan = self.fixture(months=1, start_days_ago=40)
+        self.assertGreater(plan['checks'][0]['expired_end'], real_at.timestamp())
+        with self.assertRaisesRegex(Exception, 'expired rights are still live'):
+            self.apply()
+        self.assertEqual(plan['expected'], self.redis.hgetall(self.key))
+
+    def test_expired_rights_are_used_before_live_owned_quota(self):
+        oid, other, plan = self.fixture(months=2, amount='100.00', start_days_ago=40)
+        accounting = plan['call_recovery_accounting']
+        self.assertEqual(['expired_unused_rights', 'live_quota_reduction'],
+                         [row['recognition'] for row in accounting])
+        self.assertEqual([119, 4], [row['recovered_calls'] for row in accounting])
+        self.assertEqual(123, sum(row['recovered_calls'] for row in accounting))
+        self.apply()
+        self.assertIsNotNone(self.entitlement(self.at))
+
+    def test_expired_rights_ambiguous_ownership_fails_closed(self):
+        oid, other, plan = self.fixture(months=1, start_days_ago=40, persist_execution=False)
+        rows = json.loads(plan['expected']['subscription_periods'])
+        next(row for row in rows if row['order_id'] == other)['segment_id'] = plan['term_id']
+        self.redis.hset(self.key, 'subscription_periods', json.dumps(rows, separators=(',', ':')))
+        before = self.redis.hgetall(self.key)
+        with self.m.SessionLocal() as db:
+            case = db.get(self.m.refund_workflow['Case'], 'execution-refund')
+            with self.assertRaises(self.m.HTTPException):
+                self.resources['prepare'](db, db.get(self.m.Order, oid),
+                    db.get(self.m.Refund, 'execution-refund'), json.loads(case.plan_json))
+        self.assertEqual(before, self.redis.hgetall(self.key))
 
     def test_pending_recovery_is_visible_and_money_failure_keeps_limits(self):
         oid, other, plan = self.fixture()
