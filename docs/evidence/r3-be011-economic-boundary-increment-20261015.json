@@ -33,6 +33,23 @@
     "A persisted intent with failed metadata HSET cannot be auto-recovered using the stale watermark",
     "A subscription bucket cannot be attributed to multiple orders or duplicate terms"
   ],
+  "deployment": {
+    "tag": "20261015094810-1ac89e7",
+    "commit": "1ac89e726372a03bb389813add7f23776562eeed",
+    "manifest_sha256": "1f06b323c3183e331e2e1c62864b0eada21572377a7d531eca94ee8de856b956",
+    "api_pod": "market-api-8488b95f55-p7fv9",
+    "api_health": "200 status=ok service=market-api",
+    "api_source_hashes_match": true,
+    "ready_apisix_replicas": 3,
+    "gateway_plugin_hash_matches_on_all_three": true,
+    "refund_get_roles": {"super_admin": 200, "platform_operator": 200, "finance_settlement": 403, "delivery_monitor": 403},
+    "charge_worker_source_registered": true,
+    "protected_order_count": 1,
+    "mutating_http_requests": 0,
+    "task_status": "in_progress",
+    "task_progress": 70,
+    "limits": "Installed checks confirm code and read-only HTTP behavior, not a completed cross-version refund transaction"
+  },
   "limits": [
     "Economic planner and policy-switch receipt primitive are not yet connected to the refund database transaction",
     "No multi-payment reservation persistence or ordinary refund execution",
