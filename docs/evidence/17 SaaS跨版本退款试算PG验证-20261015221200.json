@@ -1,0 +1,94 @@
+{
+  "status": "passed",
+  "coverage": [
+    "TRD-R3-BE-011"
+  ],
+  "user_acceptance": "not performed",
+  "captured_at": "2026-10-15T14:12:00Z",
+  "deployed_business_commit": "0e6c98e8f93765e61742971c74a4a00c3cdf3c99",
+  "pg": {
+    "status": "passed",
+    "captured_at": "2026-10-15T14:10:52.501609+00:00",
+    "completed_at": "2026-10-15T14:10:59.588619+00:00",
+    "scope": "Real models, immutable receipt/materialize/latest, PostgreSQL scalars and registered ASGI",
+    "owned_schema": "qa_r3_be_cbd89b89970fd5a0",
+    "cases": {
+      "saas_quote_request_review": {
+        "status": "passed",
+        "fail_closed": false,
+        "completion_rows": 0
+      },
+      "saas_wrong_tenant": {
+        "status": "passed",
+        "fail_closed": true,
+        "completion_rows": 0
+      },
+      "saas_missing_receipt": {
+        "status": "passed",
+        "fail_closed": true,
+        "completion_rows": 0
+      },
+      "protected_count_only": {
+        "status": "passed",
+        "before": 1,
+        "after": 1
+      }
+    },
+    "gaps": [
+      "No provider HTTP, ingress, deployment, execution, bank or concurrency coverage"
+    ],
+    "public_write_operations": 0,
+    "task_status_changes": 0,
+    "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+    "cleanup": "owned schema removed",
+    "protected_order_count_before": 1,
+    "protected_order_count_after": 1,
+    "protected_order_content_read": false,
+    "coverage": [],
+    "incremental_scope": "BE011 SaaS cross-version quote and funding only",
+    "source_kind": "workingtree",
+    "deployed": false,
+    "source_sha256": {
+      "main.py": "951e3580e8f4712ae346005601fdae74f82a123cb194b53db5be5c6565b0884e",
+      "refund_segment_store.py": "9f7875de21de7dc59faa9cd25b1a06ecdda94091de307953423969fa69a083e3",
+      "refund_funding_store.py": "440d25c485ce28b4b5e189e5392909c8e8678a050a323a37b6076dda44ea74ea",
+      "refund_workflow.py": "b8a73a48ea08f2f918d8d054aa5212949f18af813e8ed2b830838f129bd89e44",
+      "refund_planning.py": "2c837aad945f0deb62361d09beb1107e4bbef3bdda835c0adc053038c9de3b6a",
+      "api_charge_ledger.py": "01a866cd99bb4a7b703b93618a514b8498c34bd94d7e7cfdbbf10476e5b225b2",
+      "subscription_terms.py": "37df9867d4089ce605e67841f9a182c1b3edb729416003d15feb379ecb3cd95d",
+      "version_change_resources.py": "3669421f1dbe46b36798038557e1d8bcf279e1806749a0c99f905c075411589d",
+      "refund_segment_boundary.py": "eed7ad0ac5a3ec04d0fff994ff6b333f21bd6b7aec7ed00de1c2a3cbe2989d1f",
+      "refund_economic_segments.py": "0cc81d67be0e1b215b0e8b1d283fb50132dee83d18115651c7bfe10f40ccba10",
+      "refund_funding.py": "c8e660d6f90f55fc635fb3a9a257a325ac7f4b5d657e481795f7679311b7be90",
+      "version_change_saga.py": "e7684975ac987821c0af864686f9585c4a39a48cc01ddfd1c382c4857604bc6e",
+      "version_change_worker.py": "bc8fc76c88808c3e92e763b0ddb59a16c8b10742221eb6fed7554d2c8789f329",
+      "refund_schema.py": "744a83c9e42c8ea98b75239f964a5ed36c2c3b7a6581e3326a39d0f2b8000760",
+      "subscription_calendar.py": "09e0facc1f8bd37c25a7be2a204422fb9a97743e8d4b71819e2229430160a011",
+      "order_economics.py": "521d169ea6a133d245b9bc28dccfb6b01fb84fb49a73fec0a747d2a31ffbb388"
+    },
+    "source_package_sha256": "d933191fda70d7c639fe7da35517fa2333c6c06378945105dde83c559d043ab1",
+    "external_adapters": {
+      "provider": "Explicit synthetic CHANGE/STATUS fixture; no real HTTP",
+      "Redis": "Forbidden"
+    }
+  },
+  "pg_log": {
+    "path": "/tmp/r3-five-saas-real-pg-20261015-2212.log",
+    "sha256": "739ad60b43d5765cf263a695f06f35d6ae04e743859e0f38f0c3731fd18f6128"
+  },
+  "offline": {
+    "passed": 4,
+    "path": "/tmp/r3-five-saas-pg-guards-final-20261015-2212.log",
+    "sha256": "738a50557be8651fc9cf1d8a902b4fe83f2cb12e7e1d90da47073ce8e8850ecc"
+  },
+  "scripts_sha256": {
+    "scripts/r3_saas_refund_planning_pg_acceptance.py": "82fb6c3a818dfd4100604961b4541223207c29e7dda898d0305513a9e50cd6ad",
+    "scripts/test_r3_saas_refund_planning_pg_acceptance.py": "a6aa07e10e31c851e903ea1f58d3a84e4b511f6b1f1b25723ab5fd22e5aba9ab"
+  },
+  "related_evidence": "15 五项退款增量验证依据-20261015215900.json",
+  "limits": [
+    "SaaS CHANGE/STATUS is an explicitly synthetic trusted receipt fixture, not real provider HTTP",
+    "No resource recovery, bank, concurrency or browser transaction completion claim",
+    "BE011 quote/hold/review scope only; BE012/QA005/QA006 retain network and combined transaction validation"
+  ]
+}
