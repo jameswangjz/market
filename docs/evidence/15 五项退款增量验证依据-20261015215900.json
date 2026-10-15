@@ -1,0 +1,348 @@
+{
+  "status": "passed",
+  "coverage": [
+    "TRD-R3-FE-008"
+  ],
+  "captured_at": "2026-10-15T14:00:36Z",
+  "user_acceptance": "not performed",
+  "backend_task_completion_claimed": false,
+  "tests": {
+    "planning": {
+      "passed": 49,
+      "path": "/tmp/r3-five-planning-20261015-2144.log",
+      "sha256": "28e0570a163e7d105a45597a05cf0dbbbae1a450f4214f0ae8c44a5be14fde85"
+    },
+    "resource_final": {
+      "passed": 38,
+      "path": "/tmp/r3-five-resources-38-frozen-20261015-215730.log",
+      "sha256": "378d76a1e1211e36c219b3045dc1ed4513e3e69fa5f6e742076be583b61d50fb"
+    },
+    "execution_metering": {
+      "passed": 12,
+      "path": "/tmp/r3-five-execution-faults-20261015-2154.log",
+      "sha256": "5c654732ccc7747bb4dd132fafd8b97e4aec47f199e9099230945f9c3a74bdc3"
+    },
+    "monthly_local": {
+      "passed": 3,
+      "path": "/tmp/r3-five-monthly-local-frozen-20261015-2153.log",
+      "sha256": "4e430272737169565b61be2bbbff100ce390199fdf1b4c361e30bcc08ef0eee9"
+    },
+    "isolated_guard_process": {
+      "passed": 15,
+      "path": "/tmp/r3-five-transport-guards-frozen-20261015-2153.log",
+      "sha256": "3febba96fd5008eebb70c7775969d5822370179574086893c96a64975bcafb5d"
+    },
+    "frontend": {
+      "passed": 42,
+      "path": "/tmp/r3-five-fe-frozen-20261015-2153.log",
+      "sha256": "28e0284dd381b80290b20df089de92a62d9ef31738c472ab9b586e68055405df"
+    }
+  },
+  "postgres_sigkill": {
+    "log": {
+      "path": "/tmp/r3-five-kill-pg-20261015-2200.log",
+      "sha256": "ea8ddbbdd105532509148d9b8c51f5e5b4869d2539cca1092b43a71a0f7e2771"
+    },
+    "result": {
+      "status": "passed",
+      "captured_at": "2026-10-15T13:45:32.391398+00:00",
+      "completed_at": "2026-10-15T13:46:07.814706+00:00",
+      "scope": "Actual main models, PG owned schema and registered ASGI; synthetic external receipts/MockRedis; hook races are HTTP-equivalent; not an actual APISIX complete chain",
+      "owned_schema": "qa_r3_be_9d123374cc130f9b",
+      "cases": {
+        "execute_permissions_idempotency": {
+          "status": "passed",
+          "permissions_checked": true,
+          "completion_unique": true,
+          "resource_calls": 1
+        },
+        "resource_failure_retry": {
+          "status": "passed",
+          "funds_before_resource": 0,
+          "authorized_retry_completed": true
+        },
+        "worker_restart_resume": {
+          "status": "passed",
+          "independent_worker_processes": 2,
+          "completion_unique": true
+        },
+        "completion_audit_rollback": {
+          "status": "passed",
+          "completion_rolled_back": true,
+          "successful_legs_preserved": true,
+          "retry_completed": true
+        },
+        "multi_source_order_isolation": {
+          "status": "passed",
+          "second_refund_payment_legs": 3,
+          "economic_order_isolation": true,
+          "payment_and_economic_sources_separate": true
+        },
+        "abrupt_kill_after_durable_simulated_leg": {
+          "status": "passed",
+          "killed_signal": "SIGKILL",
+          "durable_simulated_legs_before_kill": 1,
+          "completions_before_kill": 0,
+          "independent_worker_processes": 2,
+          "leg_identity_preserved": true,
+          "committed_receipt_unchanged": true,
+          "completions_after_resume": 1,
+          "resources": "Synthetic idempotent adapter; not native gateway",
+          "funds": "Simulated durable payment legs; no bank movement"
+        },
+        "protected_count_only": {
+          "status": "passed",
+          "before": 1,
+          "after": 1
+        }
+      },
+      "gaps": [
+        "No native gateway, supplier, bank, browser or deployment evidence",
+        "Kill is after durable leg commit, not within an in-flight commit"
+      ],
+      "public_write_operations": 0,
+      "task_status_changes": 0,
+      "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+      "cleanup": "owned schema removed",
+      "protected_order_count_before": 1,
+      "protected_order_count_after": 1,
+      "protected_order_content_read": false,
+      "coverage": [],
+      "incremental_scope": "QA005 SIGKILL; synthetic resources and simulated funds",
+      "source_kind": "workingtree",
+      "deployed": false,
+      "source_sha256": {
+        "main.py": "951e3580e8f4712ae346005601fdae74f82a123cb194b53db5be5c6565b0884e",
+        "refund_segment_store.py": "9f7875de21de7dc59faa9cd25b1a06ecdda94091de307953423969fa69a083e3",
+        "refund_funding_store.py": "440d25c485ce28b4b5e189e5392909c8e8678a050a323a37b6076dda44ea74ea",
+        "refund_workflow.py": "b8a73a48ea08f2f918d8d054aa5212949f18af813e8ed2b830838f129bd89e44",
+        "refund_planning.py": "2c837aad945f0deb62361d09beb1107e4bbef3bdda835c0adc053038c9de3b6a",
+        "api_charge_ledger.py": "01a866cd99bb4a7b703b93618a514b8498c34bd94d7e7cfdbbf10476e5b225b2",
+        "subscription_terms.py": "37df9867d4089ce605e67841f9a182c1b3edb729416003d15feb379ecb3cd95d",
+        "version_change_resources.py": "3669421f1dbe46b36798038557e1d8bcf279e1806749a0c99f905c075411589d",
+        "refund_segment_boundary.py": "eed7ad0ac5a3ec04d0fff994ff6b333f21bd6b7aec7ed00de1c2a3cbe2989d1f",
+        "refund_economic_segments.py": "0cc81d67be0e1b215b0e8b1d283fb50132dee83d18115651c7bfe10f40ccba10",
+        "refund_funding.py": "c8e660d6f90f55fc635fb3a9a257a325ac7f4b5d657e481795f7679311b7be90",
+        "version_change_saga.py": "e7684975ac987821c0af864686f9585c4a39a48cc01ddfd1c382c4857604bc6e",
+        "version_change_worker.py": "bc8fc76c88808c3e92e763b0ddb59a16c8b10742221eb6fed7554d2c8789f329",
+        "refund_execution.py": "7276b397d56c003904fc6d0451a5b44bbee704ed7abee4c16a34010f928302c7",
+        "refund_execution_worker.py": "d6e235c6c5b055360ce948debe52f26dc31994262ae31e33bc28a538768abccb",
+        "refund_execution_resources.py": "9b0fc1e3a24a9722f7911611dcdb3be1403c0daeb797527898a89b52db9b1346"
+      },
+      "source_package_sha256": "b33929745b98a8ec78b32ae5812fd335bc104b01fde56f004a8760723f4d0030",
+      "external_adapters": {
+        "resources": "Synthetic idempotent adapter; not native gateway/APISIX",
+        "funds": "Simulated payment legs; no native bank execution"
+      }
+    }
+  },
+  "postgres_cross_month_five_nonzero": {
+    "log": {
+      "path": "/tmp/r3-five-monthly-five-party-pg-20261015-2151.log",
+      "sha256": "3045cc01a011db5f603a8e32a182ba86716ae31397e368b2f0a14ca6245d544d"
+    },
+    "result": {
+      "status": "passed",
+      "captured_at": "2026-10-15T13:50:19.425565+00:00",
+      "completed_at": "2026-10-15T13:50:32.568403+00:00",
+      "scope": "Owned PostgreSQL and real ASGI/worker/settlement functions; seeded version change",
+      "owned_schema": "qa_r3_be_e2d3f982713ba9c6",
+      "cases": {
+        "cross_month_partial_refunds_after_version_change": {
+          "status": "passed",
+          "refunds": 2,
+          "participant_lines": 10,
+          "csv_rows": 2,
+          "cost_reversal": "0.40",
+          "original_paid_batch_unchanged": true,
+          "rebuild_idempotent": true,
+          "five_nonzero_exact_shares": true
+        },
+        "protected_count_only": {
+          "status": "passed",
+          "before": 1,
+          "after": 1
+        }
+      },
+      "gaps": [
+        "Version-change history is seeded, not full Saga execution",
+        "No actual Redis/APISIX/supplier or bank execution",
+        "No deployment, browser, concurrency, or process-kill coverage"
+      ],
+      "public_write_operations": 0,
+      "task_status_changes": 0,
+      "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+      "cleanup": "owned schema removed",
+      "protected_order_count_before": 1,
+      "protected_order_count_after": 1,
+      "protected_order_content_read": false,
+      "coverage": [],
+      "incremental_scope": "QA006 cross-month partial refund monthly matrix",
+      "source_kind": "workingtree",
+      "deployed": false,
+      "source_sha256": {
+        "main.py": "951e3580e8f4712ae346005601fdae74f82a123cb194b53db5be5c6565b0884e",
+        "refund_segment_store.py": "9f7875de21de7dc59faa9cd25b1a06ecdda94091de307953423969fa69a083e3",
+        "refund_funding_store.py": "440d25c485ce28b4b5e189e5392909c8e8678a050a323a37b6076dda44ea74ea",
+        "refund_workflow.py": "b8a73a48ea08f2f918d8d054aa5212949f18af813e8ed2b830838f129bd89e44",
+        "refund_planning.py": "2c837aad945f0deb62361d09beb1107e4bbef3bdda835c0adc053038c9de3b6a",
+        "api_charge_ledger.py": "01a866cd99bb4a7b703b93618a514b8498c34bd94d7e7cfdbbf10476e5b225b2",
+        "subscription_terms.py": "37df9867d4089ce605e67841f9a182c1b3edb729416003d15feb379ecb3cd95d",
+        "version_change_resources.py": "3669421f1dbe46b36798038557e1d8bcf279e1806749a0c99f905c075411589d",
+        "refund_segment_boundary.py": "eed7ad0ac5a3ec04d0fff994ff6b333f21bd6b7aec7ed00de1c2a3cbe2989d1f",
+        "refund_economic_segments.py": "0cc81d67be0e1b215b0e8b1d283fb50132dee83d18115651c7bfe10f40ccba10",
+        "refund_funding.py": "c8e660d6f90f55fc635fb3a9a257a325ac7f4b5d657e481795f7679311b7be90",
+        "version_change_saga.py": "e7684975ac987821c0af864686f9585c4a39a48cc01ddfd1c382c4857604bc6e",
+        "version_change_worker.py": "bc8fc76c88808c3e92e763b0ddb59a16c8b10742221eb6fed7554d2c8789f329",
+        "refund_execution.py": "7276b397d56c003904fc6d0451a5b44bbee704ed7abee4c16a34010f928302c7",
+        "refund_execution_worker.py": "d6e235c6c5b055360ce948debe52f26dc31994262ae31e33bc28a538768abccb",
+        "refund_execution_resources.py": "9b0fc1e3a24a9722f7911611dcdb3be1403c0daeb797527898a89b52db9b1346",
+        "refund_settlement.py": "7b3aafd4f481156e3fade701ed1c8dba8d6f4e2093987b7d1b1c1d06d4444cff"
+      },
+      "source_package_sha256": "b33929745b98a8ec78b32ae5812fd335bc104b01fde56f004a8760723f4d0030",
+      "external_adapters": {
+        "Redis": "MockRedis",
+        "resources": "Synthetic prepare/apply with durable Recovery",
+        "funds": "Platform simulated payment legs"
+      }
+    }
+  },
+  "browsers": [
+    {
+      "path": "frontend/artifacts/r3-refund-baseline-20261015-2153/browser-results.json",
+      "sha256": "84b5db3b31fdac136ce561abfe66692786fd2bd766352715fbe9d32ea8c5dbd2",
+      "result": {
+        "checks": [
+          "styled dialog",
+          "empty reason blocked",
+          "mobile dialog bounds",
+          "execute version contract",
+          "retry version contract",
+          "safe funding legs",
+          "enterprise commands hidden"
+        ],
+        "limits": [
+          "real browser and Vue components; mocked API; no actual refund or resource call"
+        ],
+        "fixture_mutations": 2,
+        "bounds": {
+          "left": 16,
+          "top": 199.90625,
+          "right": 374,
+          "bottom": 644.09375,
+          "width": 390,
+          "height": 844
+        },
+        "platform_mutations": 0,
+        "status": "passed"
+      },
+      "screenshots": {
+        "refund-execution-desktop-failure.png": "0d7d2db8731930b09be5d721b7ba693f3dda8013cd95a0b200bb23f259fab603",
+        "refund-execution-desktop.png": "1a4c3c7a563a7ad07c7a4abd7d3d84114521481b5a9d39aa75032381c87c3e08",
+        "refund-execution-mobile-dialog.png": "b388456993353dedec763283095d68bd73ab8b50a7db4506af2a8bc9f65fc7a7",
+        "refund-execution-mobile-failure.png": "bde2cbf43e431b0dfcdc93064b928ed32f26596f0bec3af28f0fea8e2000bac3"
+      }
+    },
+    {
+      "path": "frontend/artifacts/r3-refund-state-fresh-20261015-2154/browser-results.json",
+      "sha256": "f79a3cba79b8d0fa765b792e9f4388fcf5c204f1d42add2502c13006aeaf1abb",
+      "result": {
+        "fixture_posts": 3,
+        "checks": [
+          "duplicate submissions blocked",
+          "network key reused",
+          "execute/retry version contracts",
+          "enterprise progress visible, commands hidden",
+          "safe failure projection",
+          "simulated completion",
+          "mobile width"
+        ],
+        "limits": [
+          "Actual RefundCenter Vue module with explicitly mocked API; no live app mutations"
+        ],
+        "platform_mutations": 0,
+        "status": "passed",
+        "states": [
+          "approved",
+          "executing",
+          "resources_applied",
+          "funds_pending",
+          "failed",
+          "retry",
+          "completed"
+        ]
+      },
+      "screenshots": {
+        "refund-state-completed-desktop.png": "27aee52019329a73f9d6bfd6a3ebaeb0b90803594d916e55d89fded52a2f0c4b",
+        "refund-state-completed-mobile.png": "f0c8abe58e2ec6d37767f4293627621cf42e8ccb24dcabc10475692ecb4fbec6",
+        "refund-state-failed.png": "28a0b75272bf8abe2cf025aa4afa451f18de0e2c380c1df08d2ca75f4eda31ba",
+        "refund-state-funds_pending.png": "92578e0cf899faca36ac9db6b4b04ff633858cb6fb331d9209a4c4b581c78fa5",
+        "refund-state-resources_applied.png": "15c6a94731354ddea97991c37417bbbbe376fe2a0ec8568840593f64f67229dd"
+      }
+    }
+  ],
+  "installed_http": {
+    "log": {
+      "path": "/tmp/r3-five-installed-readonly-20261015-2201.log",
+      "sha256": "1e24dec73a7d5b23af356d6e6aa8059309833a40ed35459c3ecf1f94728a5d7f"
+    },
+    "result": {
+      "status": "passed",
+      "scope": "installed actual GET through market-web",
+      "roles": {
+        "super_admin": {
+          "status": 200,
+          "rows": 0,
+          "private_fields_absent": true
+        },
+        "platform_operator": {
+          "status": 200,
+          "rows": 0,
+          "private_fields_absent": true
+        },
+        "finance_settlement": {
+          "status": 403
+        },
+        "delivery_monitor": {
+          "status": 403
+        }
+      },
+      "charge_worker_source_registered": true,
+      "protected_order_count": 1,
+      "mutating_http_requests": 0,
+      "test_database_writes": 0,
+      "limits": "No quote POST, request/review/manual mutation, funds execution or browser E2E claimed"
+    }
+  },
+  "release": {
+    "commit": "0e6c98e8f93765e61742971c74a4a00c3cdf3c99",
+    "tag": "20261015215635-0e6c98e",
+    "manifest_sha256": "2d77834b7ca10dac70701f861659f1acea9781cc60cf94ab01143810fbf06275",
+    "deployment": {
+      "path": "/tmp/r3-five-deployment-retry-20261015-2200.log",
+      "sha256": "af86f4df9ef2c5130cbaf446e789f60860904ec34f41aa2e6dbd0994c9c4de4b"
+    },
+    "deployment_completed": true,
+    "health_http": 200,
+    "all_seven_deployments_ready": true,
+    "installed_resource_source_sha256": "ccfd5635e52248804abff1ef746fde93d7021a28c7f9c2188aa584a692392ad3"
+  },
+  "source_sha256": {
+    "backend/app/refund_execution_resources.py": "ccfd5635e52248804abff1ef746fde93d7021a28c7f9c2188aa584a692392ad3",
+    "backend/tests/test_refund_execution_resources.py": "a7b1f6c265ea86c169179721274c7e5b01a3ef3da9a03732758428ab196aecbd",
+    "frontend/src/refunds.js": "c50f79dbc7a67857da4887d538ae751cd60069ddb39b1f7224a30468d6b58dd9",
+    "frontend/tests/refund-execution.test.mjs": "37187b339406a907135880df1144c3e284cdbca11b112e0c413abefbf90be6ac",
+    "scripts/r3_refund_kill_pg_acceptance.py": "8061a72e2383355d92b9d4323f30cc308f68640f03fb1fa1f50a59010a163c40",
+    "scripts/r3_refund_monthly_matrix_acceptance.py": "a1dc98a27944764ca779ec98ab47ea66ade98c1dccfd1e7002bdd847ab8526d6",
+    "scripts/refund_execution_state_browser_cdp.ps1": "42bc934c346ded35a7494bbeee555beebc35d09d3092e012a7c4adc137b2ea0a",
+    "scripts/r3_refund_cross_version_pg_acceptance.py": "f9666025e477baadee6ddb54be1b76f7047a8c6200463662bf283a2b9ed030ba"
+  },
+  "limits": [
+    "PG resources and version-change history are synthetic; no native APISIX or supplier proof",
+    "Only platform simulated payment legs, no bank movement",
+    "Browser actual Vue components with mocked API, not full deployed transaction",
+    "Latest SaaS later-first rule verified with isolated DB and mocked provider responses, not live SaaS PG chain",
+    "PG run hashes reflect their respective source snapshots; latest resource changes independently covered by final 38 tests",
+    "No business refund or business settlement batch created; protected order count-only unchanged"
+  ]
+}
