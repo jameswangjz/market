@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -9,6 +10,29 @@ import trading_artifact_gate as gate
 import trading_rollback_rehearsal as rollback
 
 REAL_RUN = subprocess.run
+
+
+class FrontendDeployGuardTests(unittest.TestCase):
+    def test_untrusted_release_stops_before_cluster_access(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'cluster-accessed'
+            stub = Path(directory) / 'kubectl'
+            stub.write_text('#!/bin/sh\ntouch "$CLUSTER_MARKER"\nexit 99\n')
+            stub.chmod(0o755)
+            for digest in (None, '0' * 64):
+                env = {**os.environ, 'GIT_SHA': 'a' * 40,
+                       'IMAGE_TAG': '20261015000000-aaaaaaa',
+                       'PATH': directory + os.pathsep + os.environ['PATH'],
+                       'CLUSTER_MARKER': str(marker)}
+                env.pop('PROVENANCE_SHA256', None)
+                if digest is not None:
+                    env['PROVENANCE_SHA256'] = digest
+                result = subprocess.run(['bash', 'scripts/deploy_integration_frontend.sh'],
+                                        cwd=root, env=env, capture_output=True, timeout=10)
+                with self.subTest(digest_supplied=digest is not None):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(marker.exists())
 
 
 class ProvenanceTests(unittest.TestCase):

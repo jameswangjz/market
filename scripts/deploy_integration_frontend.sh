@@ -2,7 +2,10 @@
 set -euo pipefail
 : "${GIT_SHA:?Pass the tested Git SHA}"
 [[ "$GIT_SHA" =~ ^[0-9a-f]{7,40}$ ]]
-TAG="$(date -u +%Y%m%d%H%M%S)-${GIT_SHA}"
+: "${IMAGE_TAG:?Pass the exact timestamp-GitSha tag from the trusted build}"
+: "${PROVENANCE_SHA256:?Pass the trusted release manifest digest}"
+TAG="$IMAGE_TAG"
+python3 scripts/trading_artifact_gate.py verify --commit "$GIT_SHA" --tag "$TAG" --manifest-sha256 "$PROVENANCE_SHA256"
 BASE=$(kubectl -n market get deployment market-web -o jsonpath='{.spec.template.spec.containers[0].image}')
 mkdir -p /root/market/backups
 umask 077
