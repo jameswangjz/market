@@ -1,0 +1,57 @@
+{
+  "status": "cleaned",
+  "cleanup": {
+    "deleted_tablecounts": {
+      "api_credentials": 1,
+      "api_financial_charges": 2,
+      "api_gateway_routes": 1,
+      "application_health_observations": 1,
+      "application_health_slots": 1,
+      "audit_logs": 25,
+      "delivery_tasks": 1,
+      "enterprises": 2,
+      "gateway_config_revisions": 1,
+      "gateway_publish_records": 1,
+      "memberships": 2,
+      "notification_deliveries": 4,
+      "notification_delivery_attempts": 4,
+      "notification_messages": 1,
+      "notification_preferences": 4,
+      "notification_recipients": 2,
+      "oauth_clients": 2,
+      "order_sla_contracts": 1,
+      "order_state_logs": 5,
+      "orders": 1,
+      "ordinary_refund_cases": 1,
+      "ordinary_refund_events": 10,
+      "ordinary_refund_executions": 1,
+      "ordinary_refund_local_completions": 1,
+      "ordinary_refund_payment_legs": 1,
+      "ordinary_refund_settlement_links": 1,
+      "payments": 1,
+      "product_release_versions": 4,
+      "products": 2,
+      "refund_resource_recoveries": 1,
+      "refunds": 1,
+      "settlement_measurements": 4,
+      "settlements": 1,
+      "sla_assessment_evidence": 1,
+      "sla_online_assessments": 1,
+      "subscription_combinations": 1,
+      "subscription_terms": 1,
+      "users": 4,
+      "version_gateway_configs": 1
+    },
+    "retained_sla_count": 4,
+    "not_tested": [
+      "SLA metrics, completeness, attribution and window sealing"
+    ]
+  },
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "bcdf128df1bbaabef2acf7382757de7be50c3b1af1dc9c952651b2a25065a96e",
+    "r3_native_refund_runtime_acceptance": "f3861e83873ad8a8f35727546b0b92975dcc7e2654ffd3f1db7c0980549530bd",
+    "r3_native_refund_flow": "f5bca265f0e71b5fcadb8ff88cebc7a8c5e003896f503ef6e2c9a8fe38b62f2c"
+  }
+}

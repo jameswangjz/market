@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "error": "unknown_owned_table:service_level_assignments",
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "182239caff9326841a0425ade54c141153389b238a50f7fd1bb391fa069974f4",
+    "r3_native_refund_runtime_acceptance": "f3861e83873ad8a8f35727546b0b92975dcc7e2654ffd3f1db7c0980549530bd",
+    "r3_native_refund_flow": "e1c009d8b684a124d82e409a41ac38b7145d572f02024912bc43dc87c62a3507"
+  }
+}

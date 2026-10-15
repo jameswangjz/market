@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "error": "unknown_owned_table:sla_assessment_evidence,sla_online_assessments",
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "3e0bd9bdbbb287e8ac37113bac6e557b7b07531b4e6c7d60f41a6ba52fa54c24",
+    "r3_native_refund_runtime_acceptance": "f3861e83873ad8a8f35727546b0b92975dcc7e2654ffd3f1db7c0980549530bd",
+    "r3_native_refund_flow": "a529d9834368f673208a4585f2f16b7fbe904925000a1ef8a5c10f05f2bc7527"
+  }
+}

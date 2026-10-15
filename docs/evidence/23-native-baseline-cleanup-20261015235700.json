@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "error": "message_target_mismatch",
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "9a1489ce4be4978d9d260c95d86ec544f2f034d49203dc4e402e48703902a8b6",
+    "r3_native_refund_runtime_acceptance": "f3861e83873ad8a8f35727546b0b92975dcc7e2654ffd3f1db7c0980549530bd",
+    "r3_native_refund_flow": "43fda79d30f5b59f370254c3d280a9b5816204fabc5c624da2cde71e2c49a6d8"
+  }
+}

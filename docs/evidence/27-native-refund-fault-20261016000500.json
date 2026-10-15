@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "error": "runtime_cleanup_failed:{\"error_type\": \"AcceptanceFailure\", \"safe_detail\": \"retained_sla_set_mismatch\", \"stage\": \"cleanup\"}",
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "bcdf128df1bbaabef2acf7382757de7be50c3b1af1dc9c952651b2a25065a96e",
+    "r3_native_refund_runtime_acceptance": "f3861e83873ad8a8f35727546b0b92975dcc7e2654ffd3f1db7c0980549530bd",
+    "r3_native_refund_flow": "f5bca265f0e71b5fcadb8ff88cebc7a8c5e003896f503ef6e2c9a8fe38b62f2c"
+  }
+}
