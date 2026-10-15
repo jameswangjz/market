@@ -6,6 +6,7 @@ local random = require("resty.random")
 local hex = require("resty.string").to_hex
 local hmac = require("resty.openssl.hmac")
 local bit = require("bit")
+local ipmatcher = require("resty.ipmatcher")
 local manager = require("apisix.utils.batch-processor-manager").new("market-sla-logger", "market-sla-logger")
 
 local schema = manager:wrap_schema({type = "object", properties = {
@@ -32,6 +33,7 @@ local window_counts = {}
 local last_sealed_slot
 local draining = false
 local timer_started = false
+local probe_candidates = setmetatable({}, {__mode="k"})
 local failure_reports = {}
 local QUEUE = "market:sla:terminal:pending"
 local FAILURES = "market:sla:terminal:delivery_failures"
@@ -89,11 +91,27 @@ end
 
 local probe_headers = {"X-Market-SLA-Route", "X-Market-SLA-Product", "X-Market-SLA-Version",
                        "X-Market-SLA-Timestamp", "X-Market-SLA-Signature"}
+local function probe_source_allowed(labels)
+    local configured, remote = labels.market_sla_probe_source_cidrs, ngx.var.remote_addr
+    if type(configured) ~= "string" or configured == "" or #configured > 2048
+        or type(remote) ~= "string" or remote == "" or configured:find(",,", 1, true)
+        or configured:sub(1, 1) == "," or configured:sub(-1) == "," then return false end
+    local cidrs = {}
+    for cidr in configured:gmatch("[^,]+") do
+        if #cidrs == 32 or cidr:match("/0+$") then return false end
+        cidrs[#cidrs + 1] = cidr
+    end
+    local ok, matcher = pcall(ipmatcher.new, cidrs)
+    if not ok or not matcher then return false end
+    local matched, allowed = pcall(matcher.match, matcher, remote)
+    return matched and allowed == true
+end
 local function verify_probe(ctx)
     local route = ctx.matched_route and ctx.matched_route.value
     local labels = route and route.labels or {}
     local secret = os.getenv("SLA_PROBE_SECRET")
-    if not secret or #secret < 32 or #secret > 512 or labels.market_managed ~= "true" then return false end
+    if not secret or #secret < 32 or #secret > 512 or labels.market_managed ~= "true"
+        or not probe_source_allowed(labels) then return false end
     local values = {}
     for _, name in ipairs(probe_headers) do
         local value = core.request.header(ctx, name)
@@ -101,9 +119,12 @@ local function verify_probe(ctx)
         values[#values + 1] = value
     end
     local method, path = ngx.req.get_method(), ngx.var.uri
+    local prefix = "/gateway/" .. tostring(route and route.id or "") .. "/"
     if type(path) ~= "string" or path == "" or (method ~= "GET" and method ~= "HEAD") or method ~= labels.market_sla_probe_method
+        or path:sub(1, #prefix) ~= prefix
         or path ~= labels.market_sla_probe_path or (ngx.var.args and ngx.var.args ~= "")
-        or values[1] ~= tostring(route.id) or values[2] ~= labels.market_product_id
+        or not labels.market_sla_probe_route_id or labels.market_sla_probe_route_id == ""
+        or values[1] ~= labels.market_sla_probe_route_id or values[2] ~= labels.market_product_id
         or values[3] ~= labels.market_version_id then return false end
     local stamp = values[4]
     if not stamp:match("^%d%d%d%d%d%d%d%d%d%d%d?$") or math.abs(ngx.time() - tonumber(stamp)) > 30
@@ -117,12 +138,20 @@ local function verify_probe(ctx)
     return diff == 0
 end
 
+local function public_probe_binding(candidate)
+    return {path=candidate.path, method=candidate.method,
+        gateway_route_id=candidate.apisix_route_key, database_route_id=candidate.db_route_id,
+        product_id=candidate.product_id, version_id=candidate.version_id, config_version=candidate.config}
+end
+
 function _M.check_schema(conf, schema_type)
     return core.schema.check(schema_type == core.schema.TYPE_METADATA and metadata_schema or schema, conf)
 end
 
 function _M.rewrite(conf, ctx)
     if ngx.is_subrequest or ctx.market_sla_request_id then return end
+    probe_candidates[ctx] = nil
+    ctx.market_sla_probe_binding = nil
     local ok, bytes = pcall(random.bytes, 16, true)
     if not ok or not bytes or #bytes ~= 16 then
         ngx.req.clear_header("X-Request-Id")
@@ -133,17 +162,43 @@ function _M.rewrite(conf, ctx)
     ngx.req.set_header("X-Request-Id", ctx.market_sla_request_id)
     ctx.market_sla_probe_verified = false
     ctx.market_sla_probe_signature_valid = verify_probe(ctx)
+    local route = ctx.matched_route and ctx.matched_route.value
+    local labels = route and route.labels or {}
+    if ctx.market_sla_probe_signature_valid and type(labels.market_sla_probe_config_version) == "string"
+        and labels.market_sla_probe_config_version ~= "" then
+        probe_candidates[ctx] = {apisix_route_key=route.id, product_id=labels.market_product_id,
+            version_id=labels.market_version_id, db_route_id=labels.market_sla_probe_route_id,
+            config=labels.market_sla_probe_config_version, consumer=labels.market_sla_probe_consumer,
+            source_cidrs=labels.market_sla_probe_source_cidrs,
+            path=ngx.var.uri, method=ngx.req.get_method(), verified_at=ngx.time()}
+        ctx.market_sla_probe_binding = public_probe_binding(probe_candidates[ctx])
+    end
 end
 
 function _M.access(conf, ctx)
-    -- key-auth runs in rewrite at priority 2500. Only after it attached the
-    -- independent consumer may global access mark this request quota-exempt.
+    -- Route rewrite includes key-auth AND proxy-rewrite. The latter changes
+    -- ngx.var.uri, so only the private, original-path signed candidate is valid.
     ctx.market_sla_probe_verified = false
+    ctx.market_sla_probe_original_path = nil
+    ctx.market_sla_probe_original_method = nil
     local route = ctx.matched_route and ctx.matched_route.value
     local labels = route and route.labels or {}
-    if ctx.market_sla_request_id and labels.market_sla_probe_consumer and labels.market_sla_probe_consumer ~= ""
-        and ctx.consumer_name == labels.market_sla_probe_consumer and verify_probe(ctx) then
+    local candidate = probe_candidates[ctx]
+    probe_candidates[ctx] = nil
+    ctx.market_sla_probe_binding = nil
+    if candidate and route and candidate.apisix_route_key == route.id
+        and candidate.product_id == labels.market_product_id and candidate.version_id == labels.market_version_id
+        and candidate.db_route_id == labels.market_sla_probe_route_id
+        and candidate.config == labels.market_sla_probe_config_version and labels.market_managed == "true"
+        and candidate.source_cidrs == labels.market_sla_probe_source_cidrs
+        and candidate.path == labels.market_sla_probe_path and candidate.method == labels.market_sla_probe_method
+        and candidate.method == ngx.req.get_method() and math.abs(ngx.time() - candidate.verified_at) <= 30
+        and candidate.consumer and candidate.consumer ~= "" and candidate.consumer == labels.market_sla_probe_consumer
+        and ctx.consumer_name == candidate.consumer then
         ctx.market_sla_probe_verified = true
+        ctx.market_sla_probe_binding = public_probe_binding(candidate)
+        ctx.market_sla_probe_original_path = candidate.path
+        ctx.market_sla_probe_original_method = candidate.method
         ctx.market_sla_traffic = {kind="probe", evidence_id="probe-signature:" .. ctx.market_sla_request_id}
     end
     for _, name in ipairs(probe_headers) do ngx.req.clear_header(name) end

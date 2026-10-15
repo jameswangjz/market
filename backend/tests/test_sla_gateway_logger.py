@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import ipaddress
 import json
 from pathlib import Path
 import unittest
@@ -37,12 +38,15 @@ class Harness:
         g.py_hsetnx = self.hsetnx
         g.py_hincrby = self.hincrby
         g.py_post = self.post
+        g.py_validate_cidrs = lambda cidrs: all(ipaddress.ip_network(c, strict=True) for c in cidrs.values())
+        g.py_match_cidrs = lambda cidrs, remote: any(ipaddress.ip_address(remote) in ipaddress.ip_network(c, strict=True)
+                                                    for c in cidrs.values())
         self.lua.execute('''
 NOW=STAMP; METHOD="HEAD"; HEADERS={}; BUFFER={}; HTTP_STATUS=200; HTTP_CONNECT=true; REDIS_UP=true
 os.getenv=function(key) return ENV[key] end
 ngx={is_subrequest=false, status=200, header={}, worker={pid=function() return 7 end},
  time=function() return math.floor(NOW) end, now=function() return NOW end,
- var={uri="/gateway/route/health",args="",request_time="0.125",upstream_status="200"},
+ var={uri="/gateway/route/health",args="",remote_addr="10.42.0.5",request_time="0.125",upstream_status="200"},
  req={get_method=function() return METHOD end,
       set_header=function(k,v) HEADERS[k]=v end, clear_header=function(k) HEADERS[k]=nil end},
  timer={every=function(_,cb) TIMER_COUNT=(TIMER_COUNT or 0)+1;TICK=cb;return true end}}
@@ -57,6 +61,8 @@ package.preload["apisix.core"]=function() return {
 package.preload["apisix.utils.batch-processor-manager"]=function() return {new=function() return manager end} end
 package.preload["resty.random"]=function() return {bytes=py_random} end
 package.preload["resty.string"]=function() return {to_hex=py_hex} end
+package.preload["resty.ipmatcher"]=function() return {new=function(cidrs)
+ py_validate_cidrs(cidrs);return {match=function(_,remote) return py_match_cidrs(cidrs,remote) end} end} end
 package.preload["resty.openssl.hmac"]=function() return {new=function(key,alg)
  assert(alg=="sha256");return {final=function(_,message) return py_hmac(key,message) end} end} end
 package.preload["resty.redis"]=function() return {new=function() return {
@@ -124,6 +130,9 @@ package.preload["resty.http"]=function() return {new=function() return {
         ctx = self.lua.table_from({"consumer_name": consumer} if consumer else {})
         labels = self.lua.table_from({"market_managed": "true", "market_product_id": "product",
             "market_version_id": "version", "market_version": "v1", "market_sla_probe_consumer": "owned-probe-consumer",
+            "market_sla_probe_route_id": "route",
+            "market_sla_probe_config_version": "owned-config-v1",
+            "market_sla_probe_source_cidrs": "10.42.0.0/16",
             "market_sla_probe_method": "HEAD", "market_sla_probe_path": "/gateway/route/health"})
         ctx.matched_route = self.lua.table_from({"value": self.lua.table_from({"id": "route", "labels": labels})})
         return ctx
@@ -145,6 +154,80 @@ package.preload["resty.http"]=function() return {new=function() return {
 
 @unittest.skipIf(LuaRuntime is None, "LuaJIT binding required for executable plugin tests")
 class GatewayLoggerTests(unittest.TestCase):
+    def test_probe_source_cidr_uses_remote_addr_never_forwarded_header(self):
+        for cidrs, remote, allowed in (("10.42.0.0/16", "10.42.0.5", True),
+                ("10.42.0.0/16", "203.0.113.5", False),
+                ("", "10.42.0.5", False), ("invalid", "10.42.0.5", False),
+                ("0.0.0.0/0", "10.42.0.5", False),
+                ("10.42.0.0/16,2001:db8::/32", "2001:db8::5", True)):
+            h = Harness(); ctx = h.context("owned-probe-consumer"); h.sign()
+            ctx.matched_route.value.labels.market_sla_probe_source_cidrs = cidrs
+            h.lua.globals().ngx.var.remote_addr = remote
+            h.lua.globals().HEADERS["X-Forwarded-For"] = "10.42.0.5"
+            h.plugin.rewrite(h.conf, ctx); h.plugin.access(h.conf, ctx)
+            self.assertEqual(bool(ctx.market_sla_probe_verified), allowed, (cidrs, remote))
+
+    def test_actual_split_phases_use_database_route_identity_not_admin_route_key(self):
+        h = Harness(); ctx = h.context(consumer=None); g = h.lua.globals()
+        db_route_id = "0123456789abcdef0123456789abcdef"
+        ctx.matched_route.value.labels.market_sla_probe_route_id = db_route_id
+        h.sign(route_id=db_route_id)
+        # Actual init.lua: global rewrite -> native key-auth rewrite ->
+        # consumer merge -> global access -> route quota access.
+        h.plugin.rewrite(h.conf, ctx)
+        self.assertTrue(ctx.market_sla_probe_signature_valid)
+        self.assertEqual(ctx.market_sla_probe_binding.gateway_route_id, "route")
+        self.assertEqual(ctx.market_sla_probe_binding.database_route_id, db_route_id)
+        self.assertFalse(ctx.market_sla_probe_verified)
+        ctx.consumer_name = "owned-probe-consumer"
+        g.ngx.var.uri = "/health"
+        h.plugin.access(h.conf, ctx)
+        self.assertTrue(ctx.market_sla_probe_verified)
+        self.assertEqual(ctx.market_sla_probe_original_path, "/gateway/route/health")
+        self.assertEqual(ctx.market_sla_probe_original_method, "HEAD")
+        self.assertEqual(ctx.market_sla_probe_binding.path, "/gateway/route/health")
+        self.assertEqual(ctx.market_sla_probe_binding.config_version, "owned-config-v1")
+        self.assertEqual(ctx.market_sla_traffic.kind, "probe")
+        self.assertIsNone(g.HEADERS["X-Market-SLA-Signature"])
+        h = Harness(); ctx = h.context("owned-probe-consumer")
+        ctx.matched_route.value.labels.market_sla_probe_route_id = db_route_id
+        h.sign(route_id="route")
+        h.plugin.rewrite(h.conf, ctx); h.plugin.access(h.conf, ctx)
+        self.assertFalse(ctx.market_sla_probe_verified)
+
+    def test_signed_original_path_must_match_actual_route_key_prefix(self):
+        h = Harness(); ctx = h.context("owned-probe-consumer")
+        path = "/gateway/different-route/health"
+        ctx.matched_route.value.labels.market_sla_probe_path = path
+        h.lua.globals().ngx.var.uri = path
+        h.sign(path=path)
+        h.plugin.rewrite(h.conf, ctx)
+        self.assertFalse(ctx.market_sla_probe_signature_valid)
+        h.plugin.access(h.conf, ctx)
+        self.assertFalse(ctx.market_sla_probe_verified)
+
+    def test_private_probe_candidate_rejects_forged_ctx_and_changed_binding(self):
+        for changed in ("forged", "config", "route", "version", "path", "method", "consumer"):
+            h = Harness(); ctx = h.context("owned-probe-consumer"); h.sign()
+            if changed != "forged":
+                h.plugin.rewrite(h.conf, ctx)
+            else:
+                ctx.market_sla_probe_signature_valid = True
+                ctx.market_sla_probe_verified = True
+                ctx.market_sla_probe_original_path = "/gateway/route/health"
+            if changed == "route":
+                ctx.matched_route.value.id = "different-route"
+            elif changed != "forged":
+                key = {"config":"market_sla_probe_config_version", "version":"market_version_id",
+                    "path":"market_sla_probe_path", "method":"market_sla_probe_method",
+                    "consumer":"market_sla_probe_consumer"}[changed]
+                ctx.matched_route.value.labels[key] = "different"
+            h.lua.globals().ngx.var.uri = "/health"
+            h.plugin.access(h.conf, ctx)
+            self.assertFalse(ctx.market_sla_probe_verified)
+            self.assertIsNone(ctx.market_sla_probe_original_path)
+            self.assertIsNone(ctx.market_sla_probe_binding)
+
     def test_apisix_loader_init_hook_starts_drainer_without_request(self):
         h = Harness()
         self.assertIsNone(h.plugin.init_worker)

@@ -22,10 +22,16 @@ package.preload['resty.redis'] = function()
   return {new=function() redis_calls=redis_calls+1
     return {set_timeout=function() end,connect=function() return false end} end}
 end
-ngx={var={uri='/gateway/route/health'},req={get_method=function() return 'GET' end}}
+ngx={var={uri='/health'},req={get_method=function() return 'GET' end}}
 function context(flag,consumer,path)
   return {market_sla_probe_verified=flag,consumer_name=consumer,
+    market_sla_probe_original_path='/gateway/route/health',market_sla_probe_original_method='GET',
+    market_sla_probe_binding={gateway_route_id='route',database_route_id='db-route',
+      product_id='product',version_id='version',config_version='config',
+      path='/gateway/route/health',method='GET'},
     matched_route={value={id='route',labels={market_sla_probe_consumer='probe-consumer',
+      market_sla_probe_route_id='db-route',market_product_id='product',market_version_id='version',
+      market_sla_probe_config_version='config',
       market_sla_probe_path=path,market_sla_probe_method='GET'}}}}
 end
 ''')
@@ -52,6 +58,17 @@ end
             with self.subTest(consumer=consumer, path=path):
                 ctx = self.lua.globals().context(True, consumer, path)
                 self.assertEqual(self.plugin.access(self.conf, ctx)['code'], 403)
+        self.assertEqual(self.lua.globals().redis_calls, 0)
+
+    def test_missing_or_changed_original_binding_cannot_bypass(self):
+        for field in ('gateway_route_id', 'database_route_id', 'product_id', 'version_id', 'config_version', 'path'):
+            with self.subTest(field=field):
+                ctx = self.lua.globals().context(True, 'probe-consumer', '/gateway/route/health')
+                ctx['market_sla_probe_binding'][field] = 'changed'
+                self.assertEqual(self.plugin.access(self.conf, ctx)['code'], 403)
+        ctx = self.lua.globals().context(True, 'probe-consumer', '/gateway/route/health')
+        ctx['market_sla_probe_binding'] = None
+        self.assertEqual(self.plugin.access(self.conf, ctx)['code'], 403)
         self.assertEqual(self.lua.globals().redis_calls, 0)
 
 

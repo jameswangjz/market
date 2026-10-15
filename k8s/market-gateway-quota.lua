@@ -163,9 +163,19 @@ function _M.access(conf, ctx)
     if ctx.market_sla_probe_verified == true then
         local matched = ctx.matched_route and ctx.matched_route.value
         local labels = matched and matched.labels or {}
+        local binding = ctx.market_sla_probe_binding
         if consumer ~= "" and consumer == labels.market_sla_probe_consumer
-            and ngx.var.uri == labels.market_sla_probe_path
-            and ngx.req.get_method() == labels.market_sla_probe_method then
+            and type(binding) == "table" and matched
+            and binding.gateway_route_id == tostring(matched.id)
+            and binding.database_route_id and binding.database_route_id ~= ""
+            and binding.database_route_id == labels.market_sla_probe_route_id
+            and binding.product_id == labels.market_product_id and binding.version_id == labels.market_version_id
+            and binding.config_version and binding.config_version ~= ""
+            and binding.config_version == labels.market_sla_probe_config_version
+            and binding.path == labels.market_sla_probe_path
+            and binding.path == ctx.market_sla_probe_original_path
+            and binding.method == ctx.market_sla_probe_original_method
+            and binding.method == ngx.req.get_method() and binding.method == labels.market_sla_probe_method then
             -- Only the server-signed, read-only, dedicated probe identity is
             -- exempt. Standard key-auth and its own rate bucket still apply.
             return

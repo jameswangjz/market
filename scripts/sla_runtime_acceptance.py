@@ -69,7 +69,32 @@ def run(args):
         try:
             quota = sorted({key for window in saved['quota_windows']
                 for epoch in range(window['start'], window['end'] + 1)
-                for key in fixture.quota_keys(window['scope'], window['period'], epoch)})
+                for key in fixture.quota_keys(window['scope'], window['period'], epoch)
+                if ':minute:' not in key})
+            report['quota_check'] = 'Buyer day/month counters; expiring minute keys checked by Lua isolation tests'
+            warmup_baseline = {key: redis.get(key) for key in quota}
+            report['probe_preflight'] = []
+            for cid in contract_ids:
+                with m.SessionLocal() as db:
+                    target = m.sla_probe_runtime['resolve'](db, cid, instant=m.now())
+                    if target is None:
+                        continue
+                    fixture.check(bool(target.url), 'Business-entry binding source is missing')
+                    status = None
+                    for attempt in range(3):
+                        headers = m.sla_probe_headers(db, target)
+                        response = m.validated_http_request(target.method, target.url, timeout=5,
+                            follow_redirects=False, headers=headers)
+                        status = response.status_code
+                        response.close()
+                        if status != 401 or attempt == 2:
+                            break
+                        # A newly created Consumer must reach data-plane watchers.
+                        time.sleep(1)
+                    report['probe_preflight'].append({'product_id': target.product_id, 'status_code': status})
+                    fixture.check(200 <= status < 300, 'Signed business-entry preflight failed')
+            fixture.check(all(redis.get(key) == value for key, value in warmup_baseline.items()),
+                          'Signed probe preflight changed buyer quota')
             # A newly delivered service does not own the earlier boundary of
             # the current slot. Wait for a real slot, never insert future facts.
             first_slot = math.ceil(max(row.verified_at.timestamp() for row in contracts) / 300) * 300
@@ -103,13 +128,16 @@ def run(args):
                 rows = list(db.scalars(select(m.sla_gateway_events['Model']).where(
                     m.sla_gateway_events['Model'].product_id.in_(saved['products']))))
                 event_count = len(rows)
-                if event_count >= 4:
+                business_count = sum(row.traffic == 'business' and row.scope_resolved
+                    and row.enterprise_id == saved['enterprises'][0] for row in rows)
+                if business_count >= 4:
                     break
             time.sleep(1)
-        fixture.check(event_count >= 4, 'Real APISIX terminal logs were not ingested')
+        fixture.check(business_count >= 4, 'Real APISIX terminal business logs were not ingested')
         fixture.check(len({row.request_id for row in rows}) == event_count,
                       'Terminal request IDs were duplicated')
         report['real_gateway_events'] = event_count
+        report['real_scoped_business_events'] = business_count
         report['verified_order_contracts'] = len(contract_ids)
         # No context manager: never run lifespan/seeding against the business DB.
         client = TestClient(m.app)
