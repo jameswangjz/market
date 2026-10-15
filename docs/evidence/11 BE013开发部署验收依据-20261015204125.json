@@ -1,0 +1,47 @@
+{
+  "status": "passed",
+  "coverage": ["TRD-R3-BE-013"],
+  "captured_at": "2026-10-15T12:41:25Z",
+  "user_acceptance": "not performed",
+  "runtime_commit": "b5ef8051c29dce3fc225d1311531cd689736ccc5",
+  "image_tag": "20261015123800-b5ef805",
+  "manifest_sha256": "205d82532e1689d3446c8cad3c95180cf43a42623413af00fe4a684f0674cd52",
+  "backend_group": {
+    "passed": 122,
+    "subtests_passed": 78,
+    "log": "/tmp/market-be013-final-group-20261015-c.log",
+    "sha256": "5e9d5071e5c0bf7d5e1c12cf4bf0e42141c0fd0d3d299a51595da23a7da82b05"
+  },
+  "frontend": {
+    "passed": 27,
+    "log": "/tmp/market-be013-frontend-20261015-a.log",
+    "sha256": "e9360b0f250d36eb3626ae1de6628779febd4fdda7c274019a2854d230fd65a5",
+    "build": "passed, local build and clean committed-source release rebuild"
+  },
+  "postgresql": {
+    "business_cases_passed": 4,
+    "proof": "10 BE013跨版本月清算PG验证-20261015203647.json",
+    "temporary_schema_cleanup": "passed",
+    "public_write_operations": 0,
+    "resources": "explicit synthetic recovery adapter",
+    "funds": "platform simulated payment legs"
+  },
+  "deployed_checks": {
+    "api_web_refund_worker_image_match": true,
+    "api_and_build_metadata": "passed",
+    "installed_main_worker_adapter_hashes": "matched tested source",
+    "new_mapping_table_present": true,
+    "worker_heartbeat_age_seconds": 0.5747089385986328,
+    "refund_get_roles": {"super_admin": 200, "platform_operator": 200, "finance_settlement": 403, "delivery_monitor": 403},
+    "protected_order_count": 1,
+    "business_mutation_requests": 0,
+    "ntp_synchronized": true
+  },
+  "limits": [
+    "Not user frontend acceptance",
+    "No real bank refund or supplier/APISIX complete resource-fault chain",
+    "Cross-version monthly graph uses explicitly seeded trusted economic history",
+    "BE011/BE012 unsupported resource and historical-evidence boundaries remain open",
+    "Does not mark QA006, FE008, BE012 or BE011 complete"
+  ]
+}
