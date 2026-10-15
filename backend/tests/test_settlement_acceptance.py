@@ -66,12 +66,26 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         self.request('POST', f'/api/settlement-batches/{original_batch["id"]}/confirm', actor='finance', json={})
         self.request('POST', f'/api/settlement-batches/{original_batch["id"]}/pay', actor='finance', json={})
         self.request('POST', f'/api/orders/{oid}/transition', actor='platform',
-                     json={'action': 'approve_refund', 'refund_amount': 20, 'reason': 'Partial refund'})
-        self.request('POST', f'/api/orders/{oid}/transition', actor='platform', json={'action': 'complete_refund'})
-        refund = self.rows(self.m.Refund, order_id=oid)[0]
+                     expected=409, json={'action': 'approve_refund', 'refund_amount': 20, 'reason': 'Partial refund'})
+        self.request('POST', f'/api/orders/{oid}/transition', actor='platform', expected=409,
+                     json={'action': 'complete_refund'})
+        self.assertEqual(self.rows(self.m.Refund, order_id=oid), [])
+        # Historical completed evidence only; current execution is covered by
+        # test_refund_monthly_settlement, never by the forbidden legacy route.
         with self.m.SessionLocal() as db:
-            db.get(self.m.Refund, refund.id).completed_at = datetime(2026, 9, 20, tzinfo=timezone.utc)
+            payment = db.scalar(self.select(self.m.Payment).where(self.m.Payment.order_id == oid))
+            refund = self.m.Refund(id='historical-settlement-refund', refund_no='REF-HISTORICAL-SETTLEMENT',
+                order_id=oid, payment_id=payment.id, amount=Decimal('20'), status='completed',
+                reason='Seeded historical completed refund evidence',
+                completed_at=datetime(2026, 9, 20, tzinfo=timezone.utc))
+            db.add(refund)
+            db.get(self.m.Order, oid).refunded_amount = Decimal('20')
+            db.flush()
+            self.m.create_refund_negative_settlement(db, refund, 'historical-test-fixture')
+            self.m.settlement_metering['record_order_event'](
+                db, db.get(self.m.Order, oid), 'complete_refund', 1, actor_id='platform')
             db.commit()
+        refund = self.rows(self.m.Refund, order_id=oid)[0]
         batch = self.batch(idempotency_key='refund-completion-month')
         rows = self.batch_settlements(batch['id'])
         self.assertEqual(len(rows), 1)

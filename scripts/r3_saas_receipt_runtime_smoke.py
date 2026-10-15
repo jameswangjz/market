@@ -1,5 +1,5 @@
 """Installed mock Store smoke with a temporary DB; no real tenants or OAuth calls."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import tempfile
@@ -19,7 +19,8 @@ def main():
         def call(operation, **values):
             return store.machine_operation(dict(type=operation, **identity, **values), claims)
 
-        call('OPEN', version='v1')
+        expiry = datetime.now(timezone.utc) + timedelta(days=20, microseconds=123)
+        call('OPEN', version='v1', expires_at=expiry.isoformat())
         body = dict(to_version='v2', change_id='isolated-change', direction='target',
                     idempotency_key='isolated-target')
         first = call('CHANGE', **body)
@@ -41,7 +42,25 @@ def main():
                                        idempotency_key='isolated-original'))
         assert call('CHANGE', **body) == first
         assert {k: call('STATUS')[k] for k in fields} == {k: restored[k] for k in fields}
-    print(json.dumps({'status': 'passed', 'cases': 7,
+        shortened = expiry - timedelta(days=2, microseconds=123)
+        shortening = dict(action='refund_shorten', protocol='refund_shorten_v1',
+            refund_id='isolated-refund', idempotency_key='refund-shorten:isolated-refund',
+            expected_expires_at=expiry.isoformat(), expires_at=shortened.isoformat())
+        receipt = call('RENEW', **shortening)
+        assert call('RENEW', **shortening) == receipt
+        store = Store(path)
+        assert call('RENEW', **shortening) == receipt
+        status = call('STATUS')
+        assert status['refund_shorten_supported'] is True and status['refund_id'] == 'isolated-refund'
+        assert datetime.fromisoformat(status['expires_at']) == shortened
+        assert {k: status[k] for k in fields} == {k: restored[k] for k in fields}
+        try:
+            call('RENEW', **dict(shortening, expires_at=expiry.isoformat()))
+        except MachineOperationError as exc:
+            assert exc.status == 409
+        else:
+            raise AssertionError('Conflicting refund shortening accepted')
+    print(json.dumps({'status': 'passed', 'cases': 10,
         'scope': 'installed mock Store and temporary SQLite only',
         'live_tenant_writes': 0, 'platform_database_writes': 0,
         'limits': 'Synthetic trusted claims; not HTTP OAuth, real supplier or bank validation'}))

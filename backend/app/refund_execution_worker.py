@@ -215,6 +215,12 @@ def process_once(SessionLocal=None, *, ns=None, now=None):
                             completed_at=instant,
                         )
                     )
+                    ns['settlement_metering']['record'](
+                        db, order, 'refund', refund.amount, 'currency', 'refund',
+                        refund.id + ':completed', refund.id, 'refund-execution-worker',
+                        evidence=dict(refund_id=refund.id, payment_id=refund.payment_id,
+                                      basis='negative_adjustment', funds_mode='simulated'),
+                    )
                     finish_phase(db, execution, refund, case, "completed")
         return True
     except Exception as exc:

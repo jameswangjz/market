@@ -174,10 +174,28 @@ class SettlementMeteringTests(unittest.TestCase):
             storage.return_value.get_object.return_value.read.return_value = b'x'
             self.request("POST", f"/api/delivery-tasks/{tid}/process", actor="ops", json={"success": True})
         self.request("POST", f"/api/orders/{oid}/transition", expected=409, json={"action": "accept_delivery"})
-        for amount in (20, 10):
-            self.request("POST", f"/api/orders/{oid}/transition", actor="finance", json={"action": "approve_refund", "refund_amount": amount})
-            self.request("POST", f"/api/orders/{oid}/transition", expected=409, json={"action": "confirm_payment"})
-            self.request("POST", f"/api/orders/{oid}/transition", actor="finance", json={"action": "complete_refund"})
+        for action in ("approve_refund", "complete_refund"):
+            self.request("POST", f"/api/orders/{oid}/transition", actor="finance", expected=403,
+                         json={"action": action, "refund_amount": 20})
+        with self.m.SessionLocal() as db:
+            self.assertEqual(list(db.scalars(self.select(self.m.Refund).where(self.m.Refund.order_id == oid))), [])
+        # Seed historical completion evidence, then exercise the actual observer.
+        # This does not claim execution through today's ordinary refund APIs.
+        for index, amount in enumerate((20, 10)):
+            with self.m.SessionLocal() as db:
+                payment = db.scalar(self.select(self.m.Payment).where(self.m.Payment.order_id == oid))
+                order = db.get(self.m.Order, oid)
+                refund = self.m.Refund(id=f'historical-metering-refund-{index}',
+                    refund_no=f'REF-HISTORICAL-METERING-{index}', order_id=oid, payment_id=payment.id,
+                    amount=Decimal(amount), status='completed',
+                    reason='Seeded historical completed refund evidence',
+                    completed_at=datetime(2026, 9, 20, tzinfo=timezone.utc) + timedelta(seconds=index))
+                db.add(refund)
+                order.refunded_amount = Decimal(str(order.refunded_amount or 0)) + Decimal(amount)
+                db.flush()
+                self.m.settlement_metering['record_order_event'](
+                    db, order, 'complete_refund', index + 1, actor_id='platform')
+                db.commit()
         refunds = [item for item in self.measurements(oid) if item["measurement_type"] == "refund"]
         self.assertEqual(sorted(item["quantity"] for item in refunds), [10, 20])
         self.assertEqual(len({item["source_id"] for item in refunds}), 2)

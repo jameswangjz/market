@@ -160,6 +160,36 @@ test("pending_be013 is pending clearing integration, never posted or completed",
     assert.equal(progress.legsAvailable, true);
   }
 });
+test("BE013 ledger labels distinguish monthly clearing from refund bank settlement", () => {
+  for (const [ledger_status, label] of Object.entries({ pending_monthly: "待纳入月度清算",
+    settlement_generated: "负向清算单已生成", in_batch: "已纳入清算批次", paid: "清算已付款",
+    pending_be013: "待清算接入" })) {
+    for (const item of [{ execution: { status: "completed", ledger_status, funds_mode: "simulated", payment_legs: [] } },
+      { execution_status: "completed", ledger_status, execution_mode: "simulated", payment_legs: [] }]) {
+      const progress = refundExecutionProgress(item);
+      assert.equal(progress.ledger, label);
+      assert.equal(progress.status, "已完成");
+      assert.equal(progress.simulated, true);
+      assert.doesNotMatch(progress.ledger, /银行|退款已到账|退款已结算/);
+    }
+  }
+  assert.equal(refundStatus("completed"), "已退款");
+});
+test("BE013 execution DTO projection excludes private financial and source evidence", () => {
+  for (const ledger_status of ["pending_monthly", "settlement_generated", "in_batch", "paid"]) {
+    const privateFields = { cost_reversal: "PRIVATE_COST", settlement_rule: { account: "PRIVATE_ACCOUNT" },
+      payment_id: "PRIVATE_PAYMENT", source_order_id: "PRIVATE_SOURCE", token: "PRIVATE_TOKEN",
+      resource_plan_json: "PRIVATE_RESOURCE", receipt: "PRIVATE_RECEIPT", last_error: "PRIVATE_URL" };
+    for (const item of [{ ...privateFields, execution: { ...privateFields, status: "completed", ledger_status,
+      resource_status: "applied", funds_mode: "simulated", payment_legs: [{ ...privateFields, amount: "12.50", status: "completed" }] } },
+    { ...privateFields, execution_status: "completed", ledger_status, resource_status: "applied",
+      execution_mode: "simulated", payment_legs: [{ ...privateFields, amount: "12.50", status: "completed" }] }]) {
+      const progress = refundExecutionProgress(item);
+      assert.doesNotMatch(JSON.stringify(progress), /PRIVATE|cost_reversal|settlement_rule|payment_id|source_order_id|token|resource_plan_json|receipt|last_error/);
+      assert.deepEqual(progress.legs, [{ label: "资金腿 1", amount: "¥12.50", status: "已完成", failure: "执行未完成，请由平台核对后处理" }]);
+    }
+  }
+});
 test("execution uses existing modal and components compile", () => {
   for (const name of ["RefundCenter", "RefundDetail"]) {
     const source = readFileSync(new URL(`../src/${name}.vue`, import.meta.url), "utf8");

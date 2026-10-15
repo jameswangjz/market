@@ -82,7 +82,8 @@ export function refundExecutionActions(item, user) {
 }
 const executionStates = Object.freeze({ pending: "等待处理", requested: "已提交", executing: "处理中",
   prepared: "执行已准备", resources_pending: "等待资源回收", resources_applied: "资源已回收", funds_pending: "等待资金处理",
-  pending_be013: "待清算接入", applied: "已回收",
+  pending_be013: "待清算接入", pending_monthly: "待纳入月度清算", settlement_generated: "负向清算单已生成",
+  in_batch: "已纳入清算批次", paid: "清算已付款", applied: "已回收",
   processing: "处理中", succeeded: "已完成", completed: "已完成", failed: "失败", unavailable: "不可用", posted: "已入账" });
 export function refundExecutionStatus(value) { return Object.hasOwn(executionStates, value) ? executionStates[value] : "状态待确认"; }
 export function refundExecutionFailure(value) {

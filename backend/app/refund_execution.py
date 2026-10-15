@@ -422,12 +422,16 @@ def install(ns):
             "applied" if execution.proof_json else ("failed" if execution.status == "failed" else "pending")
         )
         completion = db.get(Completion, execution.refund_id)
+        ledger_status = "blocked_guard" if execution.status == "completed" and completion is None else "pending_be013"
+        if completion is not None:
+            describe_ledger = ns.get("refund_settlement", {}).get("ledger_status")
+            ledger_status = describe_ledger(db, execution.refund_id) if callable(describe_ledger) else "pending_monthly"
+            if ledger_status not in {"pending_monthly", "settlement_generated", "in_batch", "paid"}:
+                ledger_status = "blocked_guard"
         return dict(
             status=execution.status,
             resource_status=resource_status,
-            ledger_status="blocked_guard"
-            if execution.status == "completed" and completion is None
-            else "pending_be013",
+            ledger_status=ledger_status,
             payment_legs=[
                 dict(
                     amount=format(_money(cents(leg.amount)), ".2f"),

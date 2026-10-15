@@ -167,7 +167,7 @@ class RefundExecutionTests(unittest.TestCase):
         for actor in ("buyer", "provider", "ops"):
             view = self.request("GET", "/api/refunds/" + approved["id"], actor=actor)["execution"]
             self.assertEqual(view["funds_mode"], "simulated")
-            self.assertEqual(view["ledger_status"], "pending_be013")
+            self.assertEqual(view["ledger_status"], "pending_monthly")
             self.assertEqual(
                 view["payment_legs"], [dict(amount="20.00", status="completed", error_code=None)]
             )
@@ -179,8 +179,11 @@ class RefundExecutionTests(unittest.TestCase):
             self.assertEqual(db.get(self.Completion, refund.id).settlement_status, "pending_be013")
             leg = db.scalar(select(self.Leg))
             self.assertEqual(leg.receipt, "simulated:" + refund.id + ":paid-source")
-            with self.assertRaises(HTTPException):
-                self.m.create_refund_negative_settlement(db, refund)
+            with patch.dict(self.m.refund_settlement, negative_settlement=None):
+                with self.assertRaises(HTTPException) as unavailable:
+                    self.m.create_refund_negative_settlement(db, refund)
+            self.assertEqual(unavailable.exception.status_code, 409)
+            self.assertIn("adapter is unavailable", unavailable.exception.detail)
             self.assertEqual(list(db.scalars(select(self.m.Settlement))), [])
 
     def test_roles_manual_and_request_fields_fail_closed(self):
