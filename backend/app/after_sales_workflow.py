@@ -8,9 +8,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from .sla_clock import CalendarNotReady, elapsed_seconds, ticket_measurements
-
-
 TERMINAL = frozenset({"completed", "withdrawn", "force_closed"})
 ENDED = TERMINAL | {"resolved", "closed"}
 STATES = frozenset({"awaiting_response", "processing", "awaiting_buyer_info",
@@ -25,6 +22,7 @@ TRANSITIONS = {
     "reject_resolution": ("buyer", {"awaiting_buyer_confirmation"}, "processing"),
     "withdraw": ("buyer", STATES - TERMINAL, "withdrawn"),
     "request_intervention": ("party", STATES - TERMINAL - {"platform_intervention"}, "platform_intervention"),
+    "respond_intervention": ("platform", {"platform_intervention"}, "platform_intervention"),
     "review_intervention": ("platform", {"platform_intervention"}, None),
     "force_close": ("closer", STATES - TERMINAL, "force_closed"),
 }
@@ -116,7 +114,7 @@ def install(ns):
                 raise HTTPException(409, "幂等键已用于不同操作")
             return db.get(Ticket, event.ticket_id)
 
-    def record(db, user, order, ticket, body, old, actor_role, actor_enterprise):
+    def record(db, user, order, ticket, body, old, actor_role, actor_enterprise, occurred_at):
         new = {"status": ticket.status, "version": ticket.version}
         event = Event(ticket_id=ticket.id, operation_key=identity(user, body),
             payload_hash=hashlib.sha256(canonical(body).encode()).hexdigest(),
@@ -124,7 +122,7 @@ def install(ns):
             to_status=ticket.status, actor_id=user.id, actor_role=actor_role,
             actor_enterprise_id=actor_enterprise, reason=getattr(body, "reason", body.description if isinstance(body, TicketCreate) else ""),
             request_id=(ns["audit_request_id"].get() or "")[:100],
-            before_json=json.dumps(old), after_json=json.dumps(new), occurred_at=ns["now"]())
+            before_json=json.dumps(old), after_json=json.dumps(new), occurred_at=occurred_at)
         db.add(event)
         ns["audit"](db, user.email or user.id, "after_sales_" + event.event_type,
             "after_sales_ticket", ticket.id, event.reason, order_id=order.id,
@@ -167,11 +165,11 @@ def install(ns):
             status="awaiting_response", version=1, buyer_enterprise_id=order.buyer_enterprise_id,
             provider_enterprise_id=order.provider_enterprise_id, created_by=user.id,
             sla_snapshot_json=json.dumps(snapshot, ensure_ascii=False), evidence_status="recorded",
-            service_level_code=snapshot["service_level_code"])
+            service_level_code=snapshot["service_level_code"], created_at=ns["now"]())
         db.add(ticket)
         db.flush()
         order.after_sales_status = "processing"
-        record(db, user, order, ticket, body, {}, role, tenant)
+        record(db, user, order, ticket, body, {}, role, tenant, ticket.created_at)
         return ticket
 
     def act(db, user, ticket_id, body):
@@ -200,6 +198,8 @@ def install(ns):
         current = "completed" if ticket.status == "resolved" else ticket.status
         if current not in allowed:
             raise HTTPException(409, "当前售后状态不能执行该动作")
+        if body.action == "respond_intervention":
+            ns["ticket_sla_clocks"]["require_first_intervention_response"](db, ticket)
         old = {"status": ticket.status, "version": ticket.version}
         if body.action == "request_intervention":
             ticket.previous_status = current
@@ -218,7 +218,7 @@ def install(ns):
         active_ticket = db.scalar(select(Ticket.id).where(Ticket.order_id == order.id,
             Ticket.id != ticket.id, Ticket.status.notin_(ENDED)))
         order.after_sales_status = "processing" if target not in TERMINAL or active_ticket else "resolved"
-        record(db, user, order, ticket, body, old, role, tenant)
+        record(db, user, order, ticket, body, old, role, tenant, at)
         return ticket
 
     @app.post("/api/after-sales")
@@ -286,58 +286,15 @@ def install(ns):
             raise HTTPException(404, "售后工单不存在")
         require_view(db, user, order)
         require_scope(request, db, user, order)
+        # Match action lock order before calendar resolution or clock writes.
+        order = db.scalar(select(Order).where(Order.id == order.id).with_for_update()
+                          .execution_options(populate_existing=True))
         ticket = db.scalar(select(Ticket).where(Ticket.id == ticket_id).with_for_update()
                            .execution_options(populate_existing=True))
-        snapshot = json.loads(ticket.sla_snapshot_json or "{}")
-        if ticket.evidence_status != "recorded" or not snapshot.get("metrics"):
-            return {"status": "insufficient_data", "reason": "historical_evidence_unknown",
-                    "items": [], "evidence_status": ticket.evidence_status}
-        events = db.scalars(select(Event).where(Event.ticket_id == ticket.id)
-                           .order_by(Event.occurred_at, Event.id)).all()
-        # SQLite legacy readers omit offsets; persisted timestamps are UTC.
-        from datetime import timezone
-        from types import SimpleNamespace
-        utc = lambda value: value.replace(tzinfo=timezone.utc) if value and value.tzinfo is None else value
-        facts = SimpleNamespace(**{key: getattr(ticket, key) for key in
-            ("priority", "status", "evidence_status")}, **{key: utc(getattr(ticket, key)) for key in
-            ("created_at", "first_response_at", "closed_at")})
-        event_facts = [SimpleNamespace(occurred_at=utc(e.occurred_at), event_type=e.event_type,
-                                      to_status=e.to_status) for e in events]
-        at = ns["now"]()
-        calendar = snapshot.get("calendar")
-        resolve_calendar = ns.get("resolve_ticket_calendar")
-        if resolve_calendar:
-            calendar = resolve_calendar(db, ticket, min(at, facts.closed_at) if facts.closed_at else at)
-        calendar_status = "ready"
-        try:
-            measured = ticket_measurements(facts, event_facts, at, calendar)
-        except CalendarNotReady:
-            measured, calendar_status = {}, "not_ready"
-            if ticket.priority == "urgent":
-                end = facts.first_response_at or facts.closed_at or at
-                measured["first_response_seconds"] = elapsed_seconds(facts.created_at, end, mode="natural")
-        items = []
-        urgent = ticket.priority == "urgent"
-        for name, source, completed in (
-                ("urgent_first_response" if urgent else "first_response", "first_response_seconds", bool(ticket.first_response_at)),
-                ("urgent_resolution" if urgent else "resolution", "resolution_seconds", ticket.status == "completed")):
-            rule = snapshot["metrics"].get(name)
-            if not rule:
-                continue
-            value = measured.get(source)
-            status = "insufficient_data" if value is None else (
-                "breached" if value > rule["target_seconds"] else
-                "warning" if value >= rule["warning_seconds"] else "met" if completed else "running")
-            if ticket.status in {"force_closed", "withdrawn"} and not completed and status in {"running", "met"}:
-                status = "closed_without_confirmation"
-            items.append({"metric": name, "responsibility": rule["responsibility"],
-                          "elapsed_seconds": value, "target_seconds": rule["target_seconds"],
-                          "warning_seconds": rule["warning_seconds"], "clock": rule["clock"], "status": status})
-        result = {"status": "partial" if calendar_status != "ready" else "measured",
-                "calendar_status": calendar_status, "calendar_version": (calendar or {}).get("version"),
-                "evidence_status": ticket.evidence_status, "as_of": at, "items": items,
-                "scope": "first_response_and_resolution; intervention and remediation not yet materialized"}
-        # Only missing annual version bindings and their audit records may be added.
+        if ticket is None or order is None:
+            raise HTTPException(404, "售后工单不存在")
+        result = ns["ticket_sla_clocks"]["refresh"](db, ticket, ns["now"]())
+        # GET materializes clocks and may append audited annual bindings.
         db.commit()
         return result
 

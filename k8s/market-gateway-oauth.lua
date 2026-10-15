@@ -7,7 +7,12 @@ local schema = {type = "object", properties = {
     client_id = {type = "string"}, client_secret = {type = "string"}, scope = {type = "string"},
 }}
 
-local function reject(code, message)
+local function reject(code, message, ctx)
+    if ctx then
+        ctx.market_sla_evidence = {reason="forward_auth_failure", responsibility="platform",
+            evidence_id="oauth:token_acquisition",
+            authorized=type(ctx.consumer_name) == "string" and ctx.consumer_name ~= ""}
+    end
     return core.response.exit(code, {code = "UPSTREAM_OAUTH_ERROR", message = message})
 end
 
@@ -56,17 +61,17 @@ end
 
 function _M.access(conf, ctx)
     if not conf.token_url or not conf.client_id then
-        return reject(502, "API 提供方 OAuth2 配置不完整")
+        return reject(502, "API 提供方 OAuth2 配置不完整", ctx)
     end
     local red = redis:new()
     red:set_timeout(1000)
     local ok = red:connect("market-redis", 6379)
-    if not ok then return reject(503, "API 网关 OAuth2 缓存不可用") end
+    if not ok then return reject(503, "API 网关 OAuth2 缓存不可用", ctx) end
     ok = red:select(0)
-    if not ok then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用") end
+    if not ok then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用", ctx) end
     local cache_key = "market:apisix:oauth:" .. (conf.product_id or "unknown")
     local cached = red:get(cache_key)
-    if cached == nil then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用") end
+    if cached == nil then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用", ctx) end
     if cached and cached ~= ngx.null then
         ngx.req.set_header("Authorization", "Bearer " .. cached)
         ctx.market_oauth_cache_key = cache_key
@@ -81,15 +86,15 @@ function _M.access(conf, ctx)
     local response = client:request_uri(conf.token_url, {method = "POST", body = form, headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }})
     if not response or response.status < 200 or response.status >= 300 then
         red:set_keepalive(60000, 100)
-        return reject(502, "获取上游 OAuth2 Token 失败")
+        return reject(502, "获取上游 OAuth2 Token 失败", ctx)
     end
     local payload = core.json.decode(response.body)
     local token = payload and payload.access_token
-    if not token then red:set_keepalive(60000, 100); return reject(502, "上游 OAuth2 响应缺少 access_token") end
+    if not token then red:set_keepalive(60000, 100); return reject(502, "上游 OAuth2 响应缺少 access_token", ctx) end
     local ttl = tonumber(payload.expires_in or 3600) - 60
     if ttl < 60 then ttl = 60 end
     local stored = red:setex(cache_key, ttl, token)
-    if not stored then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用") end
+    if not stored then red:close(); return reject(503, "API 网关 OAuth2 缓存不可用", ctx) end
     red:set_keepalive(60000, 100)
     ngx.req.set_header("Authorization", "Bearer " .. token)
     ctx.market_oauth_cache_key = cache_key

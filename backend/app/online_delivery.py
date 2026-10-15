@@ -156,6 +156,7 @@ def install(ns):
             order.delivery_status = 'accepted'
             order.main_status = 'completed'
             action = 'delivery_succeeded'
+            ns['order_sla_contracts']['record_verified_delivery'](db, order, task)
         for domain in ('main', 'delivery'):
             old = before[domain+'_status']
             new = getattr(order, domain+'_status')

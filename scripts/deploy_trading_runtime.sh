@@ -40,5 +40,8 @@ elif kubectl -n market get deployment version-change-worker >/dev/null 2>&1; the
 fi
 kubectl -n market set image deployment/market-web "web=market-web:${TAG}"
 kubectl -n market rollout status deployment/market-web --timeout=240s
+if [[ -f k8s/ticket-sla-monitor.yaml ]]; then
+  sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/ticket-sla-monitor.yaml | kubectl apply -f -
+fi
 echo "Deployed: $TAG"
 kubectl -n market get deployment market-api market-web message-center-worker -o wide

@@ -87,7 +87,11 @@ data:
       - prometheus
       - market-gateway-quota
       - market-gateway-oauth
+      - market-sla-logger
     nginx_config:
+      envs:
+        - SLA_GATEWAY_INGEST_SECRET
+        - SLA_PROBE_SECRET
       error_log: "/dev/stderr"
       error_log_level: "warn"
 ---
@@ -120,6 +124,8 @@ spec:
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
           args: ["apisix init && apisix start -c /usr/local/apisix/conf/config.yaml && tail -f /dev/null"]
+          envFrom:
+            - secretRef: {name: market-sla-telemetry, optional: true}
           ports:
             - {name: proxy, containerPort: 9080}
             - {name: admin, containerPort: 9180}
@@ -128,6 +134,7 @@ spec:
             - {name: config, mountPath: /usr/local/apisix/conf/config.yaml, subPath: config.yaml}
             - {name: policy-plugin, mountPath: /usr/local/apisix/apisix/plugins/market-gateway-quota.lua, subPath: market-gateway-quota.lua}
             - {name: policy-plugin, mountPath: /usr/local/apisix/apisix/plugins/market-gateway-oauth.lua, subPath: market-gateway-oauth.lua}
+            - {name: policy-plugin, mountPath: /usr/local/apisix/apisix/plugins/market-sla-logger.lua, subPath: market-sla-logger.lua}
           readinessProbe:
             tcpSocket: {port: 9080}
             initialDelaySeconds: 12

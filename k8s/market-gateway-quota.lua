@@ -39,7 +39,13 @@ end
 return {1, day, month}
 ]]
 
-local function reject(code, message)
+local function reject(code, message, ctx, reason, party)
+    if ctx and reason then
+        local matched = ctx.matched_route and ctx.matched_route.value
+        ctx.market_sla_evidence = {reason=reason, responsibility=party,
+            evidence_id="quota:" .. tostring(matched and matched.id or "unknown"),
+            authorized=type(ctx.consumer_name) == "string" and ctx.consumer_name ~= ""}
+    end
     return core.response.exit(code, {code = "GATEWAY_POLICY_REJECTED", message = message})
 end
 
@@ -140,9 +146,9 @@ local function subscription_access(red, conf, ctx, values)
     red:set_keepalive(60000, 100)
     if not result then return reject(503, "API 网关配额服务不可用") end
     local reason = tonumber(result[1])
-    if reason == 1 then return reject(429, "超过 API 每分钟调用配额") end
-    if reason == 2 then return reject(429, "超过 API 每日调用配额") end
-    if reason == 3 then return reject(429, "超过 API 订阅月调用配额") end
+    if reason == 1 then return reject(429, "超过 API 每分钟调用配额", ctx, "contract_quota", "caller") end
+    if reason == 2 then return reject(429, "超过 API 每日调用配额", ctx, "contract_quota", "caller") end
+    if reason == 3 then return reject(429, "超过 API 订阅月调用配额", ctx, "contract_quota", "caller") end
     if reason ~= 0 then return reject(503, "API 网关配额服务不可用") end
 end
 
@@ -154,6 +160,18 @@ end
 
 function _M.access(conf, ctx)
     local consumer = ctx.consumer_name or ngx.var.consumer_name or ""
+    if ctx.market_sla_probe_verified == true then
+        local matched = ctx.matched_route and ctx.matched_route.value
+        local labels = matched and matched.labels or {}
+        if consumer ~= "" and consumer == labels.market_sla_probe_consumer
+            and ngx.var.uri == labels.market_sla_probe_path
+            and ngx.req.get_method() == labels.market_sla_probe_method then
+            -- Only the server-signed, read-only, dedicated probe identity is
+            -- exempt. Standard key-auth and its own rate bucket still apply.
+            return
+        end
+        return reject(403, "SLA 探测身份与路由不匹配", ctx, "valid_input_failure", "platform")
+    end
     if consumer == "" then
         return reject(401, "缺少有效的 API Consumer")
     end
@@ -229,9 +247,9 @@ function _M.access(conf, ctx)
             return reject(403, "订单 API 调用额度已耗尽，访问凭据已回收")
         end
         if daily_limit > 0 and tonumber(result[2]) > daily_limit then
-            return reject(429, "超过 API 每日调用配额")
+            return reject(429, "超过 API 每日调用配额", ctx, "contract_quota", "caller")
         end
-        return reject(429, "超过 API 每月调用配额")
+        return reject(429, "超过 API 每月调用配额", ctx, "contract_quota", "caller")
     end
 end
 

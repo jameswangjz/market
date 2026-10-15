@@ -1,0 +1,41 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ticket-sla-monitor
+  namespace: market
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 240
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 240
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - name: ticket-sla-monitor
+              image: market-api:REPLACE_WITH_DEPLOYED_TAG
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command: [python, -m, app.ticket_sla_worker]
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: '1', memory: 512Mi}
+              envFrom:
+                - configMapRef: {name: market-config}
+                - secretRef: {name: market-secrets}
+              env:
+                - {name: PYTHONPATH, value: /app}
+                - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+                - {name: OIDC_ISSUER, value: 'http://192.168.10.10:30080'}
+                - {name: OIDC_ALLOW_HTTP_DEVELOPMENT, value: 'true'}
+                - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
+                - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+                - {name: API_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-api-credentials, key: API_CREDENTIAL_ENCRYPTION_KEY}}}
+                - {name: OIDC_SIGNING_KEY_PEM, valueFrom: {secretKeyRef: {name: market-oidc-signing, key: OIDC_SIGNING_KEY_PEM}}}
+                - {name: OIDC_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-oidc-credentials, key: OIDC_CREDENTIAL_ENCRYPTION_KEY}}}

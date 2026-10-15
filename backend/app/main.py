@@ -701,6 +701,30 @@ class AfterSalesEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
+class TicketSlaClock(Base):
+    __tablename__ = "ticket_sla_clocks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    ticket_id: Mapped[str] = mapped_column(ForeignKey("after_sales_tickets.id"), index=True)
+    metric: Mapped[str] = mapped_column(String(50))
+    round: Mapped[int] = mapped_column(Integer)
+    party: Mapped[str] = mapped_column(String(30))
+    rule_snapshot_json: Mapped[str] = mapped_column(Text)
+    rule_version: Mapped[str] = mapped_column(String(128), default="")
+    calendar_snapshot_json: Mapped[str] = mapped_column(Text)
+    calendar_bindings_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_event_ids_json: Mapped[str] = mapped_column(Text)
+    source_ticket_version: Mapped[int] = mapped_column(Integer)
+    elapsed_seconds: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    status: Mapped[str] = mapped_column(String(40))
+    lifecycle: Mapped[str] = mapped_column(String(30))
+    reason: Mapped[str] = mapped_column(String(100), default="")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    measured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("ticket_id", "metric", "round", "party", name="uq_ticket_sla_clock_round"),)
+
+
 class Settlement(Base):
     __tablename__ = "settlements"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -4564,6 +4588,35 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
             "client_secret": route.upstream_client_secret,
             "scope": route.upstream_scope,
         }
+    health = urlparse(route.health_path or "")
+    health_label = health.path if (health.path.startswith("/") and not health.scheme and not health.netloc
+                                  and not health.query and not health.fragment) else ""
+    probe_labels = {}
+    labels_hook = globals().get("sla_probe_runtime", {}).get("route_labels")
+    if callable(labels_hook) and version is not None and health_label:
+        # Pure runtime hook; main import/installation never publishes a route.
+        probe_labels = labels_hook(route, version.id)
+    elif version is not None and route.id and health_label and route.health_method in {"GET", "HEAD"}:
+        from ipaddress import ip_network
+        from .sla_probe_runtime import probe_consumer_name
+        try:
+            cidrs = [str(ip_network(value.strip(), strict=True)) for value in
+                     os.getenv("SLA_PROBE_SOURCE_CIDRS", "").split(",") if value.strip()]
+            secret = os.getenv("SLA_PROBE_SECRET", "")
+            if (cidrs and all(ip_network(value).prefixlen > 0 for value in cidrs)
+                    and 32 <= len(secret) <= 512 and all(32 < ord(char) < 127 for char in secret)):
+                probe_labels = {
+                    "market_sla_probe_enabled": "true",
+                    "market_sla_probe_path": f"/gateway/{route.route_key}{health_label}",
+                    "market_sla_probe_method": route.health_method,
+                    "market_sla_probe_route_id": route.id,
+                    "market_sla_probe_consumer": probe_consumer_name(route.id, route.product_id, version.id),
+                    "market_sla_probe_source_cidrs": ",".join(cidrs),
+                }
+                probe_labels["market_sla_probe_config_version"] = hashlib.sha256(
+                    json.dumps(probe_labels, sort_keys=True).encode()).hexdigest()
+        except ValueError:
+            probe_labels = {}
     return {
         "name": f"market-{route.route_key}",
         "uri": f"/gateway/{route.route_key}/*",
@@ -4573,7 +4626,11 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
                      "timeout": {"connect": route.timeout_ms / 1000, "send": route.timeout_ms / 1000, "read": route.timeout_ms / 1000}}
                     if route.validated_ip else {"type": "roundrobin", "nodes": {target_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if target_upstream.startswith("https://") else "http"},
         "plugins": plugins,
-        "labels": {"market_product_id": route.product_id, "market_version": route.version, "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"},
+        "labels": {"market_product_id": route.product_id, "market_version": route.version,
+                   "market_version_id": version.id if version else "", "market_route_id": route.id or "",
+                   "market_health_path": health_label, "market_health_method": route.health_method,
+                   **probe_labels,
+                   "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"},
     }
 
 
@@ -5186,9 +5243,11 @@ def add_saas_order(db: Session, subscription: SaaSSubscription, product: Product
     order = Order(order_no=make_order_no(), buyer_user_id=buyer.id, buyer_enterprise_id=subscription.enterprise_id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=version.name, billing_cycle=subscription.billing_cycle, subscription_id=subscription.id, business_type=business_type, related_order_id=related_order_id, product_name=product.name, buyer_name=enterprise.name if enterprise else "", amount=amount, paid_amount=amount if paid else 0, main_status="completed" if paid else "created", payment_status="paid" if paid else "unpaid")
     db.add(order)
     db.flush()
-    db.add(Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid", paid_at=now() if paid and business_type != "downgrade" else None))
+    payment = Payment(order_id=order.id, payment_no="PAY-" + secrets.token_hex(6).upper(), amount=amount, status="paid" if paid else "unpaid", paid_at=now() if paid and business_type != "downgrade" else None)
+    db.add(payment)
     if paid and business_type != "downgrade":
         db.flush()
+        order_sla_contracts["freeze_payment"](db, order, payment, previously_paid=False, legacy_saas=True)
         settlement_metering["record_order_event"](db, order, "confirm_payment", "paid", buyer.id)
         notify_order_event(db, order, "confirm_payment", "paid")
     return order
@@ -5727,6 +5786,7 @@ def transition_order(order_id: str, body: TransitionBody, request: Request, user
             raise HTTPException(400, "支付单不存在")
         if order.payment_status not in {"unpaid", "paying", "paid"} or payment.status not in {"unpaid", "paying", "paid"}:
             raise HTTPException(409, "当前支付状态不允许确认支付")
+        previously_paid = order.payment_status == "paid" or payment.status == "paid"
         if order.business_type == "upgrade" and order.subscription_id and order.product_version_id:
             subscription = db.get(SaaSSubscription, order.subscription_id)
             target_version = db.get(SaaSProductVersion, order.product_version_id)
@@ -5740,9 +5800,11 @@ def transition_order(order_id: str, body: TransitionBody, request: Request, user
                 subscription.status = "active"
         payment.status = "paid"
         payment.confirmed_by = user.name
-        payment.paid_at = payment.paid_at or now()
+        if not previously_paid:
+            payment.paid_at = now()
         order.payment_status = "paid"
         order.paid_amount = order.amount
+        order_sla_contracts["freeze_payment"](db, order, payment, previously_paid=previously_paid)
         log_state(db, order, "payment", current, target, body.action, user, body.reason)
         if order.main_status in ["created", "pending_review", "pending_payment"]:
             old_main = order.main_status
@@ -7044,31 +7106,28 @@ def sla_result_out(item: SLAResult, profile: SLAProfile | None = None) -> dict[s
     return {"id": item.id, "profile_id": item.profile_id, "profile_name": profile.name if profile else "",
             "product_id": item.product_id, "period_start": item.period_start, "period_end": item.period_end,
             "sample_count": item.sample_count, "success_count": item.success_count,
-            "availability": float(item.availability or 0), "avg_latency_ms": float(item.avg_latency_ms or 0),
-            "error_rate": float(item.error_rate or 0), "delivery_count": item.delivery_count,
-            "delivery_on_time": item.delivery_on_time, "delivery_compliance": float(item.delivery_compliance or 0),
-            "status": item.status, "breach_reason": item.breach_reason, "calculated_at": item.calculated_at}
+            "availability": None, "avg_latency_ms": None, "p95_latency_ms": None,
+            "error_rate": None, "delivery_count": item.delivery_count,
+            "delivery_on_time": item.delivery_on_time, "delivery_compliance": None,
+            "legacy": True, "legacy_status": item.status, "status": "legacy",
+            "breach_reason": "legacy_unverified_sources", "calculated_at": item.calculated_at}
 
 
 @app.get("/api/sla/overview")
 def sla_overview(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
     profiles = db.scalars(select(SLAProfile).order_by(SLAProfile.created_at.desc())).all()
-    all_results = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc()).limit(200)).all()
-    latest_result_ids = set()
-    results = []
-    for result in all_results:
-        if result.profile_id not in latest_result_ids:
-            latest_result_ids.add(result.profile_id)
-            results.append(result)
-    profile_map = {x.id: x for x in profiles}
+    results = sla_online_assessments["results"](db)
+    legacy = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc(), SLAResult.id).limit(100)).all()
+    legacy_results = [sla_result_out(row, db.get(SLAProfile, row.profile_id)) for row in legacy]
     service_levels = db.scalars(select(ServiceLevel).order_by(ServiceLevel.code)).all()
     assignments = db.scalars(select(ServiceLevelAssignment).order_by(ServiceLevelAssignment.created_at.desc()).limit(100)).all()
     return {"summary": {"profiles": len(profiles), "active_profiles": sum(x.status == "active" for x in profiles),
-                         "met": sum(x.status == "met" for x in results), "warning": sum(x.status == "warning" for x in results),
-                         "breached": sum(x.status == "breached" for x in results)},
+                         "met": sum(x["status"] == "met" for x in results), "warning": sum(x["status"] == "warning" for x in results),
+                         "breached": sum(x["status"] == "breached" for x in results),
+                         "insufficient_data": sum(x["status"] == "insufficient_data" for x in results), "legacy": len(legacy_results)},
             "profiles": [sla_profile_out(x) for x in profiles],
-            "results": [sla_result_out(x, profile_map.get(x.profile_id)) for x in results],
+            "results": (results + legacy_results)[:100],
             "service_levels": [service_level_out(x) for x in service_levels],
             "service_level_assignments": [service_level_assignment_out(x, db.get(ServiceLevel, x.service_level_id), db.get(Enterprise, x.enterprise_id)) for x in assignments]}
 
@@ -7156,62 +7215,22 @@ def my_service_level(user: User = Depends(current_user), db: Session = Depends(d
 
 
 @app.post("/api/sla/evaluate")
-def evaluate_sla(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def evaluate_sla(year: int | None = Query(default=None, ge=2000, le=9998), month: int | None = Query(default=None, ge=1, le=12), user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    end = now()
-    start = end - timedelta(hours=24)
-    created = []
-    for profile in db.scalars(select(SLAProfile).where(SLAProfile.status == "active")).all():
-        usage_query = select(ApiUsage).join(ApiGatewayRoute, ApiUsage.route_id == ApiGatewayRoute.id).where(ApiUsage.created_at >= start, ApiUsage.created_at <= end)
-        if profile.product_id:
-            usage_query = usage_query.where(ApiGatewayRoute.product_id == profile.product_id)
-        usage = db.scalars(usage_query).all()
-        sample_count = len(usage)
-        success_count = sum(1 for x in usage if x.status_code < 400)
-        availability = round(success_count / sample_count * 100, 4) if sample_count else 100.0
-        avg_latency = round(sum(x.latency_ms for x in usage) / sample_count, 2) if sample_count else 0.0
-        error_rate = round((sample_count - success_count) / sample_count * 100, 4) if sample_count else 0.0
-        delivery_query = select(DeliveryTask).where(DeliveryTask.created_at >= start, DeliveryTask.created_at <= end)
-        deliveries = db.scalars(delivery_query).all()
-        delivery_count = len(deliveries)
-        on_time = sum(1 for task in deliveries if task.status in {"completed", "pending_acceptance"} and (not task.sla_due_at or task.sla_due_at >= end))
-        delivery_compliance = round(on_time / delivery_count * 100, 4) if delivery_count else 100.0
-        reasons = []
-        if availability < float(profile.availability_target): reasons.append(f"可用性 {availability}% < {float(profile.availability_target)}%")
-        if avg_latency > profile.latency_target_ms: reasons.append(f"平均延迟 {avg_latency}ms > {profile.latency_target_ms}ms")
-        if error_rate > float(profile.error_rate_target): reasons.append(f"错误率 {error_rate}% > {float(profile.error_rate_target)}%")
-        if delivery_compliance < 100: reasons.append(f"交付及时率 {delivery_compliance}%")
-        has_samples = sample_count > 0 or delivery_count > 0
-        warning_reasons = []
-        if has_samples and not reasons:
-            availability_warning_threshold = min(100.0, float(profile.availability_target) + float(profile.warning_margin))
-            if availability < availability_warning_threshold: warning_reasons.append(f"可用性接近阈值：当前 {availability}% / 目标 {float(profile.availability_target)}%")
-            if avg_latency > profile.latency_target_ms * 0.8: warning_reasons.append(f"延迟接近阈值：当前 {avg_latency}ms / 目标 {profile.latency_target_ms}ms")
-            if error_rate > float(profile.error_rate_target) * 0.8: warning_reasons.append(f"错误率接近阈值：当前 {error_rate}% / 上限 {float(profile.error_rate_target)}%")
-            if delivery_compliance < 100: warning_reasons.append(f"交付及时率存在风险：当前 {delivery_compliance}%")
-        warning = has_samples and bool(warning_reasons) and not reasons
-        status = "breached" if reasons else "warning" if warning else "met"
-        result = SLAResult(profile_id=profile.id, product_id=profile.product_id, period_start=start, period_end=end, sample_count=sample_count,
-                           success_count=success_count, availability=availability, avg_latency_ms=avg_latency, error_rate=error_rate,
-                           delivery_count=delivery_count, delivery_on_time=on_time, delivery_compliance=delivery_compliance,
-                           status=status, breach_reason="；".join(reasons or warning_reasons))
-        db.add(result)
-        db.flush()
-        if status in {"warning", "breached"}:
-            notify_business_event(db, "SLA 服务异常" if status == "breached" else "SLA 服务预警", "服务等级考核发现异常，请查看考核结果。", "sla_result", result.id,
-                                  event_key=f"sla:{result.id}:{status}:{end.isoformat()}", category="system",
-                                  platform_roles=("super_admin", "platform_operator", "delivery_monitor"))
-        created.append(result)
-        audit(db, user.email, "evaluate_sla", "sla_result", result.id, f"SLA 考核：{profile.name} / {status}", category="sla", business_domain="sla", risk_level="high" if status == "breached" else "normal")
+    items = sla_online_assessments["evaluate"](db, user.email or user.id, year=year, month=month)
     db.commit()
-    return {"items": [sla_result_out(x, db.get(SLAProfile, x.profile_id)) for x in created]}
+    return {"items": items}
 
 
 @app.get("/api/sla/results")
 def sla_results(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    items = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc()).limit(100)).all()
-    return {"items": [sla_result_out(x, db.get(SLAProfile, x.profile_id)) for x in items]}
+    items = sla_online_assessments["results"](db)
+    legacy = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc(), SLAResult.id).limit(100)).all()
+    items.extend(sla_result_out(row, db.get(SLAProfile, row.profile_id)) for row in legacy)
+    from .sla_online_assessments import utc
+    items.sort(key=lambda row: (utc(row["calculated_at"]), row["id"]), reverse=True)
+    return {"items": items[:100]}
 
 
 def file_out(item: FileObject) -> dict[str, Any]:
@@ -7746,6 +7765,32 @@ from .enterprise_sla import install as install_enterprise_sla
 
 enterprise_sla = install_enterprise_sla(globals())
 
-from .after_sales_workflow import install as install_after_sales_workflow
+from .order_sla_contracts import install as install_order_sla_contracts
 
+order_sla_contracts = install_order_sla_contracts(globals())
+
+from .sla_gateway_events import install as install_sla_gateway_events
+
+sla_gateway_events = install_sla_gateway_events(globals())
+
+from .sla_probe_runtime import install as install_sla_probe_runtime
+
+sla_probe_runtime = install_sla_probe_runtime(globals())
+
+from .sla_online_assessments import install as install_sla_online_assessments
+
+sla_online_assessments = install_sla_online_assessments(globals())
+
+from .sla_online_sources import install as install_sla_online_sources
+
+sla_online_sources = install_sla_online_sources(globals())
+
+from .after_sales_workflow import install as install_after_sales_workflow
+from .ticket_sla_clocks import install as install_ticket_sla_clocks
+
+ticket_sla_clocks = install_ticket_sla_clocks(globals())
 after_sales_workflow = install_after_sales_workflow(globals())
+
+from .ticket_sla_monitor import install as install_ticket_sla_monitor
+
+ticket_sla_monitor = install_ticket_sla_monitor(globals())
