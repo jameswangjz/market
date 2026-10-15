@@ -13,6 +13,17 @@ export const afterSalesActions = {
 export function ticketStatus(value) { return Object.hasOwn(afterSalesStatuses, value) ? afterSalesStatuses[value] : "未知状态"; }
 export function timelineActor(event) { return event.actor_name || event.actor_email || event.actor_id || "历史操作者未记录"; }
 export function timelineFrom(event) { return event.before?.status ? ticketStatus(event.before.status) : "创建"; }
+export function evidenceAuthor(item) { return item.author_name || item.author_email || item.author_id || "历史作者未记录"; }
+export function createAfterSalesCloseGuard({ isBusy, isDirty, confirmDiscard, onClose }) {
+  let confirming = false;
+  return async function requestClose() {
+    if (isBusy() || confirming) return;
+    if (!isDirty()) { onClose(); return; }
+    confirming = true;
+    try { if (await confirmDiscard() && !isBusy()) onClose(); }
+    finally { confirming = false; }
+  };
+}
 export function ticketActions(ticket, user) {
   if (!Array.isArray(ticket?.allowed_actions)) return [];
   return ticket.allowed_actions.filter(action => Object.hasOwn(afterSalesActions, action)
@@ -80,7 +91,9 @@ export function createAfterSalesSession(api, state, params = {}, makeKey = newAf
       if (current !== generation) return false;
       if (error.response?.status === 409) {
         operation = null;
+        const refreshGeneration = generation + 1;
         await load(id);
+        if (disposed || generation !== refreshGeneration) return false;
         state.error = "工单已变化，已尝试刷新；请核对最新状态后重新确认。原输入已保留。";
       } else state.error = error.response?.data?.detail || "提交失败，输入已保留，可重试";
       return false;

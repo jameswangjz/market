@@ -21,7 +21,7 @@ async function submit() {
 }
 </script>
 <template>
-  <AfterSalesModalShell title="发起售后" :busy="busy" @close="emit('close')"><p>订单：{{ orderId }}</p><p v-if="error" class="error-text" role="alert">{{ error }}</p>
+  <AfterSalesModalShell title="发起售后" :busy="busy" :dirty="!!description || type !== '质量异议' || priority !== 'normal'" @close="emit('close')"><p>订单：{{ orderId }}</p><p v-if="error" class="error-text" role="alert">{{ error }}</p>
     <form @submit.prevent="submit"><fieldset :disabled="busy"><label>类别<select v-model="type"><option>质量异议</option><option>交付问题</option><option>服务问题</option><option>其他</option></select></label><label>优先级<select v-model="priority"><option value="normal">普通</option><option value="important">重要</option><option value="urgent">紧急</option></select></label><label>售后说明（必填）<textarea v-model="description" rows="5" required maxlength="10000" /></label><button class="primary-btn" :disabled="!description.trim()" type="submit">{{ busy ? '提交中' : '提交售后申请' }}</button></fieldset></form>
   </AfterSalesModalShell>
 </template>

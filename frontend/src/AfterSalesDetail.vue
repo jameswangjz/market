@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { Download, RefreshCw, Upload, Send } from "lucide-vue-next";
 import AfterSalesModalShell from "./AfterSalesModalShell.vue";
-import { afterSalesActions, ticketStatus, ticketActions, canCollaborate, createAfterSalesSession, timelineActor, timelineFrom } from "./afterSales.js";
+import { afterSalesActions, ticketStatus, ticketActions, canCollaborate, createAfterSalesSession, timelineActor, timelineFrom, evidenceAuthor } from "./afterSales.js";
 const props = defineProps({ ticketId: String, api: Object, params: Object, user: Object, enterpriseId: String });
 const emit = defineEmits(["close", "changed"]);
 const state = reactive({ ticket: null, timeline: [], comments: [], attachments: [], loading: false, busy: false, error: "" });
@@ -55,7 +55,7 @@ async function download(item) {
 }
 </script>
 <template>
-  <AfterSalesModalShell :title="state.ticket?.ticket_no || '售后工单详情'" :busy="state.busy" @close="emit('close')">
+  <AfterSalesModalShell :title="state.ticket?.ticket_no || '售后工单详情'" :busy="state.busy" :dirty="!!reason || !!comment || !!selectedAttachments.length" @close="emit('close')">
     <div class="after-sales-actions"><button class="icon-btn" title="刷新工单" aria-label="刷新工单" :disabled="state.loading || state.busy" @click="session.load(ticketId)"><RefreshCw :size="16" /></button><span v-if="state.loading" role="status">加载中</span></div>
     <p v-if="state.error" class="error-text" role="alert">{{ state.error }}</p>
     <template v-if="state.ticket">
@@ -68,10 +68,10 @@ async function download(item) {
       </fieldset>
       <h3>附件</h3>
       <fieldset :disabled="state.busy || state.loading"><input ref="fileInput" type="file" hidden @change="upload" /><button v-if="collaborate" type="button" class="secondary-btn" @click="fileInput.click()"><Upload :size="15" />上传附件</button>
-        <div v-for="item in state.attachments" :key="item.id" class="after-sales-record"><label v-if="selectableAttachment(item)"><input v-model="selectedAttachments" type="checkbox" :value="item.id" :disabled="selectedAttachments.length >= 10 && !selectedAttachments.includes(item.id)" />用于本次处理或评论</label><span>{{ item.name }} · {{ item.available ? '安全扫描通过' : '暂不可用' }}</span><button class="icon-btn" :disabled="!item.available" :title="`下载 ${item.name}`" :aria-label="`下载 ${item.name}`" @click="download(item)"><Download :size="16" /></button></div>
+        <div v-for="item in state.attachments" :key="item.id" class="after-sales-record"><label v-if="selectableAttachment(item)"><input v-model="selectedAttachments" type="checkbox" :value="item.id" :disabled="selectedAttachments.length >= 10 && !selectedAttachments.includes(item.id)" />用于本次处理或评论</label><span>{{ item.name }} · {{ item.available ? '安全扫描通过' : '暂不可用' }}</span><small>上传人：{{ evidenceAuthor(item) }} · {{ item.author_role }}</small><button class="icon-btn" :disabled="!item.available" :title="`下载 ${item.name}`" :aria-label="`下载 ${item.name}`" @click="download(item)"><Download :size="16" /></button></div>
         <p v-if="!state.attachments.length" class="muted">暂无附件</p>
       </fieldset>
-      <h3>沟通记录</h3><article v-for="item in state.comments" :key="item.id" class="after-sales-record"><small>{{ item.author_role }} · {{ date(item.created_at) }}</small><p>{{ item.content }}</p><small v-if="item.attachments.length">附件：{{ item.attachments.map(id => state.attachments.find(file => file.id === id)?.name || id).join('、') }}</small></article><p v-if="!state.comments.length" class="muted">暂无评论</p>
+      <h3>沟通记录</h3><article v-for="item in state.comments" :key="item.id" class="after-sales-record"><small>{{ evidenceAuthor(item) }} · {{ item.author_role }} · {{ date(item.created_at) }}</small><p>{{ item.content }}</p><small v-if="item.attachments.length">附件：{{ item.attachments.map(id => state.attachments.find(file => file.id === id)?.name || id).join('、') }}</small></article><p v-if="!state.comments.length" class="muted">暂无评论</p>
       <form v-if="collaborate" @submit.prevent="submitComment"><fieldset :disabled="state.busy || state.loading"><label>{{ terminal ? '追加审计评论' : '新增评论' }}<textarea v-model="comment" rows="3" required maxlength="10000" /></label><button type="submit" class="secondary-btn" :disabled="!comment.trim()"><Send :size="15" />发送</button></fieldset></form>
       <h3>处理时间线</h3><article v-for="item in state.timeline" :key="item.id" class="after-sales-record"><strong>{{ afterSalesActions[item.action] || (item.action === 'create' ? '创建工单' : '历史操作') }}</strong><small>{{ date(item.occurred_at) }} · {{ timelineActor(item) }} · {{ item.actor_role }}</small><p>{{ item.reason }}</p><small>{{ timelineFrom(item) }} → {{ ticketStatus(item.after?.status) }}</small><small v-if="item.request_id">请求：{{ item.request_id }}</small></article><p v-if="!state.timeline.length" class="muted">暂无处理记录</p>
     </template>
