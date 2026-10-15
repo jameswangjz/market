@@ -141,9 +141,17 @@ class OnlineSourceTests(unittest.TestCase):
 
     def test_synthetically_sealed_windows_preserve_nearest_rank_p95_not_mean(self):
         self.requests()
+        cutoff = datetime.fromtimestamp(int(self.at.timestamp()) // 300 * 300, timezone.utc)
         Window = self.m.sla_gateway_events['SourceWindow']
         with self.m.SessionLocal() as db:
-            for slot in range(int(self.start.timestamp()) // 300, (int(self.at.timestamp()) + 299) // 300):
+            credential = db.scalar(select(self.m.ApiCredential).where(self.m.ApiCredential.enterprise_id == 'buyer_tenant'))
+            identity = 'gw_' + 'a' * 32
+            self.m.sla_gateway_events['ingest'](db, [dict(event_id=identity, request_id=identity,
+                product_id='product', version_id='version', version_code='v1', entry_id='route-v1', route_id='route-v1',
+                credential_id=credential.id, completed_at_ms=int(cutoff.timestamp() * 1000),
+                status_code=500, duration_ms=90000, authorized=True, published_route=True,
+                producer_id='synthetic-producer')])
+            for slot in range(int(self.start.timestamp()) // 300, int(cutoff.timestamp()) // 300):
                 row = db.get(Window, ('synthetic-producer', slot))
                 if row is None:
                     row = Window(producer_id='synthetic-producer', window_slot=slot, updated_at=self.at)
@@ -156,6 +164,17 @@ class OnlineSourceTests(unittest.TestCase):
         self.assertEqual((result['p95_latency_ms'], result['metrics']['latency_p95']['sample_count']), (1000, 100))
         self.assertNotEqual(result['p95_latency_ms'], 60.94)
         self.assertIsNone(result['avg_latency_ms'])
+        self.assertEqual(result['metrics']['request_error_rate']['value'], 0)
+        self.assertEqual(result['source_summary']['request_source_cutoff'], cutoff.isoformat())
+        self.assertEqual(result['source_summary']['request_source_lag_seconds'], (self.at - cutoff).total_seconds())
+
+    def test_first_service_window_not_closed_has_no_request_measurement(self):
+        self.at = self.start + timedelta(seconds=1)
+        with patch.dict(self.m.sla_gateway_events, aggregate=lambda *a, **k: self.fail('No closed service window')):
+            result = self.evaluate()
+        for name in ('request_error_rate', 'latency_p95'):
+            self.assertIsNone(result['metrics'][name]['value'])
+            self.assertEqual(result['metrics'][name]['status'], 'insufficient_data')
 
     def test_absent_or_revoked_service_evidence_never_borrows_other_orders_probe_rows(self):
         self.probes()

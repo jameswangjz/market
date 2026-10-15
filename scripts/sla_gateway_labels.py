@@ -36,8 +36,13 @@ def run(m, *, apply=False):
                         'Add telemetry labels; retain live routing/authentication/quota configuration',
                         category='sla', business_domain='sla', before=changes[-1]['before'], after=labels)
             except Exception as exc:
+                response = getattr(exc.__cause__, 'response', None)
+                if response is not None and response.status_code == 404:
+                    skipped.append({'route_id': route.id, 'reason': 'live_route_missing'})
+                    continue
                 # No raw Admin API response or credentials enter the report.
-                raise RuntimeError('SLA label refresh failed for route ' + route.id) from None
+                raise RuntimeError('SLA label refresh failed for route ' + route.id
+                    + ' (' + type(exc).__name__ + ')') from None
         if apply:
             db.commit()
     return {'applied': apply, 'changes': changes, 'skipped': skipped, 'business_configuration_rewritten': False}

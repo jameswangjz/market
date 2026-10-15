@@ -4617,6 +4617,10 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
                     json.dumps(probe_labels, sort_keys=True).encode()).hexdigest()
         except ValueError:
             probe_labels = {}
+    if any(len(value) > 256 for value in probe_labels.values()):
+        # APISIX label values are bounded; an unavailable probe binding must
+        # not prevent an otherwise valid legacy/business route from publishing.
+        probe_labels = {}
     return {
         "name": f"market-{route.route_key}",
         "uri": f"/gateway/{route.route_key}/*",
@@ -4626,11 +4630,11 @@ def apisix_route_payload(route: ApiGatewayRoute, product: Product | None = None,
                      "timeout": {"connect": route.timeout_ms / 1000, "send": route.timeout_ms / 1000, "read": route.timeout_ms / 1000}}
                     if route.validated_ip else {"type": "roundrobin", "nodes": {target_upstream.replace("http://", "").replace("https://", ""): 1}, "scheme": "https" if target_upstream.startswith("https://") else "http"},
         "plugins": plugins,
-        "labels": {"market_product_id": route.product_id, "market_version": route.version,
+        "labels": {key: value for key, value in {"market_product_id": route.product_id, "market_version": route.version,
                    "market_version_id": version.id if version else "", "market_route_id": route.id or "",
                    "market_health_path": health_label, "market_health_method": route.health_method,
                    **probe_labels,
-                   "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"},
+                   "market_rate_limit_per_minute": str(rate_limit), "market_daily_quota": str(daily_quota), "market_monthly_quota": str(monthly_quota), "market_managed": "true", "market_data_plane": "native" if use_native_upstream else "compatibility"}.items() if value},
     }
 
 

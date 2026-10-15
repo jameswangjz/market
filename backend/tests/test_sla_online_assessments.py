@@ -220,7 +220,7 @@ class OnlineAssessmentTests(unittest.TestCase):
                 labels = self.m.apisix_route_payload(route, db.get(self.m.Product, 'product'), db)['labels']
                 self.assertNotIn('market_sla_probe_enabled', labels)
             route.health_path = '/health?token=NEVER-EXPORT-SECRET'
-            self.assertEqual(self.m.apisix_route_payload(route, db.get(self.m.Product, 'product'), db)['labels']['market_health_path'], '')
+            self.assertNotIn('market_health_path', self.m.apisix_route_payload(route, db.get(self.m.Product, 'product'), db)['labels'])
 
     def test_legacy_rows_are_labeled_and_not_mutated_or_counted_as_met(self):
         with self.m.SessionLocal() as db:

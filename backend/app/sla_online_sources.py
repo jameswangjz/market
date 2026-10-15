@@ -4,7 +4,7 @@ No network, management-health fallback, source-window sealing or resolver side
 effects. Runtime slot_query owns the order-to-entry eligibility mapping; API
 entries can share facts, while SaaS identity remains contract-specific.
 """
-from datetime import timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 
@@ -66,7 +66,12 @@ def install(ns):
             evidence.extend(('probe', row.id, row.status, row.config_digest, row.reason_code, row.policy_version) for row in rows)
         gateway = ns.get('sla_gateway_events', {})
         aggregate, Model = gateway.get('aggregate'), gateway.get('Model')
-        if callable(aggregate) and Model is not None and contract.delivery_method in {'api', 'model_api'}:
+        request_end = datetime.fromtimestamp(int(end.timestamp()) // 300 * 300, timezone.utc)
+        if contract.delivery_method in {'api', 'model_api'}:
+            result['request_source_cutoff'] = request_end.isoformat()
+            result['source_available'].update(request_error_rate=False, latency_p95=False)
+        if (callable(aggregate) and Model is not None and contract.delivery_method in {'api', 'model_api'}
+                and start < request_end):
             Route = ns['ApiGatewayRoute']
             routes = list(db.scalars(select(Route).where(Route.product_id == order.product_id,
                                                         Route.version == term.version_code)))
@@ -91,9 +96,9 @@ def install(ns):
                         rows = list(db.scalars(select(Model).where(Model.product_id == order.product_id,
                             Model.version_id == term.version_id, Model.entry_id == entry,
                             Model.enterprise_id == order.buyer_enterprise_id,
-                            Model.completed_at >= start, Model.completed_at < end)))
+                            Model.completed_at >= start, Model.completed_at < request_end)))
                         measured = aggregate(db, product_id=order.product_id, version_id=term.version_id,
-                            entry_id=entry, start=start, end=end, enterprise_id=order.buyer_enterprise_id,
+                            entry_id=entry, start=start, end=request_end, enterprise_id=order.buyer_enterprise_id,
                             source_available=bool(rows))
                         result['measurements'].update(request_error_rate=measured.error_rate,
                                                        latency_p95=measured.latency_p95)

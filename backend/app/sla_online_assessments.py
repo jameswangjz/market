@@ -5,7 +5,7 @@ measurements: dict[str, MetricResult], source_available: dict[str, bool],
 source_version: str and evidence_digest: str. Caller owns transaction/commit.
 """
 from dataclasses import asdict
-from datetime import timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -97,6 +97,14 @@ def install(ns):
         source = json.loads(row.source_json)
         source_version = source.get('source_version', '')
         digest = source.get('evidence_digest', '')
+        cutoff = source.get('request_source_cutoff')
+        try:
+            cutoff_at = datetime.fromisoformat(cutoff)
+            if cutoff_at.tzinfo is None or cutoff_at > min(utc(row.calculated_at), utc(row.period_end)):
+                raise ValueError('Invalid request cutoff')
+            lag = (min(utc(row.calculated_at), utc(row.period_end)) - cutoff_at).total_seconds()
+        except (ValueError, TypeError):
+            cutoff, lag = None, None
         return {'id': row.id, 'order_id': row.order_id, 'contract_id': row.contract_id,
             'order_no': order.order_no if order else '',
             'product_id': order.product_id if order else '', 'buyer_enterprise_id': order.buyer_enterprise_id if order else '',
@@ -107,6 +115,8 @@ def install(ns):
             'frozen_tier': metrics.get('availability', {}).get('frozen_tier'),
             'rule_version': metrics.get('availability', {}).get('rule_version'),
             'source_summary': {
+                'request_source_cutoff': cutoff, 'request_source_lag_seconds': lag,
+                'request_window_policy': 'closed_5_minute_windows',
                 'source_version': source_version if isinstance(source_version, str) and re.fullmatch(r'[A-Za-z0-9_.:+-]{1,128}', source_version) else 'unidentified',
                 'evidence_digest': digest if isinstance(digest, str) and re.fullmatch(r'[a-f0-9]{64}', digest) else '',
                 'source_available': {metric: source.get('source_available', {}).get(metric) is True for metric in METRICS}},
@@ -186,6 +196,7 @@ def install(ns):
             status = next((value for value in ('breached', 'insufficient_data', 'warning', 'met') if value in statuses),
                           'insufficient_data')
             evidence = {'source_version': collected.get('source_version', 'missing'),
+                        'request_source_cutoff': collected.get('request_source_cutoff'),
                         'evidence_digest': collected.get('evidence_digest', ''), 'source_available': available}
             signature = hashlib.sha256(canonical([snapshot, values, evidence]).encode()).hexdigest()
             if row is None:
