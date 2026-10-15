@@ -6,7 +6,9 @@ param(
     [int]$ProxyVmPort = 30083,
     [switch]$NoProxy,
     [switch]$DirectRP,
-    [switch]$RestoreOwnedGrant
+    [switch]$RestoreOwnedGrant,
+    [ValidateSet('baseline','account-disabled','subscription-expired','membership-disabled','membership-removed')]
+    [string]$Scenario = 'baseline'
 )
 $ErrorActionPreference = 'Stop'
 $socket = $null; $chrome = $null; $fixture = $null
@@ -363,6 +365,35 @@ public sealed class MarketOidcRelay : IDisposable {
     Cdp 'Fetch.enable' @{patterns=@(@{urlPattern='*';requestStage='Request'})} | Out-Null
     Cdp 'Browser.setDownloadBehavior' @{behavior='deny'} | Out-Null
     $script:startup.cdp_initialized = $true
+    if ($Scenario -cne 'baseline') {
+        if ($RestoreOwnedGrant) { throw 'Restore grant is baseline only' }
+        $result['scenario'] = $Scenario
+        $result['coverage'] = 'fresh-entry denial; prepared by in-pod --set-owned-state; restore after run'
+        $result.limits += 'Existing RP session invalidation for this state is not exercised'
+        $script:stage = $Scenario + ' fresh entry'
+        ClearSession
+        Navigate $fixture.launchUrl
+        Login $fixture.memberLogin
+        if ($Scenario -ceq 'account-disabled') {
+            WaitJs '!!document.querySelector(".login-shell .error-text")&&document.querySelector(".login-shell .error-text").textContent.trim().length>0'
+            if ($script:flow.platform_login_status -notin @(401,403)) { throw 'Disabled account login not denied' }
+        } else {
+            WaitJs '!!document.querySelector(".oidc-consent [role=alert]")'
+            AssertJs '!document.querySelector(".oidc-consent dl")' 'Ineligible consent available'
+            if ($script:flow.consent_details_status -notin @(401,403)) { throw 'Ineligible consent not denied' }
+        }
+        $script:checks += $Scenario + '_fresh_entry_denied'
+        Navigate ($fixture.rpPublic + '/app')
+        WaitJs 'document.readyState==="complete"&&document.body.textContent.includes("expired")'
+        if ($script:responses['/app'] -ne 401) { throw 'Ineligible flow created RP session' }
+        $cookies = Cdp 'Network.getCookies' @{urls=@($fixture.rpPublic + '/app')}
+        if (@($cookies.cookies | Where-Object {$_.name -ceq 'mock_saas_session'}).Count) { throw 'Ineligible flow retained RP cookie' }
+        $script:checks += $Scenario + '_no_rp_session'
+        if ($script:blocked) { throw 'Network guard blocked unexpected requests' }
+        $result.status='passed'; $result.negative_cases='passed'
+        $result.browser_sso='denied-as-expected'; $result.mock_session='absent-as-expected'
+        $result.application_access='not-exercised'
+    } else {
     if ($RestoreOwnedGrant) {
         $script:stage = 'restore owned grant for repeat run'
         ClearSession
@@ -483,6 +514,7 @@ horizontal_overflow:m.scrollWidth>m.clientWidth+1};})()
     if ($script:blocked) { throw 'Network guard blocked unexpected requests' }
     $result.status='passed'; $result.browser_sso='passed'; $result.mock_session='passed'
     $result.application_access='passed'; $result.negative_cases='passed'
+    }
 } catch {
     $failure = $_
     $result.failed_stage = $script:stage

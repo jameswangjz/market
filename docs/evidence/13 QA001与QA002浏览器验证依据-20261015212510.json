@@ -1,0 +1,478 @@
+{
+  "status": "passed",
+  "coverage": [
+    "TRD-R3-QA-001",
+    "TRD-R3-QA-002"
+  ],
+  "captured_at": "2026-10-15T13:25:10Z",
+  "user_acceptance": "not performed",
+  "runtime": {
+    "commit": "b5ef8051c29dce3fc225d1311531cd689736ccc5",
+    "tag": "20261015123800-b5ef805",
+    "business_code_changed": false,
+    "rebuild_required": false
+  },
+  "qa001": {
+    "readonly_browsers": [
+      {
+        "artifact": "frontend/artifacts/r3-qa001-public-20261015-2047/result.json",
+        "sha256": "c4d6db9424006f0a7a7c1d876b08c62f7853f398508ae47c9f351c1e43269fe2",
+        "checks": [
+          "entry asset matches index-CJPeD0P_.js",
+          "FE001 two category rows; no delivery filter",
+          "FE001 secondary all disabled without parent",
+          "FE001 retired filter types absent",
+          "FE001/FE004 desktop page and control bounds",
+          "screenshot privacy gate",
+          "FE001 selecting parent clears child",
+          "FE001 children enabled after parent",
+          "FE001 selected secondary category is sent",
+          "FE001 name filter empty result and page reset",
+          "FE004 deployed empty jump input and action disabled",
+          "FE004 empty page-size selector remains available",
+          "screenshot privacy gate",
+          "FE001 positive name search matches rendered names",
+          "FE001 type filter uses product_type",
+          "FE001 type filter matches real dataset cards",
+          "FE004 storefront real size requests 10/20/50/100",
+          "FE004 invalid zero jump rejected",
+          "FE004 storefront out-of-range recovery and F5",
+          "screenshot privacy gate",
+          "entry asset matches index-CJPeD0P_.js",
+          "FE001 two category rows; no delivery filter",
+          "FE001 secondary all disabled without parent",
+          "FE001 retired filter types absent",
+          "FE001/FE004 mobile page and control bounds",
+          "screenshot privacy gate",
+          "FE001 selecting parent clears child",
+          "FE001 children enabled after parent",
+          "FE001 selected secondary category is sent",
+          "FE001 name filter empty result and page reset",
+          "FE004 deployed empty jump input and action disabled",
+          "FE004 empty page-size selector remains available",
+          "screenshot privacy gate",
+          "FE001 positive name search matches rendered names",
+          "FE001 type filter uses product_type",
+          "FE001 type filter matches real dataset cards",
+          "FE004 storefront real size requests 10/20/50/100",
+          "FE004 invalid zero jump rejected",
+          "FE004 storefront out-of-range recovery and F5",
+          "screenshot privacy gate"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [
+          {
+            "file": "frontend/artifacts/r3-qa001-public-20261015-2047/desktop-storefront.png",
+            "sha256": "8f317d71417065c5a1796d1ab1799db94db4ccae12fa887b3266e0bfd4f405dd"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-public-20261015-2047/desktop-empty-result.png",
+            "sha256": "ef64e7ac45699d82a2a18eba0fdd73aaff115635cf0d69470fc1c84a74c61fc9"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-public-20261015-2047/desktop-pagination.png",
+            "sha256": "e5bca32b87dbca88f95c958b8b8c0f8ac2ec9a4a10f6f3f9084a83b713d5bd98"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-public-20261015-2047/mobile-storefront.png",
+            "sha256": "189139bf19a6aca27ace38a7eadc2e4279e10f9259be324a3f3f10bbc88a8693"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-public-20261015-2047/mobile-empty-result.png",
+            "sha256": "53992dadaacaa8f9a227405cc74caac4784ee667c1e0eab6275258f4d9f02fa3"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-public-20261015-2047/mobile-pagination.png",
+            "sha256": "314c771e65d70761eba7da1b5005a3cbffe664bb63ffb2c60ba3d468f5bc7be9"
+          }
+        ]
+      },
+      {
+        "artifact": "frontend/artifacts/r3-qa001-provider-20261015-2050/result.json",
+        "sha256": "c6891e467ea4136172189d3a43eae367c8ed45fbc635643bb0ab9f4d7531b951",
+        "checks": [
+          "entry asset matches index-CJPeD0P_.js",
+          "FE002 non-system-admin development view denied",
+          "FE002 non-system-admin fallback development text absent",
+          "screenshot privacy gate",
+          "FE002 provider excludes MyApps and compact identity",
+          "FE002 identity uses coordinated compact font and full-label minimum width",
+          "FE002 identity auxiliary label visually hidden",
+          "FE002 identity 12px minimum 78px and control bounds",
+          "FE002 both identity labels fit with native arrow allowance",
+          "screenshot privacy gate",
+          "FE003 retired registration options absent",
+          "FE003 fixed readonly delivery dataset -> file",
+          "FE003 fixed readonly delivery model -> file",
+          "FE003 fixed readonly delivery api -> api",
+          "FE003 fixed readonly delivery saas -> tenant_access",
+          "FE003 fixed readonly delivery training -> training",
+          "FE003 fixed readonly delivery consulting -> consulting",
+          "FE003 fixed readonly delivery custom -> custom",
+          "FE003 backdrop and Escape retain unsaved editor",
+          "FE003 cancel discard preserves editor",
+          "screenshot privacy gate",
+          "entry asset matches index-CJPeD0P_.js",
+          "FE002 non-system-admin development view denied",
+          "FE002 non-system-admin fallback development text absent",
+          "screenshot privacy gate",
+          "FE002 provider excludes MyApps and compact identity",
+          "FE002 identity uses coordinated compact font and full-label minimum width",
+          "FE002 identity auxiliary label visually hidden",
+          "FE002 identity 12px minimum 78px and control bounds",
+          "FE002 both identity labels fit with native arrow allowance",
+          "screenshot privacy gate",
+          "FE003 retired registration options absent",
+          "FE003 fixed readonly delivery dataset -> file",
+          "FE003 fixed readonly delivery model -> file",
+          "FE003 fixed readonly delivery api -> api",
+          "FE003 fixed readonly delivery saas -> tenant_access",
+          "FE003 fixed readonly delivery training -> training",
+          "FE003 fixed readonly delivery consulting -> consulting",
+          "FE003 fixed readonly delivery custom -> custom",
+          "FE003 backdrop and Escape retain unsaved editor",
+          "FE003 cancel discard preserves editor",
+          "screenshot privacy gate"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [
+          {
+            "file": "frontend/artifacts/r3-qa001-provider-20261015-2050/desktop-provider.png",
+            "sha256": "08226670c349bd366384f99465f239dd1699f3ff176dcbfba7437238ea21a374"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-provider-20261015-2050/desktop-provider-identity.png",
+            "sha256": "08226670c349bd366384f99465f239dd1699f3ff176dcbfba7437238ea21a374"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-provider-20261015-2050/desktop-registration.png",
+            "sha256": "6295de4ab386bac7aa7fe50f8f0a48ccb77b4e57c00fd01755cd4b0cdce9396e"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-provider-20261015-2050/mobile-provider.png",
+            "sha256": "6f720b1a05f02f2b3c55bc7b8b539c5ee5e9ebe8adf775bbbcd3297759c67c70"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-provider-20261015-2050/mobile-provider-identity.png",
+            "sha256": "6f720b1a05f02f2b3c55bc7b8b539c5ee5e9ebe8adf775bbbcd3297759c67c70"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-provider-20261015-2050/mobile-registration.png",
+            "sha256": "b208e1236e6ccaf524913fe918eb896cca0e8686b4c82570721e2fe941728e7a"
+          }
+        ]
+      },
+      {
+        "artifact": "frontend/artifacts/r3-qa001-operator-20261015-2052/result.json",
+        "sha256": "6c18fdddd66da2b0ea6c67440d660a6165ae8f92dbea7e050ae61d5f227b6365",
+        "checks": [
+          "entry asset matches index-CJPeD0P_.js",
+          "FE002 non-system-admin development view denied",
+          "FE002 non-system-admin fallback development text absent",
+          "screenshot privacy gate",
+          "entry asset matches index-CJPeD0P_.js",
+          "FE002 non-system-admin development view denied",
+          "FE002 non-system-admin fallback development text absent",
+          "screenshot privacy gate"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [
+          {
+            "file": "frontend/artifacts/r3-qa001-operator-20261015-2052/desktop-operator.png",
+            "sha256": "d44ebdc3fc28b6776691cebdb01b777e234a201e41d75157e959e5e154b22fc3"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-operator-20261015-2052/mobile-operator.png",
+            "sha256": "8982d4a590ef0923d32d5380edf8b698624fe9d22b3b67c1f6cf5fbdd5598497"
+          }
+        ]
+      },
+      {
+        "artifact": "frontend/artifacts/r3-qa001-admin-20261015-2052/result.json",
+        "sha256": "53d3634be93b3b96c91fcb5f12d2b6e9efd5d746bba2d3af5ffa33606b55a580",
+        "checks": [
+          "entry asset matches index-CJPeD0P_.js",
+          "FE002 system administrator development view",
+          "screenshot privacy gate",
+          "entry asset matches index-CJPeD0P_.js",
+          "FE002 system administrator development view",
+          "screenshot privacy gate"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [
+          {
+            "file": "frontend/artifacts/r3-qa001-admin-20261015-2052/desktop-admin.png",
+            "sha256": "5f363e98cb168b9c5606e842b1741ccd0503a9f6d8cc6ae1acfd525d46274c8e"
+          },
+          {
+            "file": "frontend/artifacts/r3-qa001-admin-20261015-2052/mobile-admin.png",
+            "sha256": "b3edacfe4527e9c71b6b0ab17e812cd36a1b6fb3f8a34994b4c808f0561f3de5"
+          }
+        ]
+      }
+    ],
+    "registration": {
+      "artifact": "frontend/artifacts/r3-qa001-registration-strict-20261015-2119/browser-results.json",
+      "sha256": "def934c0b6e412876fda68107ecfd600798420a2c3e03b171c91b8ce7b9cae10",
+      "checks": [
+        "owned provider password login",
+        "1440: native invalid submit blocks create; backdrop/Escape retain same draft",
+        "otherwise valid training form: missing authorization prevents create",
+        "real DOM.setFileInputFiles SVG upload; POST product + POST logo + PUT same product",
+        "immediate double click generates exactly one create; owned list has one product/version/logo"
+      ],
+      "blocked_requests": 0,
+      "screenshots": [],
+      "create_requests": 1,
+      "logo_uploads": 1,
+      "updates_to_same_product": 1,
+      "persisted_products": 1,
+      "persisted_versions": 1,
+      "logo_storage_bytes_verified": true
+    },
+    "pagination": {
+      "artifact": "frontend/artifacts/r3-qa001-pagination-20261015-2114/browser-results.json",
+      "sha256": "6fb901db0ae5d191e7655cad3cdc5f50fa744a471ca7092f44fce74845f7c39b",
+      "checks": [
+        "1440: 10/12 cards; jump2 gives2; reload retains2; size20 resets1 with12; empty search disables jump; guarded names/IDs and bounds",
+        "390: 10/12 cards; jump2 gives2; reload retains2; size20 resets1 with12; empty search disables jump; guarded names/IDs and bounds"
+      ],
+      "blocked_requests": 0,
+      "screenshots": [
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/1440-page1.png",
+          "sha256": "3f451c1da562b5e52b85580ea02bcaca3fa416df3241e4caa7d18506cd609588"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/1440-page2.png",
+          "sha256": "a1f40f4d2f7fbe663f17aeb5abbf53a35abe05b5e21fe31e00378d0937f9c3ae"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/1440-page2-reload.png",
+          "sha256": "a1f40f4d2f7fbe663f17aeb5abbf53a35abe05b5e21fe31e00378d0937f9c3ae"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/1440-size20-reset.png",
+          "sha256": "5a24eabd6dc2216d1f12ab20ce8da204b8ef89434a36149db4c7a4a574ffd20a"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/1440-empty-search.png",
+          "sha256": "96f1cc820c8596630f2e9b6a4e470519d030aeb11ca3ad3a8b5e9588713892fb"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/390-page1.png",
+          "sha256": "22f6fc0bacb40f1610871ea65c0b8d8a7954983819d2127e607ff21f4b1caf44"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/390-page2.png",
+          "sha256": "3897eaf7438a8496351f11e3ec8a0340572a2f261aa0cbefc7ec456e72df8510"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/390-page2-reload.png",
+          "sha256": "6f09eda2f706a31a3edafa1a79b058f03a79204a0f76f2899ef725b0c5f933ed"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/390-size20-reset.png",
+          "sha256": "a119b513370037a635d5849dbc7d21a47539eca98231f53642c2417b9c1677e0"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa001-pagination-20261015-2114/390-empty-search.png",
+          "sha256": "23b07f9212ea0be2f47dc065dc1d061c2c6414dacd4874627816136b9df7d1bd"
+        }
+      ]
+    },
+    "foreign_scope_http": {
+      "detail": 404,
+      "files": 404,
+      "versions": 404,
+      "spoofed_enterprise": 403
+    }
+  },
+  "qa002": {
+    "baseline": {
+      "artifact": "frontend/artifacts/r3-qa002-baseline-20261015-2104/browser-results.json",
+      "sha256": "cd6953b89a2fdb8d12b01ba8bf3207ffa43df6517b0026845fcf04bd81d83f3b",
+      "checks": [
+        "desktop_login_consent_rp_session",
+        "mobile_login_consent_rp_session",
+        "reject_no_rp_session",
+        "cross_enterprise_denied",
+        "mobile_member_row_layout",
+        "applications_listing_members_ui",
+        "applications_launch_ui",
+        "grant_revoke_rp_session_and_listing"
+      ],
+      "blocked_requests": 0,
+      "screenshots": [
+        {
+          "file": "frontend/artifacts/r3-qa002-baseline-20261015-2104/desktop-consent.png",
+          "sha256": "39cec3c0a3223551d0964273975b3fed04bfd2e056e17fba1d4db04b835cfdf6"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa002-baseline-20261015-2104/desktop-app.png",
+          "sha256": "d93572114bb81cbe740b09aea280ca0c555d4c9fd4ee22fcdb9e7c1555796679"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa002-baseline-20261015-2104/mobile-consent.png",
+          "sha256": "c614121132ae96dbdcbaad788da9b4e5d94889903fb959f9d8152e94e22fd0d7"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa002-baseline-20261015-2104/mobile-app.png",
+          "sha256": "b31d608d49f6eae39eae02bf7fb8bdd031d5d183203a789c4160637eeae67b6e"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa002-baseline-20261015-2104/applications.png",
+          "sha256": "f8e59fcac3b65591cc365e63e711dc566b68279ecbdf0f40345477062c3f584a"
+        },
+        {
+          "file": "frontend/artifacts/r3-qa002-baseline-20261015-2104/mobile-members.png",
+          "sha256": "3df9ded70d1add1d1f30bc8853bafdeeea03bf4bfb43d8d6d7bd9f609f6b7019"
+        }
+      ]
+    },
+    "fresh_entry_negatives": [
+      {
+        "artifact": "frontend/artifacts/r3-qa002-account-disabled-20261015-2101/browser-results.json",
+        "sha256": "fa297136886ebefbb3c14b6fc8789973b74df2bfc088085c2cb7d3442d78a63b",
+        "checks": [
+          "account-disabled_fresh_entry_denied",
+          "account-disabled_no_rp_session"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [],
+        "scenario": "account-disabled",
+        "state_restored": true,
+        "flow": {
+          "rp_entry_status": 0,
+          "op_authorize_status": 0,
+          "platform_login_status": 401,
+          "consent_details_status": 0,
+          "consent_decision_status": 0,
+          "rp_callback_status": 0,
+          "rp_app_status": 401,
+          "login_form_seen": true,
+          "login_form_submitted": true,
+          "connection_refused": 0,
+          "connection_reset": 0
+        }
+      },
+      {
+        "artifact": "frontend/artifacts/r3-qa002-subscription-expired-20261015-2101/browser-results.json",
+        "sha256": "da6df1e72f0d714a8169ef87a9380dd09329ac6f47a3e818a35db70fed1f9317",
+        "checks": [
+          "subscription-expired_fresh_entry_denied",
+          "subscription-expired_no_rp_session"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [],
+        "scenario": "subscription-expired",
+        "state_restored": true,
+        "flow": {
+          "rp_entry_status": 0,
+          "op_authorize_status": 0,
+          "platform_login_status": 200,
+          "consent_details_status": 403,
+          "consent_decision_status": 0,
+          "rp_callback_status": 0,
+          "rp_app_status": 401,
+          "login_form_seen": true,
+          "login_form_submitted": true,
+          "connection_refused": 0,
+          "connection_reset": 0
+        }
+      },
+      {
+        "artifact": "frontend/artifacts/r3-qa002-membership-disabled-20261015-2101/browser-results.json",
+        "sha256": "25974855fb76f9e608c638927f04681982939401744d84dc4dc6f8c9c5fcfbc7",
+        "checks": [
+          "membership-disabled_fresh_entry_denied",
+          "membership-disabled_no_rp_session"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [],
+        "scenario": "membership-disabled",
+        "state_restored": true,
+        "flow": {
+          "rp_entry_status": 0,
+          "op_authorize_status": 0,
+          "platform_login_status": 200,
+          "consent_details_status": 403,
+          "consent_decision_status": 0,
+          "rp_callback_status": 0,
+          "rp_app_status": 401,
+          "login_form_seen": true,
+          "login_form_submitted": true,
+          "connection_refused": 0,
+          "connection_reset": 0
+        }
+      },
+      {
+        "artifact": "frontend/artifacts/r3-qa002-membership-removed-20261015-2101/browser-results.json",
+        "sha256": "6f0500b4ce2c455adb6f9213153064f2fe30ac3861603fa287e209889b1d2b8c",
+        "checks": [
+          "membership-removed_fresh_entry_denied",
+          "membership-removed_no_rp_session"
+        ],
+        "blocked_requests": 0,
+        "screenshots": [],
+        "scenario": "membership-removed",
+        "state_restored": true,
+        "flow": {
+          "rp_entry_status": 0,
+          "op_authorize_status": 0,
+          "platform_login_status": 200,
+          "consent_details_status": 403,
+          "consent_decision_status": 0,
+          "rp_callback_status": 0,
+          "rp_app_status": 401,
+          "login_form_seen": true,
+          "login_form_submitted": true,
+          "connection_refused": 0,
+          "connection_reset": 0
+        }
+      }
+    ],
+    "baseline_identity_png_hash_check": "passed using verify_browser",
+    "rp_exact_cleanup": true,
+    "pg_fk_cleanup": true
+  },
+  "cleanup": {
+    "registration_runs": 2,
+    "registration_owned_rows_remaining": 0,
+    "logo_objects_verified_absent": 2,
+    "pagination_products_removed": 12,
+    "pagination_versions_removed": 12,
+    "foreign_scope_fixture_removed": true,
+    "sso_owned_rows_remaining": 0,
+    "protected_order_count": 1,
+    "protected_product_count": 1,
+    "temporary_password_files_removed": true
+  },
+  "offline": {
+    "passed": 25,
+    "log": "/tmp/market-r3-browser-tools-frozen-20261015-2121.log",
+    "sha256": "a35af10b79d58fae6fcb21d2c54bbed4ec6ca8fac0f8a421cc62586b707b2f98"
+  },
+  "source_sha256": {
+    "oidc_browser_acceptance.py": "4d60810393689a86d457e6b76db287770d9477f76a221bc349619497634c2d11",
+    "oidc_browser_cdp.ps1": "1f9b7a3dca1b5bb8b1625573b0fd0c56b407ac8150310b9f40c1424f932663c4",
+    "test_r3_sso_browser_scope.py": "0142ceb650b0824f9c5669c6d365ad81bea9157dfe3bf34a7a6aeea08ad7a59a",
+    "r3_sso_runtime_transport.py": "3a0ac2d9031f9209acf94f84171c948d2ac10440d94178c91e09d047a962c27b",
+    "test_r3_sso_runtime_transport.py": "037dba18157b1f39cb850a81be4bc160832b1a330bf5ff8aa2a615e87d067938",
+    "r3_registration_browser_scope.py": "3a9d930c1f347beb48e1e7ec2d2af440c581467e91bf768c38dbe69687423221",
+    "r3_registration_browser_cdp.ps1": "86415a59e33bc70b9e871f5657606381b1a24dd35636550626332ffb47fa0ab7",
+    "test_r3_registration_browser_guards.py": "7b8668e7a7aa27b360693d432daa7ab589c81757b07c1aa28ebb1bb1a15de581",
+    "r3_pagination_browser_cdp.ps1": "fb3f5d472d77ab2c29807dc51d62a6fd74bd1e6d8ee22a04b27f1c21f885edb3",
+    "test_r3_pagination_browser_guards.py": "06b100c1b65667b9b210cf74c2bbc61f37a5e9d72a4a10b6876bd1909a907713",
+    "r3_frontend_acceptance_browser.ps1": "709ba6e0c45793f60358d4277c0c7bad8dc9be989ea800c0062b472b2b4598a3"
+  },
+  "limits": [
+    "Desktop and Chromium mobile emulation, not physical phones",
+    "Registration mutation was desktop training; mobile mapping and unsaved modal retention checked separately",
+    "SaaS paid/delivered fixtures are synthetic; OAuth, introspection, OPEN and browser SSO use real HTTP",
+    "Four state negatives are fresh-entry tests; existing RP session revocation tested for grant removal",
+    "No real bank, real supplier delivery or complete transaction-to-settlement chain",
+    "Historical read-only frontend driver has pre-existing workingtree changes; only its observed SHA is asserted, not a clean source commit",
+    "Initial registration report with six blocked read requests is excluded; strict rerun has zero blocked requests"
+  ]
+}

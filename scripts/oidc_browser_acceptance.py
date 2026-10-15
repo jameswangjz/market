@@ -3,6 +3,17 @@
 --prepare --manifest /tmp/qa.json --runtime-tag TAG
 --cleanup --manifest /tmp/qa.json
 --cleanup-rp --manifest /tmp/qa.json --rp-store /data/mock-saas.sqlite3
+--set-owned-state account-disabled --manifest /tmp/qa.json
+--set-owned-state restore --manifest /tmp/qa.json
+
+For each of account-disabled, subscription-expired, membership-disabled and
+membership-removed: set state in-pod, run Windows driver -Scenario STATE with
+the existing private browser fixture and a fresh OutputDir, then restore in-pod
+even after browser failure. These are fresh-entry checks, not existing-session
+invalidation checks (the baseline covers existing-session grant revocation).
+For the public callback use prepare --rp-public http://192.168.10.10:30083
+and driver -DirectRP -NoProxy. Baseline evidence verification remains separate;
+negative scenario JSON must never stand in for the baseline browser artifact.
 
 Run cleanup-rp inside the mock container BEFORE PostgreSQL cleanup. Copy the
 0600 manifest and .oidc.json control file there. Copy .browser.json privately
@@ -14,7 +25,7 @@ Paid/delivered terms are synthetic; machine OPEN and browser HTTP are real.
 
 import argparse
 from contextlib import ExitStack
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 import hashlib
 import logging
@@ -28,6 +39,77 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import version_change_quote_acceptance as scope
+
+OWNED_STATES = ('account-disabled', 'subscription-expired', 'membership-disabled', 'membership-removed')
+
+
+def set_owned_state(args):
+    """In-pod only. Restore between scenarios; no HTTP mutation endpoint."""
+    scope.check(args.set_owned_state in (*OWNED_STATES, 'restore'), 'Unknown owned state')
+    ids = scope.read_scope(args.manifest)
+    scope.check(ids['run_id'].startswith('qa-r3-sso-'), 'SSO fixture required')
+    owned = read_control(args.manifest, ids)
+    scope.check(not owned['rp_cleanup_verified'], 'Fixture already cleaned')
+    from sqlalchemy import select
+
+    m = scope.load_main()
+    with m.SessionLocal() as db:
+        scope.owned_rows(m, db, ids)
+        user = db.get(m.User, ids['users']['member'], with_for_update=True)
+        product = db.get(m.Product, owned['product_id'])
+        subscription = db.get(m.SaaSSubscription, owned['subscription_id'], with_for_update=True)
+        scope.check(user and user.name == user.id and user.email == user.id + '@example.invalid'
+                    and product and product.name == product.id
+                    and product.enterprise_id == ids['enterprises'][1]
+                    and subscription and subscription.product_id == product.id
+                    and subscription.enterprise_id == owned['enterprise_id']
+                    and subscription.external_tenant_id == owned['tenant_id'], 'Owned state identity mismatch')
+        members = list(db.scalars(select(m.Membership).where(
+            m.Membership.user_id == user.id,
+            m.Membership.enterprise_id == owned['enterprise_id']).with_for_update()))
+        scope.check(len(members) <= 1, 'Ambiguous owned membership')
+        member = members[0] if members else None
+        journal = owned.get('state_journal')
+        if args.set_owned_state == 'restore':
+            scope.check(isinstance(journal, dict), 'No owned state journal')
+            saved = journal['membership']
+            scope.check(saved['user_id'] == user.id and saved['enterprise_id'] == owned['enterprise_id']
+                        and (member is None or member.id == saved['id']), 'Restoration ownership mismatch')
+            if member is None:
+                scope.check(db.get(m.Membership, saved['id']) is None, 'Membership ID occupied')
+                member = m.Membership()
+                db.add(member)
+            for key in m.Membership.__table__.columns.keys():
+                value = saved[key]
+                if key in ('created_at', 'joined_at') and value is not None:
+                    value = datetime.fromisoformat(value)
+                setattr(member, key, value)
+            user.is_active = journal['is_active']
+            subscription.expires_at = datetime.fromisoformat(journal['expires_at'])
+        else:
+            scope.check(journal is None and member and member.status == 'active' and user.is_active
+                        and subscription.expires_at, 'Restore owned state before another scenario')
+            # Fail before journaling or mutation if an earlier run revoked access.
+            m.applications_access(db, user, subscription.id)
+            saved = {c.name: getattr(member, c.name) for c in m.Membership.__table__.columns}
+            saved = {k: v.isoformat() if isinstance(v, datetime) else v for k, v in saved.items()}
+            owned['state_journal'] = dict(membership=saved, is_active=user.is_active,
+                                         expires_at=subscription.expires_at.isoformat(), state=args.set_owned_state)
+            # Persist restoration values before committing any database mutation.
+            scope.private_json(control_path(args.manifest), owned)
+            if args.set_owned_state == 'account-disabled':
+                user.is_active = False
+            elif args.set_owned_state == 'subscription-expired':
+                subscription.expires_at = m.now() - timedelta(days=1)
+            elif args.set_owned_state == 'membership-disabled':
+                member.status = 'disabled'
+            else:
+                db.delete(member)
+        db.commit()
+    if args.set_owned_state == 'restore':
+        owned.pop('state_journal')
+        scope.private_json(control_path(args.manifest), owned)
+    return {'status': 'passed', 'mode': 'set-owned-state', 'state': args.set_owned_state}
 
 
 def origin(value):
@@ -326,6 +408,8 @@ def main():
     modes.add_argument('--cleanup', action='store_true')
     modes.add_argument('--cleanup-rp', action='store_true')
     modes.add_argument('--repair-login', action='store_true', help='Set email verification only for manifest-owned synthetic users')
+    modes.add_argument('--set-owned-state', choices=(*OWNED_STATES, 'restore'),
+                       help='In-pod: prepare one negative browser scenario; restore before the next')
     parser.add_argument('--manifest', required=True)
     parser.add_argument('--runtime-tag')
     parser.add_argument('--base-url', default='http://192.168.10.10:30080')
@@ -339,7 +423,7 @@ def main():
         parser.error('Browser evidence options require --cleanup --browser-result')
     logging.disable(logging.CRITICAL)
     try:
-        result = prepare(args) if args.prepare else cleanup_rp(args) if args.cleanup_rp else repair_login(args) if args.repair_login else cleanup(args)
+        result = set_owned_state(args) if args.set_owned_state else prepare(args) if args.prepare else cleanup_rp(args) if args.cleanup_rp else repair_login(args) if args.repair_login else cleanup(args)
     except Exception as exc:
         result = {'status': 'failed', 'error_type': type(exc).__name__,
                   'manifest': args.manifest, 'cleanup': 'inspect private journal; retry RP then PG cleanup if created'}
