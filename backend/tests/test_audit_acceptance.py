@@ -76,8 +76,14 @@ class AuditAcceptanceTests(unittest.TestCase):
                     self.assertEqual(set(row), {'id', 'action', 'target_type', 'target_id', 'result', 'category', 'order_id', 'order_no', 'created_at'})
             else:
                 self.request('GET', '/api/audit-logs', actor=actor, expected=403)
-            for path in ('/api/audit-logs/export', '/api/audit-logs/a1/timeline'):
-                self.request('GET', path, actor=actor, expected=403)
+            self.request('GET', '/api/audit-logs/export', actor=actor, expected=403)
+            if actor in ('buyer', 'provider'):
+                timeline = self.request('GET', '/api/audit-logs/a1/timeline', actor=actor)
+                self.assertEqual([row['id'] for row in timeline['items']], ['a1', 'a2'])
+                self.assertNotIn('before', timeline['event'])
+            else:
+                self.request('GET', '/api/audit-logs/a1/timeline', actor=actor,
+                    expected=404 if actor == 'outsider' else 403)
 
     def test_empty_and_invalid_date_filters(self):
         self.request('GET', '/api/audit-logs', actor='finance', params={'start': '', 'end': ''})

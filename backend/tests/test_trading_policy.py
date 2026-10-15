@@ -28,8 +28,8 @@ class TradingPolicyTests(unittest.TestCase):
 
     def test_product_type_delivery_mapping_and_illegal_new_combo_rejection(self):
         m = self.m
-        expected = {"dataset": "file", "model": "file", "report": "file",
-                    "application": "file", "api": "api", "saas": "tenant_access",
+        expected = {"dataset": "file", "model": "file",
+                    "api": "api", "saas": "tenant_access",
                     "training": "training", "consulting": "consulting", "custom": "custom"}
         with m.SessionLocal() as db:
             product = db.get(m.Product, "product")

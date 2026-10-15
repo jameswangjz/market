@@ -86,10 +86,11 @@ def install(ns):
     ns['applications_launch'] = launch_subscription
 
     @ns['app'].get('/api/applications')
-    def listing(user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+    def listing(enterprise_id: str = '', user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
         if not user.is_active or user.activation_status != 'active' or user.verified_status != 'verified' or user.platform_role:
             raise HTTPException(403, '仅已实名企业成员可访问应用')
-        memberships = db.scalars(select(Member).where(Member.user_id == user.id, Member.status == 'active')).all()
+        memberships = ([member_for(db, user, enterprise_id)] if enterprise_id else
+            db.scalars(select(Member).where(Member.user_id == user.id, Member.status == 'active')).all())
         items = []
         for member in memberships:
             enterprise = db.get(ns['Enterprise'], member.enterprise_id)
@@ -103,14 +104,9 @@ def install(ns):
                 if not admin and not db.scalar(select(Grant.id).where(Grant.enterprise_id == enterprise.id,
                         Grant.product_id == product.id, Grant.user_id == user.id, Grant.status == 'active')):
                     continue
-                client = client_for_product(db, product)
                 blocked = ''
                 try:
-                    if not client:
-                        raise HTTPException(409, '应用尚未配置单点登录')
-                    hooks['eligible'](db, user, client, enterprise.id, subscription.id)
-                    if not product.application_url:
-                        raise HTTPException(409, '应用访问地址未配置')
+                    access_for_subscription(db, user, subscription.id)
                 except HTTPException as exc:
                     blocked = str(exc.detail)
                 version = db.get(ns['SaaSProductVersion'], subscription.version_id)

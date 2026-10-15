@@ -1,0 +1,1319 @@
+{
+  "version": "market-r3-20261014",
+  "task_count": 32,
+  "coding_model": "gpt-6.1-sol",
+  "reasoning_effort": "low",
+  "validation_model": "current parent model",
+  "live_console_imported": true,
+  "import_evidence": "evidence/r3-task-import-recovered-20261014.json",
+  "imported_definition_sha256": "453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725",
+  "note": "32项已导入开发控制台，初始todo是任务定义而非实时状态；实时状态见运行快照，设计与代码完成不冒充用户验收",
+  "tasks": [
+    {
+      "code": "TRD-R3-ARC-001",
+      "title": "新版基线与接口权限契约",
+      "owner": "主Agent",
+      "area": "ARC",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [],
+      "acceptance": "11项需求、确认及旧规则替代可追溯；接口状态枚举冻结",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "需求设计与任务映射",
+        "验收入口与遗留条件"
+      ],
+      "subtasks": [
+        "核对最新确认及历史冲突",
+        "输出边界契约和逐项验收标准",
+        "复核任务依赖与待确认条件"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-OPS-001",
+      "title": "历史类型及工单退款只读盘点",
+      "owner": "部署测试Agent",
+      "area": "OPS",
+      "priority": "P0",
+      "stage": 1,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "输出report/application及关联数量、旧状态、缺证；不修改业务数据",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "执行步骤及回退方案",
+        "脱敏运行证据",
+        "数据变更或只读边界说明"
+      ],
+      "subtasks": [
+        "只读盘点历史report/application及关联对象",
+        "只读盘点旧售后/退款状态和缺证",
+        "输出原数据未修改证明及迁移建议"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-001",
+      "title": "开发进度服务端权限收敛",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "除super_admin外列表详情导出SSE修改均403；原权限不回归",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-001",
+      "title": "商城目录名称类型紧凑过滤",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "两级联动、类型过滤无交付过滤；桌面移动可用",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-002",
+      "title": "工作台身份与提供方菜单调整",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-BE-001"
+      ],
+      "acceptance": "非管理员无开发进度；提供方无我的应用；身份字体统一",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-002",
+      "title": "产品类型禁新增与固定交付校验",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "禁止新增report/application；伪造映射失败，旧快照可读",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-003",
+      "title": "登记类型交付联动及防误关闭",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-BE-002"
+      ],
+      "acceptance": "固定只读交付、遮罩ESC不关、dirty确认、失败保留、单次提交",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-003",
+      "title": "分页接口统一与范围鉴权",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "逐页清单；真实total、页大小边界、跨企业拒绝、稳定排序",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-004",
+      "title": "全分页页面条数及跳页",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-BE-003"
+      ],
+      "acceptance": "10/20/50/100；跳页、空页、筛选重置、移动布局",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-004",
+      "title": "授权成员我的应用与SSO统一鉴权",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "非购买人授权可见可登录；禁用退出到期撤销禁止；无Secret",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-005",
+      "title": "普通成员我的应用访问入口",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-BE-004"
+      ],
+      "acceptance": "授权应用列表、不可用原因、OIDC实际跳转",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-005",
+      "title": "售后数据迁移与状态动作服务",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-ARC-001",
+        "TRD-R3-OPS-001"
+      ],
+      "acceptance": "状态迁移、有效事件、乐观锁幂等、旧缺证不伪造",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-006",
+      "title": "售后权限与平台介入强制关闭",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-BE-005"
+      ],
+      "acceptance": "买方发起卖方处理买方确认；双方介入；监控不能强关",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-007",
+      "title": "工单附件评论消息与审计",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-BE-006"
+      ],
+      "acceptance": "受控附件、逐动作日志、站内邮件去重、买方不见成本",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-006",
+      "title": "售后列表详情及动作页面",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-BE-007"
+      ],
+      "acceptance": "按身份按钮、状态、时间线、附件、介入理由及拒绝",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-008",
+      "title": "企业SLA审核绑定及后续调整",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-ARC-001"
+      ],
+      "acceptance": "系统管理员运营调整及审计；新工单生效、旧快照不变",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-009",
+      "title": "三方SLA日历时钟及评估",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-BE-005",
+        "TRD-R3-BE-008"
+      ],
+      "acceptance": "首响/介入审查不暂停、解决暂停；探测与网关请求来源分离；100样本/90%探测覆盖/95%耗时完整/10交付门槛；错误排除及归责；P95非均值；deadline归月含失败未完成；不足不默认达标，线下售后纳入",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "保存独立探测/请求样本及数据来源、排除原因和归责",
+        "按冻结规则计算P95、采样可用率及样本完整性",
+        "实现支持日历/暂停区间和介入审查不暂停",
+        "按交付deadline归月聚合，失败未完成入分母",
+        "验证100样本、90%覆盖、95%耗时完整和10订单边界"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-007",
+      "title": "企业SLA调整及工单指标展示",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-BE-008",
+        "TRD-R3-BE-009"
+      ],
+      "acceptance": "实名审核等级、后续调整原因、责任指标及异常定位；样本不足及无数据源独立展示，周期结论可追溯探测/请求/订单/工单证据",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-010",
+      "title": "独立退款申请审批与权限",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-006"
+      ],
+      "acceptance": "REF关联订单，买方申请、管理员运营审批；财务403",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-011",
+      "title": "SaaS时长及API额度退款试算",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-010"
+      ],
+      "acceptance": "成交快照、历史计量、累计超退；有限额度以月额度乘购买月数、不限额度按时长；跨段不重复计量",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "加载原经济段成交价、完整时段、月配额及历史用量",
+        "有限API用量/月额度乘月数；不限API及SaaS按时长",
+        "冻结累计已退与在途占用，校验退款不超可退余额",
+        "累计退款比例计算额度或尾部时长回收，避免重复取整"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-012",
+      "title": "部分退款经济方案与资源补偿",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-011"
+      ],
+      "acceptance": "按确认方案回收；并发及故障可恢复；无已确认方案拒绝执行",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "实现冻结经济方案和幂等步骤台账",
+        "同步订单权益及APISIX/第三方资源，不清空已用量",
+        "资金与资源切换失败重试和补偿，重启后恢复",
+        "执行成功才进入退款完成并记录原值新值"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-BE-013",
+      "title": "退款负清算及月度报表接入",
+      "owner": "后端Agent",
+      "area": "BE",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-012"
+      ],
+      "acceptance": "完成月唯一负单、原规则收入成本；降级不重复冲回",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有数据与入口，冻结接口状态契约",
+        "实现服务端权限、校验、幂等和事务",
+        "实现审计及必要消息，不泄漏敏感信息",
+        "完成正向、越权、并发或失败测试"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-FE-008",
+      "title": "退款申请审核执行及关联展示",
+      "owner": "前端Agent",
+      "area": "FE",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-010",
+        "TRD-R3-BE-011"
+      ],
+      "acceptance": "金额预览原因、审批通知、模拟标识、失败重试",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "实现代码",
+        "针对性自动化测试",
+        "接口或交互验证记录"
+      ],
+      "subtasks": [
+        "核对现有组件和服务端契约",
+        "实现任务指定界面及角色动作",
+        "覆盖加载/空/错误/并发提交状态",
+        "执行组件测试与构建，补浏览器桌面移动验证"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-QA-001",
+      "title": "商城分页弹框及菜单浏览器回归",
+      "owner": "部署测试Agent",
+      "area": "QA",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-FE-001",
+        "TRD-R3-FE-002",
+        "TRD-R3-FE-003",
+        "TRD-R3-FE-004"
+      ],
+      "acceptance": "桌面移动、F5、一次保存一条、分页搜索及越权负测",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "可重复测试脚本及夹具范围",
+        "测试结果及失败/覆盖边界",
+        "精确清理与部署版本证据"
+      ],
+      "subtasks": [
+        "准备隔离身份和对象，禁止改动受保护订单",
+        "执行验收条件逐项正向与负向测试",
+        "记录真实环境版本、结果及未具备条件",
+        "清理仅本任务创建的夹具"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-QA-002",
+      "title": "授权SaaS普通成员浏览器SSO",
+      "owner": "部署测试Agent",
+      "area": "QA",
+      "priority": "P0",
+      "stage": 2,
+      "dependencies": [
+        "TRD-R3-FE-005"
+      ],
+      "acceptance": "非订单拥有者登录模拟SaaS；取消授权/到期/禁用负测",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "可重复测试脚本及夹具范围",
+        "测试结果及失败/覆盖边界",
+        "精确清理与部署版本证据"
+      ],
+      "subtasks": [
+        "准备隔离身份和对象，禁止改动受保护订单",
+        "执行验收条件逐项正向与负向测试",
+        "记录真实环境版本、结果及未具备条件",
+        "清理仅本任务创建的夹具"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-QA-003",
+      "title": "售后全状态权限并发回归",
+      "owner": "部署测试Agent",
+      "area": "QA",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-FE-006"
+      ],
+      "acceptance": "双方处理确认拒绝介入强关；每事件审计、越权403及冲突409",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "可重复测试脚本及夹具范围",
+        "测试结果及失败/覆盖边界",
+        "精确清理与部署版本证据"
+      ],
+      "subtasks": [
+        "准备隔离身份和对象，禁止改动受保护订单",
+        "执行验收条件逐项正向与负向测试",
+        "记录真实环境版本、结果及未具备条件",
+        "清理仅本任务创建的夹具"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-QA-004",
+      "title": "三方SLA日历暂停快照验证",
+      "owner": "部署测试Agent",
+      "area": "QA",
+      "priority": "P0",
+      "stage": 3,
+      "dependencies": [
+        "TRD-R3-FE-007"
+      ],
+      "acceptance": "跨夜跨周闰月、冻结规则、暂停恢复、介入审查不暂停；100/90%/95%/10门槛边界、4xx/429排除证据、P95、跨月deadline、失败订单入分母；线下交付排除但售后纳入；新矩阵小数分钟及预警/违约优先级",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "可重复测试脚本及夹具范围",
+        "测试结果及失败/覆盖边界",
+        "精确清理与部署版本证据"
+      ],
+      "subtasks": [
+        "准备隔离身份和对象，禁止改动受保护订单",
+        "执行验收条件逐项正向与负向测试",
+        "记录真实环境版本、结果及未具备条件",
+        "清理仅本任务创建的夹具"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-QA-005",
+      "title": "普通退款模拟资金故障测试",
+      "owner": "部署测试Agent",
+      "area": "QA",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-012",
+        "TRD-R3-FE-008"
+      ],
+      "acceptance": "审批拒绝、部分/全额、超退并发、资源失败资金失败重启恢复",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "可重复测试脚本及夹具范围",
+        "测试结果及失败/覆盖边界",
+        "精确清理与部署版本证据"
+      ],
+      "subtasks": [
+        "准备隔离身份和对象，禁止改动受保护订单",
+        "执行验收条件逐项正向与负向测试",
+        "记录真实环境版本、结果及未具备条件",
+        "清理仅本任务创建的夹具"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-QA-006",
+      "title": "退款升降级月度清算完整回归",
+      "owner": "部署测试Agent",
+      "area": "QA",
+      "priority": "P1",
+      "stage": 4,
+      "dependencies": [
+        "TRD-R3-BE-013",
+        "TRD-R3-QA-005"
+      ],
+      "acceptance": "跨月正负五方报表、成本冲回、双腿不重计、原已付批次不改",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "可重复测试脚本及夹具范围",
+        "测试结果及失败/覆盖边界",
+        "精确清理与部署版本证据"
+      ],
+      "subtasks": [
+        "准备隔离身份和对象，禁止改动受保护订单",
+        "执行验收条件逐项正向与负向测试",
+        "记录真实环境版本、结果及未具备条件",
+        "清理仅本任务创建的夹具"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-OPS-002",
+      "title": "历史迁移审批及隔离回退演练",
+      "owner": "部署测试Agent",
+      "area": "OPS",
+      "priority": "P1",
+      "stage": 5,
+      "dependencies": [
+        "TRD-R3-OPS-001",
+        "TRD-R3-BE-005"
+      ],
+      "acceptance": "先用户批准再迁移；备份隔离恢复、保留原经济快照",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [
+        "历史盘点后用户批准"
+      ],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "执行步骤及回退方案",
+        "脱敏运行证据",
+        "数据变更或只读边界说明"
+      ],
+      "subtasks": [
+        "检查依赖及备份",
+        "执行范围内操作并核对结果",
+        "保存脱敏证据及回退步骤"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-OPS-003",
+      "title": "market部署与证据归档",
+      "owner": "部署测试Agent",
+      "area": "OPS",
+      "priority": "P1",
+      "stage": 5,
+      "dependencies": [
+        "TRD-R3-QA-001",
+        "TRD-R3-QA-002",
+        "TRD-R3-QA-003",
+        "TRD-R3-QA-004",
+        "TRD-R3-QA-006"
+      ],
+      "acceptance": "规定镜像标签、版本证明、实际链路证据；不可测单列",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "执行步骤及回退方案",
+        "脱敏运行证据",
+        "数据变更或只读边界说明"
+      ],
+      "subtasks": [
+        "检查依赖及备份",
+        "执行范围内操作并核对结果",
+        "保存脱敏证据及回退步骤"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    },
+    {
+      "code": "TRD-R3-ARC-002",
+      "title": "前端验收清单与任务状态复核",
+      "owner": "主Agent",
+      "area": "ARC",
+      "priority": "P1",
+      "stage": 5,
+      "dependencies": [
+        "TRD-R3-OPS-003"
+      ],
+      "acceptance": "逐项入口角色操作预期证据；review非done；真实银行待后续",
+      "status": "todo",
+      "progress": 0,
+      "confirmation_gates": [],
+      "requirement_baseline": "运营平台新版功能需求说明-20261014.md",
+      "design_baseline": "商城工作台与售后退款SLA增量详细设计-20261014.md",
+      "deliverables": [
+        "需求设计与任务映射",
+        "验收入口与遗留条件"
+      ],
+      "subtasks": [
+        "核对最新确认及历史冲突",
+        "输出边界契约和逐项验收标准",
+        "复核任务依赖与待确认条件"
+      ],
+      "monitoring": {
+        "required_fields": [
+          "last_activity_at",
+          "current_step",
+          "test_result",
+          "evidence_path",
+          "next_action",
+          "blocker"
+        ],
+        "review_gate": "代码/自动化/部署或相关验证证据齐全才review，用户验收才done",
+        "stale_policy": "15分钟巡查，30分钟无活动报告原因，不按时间推定完成"
+      }
+    }
+  ],
+  "execution_policy": {
+    "status_source": "开发进度控制台数据库；JSON初始todo不是实时状态",
+    "stage_order": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "batch_size": "每个Agent同时一个有界任务包",
+    "progress_policy": "按实际子步骤及证据更新；不得用等待时间充进度",
+    "protected_business": [
+      "ORD-261012005144E1B3",
+      "qa-vcq-a044ea9ea181-p2"
+    ],
+    "historical_migration": "只读盘点后用户批准",
+    "no_unattended_claim": "持续执行时监控；未部署调度器不声称离线持续监控"
+  }
+}

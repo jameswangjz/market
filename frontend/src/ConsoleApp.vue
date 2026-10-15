@@ -5,6 +5,9 @@ import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
+import PaginationControls from "./PaginationControls.vue";
+import { pageCount, validPage } from "./pagination.js";
+import { taskSubtasks, useDevelopmentSubtasks } from "./developmentSubtasks.js";
 import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
 import SaaSSyncManagement from "./SaaSSyncManagement.vue";
 import ApplicationsCenter from "./ApplicationsCenter.vue";
@@ -21,7 +24,7 @@ import { allowedBusinessViews, businessModes, businessViewParams, consoleEnterpr
 import { safeReturnTarget, navigate } from "./routes.js";
 import { explicitOrderPayload } from "./orderClient.js";
 import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
-import { registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments, deliveryForProductType } from "./productRegistration.js";
+import { registrationProductTypes, registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments, deliveryForProductType } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
 import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
@@ -40,6 +43,8 @@ import {
   ClipboardList,
   ChevronDown,
   ChevronRight,
+  ChevronsDown,
+  ChevronsUp,
   CircleAlert,
   ClipboardCheck,
   Copy,
@@ -620,13 +625,19 @@ const emptyProductForm = () => ({
 const productForm = ref(emptyProductForm());
 const productReadiness = reactive({ data: null, loading: false, error: "" });
 const productReadinessController = createReadinessController({ state: productReadiness, api });
+const productEditorDirty = ref(false);
+const productClosePending = ref(false);
+watch(showProductForm, () => { productEditorDirty.value = false; }, { flush: "sync" });
+watch(productForm, () => {
+  if (showProductForm.value && !productReadOnlyMode.value) productEditorDirty.value = true;
+}, { deep: true, flush: "sync" });
 watch([showProductForm, productDetailMode, () => productForm.value.id, () => user.value?.id], () => {
   const eligible = showProductForm.value && productDetailMode.value
     && ['api', 'model_api', 'tenant_access'].includes(productForm.value.delivery_method);
   productReadinessController.load(eligible ? productForm.value.id : null);
 });
 watch(() => productForm.value.product_type, (type, previous) => {
-  if (previous && !productForm.value.delivery_fields_locked) {
+  if (previous && !productForm.value.delivery_fields_locked && !["report", "application"].includes(type)) {
     productForm.value.delivery_method = deliveryForProductType(type);
   }
 });
@@ -678,6 +689,7 @@ const filteredTasks = computed(() =>
       developmentFilter.value === "all" || t.status === developmentFilter.value,
   ),
 );
+const { expandedTaskCodes, hasVisibleSubtasks, allSubtasksExpanded, subtaskTotal, toggleTaskSubtasks, toggleAllSubtasks } = useDevelopmentSubtasks(development, filteredTasks);
 const selectedProductSettlementRule = computed(() =>
   settlementRules.value.find((rule) => rule.id === productForm.value.settlement_rule_id) || null,
 );
@@ -893,7 +905,7 @@ async function selectEnterprise(id) {
   window.history.replaceState(null, "", url);
   orders.value = []; products.value = []; deliveryItems.value = []; afterSalesItems.value = [];
   settlementItems.value = []; settlementFilterItems.value = []; auditItems.value = []; auditCategories.value = [];
-  selectedOrder.value = null; selectedProductId.value = ""; auditSelected.value = null; auditTimeline.value = [];
+  selectedOrder.value = null; selectedProductId.value = ""; closeAuditEvent();
   settlementDetail.value = null; settlementAdjusting.value = null; providerReview.value = null; showProductForm.value = false;
   closeDeliveryAccess();
   orderDetailRequest++; ordersListRequest++; auditLoadVersion++;
@@ -1035,8 +1047,9 @@ async function loadViewData(view) {
       loadSaasListAccess(orders.value);
     }
   }
-  if (view === "development" || view === "overview") {
+  if ((view === "development" || view === "overview") && canAccessConsoleView(user.value, enterprise.value, "development")) {
     const { data } = await api.get("/development/tasks");
+    if (!contextCurrent()) return;
     development.value = data;
   }
   if (view === "products") {
@@ -1410,6 +1423,8 @@ async function loadAuditLogs() {
     if (version !== auditLoadVersion) return;
     auditItems.value = data.items || [];
     const total = data.total || 0;
+    const last = pageCount(total, params.page_size);
+    if (params.page > last) { auditFilters.value.page = last; return await loadAuditLogs(); }
     auditFilters.value = { ...auditFilters.value, total, pages: data.pages ?? Math.ceil(total / params.page_size), page: data.page || params.page };
     const categoryData = await api.get("/audit-logs/categories", { params: businessViewParams(user.value, enterprise.value, businessView.value) });
     if (version === auditLoadVersion) auditCategories.value = categoryData.data.items || [];
@@ -1454,25 +1469,31 @@ async function openAuditEvent(item) {
   ++auditDetailVersion;
   auditSelected.value = item; auditTimeline.value = []; auditTimelineError.value = "";
   auditTimelineRoot.value = item.id; auditTimelinePage.value = 1; auditTimelineTotal.value = 0;
-  if (!user.value?.platform_role) return;
+  if (!canAccessConsoleView(user.value, enterprise.value, "audit")) return;
   await loadAuditTimeline(1, true);
 }
 async function loadAuditTimeline(page = 1, selectCurrent = false) {
-  if (!user.value?.platform_role || !auditTimelineRoot.value || page < 1) return;
+  if (!canAccessConsoleView(user.value, enterprise.value, "audit") || !auditTimelineRoot.value || !Number.isSafeInteger(page) || page < 1) return;
   const detailVersion = auditDetailVersion;
   const version = ++auditTimelineVersion;
-  const current = () => detailVersion === auditDetailVersion && version === auditTimelineVersion;
+  const contextEpoch = businessContextEpoch;
+  const contextKey = () => [user.value?.id, enterprise.value?.id, token.value, businessView.value].join(":");
+  const requestContext = contextKey();
+  const current = () => detailVersion === auditDetailVersion && version === auditTimelineVersion &&
+    contextEpoch === businessContextEpoch && requestContext === contextKey();
   auditTimelineBusy.value = true;
   auditTimelineError.value = "";
   try {
-    const { data } = await api.get(`/audit-logs/${encodeURIComponent(auditTimelineRoot.value)}/timeline`, { params: { page, page_size: 100 } });
+    const { data } = await api.get(`/audit-logs/${encodeURIComponent(auditTimelineRoot.value)}/timeline`, { params: { ...businessViewParams(user.value, enterprise.value, businessView.value), page, page_size: auditTimelinePageSize.value } });
     if (!current()) return;
+    const last = pageCount(data.total ?? (data.items || []).length, auditTimelinePageSize.value);
+    if (page > last) return await loadAuditTimeline(last, selectCurrent);
     if (selectCurrent && data.event) auditSelected.value = data.event;
     const events = new Map((data.items || []).map(event => [event.id, event]));
     auditTimeline.value = [...events.values()].sort((left, right) => new Date(left.created_at) - new Date(right.created_at));
     auditTimelineTotal.value = data.total ?? events.size;
     auditTimelinePage.value = data.page || page;
-    auditTimelinePageSize.value = data.page_size || 100;
+    auditTimelinePageSize.value = data.page_size || auditTimelinePageSize.value;
   } catch (error) {
     if (current()) auditTimelineError.value = auditFailure(error, "关联事件加载失败");
   } finally { if (current()) auditTimelineBusy.value = false; }
@@ -1545,9 +1566,8 @@ function resetAuditFilters() {
   auditSelectedCategory.value = "";
   loadAuditLogs().catch(() => notify("审计日志加载失败"));
 }
-function auditPage(delta) {
-  const next = auditFilters.value.page + delta;
-  if (next < 1 || (auditFilters.value.pages && next > auditFilters.value.pages)) return;
+function auditPage(next) {
+  if (auditBusy.value || validPage(next, pageCount(auditFilters.value.total, auditFilters.value.page_size)) === null) return;
   auditFilters.value.page = next;
   loadAuditLogs().catch(() => notify("审计日志加载失败"));
 }
@@ -2041,6 +2061,17 @@ async function createProduct() {
     productSaving.value = false;
   }
 }
+async function closeProductEditor() {
+  if (productSaving.value || productReviewSubmitting.value || productClosePending.value) return;
+  const form = productForm.value;
+  productClosePending.value = true;
+  try {
+    if (productEditorDirty.value && !await confirmDialog("有未保存的修改，确认放弃并关闭？", { title: "关闭产品登记", confirmText: "放弃修改", danger: true })) return;
+    if (!productSaving.value && productForm.value === form) showProductForm.value = false;
+  } finally {
+    productClosePending.value = false;
+  }
+}
 function openNewProduct() {
   if (productSaving.value || !canManageProductRegistration(user.value, enterprise.value)) return;
   productDetailMode.value = false;
@@ -2061,7 +2092,7 @@ async function openProductDetail(product, review = false) {
   productDetailMode.value = true;
   productDetailTab.value = "info";
   productReviewMode.value = review && canReviewProduct(product);
-  productReadOnlyMode.value = !canManageProductRegistration(user.value, enterprise.value) || !["draft", "rejected"].includes(product.status);
+  productReadOnlyMode.value = !canManageProductRegistration(user.value, enterprise.value) || !["draft", "rejected"].includes(product.status) || ["report", "application"].includes(product.product_type);
   let detail = product;
   try {
     const response = await api.get(`/products/${product.id}`);
@@ -2098,6 +2129,8 @@ async function openProductDetail(product, review = false) {
     productFiles.value = [];
   }
   showProductForm.value = true;
+  await nextTick();
+  productEditorDirty.value = false;
 }
 function isPlatformRole() {
   return ["super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"].includes(user.value?.platform_role);
@@ -2332,6 +2365,7 @@ async function downloadSaasCredentials(product, kind = "") {
   }
 }
 async function updateTask(task, status) {
+  if (!canAccessConsoleView(user.value, enterprise.value, "development")) return;
   try {
     await api.patch(`/development/tasks/${task.code}`, {
       status,
@@ -3143,7 +3177,7 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="overview-grid">
-            <div class="panel progress-panel">
+            <div v-if="canAccessConsoleView(user, enterprise, 'development')" class="panel progress-panel">
               <div class="panel-heading">
                 <div>
                   <span class="section-kicker">DEVELOPMENT CONTROL</span>
@@ -3326,7 +3360,7 @@ onUnmounted(() => {
             <div class="panel sla-results-panel"><div class="panel-heading"><div><span class="section-kicker">SLA RESULTS</span><h3>周期考核结果</h3></div><span class="muted">最近 100 条</span></div><div class="table-wrap"><table class="data-table compact"><thead><tr><th>规则</th><th>可用性</th><th>延迟</th><th>错误率</th><th>交付及时率</th><th>结论</th></tr></thead><tbody><tr v-for="item in slaOverview.results" :key="item.id"><td><strong>{{ item.profile_name }}</strong><small>{{ fmtDate(item.calculated_at) }}</small></td><td>{{ item.availability }}%</td><td>{{ item.avg_latency_ms }} ms</td><td>{{ item.error_rate }}%</td><td>{{ item.delivery_compliance }}%</td><td><button class="sla-result-button" @click="openSlaResult(item)"><span :class="['status-pill', item.status === 'met' ? 'status-done' : item.status === 'warning' ? 'status-review' : 'status-blocked']">{{ item.status === 'met' ? '达标' : item.status === 'warning' ? '预警' : '违约' }}</span><small>{{ item.breach_reason || '查看考核详情' }}</small></button></td></tr><tr v-if="!slaOverview.results.length"><td colspan="6"><div class="empty-state">暂无考核结果，请先执行考核</div></td></tr></tbody></table></div></div>
           </div><div v-if="selectedSlaResult" class="drawer-scrim" @click.self="selectedSlaResult = null"><aside class="order-drawer sla-result-drawer"><div class="drawer-head"><div><div class="eyebrow">SLA RESULT DETAIL</div><h2>{{ selectedSlaResult.status === 'breached' ? 'SLA 违约详情' : selectedSlaResult.status === 'warning' ? 'SLA 预警详情' : 'SLA 达标详情' }}</h2></div><button class="icon-btn" @click="selectedSlaResult = null"><X :size="18" /></button></div><div class="drawer-summary"><strong>{{ selectedSlaResult.profile_name }}</strong><span>{{ fmtDate(selectedSlaResult.period_start) }} 至 {{ fmtDate(selectedSlaResult.period_end) }}</span><span :class="['status-pill', selectedSlaResult.status === 'met' ? 'status-done' : selectedSlaResult.status === 'warning' ? 'status-review' : 'status-blocked']">{{ selectedSlaResult.status === 'met' ? '达标' : selectedSlaResult.status === 'warning' ? '预警' : '违约' }}</span></div><div class="drawer-section"><div class="drawer-section-title">异常内容</div><p class="sla-result-reason">{{ selectedSlaResult.breach_reason || '本周期各项指标均达到目标。' }}</p></div><div class="drawer-section"><div class="drawer-section-title">考核指标</div><div class="state-grid"><div><small>可用性</small><strong>{{ selectedSlaResult.availability }}%</strong></div><div><small>平均延迟</small><strong>{{ selectedSlaResult.avg_latency_ms }} ms</strong></div><div><small>错误率</small><strong>{{ selectedSlaResult.error_rate }}%</strong></div><div><small>交付及时率</small><strong>{{ selectedSlaResult.delivery_compliance }}%</strong></div><div><small>请求样本</small><strong>{{ selectedSlaResult.sample_count }}</strong></div><div><small>成功请求</small><strong>{{ selectedSlaResult.success_count }}</strong></div></div></div><div class="drawer-section"><div class="drawer-section-title">处理建议</div><p class="sla-result-advice">{{ selectedSlaResult.status === 'breached' ? '请创建服务事件，定位故障原因并记录恢复过程。' : selectedSlaResult.status === 'warning' ? '建议持续观察下一周期指标，必要时提前处理容量、延迟或交付风险。' : '当前周期无需额外处置。' }}</p></div></aside></div><div class="panel service-level-panel"><div class="panel-heading"><div><span class="section-kicker">SERVICE LEVEL</span><h3>服务级别与支持权益</h3></div><span class="muted">时长均可配置</span></div><div class="service-level-cards"><article v-for="level in slaOverview.service_levels" :key="level.id" class="service-level-card"><div class="service-level-card-head"><div><strong>{{ level.name }}</strong><small>{{ level.code }} · {{ level.support_schedule }} 支持</small></div><span :class="['status-pill', level.status === 'active' ? 'status-done' : 'status-todo']">{{ level.status === 'active' ? '启用' : '停用' }}</span></div><p>{{ level.description }}</p><div class="service-level-meta"><span>首响 {{ level.initial_response_minutes }} 分钟</span><span>问题 {{ level.problem_response_hours }} 小时</span><span v-if="level.dedicated_manager">专属经理</span><span v-if="level.quarterly_report">季度报告</span><span v-if="level.annual_optimization">年度优化</span></div></article></div><div class="service-level-config"><div class="service-level-config-title">新增可配置级别</div><div class="form-grid service-level-form"><label>编码<input v-model="serviceLevelForm.code" placeholder="如 premium" /></label><label>名称<input v-model="serviceLevelForm.name" placeholder="如 专业级" /></label><label>每周支持天数<input v-model.number="serviceLevelForm.support_days_per_week" type="number" min="1" max="7" /></label><label>每天支持小时<input v-model.number="serviceLevelForm.support_hours_per_day" type="number" min="1" max="24" /></label><label>首次响应（分钟）<input v-model.number="serviceLevelForm.initial_response_minutes" type="number" min="1" /></label><label>问题响应（小时）<input v-model.number="serviceLevelForm.problem_response_hours" type="number" min="1" /></label><label class="wide">说明<input v-model="serviceLevelForm.description" placeholder="支持权益说明" /></label></div><div class="service-level-options"><label><input v-model="serviceLevelForm.dedicated_manager" type="checkbox" />专属技术支持经理</label><label><input v-model="serviceLevelForm.quarterly_report" type="checkbox" />季度服务报告</label><label><input v-model="serviceLevelForm.annual_optimization" type="checkbox" />年度服务优化建议</label></div><button class="primary-btn" @click="createServiceLevel"><CheckCircle2 :size="15" />创建服务级别</button></div><div class="service-level-assignment"><div class="service-level-config-title">企业服务级别绑定</div><div class="form-grid"><label>企业<select v-model="serviceAssignmentForm.enterprise_id"><option value="">请选择企业</option><option v-for="enterprise in slaEnterprises" :key="enterprise.id" :value="enterprise.id">{{ enterprise.name }}</option></select></label><label>服务级别<select v-model="serviceAssignmentForm.service_level_id"><option value="">请选择级别</option><option v-for="level in slaOverview.service_levels" :key="level.id" :value="level.id">{{ level.name }}</option></select></label></div><button class="secondary-btn" @click="assignServiceLevel"><Users :size="15" />绑定企业级别</button></div></div></template
         >
-        <template v-else-if="activeView === 'development'"
+        <template v-else-if="activeView === 'development' && canAccessConsoleView(user, enterprise, 'development')"
           ><div class="page-heading">
             <div>
               <div class="eyebrow">主 Agent · 实时任务监控</div>
@@ -3399,15 +3433,18 @@ onUnmounted(() => {
                 <h3>
                   功能项清单
                   <small
-                    >共 {{ development.total }} 项 · 完成率
+                    >共 {{ development.total }} 项 · {{ subtaskTotal }} 个子步骤 · 完成率
                     {{ development.completion_rate }}%</small
                   >
                 </h3>
               </div>
+              <div class="task-register-tools">
+                <button type="button" class="icon-btn" :title="allSubtasksExpanded ? '折叠全部子步骤' : '展开全部子步骤'" :aria-label="allSubtasksExpanded ? '折叠全部子步骤' : '展开全部子步骤'" :aria-expanded="allSubtasksExpanded" :disabled="!hasVisibleSubtasks" @click="toggleAllSubtasks"><ChevronsUp v-if="allSubtasksExpanded" :size="17" /><ChevronsDown v-else :size="17" /></button>
               <span class="sync-note"
                 ><span class="live-dot"></span>实时同步
                 {{ fmtDate(development.updated_at) }}</span
               >
+              </div>
             </div>
             <div class="table-wrap">
               <table class="data-table">
@@ -3424,10 +3461,13 @@ onUnmounted(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="task in filteredTasks" :key="task.code">
+                  <template v-for="task in filteredTasks" :key="task.code">
+                  <tr>
                     <td>
+                      <div class="task-subtask-toggle">
+                      <button type="button" class="icon-btn" :title="expandedTaskCodes.has(task.code) ? '折叠子步骤' : '展开子步骤'" :aria-label="`${task.code} ${expandedTaskCodes.has(task.code) ? '折叠子步骤' : '展开子步骤'}`" :aria-expanded="expandedTaskCodes.has(task.code) && taskSubtasks(task).length > 0" :aria-controls="taskSubtasks(task).length ? `task-subtasks-${task.code}` : undefined" :disabled="!taskSubtasks(task).length" @click="toggleTaskSubtasks(task)"><ChevronDown v-if="expandedTaskCodes.has(task.code)" :size="15" /><ChevronRight v-else :size="15" /></button>
                       <span class="task-code">{{ task.code }}</span
-                      ><small>{{ task.area }}</small>
+                      ></div><small>{{ task.area }} · {{ taskSubtasks(task).length }} 个子步骤</small>
                     </td>
                     <td>
                       <strong>{{ task.title }}</strong
@@ -3470,6 +3510,14 @@ onUnmounted(() => {
                       </select>
                     </td>
                   </tr>
+                  <tr v-if="expandedTaskCodes.has(task.code) && taskSubtasks(task).length" class="task-subtask-row">
+                    <td colspan="8">
+                      <ol :id="`task-subtasks-${task.code}`" class="task-subtask-list" :aria-label="`${task.code} 子步骤`">
+                        <li v-for="step in taskSubtasks(task)" :key="step.id"><span class="task-subtask-id">{{ step.id }}</span><span class="task-subtask-title">{{ step.title }}</span><span class="task-subtask-status">未单独标记</span></li>
+                      </ol>
+                    </td>
+                  </tr>
+                  </template>
                 </tbody>
               </table>
             </div>
@@ -4014,7 +4062,7 @@ onUnmounted(() => {
               </table>
             </div>
             <div v-if="!auditItems.length" class="empty-state"><ShieldCheck :size="28" /><span>{{ auditBusy ? "加载中" : "暂无符合条件的审计事件" }}</span></div>
-            <div class="audit-pagination"><button class="secondary-btn" :disabled="auditBusy || auditFilters.page <= 1" @click="auditPage(-1)">上一页</button><button class="secondary-btn" :disabled="auditBusy || auditFilters.page >= Math.max(1, auditFilters.pages)" @click="auditPage(1)">下一页</button></div>
+            <PaginationControls :page="auditFilters.page" :page-size="auditFilters.page_size" :total="auditFilters.total" :busy="auditBusy" label="审计日志分页" @page="auditPage" @size="auditFilters.page_size = $event; searchAuditLogs()" />
           </div>
           <div v-if="auditSelected" class="drawer-scrim" @click.self="closeAuditEvent" @keydown.esc.stop="closeAuditEvent">
             <aside class="order-drawer audit-drawer" role="dialog" aria-modal="true" aria-label="审计事件详情" tabindex="-1">
@@ -4040,7 +4088,7 @@ onUnmounted(() => {
                 <div v-if="auditChangeRows(auditSelected).length" class="table-wrap"><table class="data-table audit-change-table"><thead><tr><th>字段</th><th>变更前</th><th>变更后</th></tr></thead><tbody><tr v-for="row in auditChangeRows(auditSelected)" :key="row.key" :class="{ 'audit-field-changed': row.changed }"><th scope="row">{{ row.name }}</th><td><pre>{{ auditValue(row.before, row.key) }}</pre></td><td><pre>{{ auditValue(row.after, row.key) }}</pre></td></tr></tbody></table></div>
                 <p v-else class="muted">无字段变更</p>
               </div>
-              <div v-if="user?.platform_role" class="drawer-section">
+              <div v-if="canAccessConsoleView(user, enterprise, 'audit')" class="drawer-section">
                 <div class="drawer-head"><div class="drawer-section-title">关联事件时间线</div><button class="icon-btn" title="刷新时间线" aria-label="刷新时间线" :disabled="auditTimelineBusy" @click="loadAuditTimeline(auditTimelinePage)"><RefreshCw :size="16" /></button></div>
                 <p v-if="auditTimelineError" class="error-text" role="alert">{{ auditTimelineError }}</p>
                 <p v-if="auditTimelineBusy" class="muted" role="status">加载中</p>
@@ -4049,7 +4097,7 @@ onUnmounted(() => {
                     <button class="audit-event-button" :aria-current="event.id === auditSelected.id ? 'true' : undefined" @click="auditSelected = event"><time>{{ fmtDate(event.created_at) }}</time><strong>{{ event.action }}</strong><span>{{ event.actor }} · {{ auditValue(event.result, 'result') }}</span><span v-if="event.order_no || event.batch_no">{{ event.order_no }}{{ event.order_no && event.batch_no ? ' · ' : '' }}{{ event.batch_no }}</span><span v-if="event.detail">{{ event.detail }}</span></button>
                   </li>
                 </ol>
-                <div v-if="auditTimelineTotal" class="audit-pagination"><button class="secondary-btn" :disabled="auditTimelineBusy || auditTimelinePage <= 1" @click="loadAuditTimeline(auditTimelinePage - 1)">上一页</button><span class="muted">{{ auditTimelinePage }} / {{ Math.max(1, Math.ceil(auditTimelineTotal / auditTimelinePageSize)) }} · {{ auditTimelineTotal }} 条</span><button class="secondary-btn" :disabled="auditTimelineBusy || auditTimelinePage * auditTimelinePageSize >= auditTimelineTotal" @click="loadAuditTimeline(auditTimelinePage + 1)">下一页</button></div>
+                <PaginationControls :page="auditTimelinePage" :page-size="auditTimelinePageSize" :total="auditTimelineTotal" :busy="auditTimelineBusy" label="审计时间线分页" @page="loadAuditTimeline($event)" @size="auditTimelinePageSize = $event; loadAuditTimeline(1)" />
               </div>
             </aside>
           </div>
@@ -4374,10 +4422,7 @@ onUnmounted(() => {
               :size="38"
             />
             <h3>模块骨架已就绪</h3>
-            <p>
-              开发任务监控台会显示该模块的完成状态，当前主闭环优先保证订单和清算逻辑。
-            </p>
-            <button class="text-btn" @click="selectView('development')">
+            <button v-if="canAccessConsoleView(user, enterprise, 'development')" class="text-btn" @click="selectView('development')">
               查看开发任务 <ChevronRight :size="15" />
             </button></div
         ></template>
@@ -4804,17 +4849,20 @@ onUnmounted(() => {
     <div
       v-if="showProductForm"
       class="modal-scrim"
-      @click="!productSaving && (showProductForm = false)"
+      @keydown.esc.stop.prevent
     >
       <form
         class="modal-card product-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-editor-title"
         @submit.prevent="productDetailMode ? saveProductEdit() : createProduct()"
         @click.stop
       >
         <div class="drawer-head">
           <div>
             <span class="eyebrow">PRODUCT REGISTRATION</span>
-            <h2>{{ productDetailMode ? "产品信息" : "登记数据或服务" }}</h2>
+            <h2 id="product-editor-title">{{ productDetailMode ? "产品信息" : "登记数据或服务" }}</h2>
             <p v-if="productDetailMode" class="modal-status-line">
               当前状态：{{ productForm.status === "published" ? "已发布" : productForm.status === "pending_review" ? "待审核" : productForm.status === "security_review" ? "安全审核中" : productForm.status === "security_unpublished" ? "安全下架" : productForm.status === "rejected" ? "已驳回" : "草稿" }} · {{ productForm.review_comment || "暂无审核意见" }}
             </p>
@@ -4822,8 +4870,10 @@ onUnmounted(() => {
           <button
             type="button"
             class="icon-btn"
-            :disabled="productSaving"
-            @click="showProductForm = false"
+            :disabled="productSaving || productReviewSubmitting || productClosePending"
+            title="关闭产品登记"
+            aria-label="关闭产品登记"
+            @click="closeProductEditor"
           >
             <X :size="19" />
           </button>
@@ -4854,8 +4904,9 @@ onUnmounted(() => {
               </option>
             </select></label
           ><label
-            >产品类型<select v-model="productForm.product_type">
-              <option v-for="(name, key) in typeLabels" :key="key" :value="key">
+            >产品类型<input v-if="!registrationProductTypes[productForm.product_type]" :value="typeLabels[productForm.product_type] || productForm.product_type" readonly aria-readonly="true" />
+            <select v-else v-model="productForm.product_type" :disabled="productForm.delivery_fields_locked">
+              <option v-for="(name, key) in registrationProductTypes" :key="key" :value="key">
                 {{ name }}
               </option>
             </select></label
@@ -4892,7 +4943,7 @@ onUnmounted(() => {
         <div class="form-section-title">运营与合规元数据</div>
         <div class="form-grid">
           <label
-            >交付方式<select v-model="productForm.delivery_method" :disabled="productForm.delivery_fields_locked">
+            >交付方式<select v-model="productForm.delivery_method" disabled aria-readonly="true">
               <optgroup label="线上交付">
               <option value="file">文件下载</option>
               <option value="api">API 服务</option>
@@ -5675,6 +5726,7 @@ fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid
 .version-change-summary, .version-change-segment { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e5e6eb; }
 .version-change-segment h3 { margin: 0; font-size: 14px; }
 .version-change-segment h3 small { display: block; margin-top: 6px; color: #86909c; font-size: 12px; font-weight: 400; }
+.task-register-tools{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}.task-subtask-toggle{display:flex;align-items:center;gap:4px}.task-subtask-toggle .icon-btn{width:24px;height:24px;flex:0 0 24px}.task-subtask-row>td{padding:8px 20px;background:#fafbfc;white-space:normal}.task-subtask-list{list-style:none;margin:0;padding:0}.task-subtask-list li{display:grid;grid-template-columns:minmax(130px,180px) minmax(0,1fr) 90px;align-items:start;gap:6px 14px;padding:8px 0;border-bottom:1px solid #e5e6eb;font-size:12px;line-height:1.6}.task-subtask-list li:last-child{border-bottom:0}.task-subtask-id{font-size:11px;color:#86909c;overflow-wrap:anywhere}.task-subtask-title{min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;color:#4e5969}.task-subtask-status{font-size:11px;color:#86909c;white-space:nowrap}@media(max-width:600px){.task-panel>.panel-heading{flex-wrap:wrap}.task-register-tools{justify-content:flex-start}.task-subtask-list li{grid-template-columns:minmax(0,1fr) 90px}.task-subtask-id{grid-column:1/-1}}
 .version-change-amounts { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
 .version-change-amounts th, .version-change-amounts td { padding: 10px 8px; border-bottom: 1px solid #e5e6eb; text-align: left; overflow-wrap: anywhere; }
 .version-change-amounts thead { background: #f7f8fa; }

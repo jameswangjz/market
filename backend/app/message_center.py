@@ -498,7 +498,7 @@ def install(ns):
                     raise HTTPException(422, "时间格式无效")
                 query = query.where(Message.sent_at >= timestamp if lower else Message.sent_at < timestamp)
         total = db.scalar(select(func.count()).select_from(query.subquery()))
-        return {"items": [sender_out(db, m) for m in db.scalars(query.order_by(Message.sent_at.desc()).offset((page - 1) * page_size).limit(page_size))], "total": total}
+        return {"items": [sender_out(db, m) for m in db.scalars(query.order_by(Message.sent_at.desc(), Message.id.desc()).offset((page - 1) * page_size).limit(page_size))], "total": total}
 
     @app.put("/api/notifications/sent/{mid}")
     def update_draft(mid: str, body: SendMessage, user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):

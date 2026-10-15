@@ -4,6 +4,8 @@ import axios from 'axios';
 import { Search, RefreshCw, X, Bell, Send, Save, Settings, Paperclip, Download, Eye, ExternalLink, CheckCircle2 } from 'lucide-vue-next';
 import { useNotificationStream } from './useNotificationStream';
 import { notificationRequest, notificationScopeKey, isNotificationRequestCurrent } from './notificationScope.js';
+import PaginationControls from './PaginationControls.vue';
+import { pageCount } from './pagination.js';
 
 const emit = defineEmits(['changed', 'navigate']);
 const props = defineProps({ allowedViews: { type: Array, default: null }, initialId: { type: String, default: '' }, enterpriseId: { type: String, default: '' }, businessView: { type: String, default: '' } });
@@ -29,6 +31,7 @@ api.interceptors.response.use(response => {
 const data = ref({ items: [], total: 0 });
 const folder = ref('inbox');
 const page = ref(1);
+const pageSize = ref(20);
 const selected = ref([]);
 const detail = ref(null);
 const error = ref('');
@@ -104,11 +107,13 @@ async function load(background = false) {
   try {
     if (filters.value.start && filters.value.end && filters.value.start > filters.value.end) throw new Error('date');
     const snapshot = { ...filters.value };
-    const params = { ...snapshot, start: dateBoundary(snapshot.start), end: dateBoundary(snapshot.end, true), folder: currentFolder, page: page.value, page_size: 20 };
+    const params = { ...snapshot, start: dateBoundary(snapshot.start), end: dateBoundary(snapshot.end, true), folder: currentFolder, page: page.value, page_size: pageSize.value };
     const result = await api.get(sentFolder.value ? '/notifications/sent' : '/notifications', { params });
     if (version !== loadVersion || disposed) return;
     const resultData = Array.isArray(result.data) ? { items: result.data, total: result.data.length } : result.data;
     data.value = { ...resultData, items: resultData.items || [], total: resultData.total || 0 };
+    const last = pageCount(data.value.total, pageSize.value);
+    if (page.value > last) { page.value = last; return await load(background); }
     if (!background) selected.value = [];
     else selected.value = selected.value.filter(id => data.value.items.some(item => item.id === id));
     if (!background) error.value = '';
@@ -411,7 +416,7 @@ onUnmounted(() => { disposed = true; ++loadVersion; ++detailVersion; closePrevie
     <p v-if="error" role="alert" class="error-text">{{ error }}</p><p v-if="notice" role="status" class="muted">{{ notice }}</p>
     <div v-if="selected.length && !sentFolder" class="action-list message-batch"><button v-if="folder !== 'trash'" class="text-btn" :disabled="saving" @click="action('read', selected)">标记已读</button><button v-if="folder !== 'trash'" class="text-btn" :disabled="saving" @click="action('archive', selected)">归档</button><button v-if="folder !== 'trash'" class="text-btn danger-text" :disabled="saving" @click="action('delete', selected)">删除</button><button v-else class="text-btn" :disabled="saving" @click="action('restore', selected)">恢复</button></div>
     <div class="table-wrap" :aria-busy="busy"><table class="data-table"><thead><tr><th v-if="!sentFolder"></th><th>等级 / 分类</th><th>消息</th><th>状态</th><th>发送时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in data.items" :key="item.id"><td v-if="!sentFolder"><input v-model="selected" type="checkbox" :value="item.id" :aria-label="`选择消息：${item.title}`" /></td><td>{{ severity(item.severity) }}<small>{{ categoryName(item.category) }}</small></td><td class="message-title"><button class="product-link" @click="open(item)">{{ item.title }}</button><small class="message-excerpt">{{ item.content }}</small></td><td>{{ sentFolder ? (isDraft(item) ? '草稿' : isRecalled(item) ? '已撤回' : '已发送') : item.status === 'unread' ? '未读' : '已读' }}<small v-if="!sentFolder && item.severity === 'urgent'">{{ item.acknowledged_at ? '已确认' : '待确认' }}</small><small v-if="item.email_status">邮件：{{ emailState(item.email_status) }}</small></td><td>{{ date(item.sent_at || item.created_at) }}</td><td><template v-if="sentFolder"><button v-if="canSend && isDraft(item)" class="text-btn" :disabled="saving" @click="editDraft(item)">编辑</button><button v-if="canSend && isDraft(item)" class="text-btn" :disabled="saving" @click="confirmation = { item, action: 'publish' }">发送</button><button v-else-if="!isDraft(item) && !isRecalled(item)" class="text-btn danger-text" :disabled="saving" @click="confirmation = { item, action: 'recall', reason: '' }">撤回</button></template><button v-else-if="folder === 'trash'" class="text-btn" :disabled="saving" @click="action('restore', [item.id])">恢复</button><button v-else class="text-btn danger-text" :disabled="saving" @click="action('delete', [item.id])">删除</button></td></tr></tbody></table><div v-if="!data.items.length" class="empty-state"><Bell :size="22" />{{ busy ? '加载中' : '暂无消息' }}</div></div>
-    <div class="audit-pagination"><button class="secondary-btn" :disabled="page === 1 || busy" @click="page--; load()">上一页</button><span class="muted">{{ page }} / {{ Math.max(1, Math.ceil(data.total / 20)) }}</span><button class="secondary-btn" :disabled="page * 20 >= data.total || busy" @click="page++; load()">下一页</button></div>
+    <PaginationControls :page="page" :page-size="pageSize" :total="data.total" :busy="busy || saving" label="消息分页" @page="page = $event; load()" @size="pageSize = $event; page = 1; load()" />
 
     <div v-if="detail" class="modal-scrim" @click.self="closeDetail"><section class="modal-card message-detail" role="dialog" aria-modal="true" aria-label="消息详情"><div class="drawer-head"><div><span class="eyebrow">{{ severity(detail.severity) }} · {{ categoryName(detail.category) }}</span><h2>{{ detail.title }}</h2></div><button class="icon-btn" title="关闭" aria-label="关闭" @click="closeDetail"><X :size="18" /></button></div><p class="message-body">{{ detail.content }}</p><div class="state-grid"><div><small>发送时间</small><strong>{{ date(detail.sent_at || detail.created_at) }}</strong></div><div><small>邮件状态</small><strong>{{ emailState(detail.email_status) }}</strong></div><template v-if="!detail.outgoing"><div><small>站内送达</small><strong>{{ date(detail.delivered_at) }}</strong></div><div><small>首次阅读</small><strong>{{ date(detail.first_read_at) }}</strong></div><div><small>最后阅读</small><strong>{{ date(detail.last_read_at) }}</strong></div><div><small>确认时间</small><strong>{{ date(detail.acknowledged_at) }}</strong></div></template><div v-if="detail.recalled_at"><small>撤回时间</small><strong>{{ date(detail.recalled_at) }}</strong></div></div>
       <ul v-if="detail.attachments?.length" class="attachments"><li v-for="item in detail.attachments" :key="item.id"><Paperclip :size="15" /><span>{{ item.name }}</span><button class="icon-btn" title="查看附件" aria-label="查看附件" :disabled="downloading" @click="attachment(item, true)"><Eye :size="16" /></button><button class="icon-btn" title="下载附件" aria-label="下载附件" :disabled="downloading" @click="attachment(item)"><Download :size="16" /></button></li></ul>

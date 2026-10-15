@@ -6802,7 +6802,7 @@ def export_settlement_report(status: str | None = None, start: str | None = None
 
 
 @app.get("/api/audit-logs")
-def audit_logs(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def audit_logs(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), category: str | None = None, q: str | None = None, actor: str | None = None, order_id: str | None = None, batch_no: str | None = None, rule_version: str | None = None, risk_level: str | None = None, start: str | None = None, end: str | None = None, page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=100), user: User = Depends(current_user), db: Session = Depends(db_session)):
     scope = resolve_business_scope(request, db, user, Membership, business_view)
     if scope is None:
         require_audit_viewer(user)
@@ -6882,18 +6882,35 @@ def admin_enterprises(user: User = Depends(current_user), db: Session = Depends(
     return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "registered_capital": x.registered_capital, "establishment_date": x.establishment_date, "business_address": x.business_address, "business_scope": x.business_scope, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
 
 
+def can_manage_development(user: User) -> bool:
+    return user.platform_role == "super_admin"
+
+
+def require_development_manager(user: User) -> None:
+    if not can_manage_development(user):
+        raise HTTPException(403, "Development progress requires super_admin")
+
+
 @app.get("/api/development/tasks")
 def development_tasks(user: User = Depends(current_user), db: Session = Depends(db_session)):
+    require_development_manager(user)
+    from .development_steps import subtasks_for
+
     tasks = db.scalars(select(DevelopmentTask).order_by(DevelopmentTask.status, DevelopmentTask.priority, DevelopmentTask.code)).all()
     counts = {status: sum(1 for x in tasks if x.status == status) for status in ["todo", "in_progress", "review", "blocked", "done"]}
     total = len(tasks)
-    return {"total": total, "counts": counts, "completion_rate": round((counts["done"] / total * 100) if total else 0, 1), "updated_at": now(), "items": [{"id": x.id, "code": x.code, "owner": x.owner, "title": x.title, "area": x.area, "priority": x.priority, "status": x.status, "dependencies": x.dependencies, "acceptance": x.acceptance, "progress": x.progress, "updated_at": x.updated_at} for x in tasks]}
+    items = [{"id": x.id, "code": x.code, "owner": x.owner, "title": x.title, "area": x.area,
+              "priority": x.priority, "status": x.status, "dependencies": x.dependencies,
+              "acceptance": x.acceptance, "progress": x.progress, "updated_at": x.updated_at,
+              "subtasks": subtasks_for(x.code)} for x in tasks]
+    return {"total": total, "counts": counts, "completion_rate": round((counts["done"] / total * 100) if total else 0, 1),
+            "updated_at": now(), "items": items,
+            "subtask_count": sum(len(item["subtasks"]) for item in items)}
 
 
 @app.patch("/api/development/tasks/{code}")
 def update_development_task(code: str, body: DevelopmentTaskUpdate, user: User = Depends(current_user), db: Session = Depends(db_session)):
-    if user.platform_role not in {"super_admin", "platform_operator"}:
-        raise HTTPException(403, "只有平台管理员或平台运营人员可以更新开发任务")
+    require_development_manager(user)
     task = db.scalar(select(DevelopmentTask).where(DevelopmentTask.code == code))
     if not task:
         raise HTTPException(404, "开发任务不存在")

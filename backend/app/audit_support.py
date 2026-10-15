@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from io import StringIO
 
-from fastapi import Depends, HTTPException, Query, Response
+from fastapi import Depends, HTTPException, Query, Request, Response
 from sqlalchemy import Index, func, or_, select
 from sqlalchemy.schema import CreateIndex
 
@@ -118,10 +118,20 @@ def install(ns):
                                  'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
 
     @app.get('/api/audit-logs/{event_id}/timeline')
-    def timeline(event_id: str, page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=200),
+    def timeline(event_id: str, request: Request, enterprise_id: str = Query(default=''),
+                 business_view: str = Query(default=''),
+                 page: int = Query(1, ge=1), page_size: int = Query(100, ge=1, le=100),
                  user=Depends(current_user), db=Depends(session)):
-        ns['require_audit_viewer'](user)
-        event = db.get(Audit, event_id)
+        scope = ns['resolve_business_scope'](request, db, user, ns['Membership'], business_view)
+        if scope is None:
+            ns['require_audit_viewer'](user)
+        elif scope['membership'].role not in {'super_admin', 'enterprise_admin'}:
+            raise HTTPException(403, '普通企业成员无权查看企业审计记录')
+        visible = ns['audit_predicate'](Audit, Order, scope) if scope is not None else None
+        event_query = select(Audit).where(Audit.id == event_id)
+        if visible is not None:
+            event_query = event_query.where(visible)
+        event = db.scalar(event_query)
         if not event:
             raise HTTPException(404, '审计事件不存在')
         # Order-specific timelines never expand to unrelated orders in the same batch.
@@ -134,9 +144,16 @@ def install(ns):
         else:
             condition = Audit.id == event.id
         stmt = select(Audit).where(condition).order_by(Audit.created_at, Audit.id)
+        if visible is not None:
+            stmt = stmt.where(visible)
         total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = objects(db, db.scalars(stmt.offset((page - 1) * page_size).limit(page_size)).all())
         current = objects(db, [event])[0]
+        if scope is not None:
+            allowed = ('id', 'action', 'target_type', 'target_id', 'result', 'category',
+                       'order_id', 'order_no', 'created_at')
+            rows = [{key: row[key] for key in allowed} for row in rows]
+            current = {key: current[key] for key in allowed}
         ns['audit'](db, user.email or user.id, 'view_audit_timeline', 'audit_event', event.id,
                     category='security', after={'event_id': event.id, 'rows': len(rows)})
         db.commit()

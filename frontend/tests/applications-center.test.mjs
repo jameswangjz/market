@@ -10,10 +10,10 @@ const app = { subscription_id: "s1", enterprise_id: "e1", product_id: "p1", ente
 const managed = { ...app, subscription_id: "s2", enterprise_id: "e2", is_enterprise_admin: true };
 const member = { user_id: "u2", name: "Member", login_name: "member", email: "member@example.invalid", role: "member", granted: false };
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
-function harness() {
-  const context = { user: structuredClone(user), enterprise: { id: "e1" }, token: "private-token" }, calls = [], redirects = [];
+function harness(enterpriseId = "") {
+  const context = { user: structuredClone(user), enterprise: { id: enterpriseId }, token: "private-token" }, calls = [], redirects = [];
   let state;
-  const api = { get: async (...args) => { calls.push(["GET", ...args]); return { data: { items: args[0] === "/applications" ? [app, managed] : [member] } }; },
+  const api = { get: async (...args) => { calls.push(["GET", ...args]); const selected = args[1]?.params?.enterprise_id; return { data: { items: args[0] === "/applications" ? [app, managed].filter(item => !selected || item.enterprise_id === selected) : [member] } }; },
     post: async (...args) => { calls.push(["POST", ...args]); return { data: args[0].endsWith("/launch") ? { launch_url: "https://rp.example/login?enterprise_id=e1" } : { granted: args[1].granted } }; } };
   const session = createApplicationsSession({ api, getContext: () => context, onChange: value => { state = value; }, onNavigate: value => redirects.push(value) });
   return { context, calls, redirects, api, session, state: () => state };
@@ -126,4 +126,87 @@ test("grant error preserves authoritative checkboxes and cannot release a newer 
 test("enterprise admins cannot be changed as ordinary grants", async () => {
   const h = harness(); await h.session.load(); h.api.get = async () => ({ data: { items: [{ ...member, role: "enterprise_admin", granted: true }] } });
   await h.session.openMembers("s2"); const calls = h.calls.length; await h.session.grant("u2", false); assert.equal(h.calls.length, calls);
+});
+
+test("list sends selected enterprise_id and keeps legacy unfiltered requests without selection", async () => {
+  for (const enterpriseId of ["e1", "e2", ""]) {
+    const h = harness(enterpriseId);
+    await h.session.load();
+    const [method, path, config] = h.calls[0];
+    assert.equal(method, "GET");
+    assert.equal(path, "/applications");
+    assert.deepEqual(config.params, enterpriseId ? { enterprise_id: enterpriseId } : undefined);
+    assert.equal(config.headers.Authorization, "Bearer private-token");
+    assert.equal(config.withCredentials, true);
+    assert.deepEqual(h.state().items.map(item => item.enterprise_id), enterpriseId ? [enterpriseId] : ["e1", "e2"]);
+  }
+});
+
+test("enterprise switch discards stale list success/error without clearing the new pending list", async () => {
+  for (const fail of [false, true]) {
+    const h = harness("e1"), old = deferred(), newer = deferred(), queries = [];
+    h.api.get = (_path, config) => { queries.push(config.params); return config.params.enterprise_id === "e1" ? old.promise : newer.promise; };
+    const first = h.session.load();
+    h.context.enterprise = { id: "e2" };
+    h.session.reset();
+    const second = h.session.load();
+    if (fail) old.reject({ response: { status: 403 } }); else old.resolve({ data: { items: [app] } });
+    await first;
+    assert.equal(h.state().loading, true);
+    assert.deepEqual(h.state().items, []);
+    assert.equal(h.state().error, "");
+    newer.resolve({ data: { items: [managed] } });
+    await second;
+    assert.deepEqual(queries, [{ enterprise_id: "e1" }, { enterprise_id: "e2" }]);
+    assert.deepEqual(h.state().items, [managed]);
+    assert.equal(h.state().loading, false);
+    assert.equal(h.state().error, "");
+  }
+});
+
+test("selected list rejects another enterprise even when both memberships are active", async () => {
+  const h = harness("e1");
+  h.api.get = async () => ({ data: { items: [managed] } });
+  await h.session.load();
+  assert.deepEqual(h.state().items, []);
+  assert.ok(h.state().error);
+  await h.session.launch("s2");
+  assert.deepEqual(h.redirects, []);
+});
+
+test("granted ordinary member lists and launches without order ownership or admin privileges", async () => {
+  const h = harness("e1");
+  assert.equal(h.context.user.enterprise_memberships[0].role, "member");
+  assert.equal("order_id" in app, false);
+  await h.session.load();
+  assert.deepEqual(h.state().items, [app]);
+  await h.session.launch("s1");
+  assert.equal(h.redirects.length, 1);
+  assert.equal(h.calls.at(-1)[1], "/applications/s1/launch");
+  const count = h.calls.length;
+  await h.session.openMembers("s1");
+  await h.session.grant("u2", true);
+  assert.equal(h.calls.length, count);
+});
+
+test("selected enterprise admin can grant; switching selection blocks cached launch and grants", async () => {
+  const h = harness("e2");
+  await h.session.load();
+  await h.session.openMembers("s2");
+  await h.session.grant("u2", true);
+  assert.deepEqual(h.calls.find(call => call[1] === "/applications/s2/grants")[2], { user_id: "u2", granted: true });
+  h.context.enterprise = { id: "e1" };
+  const count = h.calls.length;
+  await h.session.launch("s2");
+  await h.session.loadMembers();
+  await h.session.openMembers("s2");
+  await h.session.grant("u2", false);
+  assert.equal(h.calls.length, count);
+  assert.deepEqual(h.redirects, []);
+});
+
+test("component watches the selected enterprise context synchronously", async () => {
+  const source = await readFile(new URL("../src/ApplicationsCenter.vue", import.meta.url), "utf8");
+  assert.match(source, /enterprise: props.enterprise/);
+  assert.match(source, /watch\(\(\) => JSON.stringify\(context\(\)\), \(\) => \{ session.reset\(\);.*session.load\(\); \}, \{ flush: "sync" \}\)/);
 });

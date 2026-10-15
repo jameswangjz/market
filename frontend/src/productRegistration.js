@@ -4,6 +4,7 @@ const integrationFields = ["upstream_url", "route_key", "auth_mode", "upstream_a
 export const productDeliveryMapping = Object.freeze({ dataset: "file", model: "file", report: "file", application: "file", api: "api", saas: "tenant_access", training: "training", consulting: "consulting", custom: "custom" });
 
 export function deliveryForProductType(type) { return productDeliveryMapping[type] || "file"; }
+export const registrationProductTypes = Object.freeze({ dataset: "数据集", model: "模型", api: "API 服务", saas: "SaaS 应用", training: "培训", consulting: "咨询", custom: "定制开发" });
 
 export function stableRouteKey(productId, versionId) {
   return `p-${productId}-v-${versionId}`.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 100);

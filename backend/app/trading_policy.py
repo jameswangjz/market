@@ -12,8 +12,8 @@ def install(ns):
     SaaSSubscription = ns.get("SaaSSubscription")
     online = {"file", "api", "model_api", "tenant_access"}
     offline = {"training", "consulting", "custom"}
-    product_delivery = {"dataset": "file", "model": "file", "report": "file",
-                       "application": "file", "api": "api", "saas": "tenant_access",
+    product_delivery = {"dataset": "file", "model": "file",
+                       "api": "api", "saas": "tenant_access",
                        "training": "training", "consulting": "consulting", "custom": "custom"}
 
     def validate_product_delivery(db, product, product_type=None, delivery_method=None):
@@ -29,7 +29,7 @@ def install(ns):
                 Order.paid_amount > 0).limit(1))
             if has_sold_snapshot:
                 return
-        if expected != delivery_method:
+        if expected is None or expected != delivery_method:
             raise HTTPException(400, "产品类型与交付方式不匹配")
 
     def delivery_category(method):

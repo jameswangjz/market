@@ -11,7 +11,8 @@ export function canAccessConsoleView(user, enterprise, view) {
   if (view === "products") return [...operators, "product_manager", "quality_reviewer", "security_compliance"].includes(user.platform_role) || Boolean(!user.platform_role && activeConsoleMembership(user, enterprise));
   if (user.verified_status !== "verified") return false;
   const role = user.platform_role;
-  if (["gateway", "sla", "settings", "development"].includes(view)) return operators.includes(role);
+  if (view === "development") return role === "super_admin";
+  if (["gateway", "sla", "settings"].includes(view)) return operators.includes(role);
   const enterpriseAdmin = !role && ["super_admin", "enterprise_admin"].includes(activeConsoleMembership(user, enterprise)?.role);
   if (["settlements", "audit"].includes(view)) return auditors.includes(role) || enterpriseAdmin;
   if (view === "delivery") return [...operators, "delivery_monitor"].includes(role) || enterpriseAdmin;
@@ -50,12 +51,12 @@ export function canManageApplication(user, item) {
 const appText = value => typeof value === "string" ? value : "";
 const appId = value => typeof value === "string" && value.length > 0 && value.length <= 180 && !/[\\/\u0000-\u0020\u007f]/.test(value);
 
-export function sanitizeApplications(data, user) {
+export function sanitizeApplications(data, user, enterpriseId = "") {
   if (!Array.isArray(data?.items)) throw new Error("应用数据无效");
   const seen = new Set();
   return data.items.map(item => {
     if (![item.subscription_id, item.enterprise_id, item.product_id].every(appId) ||
-        !activeApplicationMembership(user, item.enterprise_id) || seen.has(item.subscription_id) ||
+        !activeApplicationMembership(user, item.enterprise_id) || (enterpriseId && item.enterprise_id !== enterpriseId) || seen.has(item.subscription_id) ||
         typeof item.available !== "boolean" || typeof item.is_enterprise_admin !== "boolean") throw new Error("应用数据无效");
     seen.add(item.subscription_id);
     return { subscription_id: item.subscription_id, enterprise_id: item.enterprise_id, product_id: item.product_id,
@@ -92,22 +93,24 @@ export function createApplicationsSession({ api, getContext, onChange, onNavigat
   function capture() { return { epoch, key: key() }; }
   function current(ticket) { return !disposed && ticket.epoch === epoch && ticket.key === key() && canViewApplications(getContext().user); }
   function config() { return { headers: { Authorization: `Bearer ${getContext().token}` }, withCredentials: true }; }
+  function inSelectedEnterprise(item) { return !getContext().enterprise?.id || item?.enterprise_id === getContext().enterprise.id; }
   function reset() { epoch++; listNonce++; memberNonce++; saveNonce++; state = empty(); emit(); }
   function closeMembers() { memberNonce++; saveNonce++; state.modal = null; state.members = []; state.memberError = ""; state.memberLoading = false; state.saving = ""; emit(); }
   async function load() {
     reset();
     if (disposed || !getContext().token || !canViewApplications(getContext().user)) return;
     const ticket = capture(), nonce = ++listNonce;
+    const enterpriseId = getContext().enterprise?.id || "";
     state.loading = true; emit();
     try {
-      const { data } = await api.get("/applications", config());
-      if (current(ticket) && nonce === listNonce) state.items = sanitizeApplications(data, getContext().user);
+      const { data } = await api.get("/applications", { ...config(), ...(enterpriseId ? { params: { enterprise_id: enterpriseId } } : {}) });
+      if (current(ticket) && nonce === listNonce) state.items = sanitizeApplications(data, getContext().user, enterpriseId);
     } catch (error) { if (current(ticket) && nonce === listNonce) state.error = applicationError(error); }
     finally { if (current(ticket) && nonce === listNonce) { state.loading = false; emit(); } }
   }
   async function launch(id) {
     const item = state.items.find(item => item.subscription_id === id);
-    if (!item?.available || state.launching || state.loading || !canViewApplications(getContext().user)) return;
+    if (!item?.available || !inSelectedEnterprise(item) || state.launching || state.loading || !canViewApplications(getContext().user)) return;
     const ticket = capture();
     state.launching = id; state.error = ""; emit();
     try {
@@ -118,7 +121,7 @@ export function createApplicationsSession({ api, getContext, onChange, onNavigat
   }
   async function loadMembers() {
     const item = state.modal;
-    if (!item || !canManageApplication(getContext().user, item)) return;
+    if (!item || !inSelectedEnterprise(item) || !canManageApplication(getContext().user, item)) return;
     const ticket = capture(), nonce = ++memberNonce;
     state.memberLoading = true; state.memberError = ""; state.members = []; emit();
     try {
@@ -129,13 +132,13 @@ export function createApplicationsSession({ api, getContext, onChange, onNavigat
   }
   async function openMembers(id) {
     const item = state.items.find(item => item.subscription_id === id);
-    if (!canManageApplication(getContext().user, item)) return;
+    if (!inSelectedEnterprise(item) || !canManageApplication(getContext().user, item)) return;
     closeMembers(); state.modal = item; emit(); await loadMembers();
   }
   async function grant(userId, granted) {
     const item = state.modal;
     const member = state.members.find(member => member.user_id === userId);
-    if (!item || state.saving || state.memberLoading || typeof granted !== "boolean" ||
+    if (!item || !inSelectedEnterprise(item) || state.saving || state.memberLoading || typeof granted !== "boolean" ||
         !member || ["super_admin", "enterprise_admin"].includes(member.role) || !canManageApplication(getContext().user, item)) return;
     const ticket = capture(), nonce = memberNonce, savingTicket = ++saveNonce;
     state.saving = userId; state.memberError = ""; emit();

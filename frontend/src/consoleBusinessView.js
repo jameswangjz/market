@@ -23,9 +23,9 @@ export function allowedBusinessViews(user, enterprise, mode) {
   const membership = activeEnterpriseMembership(user, enterprise?.id);
   if (!membership) return ["applications", "users", "messages"];
   if (!["super_admin", "enterprise_admin"].includes(membership.role)) return ["applications", "users", "messages"];
-  const common = ["orders", "delivery", "audit", "users", "messages", "applications"];
+  const common = ["orders", "delivery", "audit", "users", "messages"];
   if (mode === "provider") return membership.role === "super_admin" ? [...common, "products", "settlements", "overview"] : [...common, "products", "settlements"];
-  return common;
+  return [...common, "applications"];
 }
 
 export function businessViewParams(user, enterprise, mode) {
