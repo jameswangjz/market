@@ -1,0 +1,91 @@
+{
+  "status": "passed",
+  "captured_at": "2026-10-15T08:33:01.453886+00:00",
+  "completed_at": "2026-10-15T08:33:08.473354+00:00",
+  "scope": "BE011 incremental owned-schema PG/ASGI; no repeated BE010 eight-case group",
+  "owned_schema": "qa_r3_be_3426db2eb2de3422",
+  "cases": {
+    "manual_permissions_version_replay": {
+      "status": "passed",
+      "unauthorized_roles": 403,
+      "manual_version": 2,
+      "replay_unique": true,
+      "stale_approve": 409,
+      "source_trust": "manual_determination",
+      "automatic_usage_trusted": false,
+      "determination_audits": 1
+    },
+    "manual_approval_rechecks_reservations": {
+      "status": "passed",
+      "new_reservation_rechecked_at_approval": 409,
+      "no_plan_frozen_on_failure": true
+    },
+    "manual_same_version_race": {
+      "status": "passed",
+      "ASGI_statuses": [
+        200,
+        409
+      ],
+      "manual_rows": 1,
+      "case_version": 2
+    },
+    "manual_determination_audit_rollback": {
+      "status": "passed",
+      "actual_flush_before_failure": true,
+      "exact_owned_snapshot_unchanged": true,
+      "fault": "audit"
+    },
+    "manual_determination_outbox_rollback": {
+      "status": "passed",
+      "actual_flush_before_failure": true,
+      "exact_owned_snapshot_unchanged": true,
+      "fault": "outbox"
+    },
+    "cumulative_original_time_plan_and_immutability": {
+      "status": "passed",
+      "basis": "original SaaS time segment",
+      "original_duration_microseconds": 2419200000000,
+      "cumulative_recovery": 1209600000000,
+      "frozen_first_plan_unchanged": true,
+      "catalog_change_not_retroactive": true,
+      "gateway_usage_adapter_used": false,
+      "executor_used": false
+    }
+  },
+  "gaps": [
+    "Synthetic original SaaS time segment and explicit human documentary determination",
+    "Actual gateway charge-ledger integration is not exercised; missing usage never invented",
+    "No resource/funds/real-bank execution, deployment or browser claim"
+  ],
+  "public_write_operations": 0,
+  "task_status_changes": 0,
+  "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+  "cleanup": "owned schema removed",
+  "protected_order_count_before": 1,
+  "protected_order_count_after": 1,
+  "protected_order_content_read": false,
+  "coverage": [
+    "TRD-R3-BE-011"
+  ],
+  "source_kind": "workingtree",
+  "deployed": false,
+  "source_sha256": {
+    "main.py": "91fcd2210e7af823e71bd4660f74b94d666dba6bb945d59c667bfe5d269684d0",
+    "refund_workflow.py": "4513e4d40c65bf9c0cb7ea87542327421c2c10b11a8756187c156c8c1646760a",
+    "refund_schema.py": "b02a6573960e3062146715da1e8706af44057aafab96b7bff20b25eea7e99f80",
+    "refund_planning.py": "a09195f1eb1d82ab8601eb2dc2f3f8c68118b82e3ce1eb6f41bc84e7c6159083",
+    "refund_entitlements.py": "975c1c673e710cfab7318ca4f35390448bcafbeba8536cc37ac803646dfe1054"
+  },
+  "freeze_evidence": "docs/evidence/r3-be011-refund-planning-freeze-20261015.json",
+  "freeze_source_match": [
+    "refund_planning.py",
+    "refund_workflow.py",
+    "refund_schema.py"
+  ],
+  "rerun_command": "PYTHONPATH=scripts /tmp/market-r3-python312/bin/python -B scripts/r3_refund_planning_pg_acceptance.py --pod <API_POD>",
+  "authentication": "Private SSHPASS environment; not recorded",
+  "guards": {
+    "passed": 5,
+    "log": "/tmp/r3-be011-planning-pg-guards-20261015.log"
+  }
+}

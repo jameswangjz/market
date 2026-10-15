@@ -12,6 +12,8 @@ import { ticketStatus, canCreateAfterSales } from "./afterSales.js";
 import SlaEvidencePanel from "./SlaEvidencePanel.vue";
 import SlaEnterpriseAdjustment from "./SlaEnterpriseAdjustment.vue";
 import SlaTicketEvidence from "./SlaTicketEvidence.vue";
+import RefundCenter from "./RefundCenter.vue";
+import { canViewRefunds } from "./refunds.js";
 import { reviewSlaPayload } from "./slaEvidence.js";
 import { pageCount, validPage } from "./pagination.js";
 import { slaResultState, slaMetric, slaResultReason } from "./slaResultDisplay.js";
@@ -2899,13 +2901,6 @@ function nextActions(order) {
     actions.push(["submit_review", "提交审核"]);
   if (order.main_status === "pending_review")
     actions.push(["approve", "审核通过"]);
-  if (
-    order.payment_status === "paid" &&
-    order.after_sales_status === "processing"
-  )
-    actions.push(["approve_refund", "同意退款"]);
-  if (order.payment_status === "refunding")
-    actions.push(["complete_refund", "确认退款完成"]);
   if (order.delivery_status === "not_started")
     actions.push(["create_task", "生成履约任务"]);
   if (order.main_status === "pending_fulfillment")
@@ -3822,6 +3817,7 @@ onUnmounted(() => {
               <RefreshCw :size="16" />刷新
             </button>
           </div>
+          <RefundCenter v-if="canViewRefunds(user, enterprise?.id)" :key="`refunds:${user?.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :params="afterSalesScope" />
           <div class="two-column-panels">
             <div class="panel">
               <div class="panel-heading">
@@ -4649,6 +4645,7 @@ onUnmounted(() => {
           ><span>{{ selectedOrder.order.buyer_name }}</span
           ><b>{{ fmtMoney(selectedOrder.order.amount) }}</b>
         </div>
+        <RefundCenter v-if="canViewRefunds(user, enterprise?.id)" :key="`order-refunds:${selectedOrder.order.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :order="selectedOrder.order" :params="afterSalesScope" />
         <section class="drawer-section subscription-terms-panel" aria-label="订阅期限">
           <div class="drawer-section-title subscription-heading">
             <span>订阅期限</span>

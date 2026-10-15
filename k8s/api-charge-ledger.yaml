@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-charge-ledger-worker
+  namespace: market
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: api-charge-ledger-worker}
+  template:
+    metadata:
+      labels: {app: api-charge-ledger-worker}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: worker
+          image: market-api:REPLACE_WITH_DEPLOYED_TAG
+          imagePullPolicy: IfNotPresent
+          command: [python, -m, app.api_charge_worker]
+          envFrom:
+            - configMapRef: {name: market-config}
+          env:
+            - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: '1', memory: 512Mi}
+          startupProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-heartbeat').stat().st_mtime < 90"]
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-heartbeat').stat().st_mtime < 90"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-heartbeat').stat().st_mtime < 180"]
+            periodSeconds: 20
+            failureThreshold: 3

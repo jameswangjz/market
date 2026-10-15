@@ -1,0 +1,39 @@
+{
+  "status": "partial",
+  "coverage": [],
+  "scope": "Refund request/review/planning UI and native charge-ledger foundations; no funds executor or whole-task acceptance",
+  "affected_group": {
+    "passed": 178,
+    "failed": 0,
+    "skipped": 0,
+    "test_seconds": 62.390,
+    "runner_seconds": 68.895,
+    "exit_code": 0,
+    "log": "/tmp/market-refund-group-affected-final-20261015-a.log",
+    "log_sha256": "d635f6dd0f6794d4b5d79ce90e349942337165ac8bf1e380faf5bd33ea1f7640",
+    "runtime": "Dedicated ephemeral Redis 7.4.11 binary matching development deployment; actual Redis EVAL and Lua runtime, not business Redis"
+  },
+  "source_sha256": {
+    "backend/app/api_charge_ledger.py": "9dda72e9fc50644c64fb958c8b846ce270eb5c76abbe26fa0f7299b5ad7719da",
+    "backend/app/api_charge_worker.py": "319fca4c7e55d4dcbf37024ddfb0be89ae18797959b6d6e403b9ab76aa164f9d",
+    "k8s/market-gateway-quota.lua": "f8f2419ffdf8dea368c611745b85257d9b12583be5518d86e19b4e76520b699e",
+    "backend/app/refund_workflow.py": "4513e4d40c65bf9c0cb7ea87542327421c2c10b11a8756187c156c8c1646760a",
+    "backend/app/refund_planning.py": "a09195f1eb1d82ab8601eb2dc2f3f8c68118b82e3ce1eb6f41bc84e7c6159083",
+    "frontend/src/refunds.js": "5a3dc0eec502f8d8b3802d0b955efc1eacf390f410515dad347f146d94b7c51c"
+  },
+  "review": "Independent static review initially identified four correctness issues. Fixes have targeted regressions and reviewer found no remaining P1 in those increments.",
+  "other_evidence": [
+    "r3-be010-refund-pg-workingtree-20261015.json",
+    "r3-be011-refund-planning-pg-workingtree-20261015.json",
+    "r3-be011-ledger-pg-final-workingtree-20261015.json",
+    "r3-be011-charge-ledger-incremental-review-20261015.json"
+  ],
+  "limitations": [
+    "Prior PG evidence binds its own earlier source hashes; not a claim of installed current-source verification",
+    "Future and revised economic subscription segment automation remains unavailable",
+    "Funds/resource execution and completed-refund settlement are not enabled",
+    "SaaS/upstream and real-bank refund E2E not claimed",
+    "Selective privileged deletion of Redis financial keys cannot be treated as trusted zero usage; requires operational protection/manual continuity review",
+    "No business credentials, quota allocations, protected order or product modified by these local tests"
+  ]
+}

@@ -1,0 +1,17 @@
+.refund-form { min-width: 0; font-size: 13px; line-height: 1.5; }
+.refund-form fieldset { min-width: 0; border: 0; padding: 0; margin: 12px 0; }
+.refund-form .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+.refund-form .wide { grid-column: 1 / -1; }
+.refund-form label { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; color: #4e5969; font-size: 13px; }
+.refund-form input, .refund-form textarea { display: block; width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid #c9cdd4; border-radius: 6px; background: #fff; color: #1d2129; padding: 8px 10px; font: inherit; font-size: 13px; line-height: 1.5; }
+.refund-form input { min-height: 36px; }
+.refund-form textarea { min-height: 84px; resize: vertical; }
+.refund-form input:disabled, .refund-form textarea:disabled { background: #f2f3f5; color: #86909c; }
+.refund-form button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; max-width: 100%; font-size: 13px; line-height: 1.5; }
+.refund-form button svg { flex-shrink: 0; }
+.refund-form p { overflow-wrap: anywhere; }
+.refund-review-actions { margin-top: 12px; }
+@media (max-width: 640px) {
+  .refund-form .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .refund-form .refund-review-actions > button { flex: 1; }
+}

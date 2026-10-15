@@ -5,7 +5,7 @@ metadata:
   name: trading-task-monitor
   namespace: market
 spec:
-  schedule: '*/5 * * * *'
+  schedule: '*/10 * * * *'
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 240

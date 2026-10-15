@@ -25,6 +25,10 @@ else
 fi
 kubectl -n market set image deployment/market-api "api=market-api:${TAG}"
 kubectl -n market rollout status deployment/market-api --timeout=240s
+if [[ -f k8s/api-charge-ledger.yaml ]]; then
+  sed "s/market-api:REPLACE_WITH_DEPLOYED_TAG/market-api:${TAG}/" k8s/api-charge-ledger.yaml | kubectl apply -f -
+  kubectl -n market rollout status deployment/api-charge-ledger-worker --timeout=240s
+fi
 kubectl -n market set image deployment/message-center-worker "worker=market-api:${TAG}"
 kubectl -n market rollout status deployment/message-center-worker --timeout=240s
 if kubectl -n market get deployment online-delivery-worker >/dev/null 2>&1; then

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi import HTTPException
 from sqlalchemy import select
 from .quota_cutover import sync_unused, refresh_subscription, QuotaCutoverError
+from .api_charge_ledger import initialize_coverage
 
 
 def install(ns):
@@ -35,6 +36,8 @@ def install(ns):
                 continue
             bound.append({key: period[key] for key in (
                 "start_at", "end_at", "period_key", "rate_limit_per_minute", "daily_quota", "monthly_quota")} | {"route_key": route.route_key})
+            if period.get("order_id") and period.get("segment_id"):
+                bound[-1].update(order_id=period["order_id"], segment_id=period["segment_id"])
         return {"mode": "subscription", "quota_scope": combo.id,
                 "status": credential.status, "subscription_periods": json.dumps(bound, separators=(",", ":")),
                 "daily_quota": credential.daily_quota or 0, "monthly_quota": credential.monthly_quota or 0,
@@ -52,11 +55,13 @@ def install(ns):
         if previous.get("mode") != "subscription":
             try:
                 sync_unused(client, key, data, route.route_key, credential.apisix_consumer_name)
+                initialize_coverage(client, data)
             except QuotaCutoverError as exc:
                 raise HTTPException(409, str(exc)) from exc
             return True
         try:
             refresh_subscription(client, key, data)
+            initialize_coverage(client, data)
         except QuotaCutoverError as exc:
             raise HTTPException(409, str(exc)) from exc
         return True

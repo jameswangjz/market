@@ -1,0 +1,134 @@
+{
+  "status": "passed",
+  "coverage": [
+    "TRD-R3-BE-010"
+  ],
+  "scope": "BE010 frozen workingtree actual PostgreSQL concurrency/reservation/idempotency/atomicity only; not whole QA005 or deployed acceptance",
+  "actor": "This agent executed one isolated PG group after parent reported Turing BE010 frozen; no backend edits",
+  "guards": {
+    "passed": 5,
+    "failed": 0,
+    "command": "PYTHONPATH=backend:scripts /tmp/market-r3-python312/bin/python -B -m unittest scripts.test_r3_refund_workflow_pg_acceptance"
+  },
+  "source_evidence_sha256": {
+    "/tmp/r3-be010-refund-pg-20261015.json": "592dab945dd31d147af5903177a2835afc24fbb2c120542193be45e696a06801",
+    "scripts/r3_refund_workflow_pg_acceptance.py": "fffe69b98b8697210124ca8bce77ebbd02a1ec4061de99ffda90d7d83dbbbdfd",
+    "scripts/test_r3_refund_workflow_pg_acceptance.py": "a3303c079a7854758487630e00dee6ea248edf10a8e6e47833707d0df0c06ed3"
+  },
+  "execution": {
+    "status": "passed",
+    "captured_at": "2026-10-15T07:55:36.753858+00:00",
+    "completed_at": "2026-10-15T07:55:42.739753+00:00",
+    "scope": "BE010 real PG owned-schema hooks; concurrency statuses are HTTP-equivalent, not ingress",
+    "owned_schema": "qa_r3_be_96f762a050c95390",
+    "cases": {
+      "budget_two_connections": {
+        "status": "passed",
+        "http_equivalent_statuses": [
+          200,
+          409
+        ],
+        "independent_pg_connections": 2,
+        "reserved": "60.00",
+        "refunds": 1,
+        "events": 1
+      },
+      "same_idempotency_key_two_connections": {
+        "status": "passed",
+        "http_equivalent_statuses": [
+          200,
+          200
+        ],
+        "same_refund": true,
+        "reserved": "70.00",
+        "changed_payload": 409
+      },
+      "same_review_version_two_connections": {
+        "status": "passed",
+        "http_equivalent_statuses": [
+          200,
+          409
+        ],
+        "version": 2,
+        "events": 2,
+        "planner": "synthetic trusted manual adapter; not real usage/economic verification"
+      },
+      "reservation_release_and_replay": {
+        "status": "passed",
+        "overflow": 409,
+        "rejection_releases_budget": true,
+        "review_replay_unique": true,
+        "new_reserved": "100.00"
+      },
+      "request_audit_rollback": {
+        "status": "passed",
+        "real_flush_before_failure": true,
+        "exact_owned_snapshot_unchanged": true,
+        "operation": "request",
+        "fault": "audit"
+      },
+      "request_outbox_rollback": {
+        "status": "passed",
+        "real_flush_before_failure": true,
+        "exact_owned_snapshot_unchanged": true,
+        "operation": "request",
+        "fault": "outbox"
+      },
+      "review_audit_rollback": {
+        "status": "passed",
+        "real_flush_before_failure": true,
+        "exact_owned_snapshot_unchanged": true,
+        "operation": "review",
+        "fault": "audit"
+      },
+      "review_outbox_rollback": {
+        "status": "passed",
+        "real_flush_before_failure": true,
+        "exact_owned_snapshot_unchanged": true,
+        "operation": "review",
+        "fault": "outbox"
+      }
+    },
+    "gaps": [
+      "No BE011 gateway-charge computation or historical manual economic verification",
+      "Approval uses explicit synthetic manual trusted planner",
+      "No BE012 executor, bank, UI or deployment claim"
+    ],
+    "public_write_operations": 0,
+    "task_status_changes": 0,
+    "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+    "cleanup": "owned schema removed",
+    "protected_order_count_before": 1,
+    "protected_order_count_after": 1,
+    "protected_order_content_read": false,
+    "coverage": [
+      "TRD-R3-BE-010"
+    ],
+    "source_kind": "workingtree",
+    "deployed": false,
+    "source_sha256": {
+      "main.py": "7d72badc41de87d2e423c2f061a31dab09c36c271f903345adbf8be196130741",
+      "refund_workflow.py": "a67deb7804129b271d7876a17d822d1869dfb43bfc33d2ac4a55ddf1f62c9c47",
+      "refund_schema.py": "b02a6573960e3062146715da1e8706af44057aafab96b7bff20b25eea7e99f80"
+    }
+  },
+  "confirmed_rules": {
+    "api_billing": "Actual persistent gateway charge/usage facts; user confirmation received, not pending",
+    "historical_missing_evidence": "User-authorized manual assessment with evidence; not pending",
+    "synthetic_fixture_limit": "This BE010 approval adapter returns explicitly synthetic manual evidence solely for locking/transaction validation, not a real charge calculation"
+  },
+  "safety": {
+    "startup_or_seeding_public": false,
+    "public_business_writes": 0,
+    "external_services": "Existing harness blocks HTTP, Redis, MinIO and mail; no executor/bank operation",
+    "temporary_source_package": "Integrity checked; /tmp directory removed; no installed /app overwrite",
+    "task_status_changes": 0
+  },
+  "limits": [
+    "Concurrency executes production hooks with two PG connections; status codes are HTTP-equivalent, not actual ingress responses.",
+    "BE011 actual gateway-charge/economic calculations and historical manual assessment correctness are outside this BE010 batch.",
+    "BE012 resources/funds execution and FE008 browser acceptance are not claimed.",
+    "Protected-order COUNT1 before/after proves existence only, not a full-row integrity comparison.",
+    "Approval/rejection scheduling winner may vary; exactly one version2 decision and one409 are required."
+  ]
+}

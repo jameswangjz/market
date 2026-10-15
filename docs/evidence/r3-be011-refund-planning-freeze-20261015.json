@@ -1,0 +1,81 @@
+{
+  "scope": "TRD-R3-BE-011 bounded refund planning; no execution",
+  "state": "source_frozen_not_deployed",
+  "files": {
+    "backend/app/refund_planning.py": "a09195f1eb1d82ab8601eb2dc2f3f8c68118b82e3ce1eb6f41bc84e7c6159083",
+    "backend/app/refund_workflow.py": "4513e4d40c65bf9c0cb7ea87542327421c2c10b11a8756187c156c8c1646760a",
+    "backend/app/refund_schema.py": "b02a6573960e3062146715da1e8706af44057aafab96b7bff20b25eea7e99f80",
+    "backend/tests/test_refund_planning.py": "d6037b793832f1e6e67f73c64f737b25b11e10f6357079d483ae550c3bfc838c",
+    "backend/tests/test_refund_workflow.py": "971fba09c71d6db04c9603cbb9fcce86293cdc07831574b68cb1cf3175c942cc"
+  },
+  "wiring": "backend/app/main.py installs refund_workflow then refund_planning; legacy ordinary approve/complete cannot execute funds. Other concurrent main changes are not owned by this evidence.",
+  "contract": {
+    "install": "refund_planning.install(ns); requires refund_workflow, subscription_terms, order_economics and version_change_saga",
+    "charge_adapter": "ns['refund_charge_summary'](db, *, order_id, segment_id, start, end, as_of) -> refund_planning['ChargeSummary']",
+    "charge_summary_fields": ["order_id", "segment_id", "start", "end", "as_of", "charged_calls", "complete", "policy_version", "evidence_ids"],
+    "charge_policy": "Actual authenticated gateway quota deductions, including upstream failures; authentication failures and quota rejections do not count. Exact complete segment/window evidence required; missing evidence is unavailable, never zero.",
+    "quote": "POST /api/orders/{order_id}/refund-quote {amount}; scoped read-only nonbinding preview, status available/unavailable, safe item, execution_available=false",
+    "manual": "POST /api/refunds/{refund_id}/manual-assessments {amount,reason,idempotency_key,expected_version,refundable_limit,used_calls,evidence_refs}; admin/operator only; increments version, leaves request unapproved",
+    "approval": "Existing POST /api/refunds/{refund_id}/review freezes PreparedRefundPlan and hash under Order then Refund locks; replay is idempotent; stale version conflicts",
+    "manual_trust": "basis=manual, source_trust=manual_determination, automatic_usage_trusted=false, resource recovery unavailable; these distinctions survive approval",
+    "automatic_support": "One unrevised active original monthly API/model_api/SaaS segment only. Finite API uses trusted charged calls; unlimited API/SaaS uses actual original calendar duration.",
+    "unsupported": "Future segments, revised economics, open version changes, unallocated historical refunds and missing charge evidence return unavailable for automatic planning; explicit manual monetary determination does not manufacture a resource plan.",
+    "recovery": "Original denominator; money ROUND_HALF_UP cents, cumulative quantity ROUND_FLOOR, final cent drains remaining unused entitlement. Prior persisted deltas counted once and reconciled; requested money and approved/in-flight plans reserve capacity.",
+    "execution": "No execute endpoint; execution_available=false for every basis. Resource/fund execution is not implemented or authorized.",
+    "storage": "New refund_manual_assessments companion table; existing BE010 ordinary_refund_cases/events remain additive. No rewriting historical Refund rows or historical plans. Normal reviewed schema rollout still required."
+  },
+  "review": {
+    "fixed": [
+      "Reject future segments in both pure planner and ORM automatic path",
+      "Preserve manual trust in frozen public approval summary",
+      "Reconcile prior persisted recovery against original cumulative allocation",
+      "Validate prior frozen plan envelope refund/order/payment/amount identity",
+      "Regression: repeated approval cannot reserve a second delta; approved deltas plus final refund cannot exceed unused calls or time"
+    ],
+    "permission_transaction_checks": "Manual assessment and review use platform admin/operator, Order-to-Refund locking, version/idempotency checks and same-transaction events/audit/outbox. Injected audit/outbox failures tested for rollback. No resource execution route exposed.",
+    "remaining": [
+      "No real PostgreSQL concurrency validation in this run; SQLite HTTP tests cannot establish PostgreSQL locking behavior",
+      "Real gateway ChargeSummary adapter integration belongs to parent; not exercised here",
+      "Before enabling execution, coordinate ordinary approved reservations with a subsequently started version-change Saga, and revalidate live resources; this package rejects already-open changes but does not modify Saga initiation",
+      "Manual determinations have no trusted automatic recovery/cost plan; execution must stay disabled",
+      "Future/revised/multiple subscription segment automation remains unsupported"
+    ]
+  },
+  "tests": {
+    "command": "PYTHONPATH=backend:backend/tests:scripts /tmp/market-r3-python312/bin/python scripts/run_tests_compact.py --log /tmp/market-r3-refund-be011-review-1792052706718.log -- /tmp/market-r3-python312/bin/python -m unittest test_refund_planning test_refund_workflow test_refund_entitlements test_version_change_saga",
+    "log": "/tmp/market-r3-refund-be011-review-1792052706718.log",
+    "count": 56,
+    "unittest_seconds": 14.488,
+    "runner_seconds": 18.364,
+    "exit_code": 0,
+    "result": "OK; no failures or skips reported",
+    "planning_tests": 18,
+    "integrity_followup": {
+      "count": 34,
+      "unittest_seconds": 14.520,
+      "exit_code": 0,
+      "modules": ["test_refund_planning", "test_refund_workflow"],
+      "log": "/tmp/market-r3-refund-planning-integrity-1792053135654.log",
+      "fix": "Malformed but hash-matching prior economic_plan now returns controlled unavailable instead of AttributeError/500.",
+      "regression": "Wrong payment identity, non-object economic plan and understated prior recovery each block quote and approval; no new frozen plan or approved state is written.",
+      "real_charge_adapter_exercised": false
+    },
+    "adapter_isolation_followup": {
+      "modules": ["test_refund_planning", "test_refund_workflow"],
+      "count": 33,
+      "unittest_seconds": 14.743,
+      "exit_code": 0,
+      "log": "/tmp/market-r3-refund-isolated-adapter-1792052847915.log",
+      "isolation": "Shared refund fixture explicitly patches refund_charge_summary=None and restores it at cleanup; ledger cases inject only local stubs. Missing-hook case asserts None. No real adapter or Redis invocation from these tests."
+    },
+    "diff_check": "git diff --check exit 0",
+    "prior_failure_fixed": "Earlier BE010 fixture expected a missing-ledger reason despite an inconsistent file delivery snapshot; assertion now follows source_reconciliation_required. Authentication and evidence checks were not relaxed."
+  },
+  "safety": {
+    "business_database_access": false,
+    "deployment": false,
+    "commit": false,
+    "parent_charge_ledger_lua_quota_files_modified": false,
+    "whole_suite_run": false
+  }
+}

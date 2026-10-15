@@ -49,6 +49,9 @@ class SubscriptionGatewayTests(unittest.TestCase):
         return int(self.redis_hashes.pop(key, None) is not None)
 
     def redis_eval(self, _script, numkeys, *args):
+        if "HSETNX" in _script and "baseline" in _script:
+            self.redis_hashes.setdefault(args[1], {}).setdefault('baseline', '0')
+            return 1
         data = json.loads(args[numkeys])
         self.redis_hashes.setdefault(args[0], {}).update(
             {str(field): str(value) for field, value in data.items()})
@@ -165,6 +168,9 @@ class SubscriptionGatewayTests(unittest.TestCase):
             self.assertEqual(data["mode"], "subscription")
             self.assertEqual(data["status"], "revoked")
             self.assertEqual(json.loads(data["subscription_periods"])[0]["monthly_quota"], 1000)
+            period = json.loads(data["subscription_periods"])[0]
+            self.assertEqual(period['order_id'], saved.id)
+            self.assertTrue(period['segment_id'])
             self.assertEqual(data["total_quota"], 0)
 
     def test_zero_credential_quota_is_not_replaced_by_route_default(self):

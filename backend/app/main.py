@@ -5727,6 +5727,10 @@ def transition_order(order_id: str, body: TransitionBody, request: Request, user
     order_peek = db.get(Order, order_id)
     if not order_peek:
         raise HTTPException(404, "订单不存在")
+    if body.action in {"approve_refund", "complete_refund"}:
+        if user.platform_role not in {"super_admin", "platform_operator"}:
+            raise HTTPException(403, "普通退款仅系统管理员或平台运营审核，财务仅保留到账确认权限")
+        raise HTTPException(409, "请使用独立退款申请及审核接口，资金执行尚未开放")
     if order_peek.business_type == "version_change_payment":
         if not version_change_saga["handle_transition"](db, user, order_peek, body):
             raise HTTPException(409, "版本变更资金支付处理失败")
@@ -7827,3 +7831,15 @@ ticket_sla_monitor = install_ticket_sla_monitor(globals())
 from .sla_evidence import install as install_sla_evidence
 
 sla_evidence = install_sla_evidence(globals())
+
+from .refund_workflow import install as install_refund_workflow
+
+refund_workflow = install_refund_workflow(globals())
+
+from .refund_planning import install as install_refund_planning
+
+refund_planning = install_refund_planning(globals())
+
+from .api_charge_ledger import install as install_api_charge_ledger
+
+api_charge_ledger = install_api_charge_ledger(globals())

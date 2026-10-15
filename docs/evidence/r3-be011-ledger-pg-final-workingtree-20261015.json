@@ -1,0 +1,61 @@
+{
+  "status": "passed",
+  "captured_at": "2026-10-15T08:41:27.928832+00:00",
+  "completed_at": "2026-10-15T08:41:33.000245+00:00",
+  "scope": "BE011 financial ledger three-case PG increment; private MockRedis; no Lua/deployed claim",
+  "owned_schema": "qa_r3_be_88c66092be0e8f9d",
+  "cases": {
+    "fact_cursor_transaction_rollback": {
+      "status": "passed",
+      "actual_flush": true,
+      "facts_and_cursor_rolled_back": true
+    },
+    "duplicate_ingest": {
+      "status": "passed",
+      "inserted": [
+        1,
+        0
+      ],
+      "facts": 1,
+      "watermark": "1-0",
+      "forced_stream_replay": true
+    },
+    "invalid_order_segment": {
+      "status": "passed",
+      "wrong_order_rejected": true,
+      "wrong_segment_rejected": true,
+      "preceding_valid_fact_rolled_back": true,
+      "watermark_unchanged": true
+    }
+  },
+  "gaps": [
+    "No real Redis/Lua or deployed gateway ledger claim"
+  ],
+  "public_write_operations": 0,
+  "task_status_changes": 0,
+  "fixture_note": "Only owned schema; no live business or production secret rows read. Ephemeral signing key generated locally.",
+  "cleanup": "owned schema removed",
+  "protected_order_count_before": 1,
+  "protected_order_count_after": 1,
+  "protected_order_content_read": false,
+  "coverage": [
+    "TRD-R3-BE-011"
+  ],
+  "source_kind": "workingtree",
+  "deployed": false,
+  "source_sha256": {
+    "main.py": "91fcd2210e7af823e71bd4660f74b94d666dba6bb945d59c667bfe5d269684d0",
+    "refund_workflow.py": "4513e4d40c65bf9c0cb7ea87542327421c2c10b11a8756187c156c8c1646760a",
+    "refund_schema.py": "b02a6573960e3062146715da1e8706af44057aafab96b7bff20b25eea7e99f80",
+    "api_charge_ledger.py": "9556c3c466abd507c4acaf7b363b089e1262580857be5cab75466e1735ca3495"
+  },
+  "guards": {
+    "passed": 3,
+    "log": "/tmp/r3-be011-ledger-pg-guards-final-20261015.log"
+  },
+  "fixture_contract": "40hex source_run_id; private Redis server run_id and persistent EPOCH hsetnx/hget; unchanged ownership isolation",
+  "limitations": [
+    "Three original ledger PG cases rerun against final source contract; dedicated source-change and pre-activation summary rejection tests not added in this increment",
+    "Private MockRedis, not real Redis/Lua/deployed ledger"
+  ]
+}

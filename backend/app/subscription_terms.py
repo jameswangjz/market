@@ -550,6 +550,7 @@ def install(ns):
                 period = anchor.period(index)
                 result.append({'start_at': int(period.start.timestamp()), 'end_at': int(period.end.timestamp()),
                     'period_key': f'{combination.id}:{combination.generation}:{index}',
+                    'order_id': order.id, 'segment_id': term.id,
                     'version_id': term.version_id, 'version_code': term.version_code,
                     **{key: delivery['quota'][key] for key in LIMIT_KEYS[:3]}})
         return result

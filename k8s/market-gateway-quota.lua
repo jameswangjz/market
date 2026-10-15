@@ -51,12 +51,52 @@ end
 
 local subscription_script = [[
 -- Redis script errors do not roll back earlier writes; validate before INCR.
+local tracking = #KEYS == 6
+local epoch
+if tracking then
+    epoch = redis.call('HGET', KEYS[6], 'run_id')
+    if not epoch or #epoch ~= 40 or not epoch:match('^[a-f0-9]+$') then
+        return redis.error_reply('扣额账本来源尚未就绪')
+    end
+    local stream_type = redis.call('TYPE', KEYS[4]).ok
+    local coverage_type = redis.call('TYPE', KEYS[5]).ok
+    if (stream_type ~= 'none' and stream_type ~= 'stream')
+        or (coverage_type ~= 'none' and coverage_type ~= 'hash') then
+        return redis.error_reply('扣额账本类型无效')
+    end
+end
+local before = {}
 for i = 1, 3 do
     local value = redis.call('GET', KEYS[i])
     if value and (not value:match('^%d+$') or (#value > 1 and value:sub(1, 1) == '0')
         or tonumber(value) > 9007199254740990) then
         return redis.error_reply('订阅配额计数器无效')
     end
+    before[i] = tonumber(value) or 0
+end
+if tracking then
+    -- Reject before emitting an event. XADD failure must not leave quota debited.
+    local reason = 0
+    if before[1] + 1 > tonumber(ARGV[3]) then reason = 1
+    elseif tonumber(ARGV[4]) > 0 and before[2] + 1 > tonumber(ARGV[4]) then reason = 2
+    elseif tonumber(ARGV[5]) > 0 and before[3] + 1 > tonumber(ARGV[5]) then reason = 3 end
+    if reason ~= 0 then return {reason, before[1], before[2], before[3]} end
+    local writes = {
+        {'XADD', KEYS[4], '*', 'quantity', '1'},
+        {'HSETNX', KEYS[5], 'baseline', tostring(before[3])},
+        {'PERSIST', KEYS[3]},
+        {'EXPIREAT', KEYS[1], ARGV[1]}, {'EXPIREAT', KEYS[2], ARGV[2]}}
+    for i = 1, 3 do writes[#writes + 1] = {'INCR', KEYS[i]} end
+    for _, command in ipairs(writes) do
+        if not redis.acl_check_cmd(unpack(command)) then
+            return redis.error_reply('扣额账本写权限不完整')
+        end
+    end
+    redis.call('XADD', KEYS[4], '*',
+        'order_id', ARGV[6], 'segment_id', ARGV[7], 'scope', ARGV[8],
+        'period_key', ARGV[9], 'route_key', ARGV[10], 'charged_at_us', ARGV[11],
+        'quantity', '1', 'policy', 'gateway_actual_charge_v1', 'source_run_id', epoch)
+    redis.call('HSETNX', KEYS[5], 'baseline', tostring(before[3]))
 end
 local minute = redis.call('INCR', KEYS[1])
 local day = redis.call('INCR', KEYS[2])
@@ -103,7 +143,8 @@ local function subscription_access(red, conf, ctx, values)
     if type(periods) ~= "table" or #periods == 0 then
         return finish(403, "订阅配额周期列表无效")
     end
-    local now = ngx.time()
+    local precise_now = ngx.now and ngx.now() or ngx.time()
+    local now = math.floor(precise_now)
     local active
     for i, period in ipairs(periods) do
         if type(period) ~= "table" or not integer(period.start_at, 0)
@@ -113,6 +154,12 @@ local function subscription_access(red, conf, ctx, values)
             or not integer(period.rate_limit_per_minute, 1)
             or not integer(period.daily_quota, 0) or not integer(period.monthly_quota, 0) then
             return finish(403, "订阅配额周期无效")
+        end
+        if (period.order_id ~= nil or period.segment_id ~= nil)
+            and (type(period.order_id) ~= 'string' or not period.order_id:match('^[%w_-]+$')
+                or #period.order_id > 36 or type(period.segment_id) ~= 'string'
+                or not period.segment_id:match('^[%w_-]+$') or #period.segment_id > 36) then
+            return finish(403, '订阅扣额归属无效')
         end
         for j = 1, i - 1 do
             local previous = periods[j]
@@ -136,13 +183,28 @@ local function subscription_access(red, conf, ctx, values)
     local scope = token(values.quota_scope)
     local prefix = "market:apisix:quota:subscription:"
     local beijing_day = math.floor((now + 28800) / 86400)
-    local result = red:eval(subscription_script, 3,
+    local args = {
         prefix .. "minute:" .. scope .. ":" .. math.floor(now / 60),
         prefix .. "day:" .. scope .. ":" .. os.date("!%Y-%m-%d", now + 28800),
-        prefix .. "month:" .. scope .. ":" .. token(active.period_key),
+        prefix .. "month:" .. scope .. ":" .. token(active.period_key)}
+    local key_count = 3
+    if active.order_id and active.segment_id then
+        key_count = 6
+        args[4] = 'market:apisix:charges:v1'
+        args[5] = 'market:apisix:charges:coverage:' .. scope .. ':' .. token(active.period_key)
+        args[6] = 'market:apisix:charges:source'
+    end
+    local arguments = {
         (math.floor(now / 60) + 1) * 60 + 10,
         (beijing_day + 1) * 86400 - 28800 + 86400,
-        active.rate_limit_per_minute, active.daily_quota, active.monthly_quota)
+        active.rate_limit_per_minute, active.daily_quota, active.monthly_quota}
+    if key_count == 6 then
+        arguments[6], arguments[7], arguments[8] = active.order_id, active.segment_id, values.quota_scope
+        arguments[9], arguments[10] = active.period_key, active.route_key
+        arguments[11] = string.format('%.0f', precise_now * 1000000)
+    end
+    for _, value in ipairs(arguments) do args[#args + 1] = value end
+    local result = red:eval(subscription_script, key_count, unpack(args))
     red:set_keepalive(60000, 100)
     if not result then return reject(503, "API 网关配额服务不可用") end
     local reason = tonumber(result[1])
