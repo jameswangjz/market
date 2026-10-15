@@ -2064,6 +2064,7 @@ def create_delivery_task(db: Session, order: Order, actor: str = "") -> Delivery
     order.delivery_status = "in_delivery" if mode == "automatic" else "preparing"
     if mode == "automatic":
         order.main_status = "fulfilling"
+    db.flush()
     if actor:
         audit(db, actor, "create_delivery_task", "delivery_task", task.id, f"mode={mode} method={method}", category="delivery", business_domain="delivery", order_id=order.id)
     return task
