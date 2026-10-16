@@ -1,0 +1,34 @@
+{
+  "captured_at": "2026-10-16T08:25:17.368381+00:00",
+  "before": false,
+  "protected": {
+    "orders": "ed9be1d026bc5b45afe44e92cfd55e0955c709e64ccce83145a5b5cee71cd095",
+    "products": "24b5406f9f549e045f96ca57ba41f85ce56934afa227fcc21eef92b1a0c9c076"
+  },
+  "checks": [
+    {
+      "matrix_count": 3,
+      "complete": true
+    },
+    {
+      "path": "/users",
+      "total": 28,
+      "empty_filter": true
+    },
+    {
+      "path": "/admin/enterprises",
+      "total": 13,
+      "empty_filter": true
+    },
+    {
+      "path": "/sla/enterprise-bindings",
+      "total": 13,
+      "empty_filter": true
+    },
+    {
+      "overview": 200,
+      "protected_unchanged": true
+    }
+  ],
+  "status": "passed"
+}

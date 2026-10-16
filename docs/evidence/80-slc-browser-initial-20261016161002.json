@@ -1,0 +1,21 @@
+{
+  "screenshots": [
+    "slc-audit-desktop.png",
+    "slc-audit-mobile.png"
+  ],
+  "status": "passed",
+  "scope": "installed administrator read-only UI; no configuration writes",
+  "checks": [
+    "SLA exposes four workspaces",
+    "Complete metric matrix is rendered",
+    "Fixed calendar and support metadata are read-only",
+    "Enterprise binding filters and server pagination exist",
+    "Frozen promises and evidence tab opens",
+    "Identity tab 0 has page size and page jump",
+    "Identity tab 1 has page size and page jump",
+    "Audit filters retain eight conditions",
+    "desktop audit controls fit parent",
+    "Desktop audit filters use two rows",
+    "mobile audit controls fit parent"
+  ]
+}

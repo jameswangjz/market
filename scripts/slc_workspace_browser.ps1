@@ -63,11 +63,12 @@ try {
         Check '!!document.querySelector(".pagination-controls select") && !!document.querySelector(".pagination-controls input")' ('Identity tab '+$index+' has page size and page jump')
     }
     Open-View 'audit' '!!document.querySelector(".audit-search-grid")'
+    WaitJs 'document.querySelector(".audit-search button")?.disabled===false && document.querySelector(".audit-panel .table-wrap")?.getAttribute("aria-busy")==="false"' 30
     Check 'document.querySelectorAll(".audit-search-grid label").length===8' 'Audit filters retain eight conditions'
     New-Item -ItemType Directory -Force -Path $OutputDir|Out-Null
     foreach($viewport in @(@{name='desktop';width=1440;height=1000},@{name='mobile';width=390;height=844})) {
         Cdp 'Emulation.setDeviceMetricsOverride' @{width=$viewport.width;height=$viewport.height;deviceScaleFactor=1;mobile=$false}|Out-Null
-        Js '(async()=>{await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const f=document.querySelector(".audit-search-grid"),h=document.querySelector(".topbar")?.getBoundingClientRect().height||66;window.scrollTo(0,Math.max(0,f.getBoundingClientRect().top+scrollY-h-16));return true})()'|Out-Null
+        Js '(async()=>{await new Promise(r=>setTimeout(r,500));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const f=document.querySelector(".audit-search-grid"),h=document.querySelector(".topbar")?.getBoundingClientRect().height||66;window.scrollTo(0,Math.max(0,f.getBoundingClientRect().top+scrollY-h-16));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()'|Out-Null
         Check '(()=>{const f=document.querySelector(".audit-search-grid"),p=f.getBoundingClientRect();return [...f.querySelectorAll("input,select")].every(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.left>=p.left-2&&r.right<=p.right+2})})()' ($viewport.name+' audit controls fit parent')
         if($viewport.name -ceq 'desktop') {Check 'new Set([...document.querySelectorAll(".audit-search-grid label")].map(e=>Math.round(e.getBoundingClientRect().top))).size===2' 'Desktop audit filters use two rows'}
         $shot=Cdp 'Page.captureScreenshot' @{format='png';captureBeyondViewport=$false}

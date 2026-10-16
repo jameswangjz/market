@@ -1,0 +1,62 @@
+{
+  "captured_at": "2026-10-16T08:27:00.730428+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "SLC-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-QA-002",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "最终版本20261016161737-b7fe27e已部署；114后端和99前端组合测试、9项收尾局部测试、5组真实HTTP、PG并发2组及浏览器17项通过；待用户验收，详见文档34"
+}

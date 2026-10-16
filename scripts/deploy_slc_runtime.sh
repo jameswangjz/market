@@ -38,6 +38,6 @@ kubectl -n market rollout status deployment/market-api --timeout=240s
 kubectl -n market set image deployment/market-web "web=market-web:${IMAGE_TAG}"
 kubectl -n market rollout status deployment/market-web --timeout=240s
 kubectl -n market set image cronjob/sla-online-monitor "$MONITOR_NAME=market-api:${IMAGE_TAG}"
-curl --fail --silent --show-error --max-time 20 http://192.168.10.10:30080/api/health
+curl --fail --silent --show-error --retry 5 --retry-connrefused --retry-delay 2 --retry-max-time 60 --max-time 10 http://192.168.10.10:30080/api/health
 trap - ERR
 echo "SLA console API/Web/online-monitor deployed: ${IMAGE_TAG}; financial data unchanged"
