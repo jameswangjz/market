@@ -1,0 +1,67 @@
+{
+  "captured_at": "2026-10-16T09:20:50.988853+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "LIST-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-005",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-QA-002",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "网关详情统一Tab弹框及分页修复已部署20261016172000-5894a17；35项局部测试、10项真实浏览器检查通过，待用户验收"
+}

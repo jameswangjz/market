@@ -1,0 +1,9 @@
+{
+  "checks": [],
+  "screenshots": [
+    "gateway-before.png"
+  ],
+  "layout": "[{\"label\":\"网关路由分页\",\"width\":1101,\"children\":[{\"tag\":\"SPAN\",\"top\":959.296875,\"width\":38.140625,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":932.796875,\"width\":67,\"direction\":\"column\"},{\"tag\":\"DIV\",\"top\":953.296875,\"width\":138,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":932.796875,\"width\":176,\"direction\":\"column\"},{\"tag\":\"BUTTON\",\"top\":953.296875,\"width\":30,\"direction\":\"row\"}]},{\"label\":\"调用统计分页\",\"width\":1101,\"children\":[{\"tag\":\"SPAN\",\"top\":1505.734375,\"width\":38.140625,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":1479.234375,\"width\":67,\"direction\":\"column\"},{\"tag\":\"DIV\",\"top\":1499.734375,\"width\":138,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":1479.234375,\"width\":176,\"direction\":\"column\"},{\"tag\":\"BUTTON\",\"top\":1499.734375,\"width\":30,\"direction\":\"row\"}]}]",
+  "scope": "installed gateway read-only UI; no business writes",
+  "status": "passed"
+}
