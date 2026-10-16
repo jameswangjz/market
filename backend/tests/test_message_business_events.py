@@ -263,6 +263,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
             connection.execute("PRAGMA foreign_keys=ON")
         m.SessionLocal = sessionmaker(bind=m.engine, autoflush=False)
         m.Base.metadata.create_all(m.engine)
+        m.gateway_monitoring["ensure_schema"](m.engine)
         self.Message, self.Receipt, self.Outbox = (m.message_center[key] for key in ("Message", "Receipt", "Outbox"))
         with m.SessionLocal() as db:
             accounts = [("buyer", ""), ("buyer_admin", ""), ("provider", ""), ("outsider", ""), ("inactive", ""), ("platform", "super_admin"), ("ops", "platform_operator"), ("finance", "finance_settlement"), ("reviewer", "product_manager"), ("quality", "quality_reviewer"), ("disabled_ops", "platform_operator")]

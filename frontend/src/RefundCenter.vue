@@ -11,9 +11,12 @@ import { canViewRefunds, canRequestRefund, refundAllowedActions, refundExecution
 const props = defineProps({ api: Object, user: Object, enterpriseId: String, order: Object, params: { type: Object, default: () => ({}) } });
 const state = reactive({ items: [], total: 0, item: null, listBusy: false, detailBusy: false, busy: false, error: "", listError: "", message: "" });
 const page = ref(1), size = ref(20), createOpen = ref(false);
+const filterDefaults = () => ({ refund_id: "", order_no: "", product: "", provider: "", buyer: "", status: "", start: "", end: "" });
+const filters = reactive(filterDefaults());
+const appliedFilters = ref({});
 const executionDialog = ref(null), executionReason = ref("");
 const dialogs = createDialogController(executionDialog);
-const session = createRefundSession(props.api, state, () => ({ user: props.user, enterpriseId: props.enterpriseId, order: props.order, params: props.params }));
+const session = createRefundSession(props.api, state, () => ({ user: props.user, enterpriseId: props.enterpriseId, order: props.order, params: { ...props.params, ...appliedFilters.value } }));
 const visible = computed(() => canViewRefunds(props.user, props.enterpriseId));
 const requestAllowed = computed(() => canRequestRefund(props.order, props.user, props.enterpriseId, props.params.business_view));
 const actions = computed(() => refundAllowedActions(state.item, props.user));
@@ -25,8 +28,14 @@ watch(() => state.item?.id, (id, previous) => {
   if (id !== previous) { dialogs.cancel(); executionReason.value = ""; }
 });
 watch(() => [state.item?.id, state.item?.status, visible.value], () => session.observeExecution());
+watch(() => state.page, value => { if (Number.isInteger(value) && value > 0) page.value = value; });
 function load() { return session.list(page.value, size.value); }
 function go(value) { page.value = value; load(); }
+function search() {
+  appliedFilters.value = Object.fromEntries(Object.entries(filters).filter(([, value]) => String(value).trim()).map(([key, value]) => [key, String(value).trim()]));
+  session.closeDetail(); go(1);
+}
+function resetFilters() { Object.assign(filters, filterDefaults()); search(); }
 async function request(values) { if (await session.send("request", values)) { createOpen.value = false; await load(); } }
 async function review(values) { if (await session.send("review", values)) await load(); }
 async function assess(values) { if (await session.send("manual", values)) await load(); }
@@ -43,6 +52,18 @@ async function execute(action) {
 </script>
 <template>
   <section v-if="visible" class="refund-center">
+    <form class="refund-filters" aria-label="退款申请检索" @submit.prevent="search">
+      <label>退款申请ID<input v-model="filters.refund_id" maxlength="180" /></label>
+      <label>订单ID<input v-model="filters.order_no" maxlength="180" /></label>
+      <label>产品<input v-model="filters.product" maxlength="180" /></label>
+      <label>提供方<input v-model="filters.provider" maxlength="180" /></label>
+      <label>购买方<input v-model="filters.buyer" maxlength="180" /></label>
+      <label>状态<select v-model="filters.status"><option value="">全部</option><option v-for="(name, code) in {requested:'待审核',approved:'已批准',rejected:'已拒绝',executing:'执行中',completed:'已退款',failed:'执行失败',pending:'历史待处理'}" :key="code" :value="code">{{ name }}</option></select></label>
+      <label>申请开始日期<input v-model="filters.start" type="date" /></label>
+      <label>申请结束日期<input v-model="filters.end" type="date" /></label>
+      <button class="primary-btn" type="submit" :disabled="state.listBusy">检索</button>
+      <button class="secondary-btn" type="button" :disabled="state.listBusy" @click="resetFilters">重置</button>
+    </form>
     <button v-if="requestAllowed && !createOpen" class="secondary-btn" :disabled="state.busy" @click="createOpen = true"><Plus :size="15" />申请退款</button>
     <RefundRequestForm v-if="createOpen" :busy="state.busy" :quote-busy="state.quoteBusy" :preview="state.quote" :enabled="requestAllowed" :order-no="order?.order_no" :error="state.error" @submit="request" @quote="session.quote" @amount-change="session.clearQuote" />
     <p v-if="state.message" role="status">{{ state.message }}</p>
@@ -53,4 +74,4 @@ async function execute(action) {
   </section>
   <ActionDialog :dialog="executionDialog" @submit="dialogs.submit" @cancel="dialogs.cancel" />
 </template>
-<style scoped>.refund-center{padding:16px 0;border-top:1px solid #e5e6eb;min-width:0}.refund-center>p{overflow-wrap:anywhere}</style>
+<style scoped>.refund-center{padding:16px 0;border-top:1px solid #e5e6eb;min-width:0}.refund-center>p{overflow-wrap:anywhere}.refund-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:12px}.refund-filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;min-width:120px;flex:1 1 130px}.refund-filters input,.refund-filters select{box-sizing:border-box;width:100%;min-width:0;height:30px;padding:4px 6px;font-size:12px;border:1px solid #e5e6eb;border-radius:4px}.refund-filters button{height:30px;font-size:12px}</style>

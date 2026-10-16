@@ -231,10 +231,27 @@ test("enterprise and mode switches reset timeline root through the drawer close 
   assert.match(close, /auditTimelineRoot.value = ""/);
 });
 
-test("all five surfaces bind shared controls with size resets; ledger remains local and clamps after shrink", async () => {
+test("existing and main list surfaces bind shared controls with size resets; ledger remains local and clamps after shrink", async () => {
   assert.equal((store.match(/<PaginationControls\b/g) || []).length, 1);
   assert.equal((messages.match(/<PaginationControls\b/g) || []).length, 1);
-  assert.equal((consoleSource.match(/<PaginationControls\b/g) || []).length, 2);
+  const controls = consoleSource.match(/<PaginationControls\b[^>]*\/>/g) || [];
+  for (const [state, page, size, total] of [
+    ["审计日志分页", "auditFilters.page", "auditFilters.page_size", "auditFilters.total"],
+    ["审计时间线分页", "auditTimelinePage", "auditTimelinePageSize", "auditTimelineTotal"],
+    ...["products", "orders", "tasks", "aftersales"].map(key => [null, `mainLists.${key}.page`, `mainLists.${key}.page_size`, `mainLists.${key}.total`]),
+  ]) {
+    const control = controls.find(item => item.includes(`:page="${page}"`));
+    assert.ok(control, `missing pagination binding: ${page}`);
+    assert.ok(control.includes(`:page-size="${size}"`));
+    assert.ok(control.includes(`:total="${total}"`));
+    if (state) assert.ok(control.includes(`label="${state}"`));
+  }
+  for (const key of ["products", "orders", "tasks", "aftersales"]) {
+    const control = controls.find(item => item.includes(`:page="mainLists.${key}.page"`));
+    assert.ok(control.includes(`:busy="mainLists.${key}.busy"`));
+    assert.ok(control.includes(`@page="pageMainList('${key}', $event)"`));
+    assert.ok(control.includes(`@size="pageMainList('${key}', 1, $event)"`));
+  }
   assert.equal((ledger.match(/<PaginationControls\b/g) || []).length, 1);
   assert.match(store, /@size="pageSize = \$event; applyFilters\(\)"/);
   assert.match(messages, /@size="pageSize = \$event; page = 1; load\(\)"/);

@@ -205,7 +205,10 @@ class RefundWorkflowTests(unittest.TestCase):
         for size in (10, 12, 20, 50, 100):
             result = self.request('GET', f'/api/refunds?page_size={size}')
             self.assertEqual((result['total'], len(result['items'])), (1, 1))
-        self.assertEqual(self.request('GET', '/api/refunds?page=99')['items'], [])
+        # List navigation now recovers to the last valid page after a shrink.
+        beyond = self.request('GET', '/api/refunds?page=99')
+        self.assertEqual((beyond['page'], beyond['total']), (1, 1))
+        self.assertEqual(len(beyond['items']), 1)
         self.request('GET', '/api/refunds?page_size=101', expected=422)
 
     def test_bad_amounts_reason_missing_payment_and_foreign_ticket_reject(self):

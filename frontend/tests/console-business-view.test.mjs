@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { fetchListPage, listState } from "../src/mainList.js";
 import { allowedBusinessViews, businessModes, businessViewParams, consoleEnterpriseSelection } from "../src/consoleBusinessView.js";
 
 const enterprise = { id: "tenant-a" };
@@ -101,7 +102,7 @@ test("checkout redirect initializes buyer orders before loading for either activ
 function providerProducts(api) {
   const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
   const state = vm.createContext({
-    api, visibleNav: { value: [{ key: "products" }] }, businessContextEpoch: 1,
+    api, fetchListPage, mainLists: { products: listState() }, productCatalogOptions: { value: [] }, visibleNav: { value: [{ key: "products" }] }, businessContextEpoch: 1,
     user: { value: { id: "provider-admin", platform_role: "", enterprise_role: "enterprise_admin" } },
     enterprise: { value: { id: "provider" } }, token: { value: "provider-token" }, businessView: { value: "provider" },
     products: { value: [] }, productDirectories: { value: [] }, settlementRules: { value: [] }, productForm: { value: { category_id: "" } },
@@ -119,7 +120,7 @@ test("provider product view uses authenticated read-only categories and retains 
   const state = providerProducts({ get: async path => {
     calls.push(path);
     if (path.startsWith("/admin/")) throw { response: { status: 403 } };
-    if (path === "/products") return { data: { items: [product] } };
+    if (path === "/products") return { data: { items: [product], total: 1 } };
     if (path === "/product-categories") return { data: { items: categories } };
     if (path === "/settlement-rules") return { data: { items: [] } };
     assert.fail(`Unexpected request: ${path}`);
@@ -139,7 +140,7 @@ test("optional directory/rule permission and transport failures do not discard p
   for (const error of [{ response: { status: 403, data: { detail: "Forbidden" } } }, new Error("network unavailable")]) {
     const product = { id: "provider-product" };
     const state = providerProducts({ get: async path => {
-      if (path === "/products") return { data: { items: [product] } };
+      if (path === "/products") return { data: { items: [product], total: 1 } };
       throw error;
     } });
     await state.loadViewData("products");
@@ -152,7 +153,9 @@ test("optional directory/rule permission and transport failures do not discard p
     if (path === "/products") throw new Error("product permission denied");
     return { data: { items: [] } };
   } });
-  await assert.rejects(required.loadViewData("products"), /product permission denied/);
+  await required.loadViewData("products");
+  assert.match(required.mainLists.products.error, /product permission denied/);
+  assert.equal(required.products.value.length, 0);
 });
 
 test("provider directory load cannot overwrite another enterprise after optional request failure", async () => {
@@ -166,7 +169,7 @@ test("provider directory load cannot overwrite another enterprise after optional
   state.enterprise.value = { id: "new-provider" };
   state.products.value = [{ id: "new-product" }];
   state.productDirectories.value = [{ value: "new-category" }];
-  resolveProducts({ data: { items: [{ id: "old-product" }] } });
+  resolveProducts({ data: { items: [{ id: "old-product" }], total: 1 } });
   await loading;
   assert.equal(state.products.value[0].id, "new-product");
   assert.equal(state.productDirectories.value[0].value, "new-category");

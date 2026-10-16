@@ -121,6 +121,10 @@ def install(ns):
         if db is not None and user is not None:
             order = orders.get(ticket.order_id) if orders is not None else db.get(Order, ticket.order_id)
             result["order_no"] = order.order_no if order else ""
+            if order is not None:
+                from .listing_common import order_labels, parties
+                result.update(order_labels(order, parties(db, [order], ns["Enterprise"])))
+            result["owner"] = ticket.owner
             result["allowed_actions"] = allowed_actions(db, user, ticket, order) if order else []
         return result
 

@@ -22,7 +22,7 @@ import zipfile
 from email.message import EmailMessage
 from io import BytesIO
 from urllib.parse import parse_qs, quote
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any
@@ -2359,6 +2359,7 @@ def startup():
         db.commit()
     ensure_review_and_file_schema()
     ensure_gateway_version_schema()
+    gateway_monitoring["ensure_schema"](engine)
     with engine.begin() as connection:
         connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_application_grant_scope ON application_access_grants (enterprise_id, product_id, user_id)"))
     repair_settlement_state_consistency()
@@ -3407,7 +3408,9 @@ def product_directories(user: User = Depends(current_user)):
 
 
 @app.get("/api/products")
-def products(request: Request, enterprise_id: str = Query(default=""), q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+def products(request: Request, enterprise_id: str = Query(default=""), q: str = "", status: str = "", product_type: str = "", user: User = Depends(current_user), db: Session = Depends(db_session), product_name: str = "", category_id: str = "", catalog_name: str = "", provider_name: str = "", page: int | None = None, page_size: int | None = None):
+    from .list_queries import pagination, product_query, result
+    paging = pagination(page, page_size)
     stmt = select(Product)
     if user.platform_role not in {"super_admin", "platform_operator", "product_manager", "quality_reviewer", "security_compliance"}:
         if user.platform_role:
@@ -3416,16 +3419,9 @@ def products(request: Request, enterprise_id: str = Query(default=""), q: str = 
         membership = resolve_enterprise_membership(db, user, Membership, selected_id)
         enterprise = db.get(Enterprise, membership.enterprise_id)
         stmt = stmt.where(Product.enterprise_id == enterprise.id)
-    if q:
-        stmt = stmt.where(or_(Product.name.ilike(f"%{q}%"), Product.description.ilike(f"%{q}%")))
-    if status:
-        stmt = stmt.where(Product.status == status)
-    if product_type:
-        stmt = stmt.where(Product.product_type == product_type)
-    rows = db.scalars(stmt.order_by(Product.updated_at.desc())).all()
-    if user.verified_status != "verified" and not user.platform_role:
-        return {"items": [unverified_product_out(product) for product in rows]}
-    return {"items": [product_out(x) for x in rows]}
+    stmt = product_query(globals(), stmt, locals())
+    serialize = unverified_product_out if user.verified_status != "verified" and not user.platform_role else product_out
+    return result(db, stmt, paging, lambda row: serialize(row[0]))
 
 
 @app.get("/api/products/{product_id}")
@@ -4529,13 +4525,6 @@ def gateway_route_out(route: ApiGatewayRoute, product: Product | None = None) ->
     return {"id": route.id, "product_id": route.product_id, "product_name": product.name if product else "", "route_key": route.route_key, "gateway_base_path": f"/gateway/{route.route_key}", "upstream_url": route.upstream_url, "version": route.version, "auth_mode": route.auth_mode, "upstream_auth_mode": route.upstream_auth_mode, "upstream_scope": route.upstream_scope, "upstream_oauth_configured": bool(route.upstream_client_id and route.upstream_client_secret), "rate_limit_per_minute": route.rate_limit_per_minute, "daily_quota": route.daily_quota, "monthly_quota": route.monthly_quota, "timeout_ms": route.timeout_ms, "strip_prefix": route.strip_prefix, "health_path": route.health_path, "health_method": route.health_method, "health_message": route.health_message, "status": route.status, "apisix_enabled": os.getenv("APISIX_ENABLED", "false").lower() == "true", "created_at": route.created_at, "updated_at": route.updated_at}
 
 
-@app.get("/api/gateway/routes")
-def gateway_routes(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_platform_admin(user)
-    rows = db.execute(select(ApiGatewayRoute, Product).join(Product, Product.id == ApiGatewayRoute.product_id).order_by(ApiGatewayRoute.updated_at.desc())).all()
-    return {"items": [gateway_route_out(route, product) for route, product in rows]}
-
-
 @app.get("/api/gateway/overview")
 def gateway_overview(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
@@ -4545,11 +4534,13 @@ def gateway_overview(user: User = Depends(current_user), db: Session = Depends(d
     return {"summary": {"routes": len(routes), "active_routes": sum(1 for x in routes if x.status == "active"), "requests": total, "success": sum(1 for x in usage if x.status_code < 400), "errors": sum(1 for x in usage if x.status_code >= 400), "avg_latency_ms": round(sum(x.latency_ms for x in usage) / total, 1) if total else 0}, "apisix_enabled": apisix_enabled(), "metrics_url": "http://market-apisix-metrics:9091/apisix/prometheus/metrics"}
 
 
-@app.get("/api/gateway/alerts")
-def gateway_alerts(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    require_platform_admin(user)
-    failed = db.scalars(select(GatewayPublishRecord).where(GatewayPublishRecord.status == "failed").order_by(GatewayPublishRecord.created_at.desc()).limit(20)).all()
-    return {"items": [{"id": x.id, "severity": "error", "title": "APISIX 路由发布失败", "message": x.error_message, "created_at": x.created_at, "status": "open"} for x in failed]}
+from .gateway_monitoring import install as install_gateway_monitoring
+
+gateway_monitoring = install_gateway_monitoring(globals())
+gateway_routes = gateway_monitoring["routes"]
+gateway_alerts = gateway_monitoring["alerts"]
+app.get("/api/gateway/routes")(gateway_routes)
+app.get("/api/gateway/alerts")(gateway_alerts)
 
 
 def apisix_enabled() -> bool:
@@ -5671,18 +5662,18 @@ def order_out(o: Order) -> dict[str, Any]:
 
 
 @app.get("/api/orders")
-def orders(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session)):
+def orders(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), q: str = "", status: str = "", user: User = Depends(current_user), db: Session = Depends(db_session), order_no: str = "", product_name: str = "", provider_name: str = "", buyer_name: str = "", main_status: str = "", payment_status: str = "", delivery_status: str = "", after_sales_status: str = "", page: int | None = None, page_size: int | None = None):
+    from .list_queries import order_query, pagination, result
+    paging = pagination(page, page_size)
     scope = resolve_business_scope(request, db, user, Membership, business_view)
     stmt = settlement_metering["scoped_orders"](db, user)
     if scope is not None:
         stmt = stmt.where(order_predicate(Order, scope))
         if scope["membership"].role not in {"super_admin", "enterprise_admin"}:
             stmt = stmt.where(Order.buyer_enterprise_id == scope["enterprise_id"])
-    if q:
-        stmt = stmt.where(or_(Order.order_no.ilike(f"%{q}%"), Order.product_name.ilike(f"%{q}%"), Order.buyer_name.ilike(f"%{q}%")))
-    if status:
-        stmt = stmt.where(Order.main_status == status)
-    return {"items": [order_out(x) for x in db.scalars(stmt.order_by(Order.updated_at.desc())).all()]}
+    stmt = order_query(globals(), stmt, locals())
+    return result(db, stmt, paging, lambda row: {**order_out(row[0]),
+        "provider_name": row.provider_name, "buyer_name": row.buyer_display_name})
 
 
 @app.get("/api/orders/{order_id}")
@@ -6051,16 +6042,19 @@ def list_delivery_attachments(task_id: str, user: User = Depends(current_user), 
 
 
 @app.get("/api/delivery-tasks")
-def delivery_tasks(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def delivery_tasks(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session), task_id: str = "", order_id: str = "", assignee: str = "", method: str = "", delivery_mode: str = "", status: str = "", sla_start: str = "", sla_end: str = "", page: int | None = None, page_size: int | None = None):
+    from .list_queries import delivery_query, pagination, result
+    paging = pagination(page, page_size)
+    # Validate filters even when authorization yields an empty legacy list.
+    stmt = delivery_query(globals(), select(DeliveryTask), locals())
     try:
         scope = resolve_business_scope(request, db, user, Membership, business_view)
     except HTTPException as exc:
         if exc.status_code == 403 and not request.headers.get("X-Enterprise-Id") and not request.query_params.get("enterprise_id") and not request.query_params.get("business_view"):
-            return {"items": []}
+            return result(db, stmt.where(False), paging, lambda row: {})
         raise
     if scope is not None and scope["membership"].role not in {"super_admin", "enterprise_admin"}:
-        return {"items": []}
-    stmt = select(DeliveryTask)
+        return result(db, stmt.where(False), paging, lambda row: {})
     if scope is not None:
         stmt = stmt.where(DeliveryTask.order_id.in_(select(Order.id).where(order_predicate(Order, scope))))
     elif user.platform_role not in {"super_admin", "platform_operator", "delivery_monitor"}:
@@ -6070,17 +6064,29 @@ def delivery_tasks(request: Request, enterprise_id: str = Query(default=""), bus
         orders = select(Order.id).where(or_(Order.buyer_enterprise_id.in_(enterprises),
                                             Order.provider_enterprise_id.in_(enterprises)))
         stmt = stmt.where(DeliveryTask.order_id.in_(orders)) if not user.platform_role else stmt.where(False)
-    items = db.scalars(stmt.order_by(DeliveryTask.created_at.desc())).all()
-    if scope is not None:
-        return {"items": [{"id": x.id, "order_id": x.order_id, "method": x.method,
+    attachment_count = select(func.count(DeliveryAttachment.id)).where(
+        DeliveryAttachment.task_id == DeliveryTask.id).correlate(DeliveryTask).scalar_subquery()
+    stmt = stmt.add_columns(attachment_count.label("attachment_count"))
+    def serialize(row):
+        x = row[0]
+        item = {"id": x.id, "order_id": x.order_id, "order_no": row.order_no, "assignee": x.assignee, "method": x.method,
             "delivery_mode": x.delivery_mode, "status": x.status, "sla_due_at": x.sla_due_at,
-            "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0,
-            "created_at": x.created_at} for x in items]}
-    return {"items": [{"id": x.id, "order_id": x.order_id, "assignee": x.assignee, "method": x.method, "delivery_mode": x.delivery_mode, "status": x.status, "retry_count": x.retry_count, "max_retries": x.max_retries, "last_error": x.last_error, "next_retry_at": x.next_retry_at, "sla_due_at": x.sla_due_at, "note": x.note, "attachment_count": db.scalar(select(func.count(DeliveryAttachment.id)).where(DeliveryAttachment.task_id == x.id)) or 0, "created_at": x.created_at} for x in items]}
+            "attachment_count": row.attachment_count or 0, "created_at": x.created_at}
+        if scope is None:
+            item.update(retry_count=x.retry_count, max_retries=x.max_retries,
+                last_error=x.last_error, next_retry_at=x.next_retry_at, note=x.note)
+        return item
+    return result(db, stmt, paging, serialize)
 
 
 @app.get("/api/after-sales")
-def after_sales(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""), user: User = Depends(current_user), db: Session = Depends(db_session)):
+def after_sales(request: Request, enterprise_id: str = Query(default=""), business_view: str = Query(default=""),
+                page: int | None = Query(default=None, ge=1, le=1000000),
+                page_size: int | None = Query(default=None, ge=1, le=100),
+                ticket_id: str = "", order_id: str = "", product: str = "", provider: str = "", buyer: str = "",
+                assignee: str = "", status: str = "", priority: str = "", start: date | None = None, end: date | None = None,
+                user: User = Depends(current_user), db: Session = Depends(db_session)):
+    from .listing_common import contains, dates, paged, party_filters
     after_sales_workflow["active"](user)
     if user.verified_status != "verified":
         raise HTTPException(403, "仅已实名用户可查看售后工单")
@@ -6096,8 +6102,29 @@ def after_sales(request: Request, enterprise_id: str = Query(default=""), busine
     stmt = select(AfterSalesTicket)
     if scope is not None:
         stmt = stmt.where(AfterSalesTicket.order_id.in_(select(Order.id).where(order_predicate(Order, scope))))
-    items = db.scalars(stmt.order_by(AfterSalesTicket.created_at.desc())).all()
-    return {"items": after_sales_workflow["output_list"](db, user, items)}
+    stmt = stmt.join(Order, Order.id == AfterSalesTicket.order_id)
+    stmt = party_filters(stmt, Order, Enterprise, product=product, provider=provider, buyer=buyer, order_id=order_id)
+    if ticket_id:
+        stmt = stmt.where(or_(AfterSalesTicket.id == ticket_id, contains(AfterSalesTicket.ticket_no, ticket_id)))
+    if assignee:
+        stmt = stmt.where(contains(AfterSalesTicket.owner, assignee))
+    if status:
+        if status not in {"awaiting_response", "processing", "awaiting_buyer_info", "awaiting_buyer_confirmation",
+                          "platform_intervention", "completed", "withdrawn", "force_closed", "resolved", "closed"}:
+            raise HTTPException(422, "售后状态不合法")
+        stmt = stmt.where(AfterSalesTicket.status == status)
+    if priority:
+        if priority not in {"normal", "important", "urgent", "high", "low"}:
+            raise HTTPException(422, "优先级不合法")
+        stmt = stmt.where(AfterSalesTicket.priority == priority)
+    stmt = dates(stmt, AfterSalesTicket.created_at, start, end)
+    pagination = {}
+    if page is not None or page_size is not None:
+        items, pagination = paged(db, stmt, page or 1, page_size or 20,
+                                  AfterSalesTicket.created_at.desc(), AfterSalesTicket.id.desc())
+    else:
+        items = db.scalars(stmt.order_by(AfterSalesTicket.created_at.desc(), AfterSalesTicket.id.desc())).all()
+    return {"items": after_sales_workflow["output_list"](db, user, items), **pagination}
 
 
 @app.get("/api/enterprise-settlements")

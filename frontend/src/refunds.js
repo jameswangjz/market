@@ -124,7 +124,10 @@ export function createRefundSession(api, state, getContext, makeKey = newRefundR
     state.listBusy = true; state.listError = "";
     try {
       const response = await api.get("/refunds", { params: { ...c.params, page, page_size: pageSize, ...(c.order?.id ? { order_id: c.order.id } : {}) } });
-      if (current(snapshot) && request === listSequence) { state.items = response.data.items; state.total = response.data.total; }
+      if (current(snapshot) && request === listSequence) {
+        state.items = response.data.items; state.total = response.data.total;
+        state.page = response.data.page ?? page;
+      }
     } catch (error) { if (current(snapshot) && request === listSequence) { state.items = []; state.total = 0; state.listError = failure(error, "退款列表读取失败"); } }
     finally { if (current(snapshot) && request === listSequence) state.listBusy = false; }
   }

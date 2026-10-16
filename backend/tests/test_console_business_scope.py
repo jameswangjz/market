@@ -72,7 +72,7 @@ class ConsoleBusinessScopeTests(harness.AcceptanceHTTPCase):
                 params={"enterprise_id": "buyer_tenant", **({"business_view": mode} if mode else {})})
             self.assertEqual({row["id"] for row in response["items"]}, expected_ids)
             for row in response["items"]:
-                self.assertEqual(set(row), public_fields)
+                self.assertEqual(set(row), public_fields | {"provider_name"})
                 self.assertEqual(row["product_id"], "lens-product")
         detail = self.request("GET", "/api/orders/lens-buy", actor="buyer_admin",
             params={"enterprise_id": "buyer_tenant", "business_view": "buyer"})["order"]

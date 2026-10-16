@@ -6,9 +6,12 @@ import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import PaginationControls from "./PaginationControls.vue";
+import MainListFilters from "./MainListFilters.vue";
+import GatewayRouteList from "./GatewayRouteList.vue";
+import { listState, applyListFilters, changeListPage, fetchListPage, methodLabel, partyName } from "./mainList.js";
 import AfterSalesDetail from "./AfterSalesDetail.vue";
 import AfterSalesCreate from "./AfterSalesCreate.vue";
-import { ticketStatus, canCreateAfterSales } from "./afterSales.js";
+import { ticketStatus, canCreateAfterSales, afterSalesStatuses } from "./afterSales.js";
 import SlaEvidencePanel from "./SlaEvidencePanel.vue";
 import SlaEnterpriseAdjustment from "./SlaEnterpriseAdjustment.vue";
 import SlaTicketEvidence from "./SlaTicketEvidence.vue";
@@ -421,13 +424,6 @@ const apiOrderState = ref({
 });
 const apiCredentialReveal = ref(null);
 const apiCredentialDownloading = ref("");
-const gatewayItems = ref([]);
-const gatewayOverview = ref({ summary: {}, apisix_enabled: false, metrics_url: "" });
-const gatewayAlerts = ref([]);
-const gatewaySelected = ref(null);
-const gatewayRevisions = ref([]);
-const gatewayUsage = ref({ summary: {}, items: [] });
-const gatewayTab = ref("routes");
 const slaOverview = ref({ summary: {}, profiles: [], results: [] });
 const selectedSlaResult = ref(null);
 const serviceLevelForm = ref({ code: "", name: "", description: "", customer_scope: "all", support_days_per_week: 5, support_hours_per_day: 8, online_docs: true, knowledge_base: true, standard_api: true, online_customer_service: true, dedicated_manager: false, technical_support: false, initial_response_minutes: 2880, urgent_initial_response_minutes: null, problem_response_hours: 48, quarterly_report: false, annual_optimization: false, status: "active" });
@@ -435,21 +431,6 @@ const serviceAssignmentForm = ref({ enterprise_id: "", service_level_id: "", use
 const serviceAssignmentSaving = ref(false);
 const slaEnterprises = ref([]);
 const slaForm = ref({ name: "", service_scope: "platform", product_id: "", evaluation_period: "daily", availability_target: 99.9, latency_target_ms: 1000, error_rate_target: 1, delivery_hours: 24, recovery_minutes: 60, warning_margin: 0.5, description: "", status: "active" });
-const gatewayForm = ref({
-  upstream_url: "",
-  route_key: "",
-  version: "v1",
-  auth_mode: "api_key",
-  rate_limit_per_minute: 60,
-  daily_quota: 10000,
-  monthly_quota: 0,
-  timeout_ms: 30000,
-  strip_prefix: true,
-  health_path: "/health",
-  health_method: "GET",
-  upstream_auth_mode: "oauth2",
-  upstream_scope: "resource.invoke",
-});
 const development = ref({
   total: 0,
   counts: {},
@@ -461,6 +442,52 @@ const afterSalesItems = ref([]);
 const selectedAfterSalesId = ref(null);
 const afterSalesCreateOrderId = ref(null);
 const afterSalesScope = computed(() => businessViewParams(user.value, enterprise.value, businessView.value));
+const deliveryTab = ref("tasks");
+const refundsVisited = ref(false);
+const mainLists = reactive({
+  products: listState({ name: "", catalog: "", provider: "", product_type: "", status: "" }),
+  orders: listState({ order_no: "", product: "", provider: "", buyer: "", main_status: "", payment_status: "", delivery_status: "", after_sales_status: "" }),
+  tasks: listState({ task_id: "", order_id: "", assignee: "", method: "", delivery_mode: "", status: "", start: "", end: "" }),
+  aftersales: listState({ ticket_id: "", order_id: "", product: "", provider: "", buyer: "", assignee: "", status: "", priority: "", start: "", end: "" }),
+});
+mainLists.products.aliases = { name: "product_name", catalog: "category_id", provider: "provider_name" };
+mainLists.orders.aliases = { product: "product_name", provider: "provider_name", buyer: "buyer_name" };
+mainLists.tasks.aliases = { start: "sla_start", end: "sla_end" };
+const options = (values, labels = statusLabels) => values.map(value => ({ value, label: labels[value] || value }));
+const mainListFields = computed(() => ({
+  products: [{ key: "name", label: "产品名称" }, { key: "catalog", label: "目录", options: productCatalogOptions.value }, { key: "provider", label: "提供方" }, { key: "product_type", label: "产品类型", options: options(["dataset", "api", "model", "saas", "training", "consulting", "custom"], typeLabels) }, { key: "status", label: "产品状态", options: options(Object.keys(productStatusOptions), productStatusOptions) }],
+  orders: [{ key: "order_no", label: "订单ID / 订单号" }, { key: "product", label: "产品" }, { key: "provider", label: "提供方" }, { key: "buyer", label: "购买方" }, ...Object.entries(orderStatusOptions).map(([key, values]) => ({ key, label: { main_status: "主状态", payment_status: "支付状态", delivery_status: "交付状态", after_sales_status: "售后状态" }[key], options: options(values) }))],
+  tasks: [{ key: "task_id", label: "任务ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "assignee", label: "负责人" }, { key: "method", label: "交付方式", options: Object.keys(deliveryMethods).map(value => ({ value, label: methodLabel(value) })) }, { key: "delivery_mode", label: "模式", options: options(["automatic", "manual"], { automatic: "自动交付", manual: "人工交付" }) }, { key: "status", label: "任务状态", options: options(["preparing", "awaiting_start", "in_delivery", "pending_acceptance", "rectifying", "completed", "exception", "retrying"]) }, { key: "start", label: "SLA截止起日", type: "date" }, { key: "end", label: "SLA截止止日", type: "date" }],
+  aftersales: [{ key: "ticket_id", label: "工单ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "product", label: "产品" }, { key: "provider", label: "提供方" }, { key: "buyer", label: "购买方" }, { key: "assignee", label: "负责人" }, { key: "status", label: "工单状态", options: options(Object.keys(afterSalesStatuses), afterSalesStatuses) }, { key: "priority", label: "优先级", options: options(["normal", "important", "urgent"], { normal: "普通", important: "重要", urgent: "紧急" }) }, { key: "start", label: "创建起日", type: "date" }, { key: "end", label: "创建止日", type: "date" }],
+}));
+const productCatalogOptions = ref([]);
+const productStatusOptions = { draft: "草稿", pending_review: "业务审核", quality_review: "质量审核", security_review: "安全审核", operation_review: "运营审核", pending_integration: "待接入验证", published: "已发布", rejected: "已拒绝", security_unpublished: "安全下架" };
+const deliveryMethods = { file: true, object_storage: true, api: true, model_api: true, tenant_access: true, training: true, consulting: true, custom: true };
+const orderStatusOptions = {
+  main_status: ["created", "pending_review", "pending_provider_review", "pending_payment", "pending_fulfillment", "awaiting_start", "fulfilling", "in_delivery", "pending_confirmation", "pending_acceptance", "rectifying", "completed", "cancelled", "closed", "refunded", "rejected"],
+  payment_status: ["unpaid", "paying", "paid", "refunding", "refunded", "cancelled"],
+  delivery_status: ["not_started", "awaiting_start", "preparing", "in_delivery", "retrying", "rectifying", "pending_acceptance", "accepted", "completed", "exception"],
+  after_sales_status: ["none", "processing", "resolved", "closed"],
+};
+async function queryMainList(key, reset = false) {
+  const state = mainLists[key];
+  applyListFilters(state, reset);
+  if (key === "orders") ordersListRequest++;
+  await loadViewData(["tasks", "aftersales"].includes(key) ? "delivery" : key);
+}
+async function pageMainList(key, page, size) {
+  if (!changeListPage(mainLists[key], page, size)) return;
+  if (key === "orders") ordersListRequest++;
+  await loadViewData(["tasks", "aftersales"].includes(key) ? "delivery" : key);
+}
+watch(deliveryTab, () => { if (deliveryTab.value === "refunds") refundsVisited.value = true; if (activeView.value === "delivery") loadViewData("delivery").catch(() => notify("列表加载失败")); });
+watch(() => [user.value?.id, enterprise.value?.id, token.value, businessView.value], () => {
+  for (const state of Object.values(mainLists)) {
+    state.generation++; state.page = 1; state.total = 0; state.busy = false; state.error = "";
+  }
+  products.value = []; orders.value = []; deliveryItems.value = []; afterSalesItems.value = [];
+  deliveryTab.value = "tasks"; refundsVisited.value = false;
+}, { flush: "sync" });
 watch(() => `${user.value?.id}:${JSON.stringify(afterSalesScope.value)}`, () => { selectedAfterSalesId.value = null; afterSalesCreateOrderId.value = null; });
 async function afterSalesCreated(ticket) {
   afterSalesCreateOrderId.value = null;
@@ -697,16 +724,8 @@ const visibleNav = computed(() => {
   const allowed = allowedBusinessViews(user.value, enterprise.value, businessView.value);
   return allowed ? (user.value?.platform_role ? base : nav.filter(item => allowed.includes(item.key))) : base;
 });
-const filteredProducts = computed(() =>
-  products.value.filter((p) => !search.value || p.name.includes(search.value)),
-);
-const filteredOrders = computed(() =>
-  orders.value.filter(
-    (o) =>
-      !search.value ||
-      `${o.order_no}${o.product_name}${o.buyer_name}`.includes(search.value),
-  ),
-);
+const filteredProducts = computed(() => products.value);
+const filteredOrders = computed(() => orders.value);
 const filteredTasks = computed(() =>
   development.value.items.filter(
     (t) =>
@@ -1077,13 +1096,14 @@ async function loadViewData(view) {
     development.value = data;
   }
   if (view === "products") {
-    const [productData, directoryData, ruleData] = await Promise.all([
-      api.get("/products"),
+    const productRequest = fetchListPage(api, "/products", mainLists.products, {}, contextCurrent, items => { products.value = items; });
+    const [, directoryData, ruleData] = await Promise.all([
+      productRequest,
       api.get("/product-categories").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
     ]);
     if (!contextCurrent()) return;
-    products.value = productData.data.items;
+    productCatalogOptions.value = directoryData.data.items.flatMap(parent => [{ value: parent.id, label: parent.name }, ...(parent.children || []).map(child => ({ value: child.id, label: `${parent.name} · ${child.name}` }))]);
     productDirectories.value = directoryData.data.items.flatMap(parent => parent.children.map(child => ({
       value: child.id, label: `${parent.name} · ${child.name}`, catalog_name: `${parent.name}/${child.name}`,
     })));
@@ -1106,9 +1126,8 @@ async function loadViewData(view) {
       ordersListContext = context;
       const current = () => request === ordersListRequest && context.token === token.value && context.userId === user.value?.id &&
         context.enterpriseId === enterprise.value?.id && context.view === activeView.value && activeView.value === "orders";
-      const promise = api.get("/orders", { params: businessViewParams(user.value, enterprise.value, businessView.value) }).then(({ data }) => {
-        if (!current()) return;
-        orders.value = data.items;
+      const promise = fetchListPage(api, "/orders", mainLists.orders, businessViewParams(user.value, enterprise.value, businessView.value), current, items => {
+        orders.value = items;
         loadSaasListAccess(orders.value);
         startOrdersPolling();
       }).finally(() => {
@@ -1119,13 +1138,11 @@ async function loadViewData(view) {
     await ordersListPromise;
   }
   if (view === "delivery") {
-    const [delivery, afterSales] = await Promise.all([
-      api.get("/delivery-tasks", { params: businessViewParams(user.value, enterprise.value, businessView.value) }),
-      api.get("/after-sales", { params: businessViewParams(user.value, enterprise.value, businessView.value) }),
-    ]);
-    if (!contextCurrent()) return;
-    deliveryItems.value = delivery.data.items;
-    afterSalesItems.value = afterSales.data.items;
+    const tab = deliveryTab.value;
+    if (tab !== "refunds") await fetchListPage(api, tab === "tasks" ? "/delivery-tasks" : "/after-sales", mainLists[tab], businessViewParams(user.value, enterprise.value, businessView.value), () => contextCurrent() && deliveryTab.value === tab, items => {
+      if (tab === "tasks") deliveryItems.value = items;
+      else afterSalesItems.value = items;
+    });
   }
   if (view === "settlements") {
     if (!user.value?.platform_role) {
@@ -1158,15 +1175,7 @@ async function loadViewData(view) {
     await loadAuditLogs();
   }
   if (view === "gateway") {
-    const [routes, overview, alerts] = await Promise.all([
-      api.get("/gateway/routes"),
-      api.get("/gateway/overview"),
-      api.get("/gateway/alerts"),
-    ]);
-    gatewayItems.value = routes.data.items;
-    gatewayOverview.value = overview.data;
-    gatewayAlerts.value = alerts.data.items;
-    if (gatewayItems.value.length) await selectGateway(gatewayItems.value[0]);
+    return;
   }
   if (view === "sla") {
     const [sla, enterprises] = await Promise.all([api.get("/sla/overview"), api.get("/admin/enterprises").catch(() => ({ data: { items: [] } }))]);
@@ -1599,75 +1608,6 @@ function auditPage(next) {
   if (auditBusy.value || validPage(next, pageCount(auditFilters.value.total, auditFilters.value.page_size)) === null) return;
   auditFilters.value.page = next;
   loadAuditLogs().catch(() => notify("审计日志加载失败"));
-}
-async function selectGateway(item) {
-  gatewaySelected.value = item;
-  try {
-    const [config, revisions, usage] = await Promise.all([
-      api.get(`/products/${item.product_id}/gateway-config`, { params: { version: item.version } }),
-      api.get(`/products/${item.product_id}/gateway-revisions`),
-      api.get(`/products/${item.product_id}/gateway-usage`, { params: { version: item.version } }),
-    ]);
-    gatewayForm.value = {
-      ...gatewayForm.value,
-      ...(config.data.item || {}),
-    };
-    gatewayRevisions.value = revisions.data.items;
-    gatewayUsage.value = usage.data;
-  } catch (error) {
-    notify(error.response?.data?.detail || "网关数据加载失败");
-  }
-}
-async function saveGatewayConfig() {
-  if (!gatewaySelected.value) return;
-  try {
-    await api.put(
-      `/products/${gatewaySelected.value.product_id}/gateway-config`,
-      gatewayForm.value,
-    );
-    notify("网关配置已保存");
-    await loadViewData("gateway");
-  } catch (error) {
-    notify(error.response?.data?.detail || "网关配置保存失败");
-  }
-}
-async function validateGatewayConfig() {
-  if (!gatewaySelected.value) return;
-  try {
-    const { data } = await api.post(
-      `/products/${gatewaySelected.value.product_id}/gateway-config/validate`,
-      null, { params: { version: gatewaySelected.value.version } },
-    );
-    notify(data.valid ? "网关配置校验通过" : "网关配置校验未通过");
-  } catch (error) {
-    notify(error.response?.data?.detail || "网关配置校验失败");
-  }
-}
-async function publishGatewayConfig() {
-  if (!gatewaySelected.value) return;
-  try {
-    await api.post(
-      `/products/${gatewaySelected.value.product_id}/gateway-config/publish`,
-      null, { params: { version: gatewaySelected.value.version } },
-    );
-    notify("网关路由已发布");
-    await loadViewData("gateway");
-  } catch (error) {
-    notify(error.response?.data?.detail || "网关路由发布失败");
-  }
-}
-async function rollbackGatewayConfig() {
-  if (!gatewaySelected.value || !await confirmDialog("确认回滚到上一稳定网关配置吗？")) return;
-  try {
-    await api.post(
-      `/products/${gatewaySelected.value.product_id}/gateway-config/rollback`,
-      null, { params: { version: gatewaySelected.value.version } },
-    );
-    notify("网关配置已回滚");
-    await loadViewData("gateway");
-  } catch (error) {
-    notify(error.response?.data?.detail || "网关回滚失败");
-  }
 }
 function selectView(view) {
   if (view !== "settings" && !visibleNav.value.some(item => item.key === view)) {
@@ -3107,7 +3047,7 @@ onUnmounted(() => {
           }}</strong>
         </div>
         <div class="top-actions">
-          <div class="search-box">
+          <div v-if="!['products', 'orders', 'delivery', 'gateway'].includes(activeView)" class="search-box">
             <Search :size="16" /><input
               v-model="search"
               placeholder="搜索订单、产品或企业"
@@ -3305,63 +3245,9 @@ onUnmounted(() => {
             </div>
           </div></template
         >
-        <template v-else-if="activeView === 'gateway'"
-          ><div class="page-heading">
-            <div>
-              <div class="eyebrow">APISIX · ROUTE CONTROL PLANE</div>
-              <h1>API 网关</h1>
-              <p>统一管理路由、版本策略、发布记录与调用运行状态。</p>
-            </div>
-            <button class="secondary-btn" @click="loadViewData('gateway')">
-              <RefreshCw :size="16" />刷新
-            </button>
-          </div>
-          <div class="metric-grid">
-            <div class="metric-card"><div class="metric-icon orange"><Network :size="17" /></div><span>已登记路由</span><strong>{{ gatewayOverview.summary.routes || 0 }}</strong><small>{{ gatewayOverview.apisix_enabled ? 'APISIX 已接管' : '兼容网关模式' }}</small></div>
-            <div class="metric-card"><div class="metric-icon green"><CheckCircle2 :size="17" /></div><span>活跃路由</span><strong>{{ gatewayOverview.summary.active_routes || 0 }}</strong><small>自动发布与健康检查</small></div>
-            <div class="metric-card"><div class="metric-icon blue"><Activity :size="17" /></div><span>近期开调用</span><strong>{{ gatewayOverview.summary.requests || 0 }}</strong><small>最近 1000 条调用记录</small></div>
-            <div class="metric-card"><div class="metric-icon violet"><Clock3 :size="17" /></div><span>平均延迟</span><strong>{{ gatewayOverview.summary.avg_latency_ms || 0 }}<small> ms</small></strong><small>成功 {{ gatewayOverview.summary.success || 0 }} · 错误 {{ gatewayOverview.summary.errors || 0 }}</small></div>
-          </div>
-          <div class="gateway-layout">
-            <div class="panel">
-              <div class="panel-heading"><div><span class="section-kicker">ROUTES</span><h3>网关路由</h3></div><span class="muted">{{ gatewayItems.length }} 条</span></div>
-              <div v-if="gatewayItems.length" class="gateway-route-list">
-                <button v-for="item in gatewayItems" :key="item.id" :class="['gateway-route-item', { active: gatewaySelected?.id === item.id }]" @click="selectGateway(item)">
-                  <strong>{{ item.product_name || item.route_key }}</strong>
-                  <small>/gateway/{{ item.route_key }} · {{ item.version }} · {{ item.status }}</small>
-                  <small>{{ item.rate_limit_per_minute }}/分钟 · 日配额 {{ item.daily_quota || '不限' }}</small>
-                </button>
-              </div>
-              <div v-else class="empty-state"><Network :size="28" /><span>暂无网关路由</span></div>
-            </div>
-            <div class="panel">
-              <div class="panel-heading"><div><span class="section-kicker">CONFIGURATION</span><h3>路由与策略配置</h3></div><span v-if="gatewaySelected" class="status-pill status-done">{{ gatewaySelected.status }}</span></div>
-              <div v-if="gatewaySelected" class="gateway-form-grid">
-                <label class="wide">上游地址<input v-model="gatewayForm.upstream_url" /></label>
-                <label>路由标识<input v-model="gatewayForm.route_key" /></label>
-                <label>版本<input v-model="gatewayForm.version" /></label>
-                <label>入口认证<select v-model="gatewayForm.auth_mode"><option value="api_key">API Key</option><option value="oauth2">OAuth2</option></select></label>
-                <label>上游认证<select v-model="gatewayForm.upstream_auth_mode"><option value="oauth2">OAuth2</option><option value="none">无</option></select></label>
-                <label>上游 Scope<input v-model="gatewayForm.upstream_scope" /></label>
-                <label>每分钟限流<input v-model.number="gatewayForm.rate_limit_per_minute" type="number" min="1" /></label>
-                <label>每日配额<input v-model.number="gatewayForm.daily_quota" type="number" min="0" /></label>
-                <label>每月配额<input v-model.number="gatewayForm.monthly_quota" type="number" min="0" /></label>
-                <label>超时（毫秒）<input v-model.number="gatewayForm.timeout_ms" type="number" min="100" /></label>
-                <label>健康检查路径<input v-model="gatewayForm.health_path" /></label>
-                <label>健康检查方法<select v-model="gatewayForm.health_method"><option>GET</option><option>HEAD</option></select></label>
-                <label class="wide checkbox-line"><input v-model="gatewayForm.strip_prefix" type="checkbox" /> 转发时剥离网关前缀</label>
-              </div>
-              <div v-if="gatewaySelected" class="gateway-actions"><button class="secondary-btn" @click="saveGatewayConfig"><CheckCircle2 :size="15" />保存</button><button class="secondary-btn" @click="validateGatewayConfig"><CheckCircle2 :size="15" />校验</button><button class="primary-btn" @click="publishGatewayConfig"><ArrowUpRight :size="15" />发布</button><button class="secondary-btn" @click="rollbackGatewayConfig"><RefreshCw :size="15" />回滚</button></div>
-              <div v-else class="empty-state"><Network :size="28" /><span>请选择一条路由</span></div>
-            </div>
-          </div>
-          <div class="panel gateway-lower-panel">
-            <div class="panel-heading"><div><span class="section-kicker">OBSERVABILITY</span><h3>运行状态</h3></div><div class="settings-tabs"><button :class="{ active: gatewayTab === 'usage' }" @click="gatewayTab = 'usage'">调用统计</button><button :class="{ active: gatewayTab === 'revisions' }" @click="gatewayTab = 'revisions'">发布记录</button><button :class="{ active: gatewayTab === 'alerts' }" @click="gatewayTab = 'alerts'">告警</button></div></div>
-            <div v-if="gatewayTab === 'usage'" class="table-wrap"><table class="data-table"><thead><tr><th>时间</th><th>API Key</th><th>状态码</th><th>延迟</th><th>版本</th></tr></thead><tbody><tr v-for="item in gatewayUsage.items" :key="item.id"><td>{{ fmtDate(item.created_at) }}</td><td>{{ item.api_key || '-' }}</td><td><span :class="['status-pill', item.status_code < 400 ? 'status-done' : 'status-blocked']">{{ item.status_code }}</span></td><td>{{ item.latency_ms }} ms</td><td>{{ item.version || '-' }}</td></tr><tr v-if="!gatewayUsage.items.length"><td colspan="5"><div class="empty-state">暂无调用数据</div></td></tr></tbody></table></div>
-            <div v-else-if="gatewayTab === 'revisions'" class="table-wrap"><table class="data-table"><thead><tr><th>版本</th><th>状态</th><th>操作人</th><th>时间</th><th>错误</th></tr></thead><tbody><tr v-for="item in gatewayRevisions" :key="item.id"><td>Revision {{ item.revision }}</td><td><span :class="['status-pill', item.status === 'published' ? 'status-done' : item.status === 'failed' ? 'status-blocked' : 'status-in_progress']">{{ item.status }}</span></td><td>{{ item.created_by }}</td><td>{{ fmtDate(item.created_at) }}</td><td>{{ item.error_message || '-' }}</td></tr><tr v-if="!gatewayRevisions.length"><td colspan="5"><div class="empty-state">暂无发布记录</div></td></tr></tbody></table></div>
-            <div v-else class="table-wrap"><table class="data-table"><thead><tr><th>等级</th><th>告警</th><th>说明</th><th>时间</th></tr></thead><tbody><tr v-for="item in gatewayAlerts" :key="item.id"><td><span class="status-pill status-blocked">{{ item.severity }}</span></td><td><strong>{{ item.title }}</strong></td><td>{{ item.message }}</td><td>{{ fmtDate(item.created_at) }}</td></tr><tr v-if="!gatewayAlerts.length"><td colspan="4"><div class="empty-state"><CheckCircle2 :size="22" />暂无未处理告警</div></td></tr></tbody></table></div>
-          </div></template
-        >
+        <template v-else-if="activeView === 'gateway'">
+          <GatewayRouteList :key="`${user?.id}:${enterprise?.id}:${businessView}:${token}`" :api="api" :dialogs="dialogs" />
+        </template>
         <template v-else-if="activeView === 'sla'"
           ><div class="page-heading">
             <div><div class="eyebrow">SERVICE ASSURANCE · SLA</div><h1>平台服务与 SLA 保障</h1><p>统一配置服务等级目标，按 API 调用质量和交付及时率进行周期考核。</p></div>
@@ -3561,7 +3447,7 @@ onUnmounted(() => {
         <template v-else-if="activeView === 'products'"
           ><div class="page-heading">
             <div>
-              <div class="eyebrow">产品目录 · {{ products.length }} 个产品</div>
+              <div class="eyebrow">产品目录 · {{ mainLists.products.total }} 个产品</div>
               <h1>数据与服务</h1>
               <p>登记产品所属目录和完整运营元数据，再进入审核发布流程。</p>
             </div>
@@ -3576,6 +3462,7 @@ onUnmounted(() => {
                 >名称、目录、提供方、安全等级和授权条件均可追溯</span
               >
             </div>
+            <MainListFilters :state="mainLists.products" :fields="mainListFields.products" @search="queryMainList('products')" @reset="queryMainList('products', true)" />
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
@@ -3611,7 +3498,7 @@ onUnmounted(() => {
                         typeLabels[product.product_type] || product.product_type
                       }}
                     </td>
-                    <td>{{ product.delivery_method }}</td>
+                    <td>{{ methodLabel(product.delivery_method) }}</td>
                     <td>
                       <span class="quality-tag">{{
                         product.security_level
@@ -3727,6 +3614,8 @@ onUnmounted(() => {
                 </tbody>
               </table>
             </div>
+            <div v-if="!products.length && !mainLists.products.busy" class="empty-state">暂无匹配产品</div>
+            <PaginationControls :page="mainLists.products.page" :page-size="mainLists.products.page_size" :total="mainLists.products.total" :busy="mainLists.products.busy" label="产品分页" @page="pageMainList('products', $event)" @size="pageMainList('products', 1, $event)" />
           </div></template
         >
         <template v-else-if="activeView === 'orders'"
@@ -3743,17 +3632,19 @@ onUnmounted(() => {
           <div class="panel">
             <div class="panel-heading">
               <h3>
-                订单列表 <small>{{ filteredOrders.length }} 条</small>
+                订单列表 <small>{{ mainLists.orders.total }} 条</small>
               </h3>
               <span class="muted">模拟支付 · 人工确认</span>
             </div>
+            <MainListFilters :state="mainLists.orders" :fields="mainListFields.orders" @search="queryMainList('orders')" @reset="queryMainList('orders', true)" />
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
                     <th>订单号</th>
                     <th>应用访问地址</th>
-                    <th>产品和客户</th>
+                    <th>产品及提供方</th>
+                    <th>购买方</th>
                     <th>主状态</th>
                     <th>支付</th>
                     <th>交付</th>
@@ -3779,8 +3670,9 @@ onUnmounted(() => {
                     </td>
                     <td>
                       <strong>{{ order.product_name }}</strong
-                      ><small>{{ order.buyer_name }}</small>
+                      ><small>{{ partyName(order, 'provider') }}</small>
                     </td>
+                    <td>{{ partyName(order, 'buyer') }}</td>
                     <td>
                       <span class="status-pill status-in_progress">{{
                         label(order.main_status)
@@ -3804,7 +3696,9 @@ onUnmounted(() => {
                   </tr>
                 </tbody>
               </table>
-            </div></div
+            </div>
+            <div v-if="!orders.length && !mainLists.orders.busy" class="empty-state">暂无匹配订单</div>
+            <PaginationControls :page="mainLists.orders.page" :page-size="mainLists.orders.page_size" :total="mainLists.orders.total" :busy="mainLists.orders.busy" label="订单分页" @page="pageMainList('orders', $event)" @size="pageMainList('orders', 1, $event)" /></div
         ></template>
         <template v-else-if="activeView === 'delivery'"
           ><div class="page-heading">
@@ -3817,12 +3711,14 @@ onUnmounted(() => {
               <RefreshCw :size="16" />刷新
             </button>
           </div>
-          <RefundCenter v-if="canViewRefunds(user, enterprise?.id)" :key="`refunds:${user?.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :params="afterSalesScope" />
-          <div class="two-column-panels">
-            <div class="panel">
+          <div class="settings-tabs" role="tablist" aria-label="交付与售后"><button role="tab" :aria-selected="deliveryTab === 'tasks'" :class="{ active: deliveryTab === 'tasks' }" @click="deliveryTab = 'tasks'">交付任务</button><button role="tab" :aria-selected="deliveryTab === 'aftersales'" :class="{ active: deliveryTab === 'aftersales' }" @click="deliveryTab = 'aftersales'">售后工单</button><button v-if="canViewRefunds(user, enterprise?.id)" role="tab" :aria-selected="deliveryTab === 'refunds'" :class="{ active: deliveryTab === 'refunds' }" @click="deliveryTab = 'refunds'">退款申请</button></div>
+          <div v-show="deliveryTab === 'refunds'"><RefundCenter v-if="canViewRefunds(user, enterprise?.id) && refundsVisited" :key="`refunds:${user?.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :params="afterSalesScope" /></div>
+          <div>
+            <div v-show="deliveryTab === 'tasks'" class="panel">
+              <MainListFilters :state="mainLists.tasks" :fields="mainListFields.tasks" @search="queryMainList('tasks')" @reset="queryMainList('tasks', true)" />
               <div class="panel-heading">
                 <h3>
-                  履约任务 <small>{{ deliveryItems.length }} 项</small>
+                  履约任务 <small>{{ mainLists.tasks.total }} 项</small>
                 </h3>
               </div>
               <div class="table-wrap">
@@ -3830,6 +3726,7 @@ onUnmounted(() => {
                   <thead>
                     <tr>
                       <th>任务</th>
+                      <th>订单号</th>
                       <th>负责人</th>
                       <th>方式</th>
                       <th>模式</th>
@@ -3842,11 +3739,12 @@ onUnmounted(() => {
                   <tbody>
                     <tr v-for="item in deliveryItems" :key="item.id">
                       <td>
-                        <button class="text-btn task-code" @click="openOrder({ id: item.order_id })">{{ item.id.slice(0, 10) }}</button><small>{{ item.order_id.slice(0, 10) }}</small>
+                        <span class="task-code">{{ item.id }}</span>
                       </td>
-                      <td>{{ item.assignee }}</td>
-                      <td>{{ item.method }}</td>
-                      <td>{{ item.delivery_mode === "automatic" ? "自动交付" : "人工交付" }}</td>
+                      <td><button class="text-btn task-code" @click="openOrder({ id: item.order_id })">{{ item.order_no || item.order_id }}</button></td>
+                      <td>{{ item.assignee_name || item.assignee || '未分配' }}</td>
+                      <td>{{ methodLabel(item.method) }}</td>
+                      <td>{{ { automatic: '自动交付', manual: '人工交付' }[item.delivery_mode] || '未知模式' }}</td>
                       <td>
                         <span :class="['status-pill', item.status === 'exception' ? 'status-blocked' : item.status === 'pending_acceptance' ? 'status-review' : 'status-in_progress']">{{
                           label(item.status)
@@ -3862,11 +3760,13 @@ onUnmounted(() => {
               <div v-if="!deliveryItems.length" class="empty-state">
                 <PackageCheck :size="28" /><span>暂无履约任务</span>
               </div>
+              <PaginationControls :page="mainLists.tasks.page" :page-size="mainLists.tasks.page_size" :total="mainLists.tasks.total" :busy="mainLists.tasks.busy" label="交付任务分页" @page="pageMainList('tasks', $event)" @size="pageMainList('tasks', 1, $event)" />
             </div>
-            <div class="panel">
+            <div v-show="deliveryTab === 'aftersales'" class="panel">
+              <MainListFilters :state="mainLists.aftersales" :fields="mainListFields.aftersales" @search="queryMainList('aftersales')" @reset="queryMainList('aftersales', true)" />
               <div class="panel-heading">
                 <h3>
-                  售后工单 <small>{{ afterSalesItems.length }} 项</small>
+                  售后工单 <small>{{ mainLists.aftersales.total }} 项</small>
                 </h3>
               </div>
               <div class="after-sales-list">
@@ -3878,6 +3778,8 @@ onUnmounted(() => {
                   <div>
                     <button class="text-btn task-code" @click="selectedAfterSalesId = item.id">{{ item.ticket_no }}</button><strong>{{ item.type }}</strong
                     ><small>{{ item.description }}</small>
+                    <small>产品：{{ item.product_name || '未记录' }} · 提供方：{{ partyName(item, 'provider') }} · 购买方：{{ partyName(item, 'buyer') }}</small>
+                    <small>订单：<button class="text-btn" @click="openOrder({ id: item.order_id })">{{ item.order_no || item.order_id }}</button> · 负责人：{{ item.assignee_name || item.assignee || '未分配' }} · 优先级：{{ { normal: '普通', important: '重要', urgent: '紧急' }[item.priority] || '未记录' }}</small>
                   </div>
                   <span
                     :class="[
@@ -3891,6 +3793,7 @@ onUnmounted(() => {
               <div v-if="!afterSalesItems.length" class="empty-state">
                 <CheckCircle2 :size="28" /><span>暂无售后工单</span>
               </div>
+              <PaginationControls :page="mainLists.aftersales.page" :page-size="mainLists.aftersales.page_size" :total="mainLists.aftersales.total" :busy="mainLists.aftersales.busy" label="售后工单分页" @page="pageMainList('aftersales', $event)" @size="pageMainList('aftersales', 1, $event)" />
             </div>
           </div></template
         >

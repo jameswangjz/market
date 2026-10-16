@@ -5,20 +5,21 @@ reinterpreting historical pending rows or changing the version-change Saga.
 No executor, entitlement recovery, external payment, or settlement is invoked.
 """
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import hashlib
 import json
 import re
 import secrets
 
 from fastapi import Depends, HTTPException, Query, Request
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import mapped_column
 
 from .refund_schema import PreparedRefundPlan, RefundRequestBody, RefundReviewBody
 from .refund_funding_store import cents
 from .refund_funding import _money
+from .listing_common import contains, dates, order_labels, paged, parties, party_filters
 
 
 RESERVED = ('pending', 'requested', 'approved', 'executing', 'failed')
@@ -212,6 +213,7 @@ def install(ns):
         execution = db.scalar(select(executor['Execution']).where(
             executor['Execution'].refund_id == refund.id)) if executor else None
         return {'id': refund.id, 'refund_no': refund.refund_no, 'order_id': refund.order_id,
+            **order_labels(order, parties(db, [order], ns['Enterprise'])),
             'order_no': order.order_no, 'payment_id': refund.payment_id, 'ticket_id': case.ticket_id if case else None,
             'amount': format(money(refund.amount), '.2f'), 'currency': 'CNY', 'status': refund.status,
             'source': source, 'version': case.version if case else None, 'reason': refund.reason,
@@ -377,8 +379,11 @@ def install(ns):
             return output(db, user, refund)
 
     @ns['app'].get('/api/refunds')
-    def list_route(request: Request, page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
-                   order_id: str | None = None, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+    def list_route(request: Request, page: int = Query(default=1, ge=1, le=1000000), page_size: int = Query(default=20, ge=1, le=100),
+                   order_id: str | None = None, order_no: str = '', refund_id: str = '', product: str = '',
+                   provider: str = '', buyer: str = '', status: str = '',
+                   start: date | None = None, end: date | None = None,
+                   user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
         selected = scope(db, user, request)
         conditions = []
         if selected is not None:
@@ -386,10 +391,17 @@ def install(ns):
         if order_id:
             conditions.append(Order.id == order_id)
         statement = select(Refund).join(Order, Order.id == Refund.order_id).where(*conditions)
-        total = db.scalar(select(func.count()).select_from(statement.subquery()))
-        rows = db.scalars(statement.order_by(Refund.created_at.desc(), Refund.id.desc())
-                          .offset((page - 1) * page_size).limit(page_size))
-        return {'items': [output(db, user, refund) for refund in rows], 'total': total, 'page': page, 'page_size': page_size}
+        statement = party_filters(statement, Order, ns['Enterprise'], product=product, provider=provider,
+                                  buyer=buyer, order_id=order_no)
+        if refund_id:
+            statement = statement.where(or_(Refund.id == refund_id, contains(Refund.refund_no, refund_id)))
+        if status:
+            if status not in {'requested', 'pending_review', 'approved', 'rejected', 'executing', 'completed', 'failed', 'pending'}:
+                raise HTTPException(422, '退款状态不合法')
+            statement = statement.where(Refund.status == status)
+        statement = dates(statement, Refund.created_at, start, end)
+        rows, pagination = paged(db, statement, page, page_size, Refund.created_at.desc(), Refund.id.desc())
+        return {'items': [output(db, user, refund) for refund in rows], **pagination}
 
     @ns['app'].get('/api/refunds/{refund_id}')
     def detail_route(refund_id: str, request: Request, user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
