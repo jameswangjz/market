@@ -11,6 +11,13 @@ const source = name => readFileSync(new URL(`../src/${name}`, import.meta.url), 
 const store = source("Storefront.vue"), messages = source("MessageCenter.vue"), consoleSource = source("ConsoleApp.vue"), ledger = source("LedgerComparison.vue");
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 
+test("pagination labels and field widths override settings and modal form inheritance", () => {
+  const text = source("PaginationControls.vue");
+  assert.match(text, /nav\.pagination-controls > label\{[^}]*width:auto[^}]*flex-direction:row[^}]*margin:0/);
+  assert.match(text, /nav\.pagination-controls > label select\{width:66px\}/);
+  assert.match(text, /nav\.pagination-controls > label input\{width:58px\}/);
+});
+
 test("page validation rejects invalid, fractional, unsafe and out-of-range jumps", () => {
   for (const value of ["", " ", "0", "-1", "1.5", "1e1", "Infinity", "NaN", "9007199254740992", "4", null]) assert.equal(validPage(value, 3), null, String(value));
   assert.equal(validPage("2", 3), 2);

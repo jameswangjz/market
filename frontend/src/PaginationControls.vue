@@ -34,3 +34,11 @@ function resize(event) {
 <style scoped>
 .pagination-controls{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px 10px;min-height:68px;margin-top:14px;font-size:12px;line-height:1.5;color:#4e5969;letter-spacing:0}.pagination-controls label{display:flex;flex-direction:row;align-items:center;gap:6px;margin:0;font-size:12px}.pagination-controls select,.pagination-controls input{box-sizing:border-box;height:30px;min-width:0;margin:0;padding:4px 6px;border:1px solid #e5e6eb;border-radius:5px;background:#fff;color:#4e5969;font-size:12px;line-height:20px}.pagination-controls select{width:66px}.pagination-controls input{width:58px}.pagination-navigation{display:flex;align-items:center;gap:4px}.pagination-controls .icon-btn{width:30px;height:30px;flex:0 0 30px}.pagination-position{min-width:70px;text-align:center;font-variant-numeric:tabular-nums}.pagination-total{font-variant-numeric:tabular-nums}.pagination-error{flex-basis:100%;min-height:18px;color:#c9302c;text-align:right}.pagination-controls :disabled{opacity:.5;cursor:default}@media(max-width:600px){.pagination-controls{justify-content:flex-start;gap:6px 8px}.pagination-error{text-align:left}}
 </style>
+<style scoped>
+/* Keep compact pagination independent from settings and modal form styles. */
+nav.pagination-controls > label{flex:0 0 auto;width:auto;min-width:0;max-width:none;flex-direction:row;gap:6px;margin:0;font-weight:400;white-space:nowrap}
+nav.pagination-controls > label select,nav.pagination-controls > label input{height:30px;padding:4px 6px;margin:0;font-size:12px;line-height:20px;border-radius:5px}
+nav.pagination-controls > label select{width:66px}
+nav.pagination-controls > label input{width:58px}
+nav.pagination-controls > .pagination-total,nav.pagination-controls > .pagination-navigation{flex:0 0 auto;white-space:nowrap}
+</style>
