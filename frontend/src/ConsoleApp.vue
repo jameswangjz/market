@@ -2345,21 +2345,6 @@ async function generateSettlement(order) {
 async function searchSettlements() {
   await loadViewData("settlements");
 }
-function updateUiScale() {
-  const width = window.innerWidth;
-  const height = window.innerHeight || 900;
-  if (width <= 760) {
-    document.documentElement.style.setProperty("--ui-scale", "1");
-    return;
-  }
-  const ratio = width / height;
-  let scale = 1;
-  if (window.devicePixelRatio >= 2) scale -= 0.08;
-  else if (window.devicePixelRatio >= 1.5) scale -= 0.04;
-  if (ratio < 1.2) scale -= 0.04;
-  if (height < 800) scale -= 0.03;
-  document.documentElement.style.setProperty("--ui-scale", String(Math.max(0.86, Math.min(1, scale))));
-}
 async function openSettlementDetail(item) {
   if (!user.value?.platform_role && !settlementSide(user.value, enterprise.value, businessView.value)) return;
   const version = ++settlementDetailRequestVersion;
@@ -2844,8 +2829,6 @@ onMounted(() => {
     versionChangeClock.value = Date.now();
     versionChangeSession.expire();
   }, 1000);
-  updateUiScale();
-  window.addEventListener("resize", updateUiScale);
   if (token.value) loadSession().then(() => { if (user.value) returnAfterLogin(); });
   progressTimer = window.setInterval(() => {
     if (user.value && activeView.value === "development") loadViewData("development").catch(() => {});
@@ -2863,7 +2846,6 @@ onUnmounted(() => {
   orderDetailRequest++;
   dialogs.dispose();
   window.clearInterval(progressTimer);
-  window.removeEventListener("resize", updateUiScale);
 });
 </script>
 
