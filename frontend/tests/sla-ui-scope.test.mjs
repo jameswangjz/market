@@ -44,6 +44,10 @@ test('SLA field styles stay local with native option fonts and compact height ex
   assert.equal(height('.sla-management .pagination-controls input,.sla-management .pagination-controls select'), '30px');
   assert.equal(height('.sla-management .sla-matrix-table input'), '32px');
   assert.equal(height('.sla-management textarea'), 'auto');
+  const labels = rules.find(rule => rule.selector === '.sla-management .form-grid label');
+  assert.ok(labels.nodes.some(node => node.prop === 'flex-direction' && node.value === 'column'));
+  const controls = rules.find(rule => rule.selector.includes('.form-grid input'));
+  assert.ok(controls.nodes.some(node => node.prop === 'width' && node.value === '100%'));
   assert.ok(rules.some(rule => rule.selector === '.sla-management textarea' && rule.nodes.some(node => node.prop === 'min-height' && node.value === '68px')));
   assert.ok(rules.some(rule => rule.selector === '.sla-management .metric-grid' && rule.nodes.some(node => node.value === 'repeat(3,minmax(0,1fr))')));
   assert.doesNotMatch(read('SlaEvidencePanel.vue'), /assignments:/);

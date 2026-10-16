@@ -3,6 +3,8 @@
 .sla-management.sla-management label,.sla-management.sla-management input,.sla-management.sla-management select,.sla-management.sla-management textarea,.sla-management.sla-management select option{font-size:12px}
 .sla-management input:not([type="checkbox"]):not([type="radio"]),.sla-management select{box-sizing:border-box;height:34px;min-height:34px;padding:6px 8px;line-height:20px}
 .sla-management textarea{box-sizing:border-box;height:auto;min-height:68px;padding:6px 8px;line-height:20px}
+.sla-management .form-grid label{display:flex;flex-direction:column;gap:5px;min-width:0;margin:0;font-weight:400;line-height:18px}
+.sla-management .form-grid input,.sla-management .form-grid select,.sla-management .form-grid textarea{width:100%;max-width:100%;min-width:0;border:1px solid #d9dde3;border-radius:4px;background:#fff;color:#1d2129}
 .sla-management .pagination-controls input,.sla-management .pagination-controls select{height:30px;min-height:30px;padding:4px 6px}
 .sla-management .sla-matrix-table input{height:32px;min-height:32px;padding:5px 8px}
 .sla-management .metric-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
