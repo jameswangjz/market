@@ -428,7 +428,7 @@ const apiOrderState = ref({
 });
 const apiCredentialReveal = ref(null);
 const apiCredentialDownloading = ref("");
-const slaOverview = ref({ summary: {}, profiles: [], results: [] });
+const slaOverview = ref({ summary: {}, results: [] });
 const development = ref({
   total: 0,
   counts: {},

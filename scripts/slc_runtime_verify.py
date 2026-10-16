@@ -12,6 +12,7 @@ def main():
     p.add_argument('--baseline', type=Path)
     p.add_argument('--before', action='store_true')
     p.add_argument('--browser-token', type=Path)
+    p.add_argument('--retired-default-id')
     args = p.parse_args()
     os.environ['MESSAGE_CENTER_DISABLE_BACKGROUND'] = 'true'
     import httpx
@@ -62,7 +63,22 @@ def main():
                     if empty['total'] != 0 or empty['items']:
                         raise ValueError('Filter ignored: ' + path)
                     checks.append({'path': path, 'total': data['total'], 'empty_filter': True})
-                get('/sla/overview')
+                overview = get('/sla/overview')
+                if args.retired_default_id:
+                    import inspect
+                    if ('profiles' in overview or 'active_profiles' in overview.get('summary', {})
+                            or 'service_level_assignments' in overview):
+                        raise ValueError('Obsolete SLA overview payload remains')
+                    if (db.scalar(select(m.SLAProfile.id).where(
+                            m.SLAProfile.name == '平台默认服务等级').limit(1)) is not None
+                            or db.get(m.SLAProfile, args.retired_default_id) is not None
+                            or db.scalar(select(m.SLAResult.id).where(
+                                m.SLAResult.profile_id == args.retired_default_id).limit(1)) is not None):
+                        raise ValueError('Retired default profile or assessments remain')
+                    if 'SLAProfile(' in inspect.getsource(m.startup):
+                        raise ValueError('Startup can recreate an obsolete profile')
+                    checks.append({'retired_profile_absent': True, 'associated_assessments_absent': True,
+                                   'startup_seed_removed': True, 'obsolete_overview_payload_removed': True})
                 checks.append({'overview': 200, 'protected_unchanged': True})
         result = {'captured_at': m.now().isoformat(), 'before': args.before,
                   'protected': protected, 'checks': checks, 'status': 'passed'}

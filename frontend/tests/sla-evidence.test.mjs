@@ -9,8 +9,8 @@ import { slaMetric, slaResultState, slaResultReason } from "../src/slaResultDisp
 
 const component = readFileSync(new URL("../src/SlaEvidencePanel.vue", import.meta.url), "utf8");
 const { descriptor } = parse(component);
-async function html(results = [], assignments = []) {
-  return renderToString(createSSRApp({ setup: () => ({ results, displayResults: results, assignments, metricRows,
+async function html(results = []) {
+  return renderToString(createSSRApp({ setup: () => ({ results, displayResults: results, metricRows,
     api: null, state: { data: null, busy: false, error: "" }, selectedSource: null, activeTab: "results",
     slaMetric, slaResultState, slaResultReason, date: value => value || "—" }),
     render: compile(descriptor.template.content) }));

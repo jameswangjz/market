@@ -53,6 +53,7 @@ test('binding form requires bounded reason and historic profiles have no write s
   assert.match(source, /v-model="form.reason"[^>]*maxlength="2000"[^>]*required/);
   const management = readFileSync(new URL('../src/SlaManagement.vue', import.meta.url), 'utf8');
   const consoleSource = readFileSync(new URL('../src/ConsoleApp.vue', import.meta.url), 'utf8');
-  assert.ok(management.includes('历史规则（只读）'));
+  assert.doesNotMatch(management, /历史规则（只读）|active_profiles|:assignments=/);
+  assert.doesNotMatch(source, /企业等级生效记录|assignments:|in assignments/);
   assert.doesNotMatch(management + consoleSource, /createSlaProfile|toggleSlaProfile|\/sla\/profiles/);
 });

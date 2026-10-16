@@ -9,7 +9,7 @@ import { metricRows } from "../src/slaEvidence.js";
 
 const source = readFileSync(new URL("../src/SlaManagement.vue", import.meta.url), "utf8");
 const listStart = source.indexOf('<section><h3>周期考核结果');
-const detailEnd = source.indexOf('<details class="sla-history"', listStart);
+const detailEnd = source.indexOf('\n    </section>\n    <SlaMatrixPanel', listStart);
 assert.ok(listStart >= 0 && detailEnd > listStart);
 const render = compile(`<section>${source.slice(listStart, detailEnd)}</section>`);
 async function resultHtml(result) {

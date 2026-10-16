@@ -1,6 +1,7 @@
 param([Parameter(Mandatory=$true)][string]$TokenFile,
       [string]$BaseUrl='http://192.168.10.10:30080',
-      [string]$OutputDir="$env:TEMP\market-slc-browser")
+      [string]$OutputDir="$env:TEMP\market-slc-browser",
+      [switch]$SlaOnly)
 $ErrorActionPreference='Stop'
 $script:socket=$null; $script:chrome=$null; $script:commandId=0
 $script:blocked=0; $script:nativeDialogs=0; $script:publicAuth=0
@@ -22,6 +23,13 @@ function Open-View([string]$view,[string]$ready) {
     Cdp 'Page.navigate' @{url="$BaseUrl/console?view=$view"}|Out-Null
     WaitJs $ready 30
 }
+function Save-SlaShot([string]$name) {
+    New-Item -ItemType Directory -Force -Path $OutputDir|Out-Null
+    Js '(async()=>{await new Promise(r=>setTimeout(r,500));window.scrollTo(0,0);await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));return true})()'|Out-Null
+    $shot=Cdp 'Page.captureScreenshot' @{format='png';captureBeyondViewport=$false}
+    [IO.File]::WriteAllBytes((Join-Path $OutputDir $name),[Convert]::FromBase64String($shot.data))
+    $result.screenshots+=,$name
+}
 try {
     $ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'password_first_purchase_browser_cdp.ps1'),[ref]$null,[ref]$null)
     foreach($name in @('Send-Cdp','Cdp','Js','WaitJs')) {
@@ -36,19 +44,31 @@ try {
     $token=Read-PrivateToken $TokenFile
     $origin=ConvertTo-Json $BaseUrl -Compress; $secret=ConvertTo-Json $token -Compress
     Connect-ReadOnlyChrome
+    Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=1000;deviceScaleFactor=1;mobile=$false}|Out-Null
     Cdp 'Page.addScriptToEvaluateOnNewDocument' @{source="if(location.origin===$origin){localStorage.setItem('market_token',$secret);}"}|Out-Null
     Open-View 'sla' '!!document.querySelector(".sla-management")'
     Check 'document.querySelectorAll(".sla-management [role=tab]").length===4' 'SLA exposes four workspaces'
+    WaitJs 'document.querySelectorAll(".sla-management .metric-card").length===3' 30
+    Check '!document.querySelector(".sla-management details.sla-history")' 'Obsolete rule history and counter removed'
+    if($SlaOnly){Save-SlaShot 'sla-overview.png'}
     Js 'document.querySelectorAll(".sla-management [role=tab]")[1].click();true'|Out-Null
     WaitJs 'document.querySelector(".sla-matrix-table tbody tr") && !document.querySelector(".sla-matrix-panel [role=alert]")' 30
     Check 'document.querySelectorAll(".sla-matrix-table tbody tr").length>=14' 'Complete metric matrix is rendered'
     Check '!document.querySelector(".sla-readonly-grid input")' 'Fixed calendar and support metadata are read-only'
+    Check '[...document.querySelectorAll(".sla-management label,.sla-management input,.sla-management select,.sla-management textarea,.sla-management option")].every(e=>getComputedStyle(e).fontSize==="12px")' 'Matrix field labels, inputs and native options consistently use 12px'
+    if($SlaOnly){Save-SlaShot 'sla-matrix.png'}
     Js 'document.querySelectorAll(".sla-management [role=tab]")[2].click();true'|Out-Null
     WaitJs '!!document.querySelector(".sla-management .main-list-filters") && document.querySelector(".sla-management .pagination-controls")?.getAttribute("aria-busy")==="false"' 30
     Check 'document.querySelectorAll(".sla-management .main-list-filters label").length>=4' 'Enterprise binding filters and server pagination exist'
+    Check 'document.querySelectorAll(".sla-management table").length===1' 'Redundant assignment history table removed'
+    Js '(()=>{const b=[...document.querySelectorAll(".sla-management .table-wrap .text-btn")].find(e=>!e.disabled);if(b)b.click();return true})()'|Out-Null
+    Check '[...document.querySelectorAll(".sla-management label,.sla-management input,.sla-management select,.sla-management textarea,.sla-management option")].every(e=>getComputedStyle(e).fontSize==="12px")' 'Binding filters and edit form consistently use 12px'
+    if($SlaOnly){Save-SlaShot 'sla-bindings.png'}
     Js 'document.querySelectorAll(".sla-management [role=tab]")[3].click();true'|Out-Null
     WaitJs '!!document.querySelector(".sla-evidence-panel,.sla-evidence")' 30
     $result.checks+=,'Frozen promises and evidence tab opens'
+    Check '[...document.querySelectorAll(".sla-management label,.sla-management input,.sla-management select,.sla-management textarea")].every(e=>getComputedStyle(e).fontSize==="12px")' 'Evidence controls consistently use 12px'
+    if(-not $SlaOnly) {
     Open-View 'delivery' 'document.querySelectorAll(".console-tabs [role=tab]").length===3'
     foreach($index in @(0,1,2)) {
         Js "document.querySelectorAll('.console-tabs [role=tab]')[$index].click();true"|Out-Null
@@ -75,6 +95,10 @@ try {
         $name='slc-audit-'+$viewport.name+'.png'
         [IO.File]::WriteAllBytes((Join-Path $OutputDir $name),[Convert]::FromBase64String($shot.data))
         $result.screenshots+=,$name
+    }
+    } else {
+        Cdp 'Emulation.setDeviceMetricsOverride' @{width=390;height=844;deviceScaleFactor=1;mobile=$false}|Out-Null
+        Save-SlaShot 'sla-mobile.png'
     }
     if($script:blocked -or $script:nativeDialogs){throw 'Unexpected mutation or native dialog'}
     $result.status='passed'

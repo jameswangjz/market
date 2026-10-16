@@ -2494,8 +2494,6 @@ def startup():
         for task in followup_tasks:
             if not db.scalar(select(DevelopmentTask.id).where(DevelopmentTask.code == task[0])):
                 db.add(DevelopmentTask(code=task[0], owner=task[1], title=task[2], area=task[3], priority=task[4], status=task[5], dependencies=task[6], acceptance=task[7], progress=task[8]))
-        if not db.scalar(select(SLAProfile.id).limit(1)):
-            db.add(SLAProfile(name="平台默认服务等级", service_scope="platform", evaluation_period="daily", availability_target=99.9, latency_target_ms=1000, error_rate_target=1, delivery_hours=24, recovery_minutes=60, warning_margin=0.5, description="覆盖平台 API 可用性、调用质量和交付及时率的默认规则", status="active", created_by="system"))
         from .enterprise_sla import STRATEGIC_DESCRIPTION, response_defaults
         service_level_seeds = [
             ("standard", "标准级", "面向所有注册用户，提供在线文档、知识库、标准 API、5×8 在线客服和 48 小时问题响应。", "all", 5, 8, 2880, 48, False, False, False),
@@ -7244,15 +7242,6 @@ def update_development_task(code: str, body: DevelopmentTaskUpdate, user: User =
     return {"code": task.code, "status": task.status, "progress": task.progress, "updated_at": task.updated_at}
 
 
-def sla_profile_out(item: SLAProfile) -> dict[str, Any]:
-    return {"id": item.id, "name": item.name, "service_scope": item.service_scope, "product_id": item.product_id,
-            "evaluation_period": item.evaluation_period, "availability_target": float(item.availability_target or 0),
-            "latency_target_ms": item.latency_target_ms, "error_rate_target": float(item.error_rate_target or 0),
-            "delivery_hours": item.delivery_hours, "recovery_minutes": item.recovery_minutes,
-            "warning_margin": float(item.warning_margin or 0), "status": item.status, "description": item.description,
-            "created_by": item.created_by, "created_at": item.created_at, "updated_at": item.updated_at}
-
-
 def service_level_out(item: ServiceLevel) -> dict[str, Any]:
     from .enterprise_sla import STRATEGIC_DESCRIPTION, response_configuration
     response = response_configuration(item)
@@ -7294,22 +7283,17 @@ def sla_result_out(item: SLAResult, profile: SLAProfile | None = None) -> dict[s
 @app.get("/api/sla/overview")
 def sla_overview(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    profiles = db.scalars(select(SLAProfile).order_by(SLAProfile.created_at.desc())).all()
     results = sla_online_assessments["results"](db)
     legacy = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc(), SLAResult.id).limit(100)).all()
     legacy_results = [sla_result_out(row, db.get(SLAProfile, row.profile_id)) for row in legacy]
     service_levels = db.scalars(select(ServiceLevel).order_by(case(
         (ServiceLevel.code == 'standard', 0), (ServiceLevel.code == 'enterprise', 1),
         (ServiceLevel.code == 'strategic', 2), else_=3), ServiceLevel.code, ServiceLevel.id)).all()
-    assignments = db.scalars(select(ServiceLevelAssignment).order_by(ServiceLevelAssignment.created_at.desc()).limit(100)).all()
-    return {"summary": {"profiles": len(profiles), "active_profiles": sum(x.status == "active" for x in profiles),
-                         "met": sum(x["status"] == "met" for x in results), "warning": sum(x["status"] == "warning" for x in results),
+    return {"summary": {"met": sum(x["status"] == "met" for x in results), "warning": sum(x["status"] == "warning" for x in results),
                          "breached": sum(x["status"] == "breached" for x in results),
                          "insufficient_data": sum(x["status"] == "insufficient_data" for x in results), "legacy": len(legacy_results)},
-            "profiles": [sla_profile_out(x) for x in profiles],
             "results": (results + legacy_results)[:100],
-            "service_levels": [service_level_out(x) for x in service_levels],
-            "service_level_assignments": [service_level_assignment_out(x, db.get(ServiceLevel, x.service_level_id), db.get(Enterprise, x.enterprise_id)) for x in assignments]}
+            "service_levels": [service_level_out(x) for x in service_levels]}
 
 
 @app.post("/api/sla/profiles")

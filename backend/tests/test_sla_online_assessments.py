@@ -244,12 +244,17 @@ class OnlineAssessmentTests(unittest.TestCase):
             db.commit()
         self.assertEqual(self.evaluate()['items'], [])
         overview = self.request('GET', '/api/sla/overview', actor='ops')
+        self.assertNotIn('profiles', overview)
+        self.assertNotIn('profiles', overview['summary'])
+        self.assertNotIn('active_profiles', overview['summary'])
+        self.assertNotIn('service_level_assignments', overview)
         self.assertEqual(overview['summary']['met'], 0)
         self.assertEqual(overview['results'][0]['status'], 'legacy')
         self.assertIsNone(overview['results'][0]['availability'])
         with self.m.SessionLocal() as db:
             row = db.query(self.m.SLAResult).one()
             self.assertEqual((row.status, float(row.availability)), ('met', 100))
+            self.assertEqual(db.get(self.m.SLAProfile, row.profile_id).name, 'Legacy profile')
 
     def test_beijing_month_boundaries_and_permission(self):
         self.paid()

@@ -6,7 +6,7 @@ import SlaSourcesDrawer from "./SlaSourcesDrawer.vue";
 import SlaTicketEvidence from "./SlaTicketEvidence.vue";
 import { metricRows, createSlaReadSession } from "./slaEvidence.js";
 import { slaMetric, slaResultState, slaResultReason } from "./slaResultDisplay.js";
-const props = defineProps({ results: { type: Array, default: () => [] }, assignments: { type: Array, default: () => [] }, focusedResult: Object, api: Object, params: Object });
+const props = defineProps({ results: { type: Array, default: () => [] }, focusedResult: Object, api: Object, params: Object });
 const emit = defineEmits(['clear-focus']);
 const state = reactive({ data: null, busy: false, error: "" });
 const session = props.api ? createSlaReadSession(props.api, state) : null;
