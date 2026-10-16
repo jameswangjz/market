@@ -71,12 +71,25 @@ try {
     Js '(()=>{const s=[...document.querySelectorAll(".main-list-filters label")].find(e=>e.textContent.includes("产品状态")).querySelector("select");s.value="all";s.dispatchEvent(new Event("change",{bubbles:true}));document.querySelector(".main-list-filters").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}));return true})()'|Out-Null
     WaitJs '!document.querySelector(".main-list-filters button:disabled")' 20
     Check '!document.querySelector(".main-list-filters [role=alert]")' 'gateway historical routes query succeeds'
+    New-Item -ItemType Directory -Force -Path $OutputDir|Out-Null
+    foreach($viewport in @(@{name='desktop';width=1440;height=1000},@{name='mobile';width=390;height=844})) {
+        Cdp 'Emulation.setDeviceMetricsOverride' @{width=$viewport.width;height=$viewport.height;deviceScaleFactor=1;mobile=$false}|Out-Null
+        Js '(async()=>{await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));window.scrollTo(0,0);const r=document.querySelector(".main-list-filters").getBoundingClientRect();window.scrollTo(0,Math.max(0,r.top+scrollY-20));return true})()'|Out-Null
+        $clip=Js '(()=>{const r=document.querySelector(".main-list-filters").getBoundingClientRect();const x=Math.max(0,r.left),y=Math.max(0,r.top);return {x:x+scrollX,y:y+scrollY,width:Math.min(innerWidth,r.right)-x,height:Math.min(innerHeight,r.bottom)-y,scale:1}})()'
+        if($clip.width -lt 100 -or $clip.height -lt 30){throw 'Filter area not visible'}
+        Check '(()=>{const f=document.querySelector(".main-list-filters");return [...f.querySelectorAll("input,select,button")].every(e=>{const r=e.getBoundingClientRect(),p=f.getBoundingClientRect();return r.width>0&&r.left>=p.left-2&&r.right<=p.right+2})})()' ($viewport.name+' filter controls stay within container')
+        $shot=Cdp 'Page.captureScreenshot' @{format='png';captureBeyondViewport=$false}
+        $name='gateway-filters-'+$viewport.name+'.png'
+        [IO.File]::WriteAllBytes((Join-Path $OutputDir $name),[Convert]::FromBase64String($shot.data))
+        $result.screenshots+=,$name
+    }
+    Cdp 'Emulation.setDeviceMetricsOverride' @{width=1440;height=1000;deviceScaleFactor=1;mobile=$false}|Out-Null
     Cdp 'Page.navigate' @{url="$BaseUrl/console?view=development"}|Out-Null
     WaitJs 'document.querySelector(".task-panel")?.textContent.includes("LIST-OPS-001")' 30
     Check '(async()=>{const r=await fetch("/api/development/tasks",{headers:{Authorization:"Bearer "+localStorage.getItem("market_token")}});return r.ok&&(await r.json()).items.filter(x=>x.code.startsWith("LIST-")).length===12})()' 'development API and UI include twelve LIST tasks'
     if($script:blocked -or $script:nativeDialogs){throw 'Unexpected blocked request or native dialog'}
     $result.status='passed'; $result.blocked=$script:blocked
-} catch {$result.error='Browser list verification failed'; $result.stage=$result.checks.Count}
+} catch {$result.error='Browser list verification failed'; $result.stage=$result.checks.Count; $result.failure_type=$_.Exception.GetType().Name}
 finally {
     if($script:socket){$script:socket.Dispose()}
     if($script:chrome -and -not $script:chrome.HasExited){Stop-Process -Id $script:chrome.Id -ErrorAction SilentlyContinue}

@@ -1,0 +1,26 @@
+﻿{
+    "screenshots":  [
+                        "gateway-filters-desktop.png",
+                        "gateway-filters-mobile.png"
+                    ],
+    "status":  "passed",
+    "scope":  "deployed platform administrator read-only list UI; no financial mutation",
+    "checks":  [
+                   "products filter and pagination controls",
+                   "products unmatched search and page reset",
+                   "orders filter and pagination controls",
+                   "orders unmatched search and page reset",
+                   "orders show separate trading parties",
+                   "delivery workspace has refund tab",
+                   "售后工单 independent list filters",
+                   "退款申请 independent list filters",
+                   "交付任务 independent list filters",
+                   "gateway defaults to published products",
+                   "gateway has no route edit or publish action",
+                   "gateway historical routes query succeeds",
+                   "desktop filter controls stay within container",
+                   "mobile filter controls stay within container",
+                   "development API and UI include twelve LIST tasks"
+               ],
+    "blocked":  0
+}

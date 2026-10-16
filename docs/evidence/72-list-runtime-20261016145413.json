@@ -1,0 +1,83 @@
+{
+  "captured_at": "2026-10-16T06:54:31.697712+00:00",
+  "mode": "after",
+  "protected": {
+    "orders": "ed9be1d026bc5b45afe44e92cfd55e0955c709e64ccce83145a5b5cee71cd095",
+    "products": "24b5406f9f549e045f96ca57ba41f85ce56934afa227fcc21eef92b1a0c9c076"
+  },
+  "checks": [
+    {
+      "path": "/products",
+      "page_size": 10,
+      "total": 15,
+      "empty_filter": true
+    },
+    {
+      "path": "/orders",
+      "page_size": 10,
+      "total": 11,
+      "empty_filter": true
+    },
+    {
+      "path": "/delivery-tasks",
+      "page_size": 10,
+      "total": 7,
+      "empty_filter": true
+    },
+    {
+      "path": "/after-sales",
+      "page_size": 10,
+      "total": 1,
+      "empty_filter": true
+    },
+    {
+      "path": "/refunds",
+      "page_size": 10,
+      "total": 0,
+      "empty_filter": true
+    },
+    {
+      "path": "/gateway/routes",
+      "published": 7,
+      "history": 7
+    },
+    {
+      "route_id": "c8a2f5fea95e32480cbf157b5ec59f90",
+      "detail": "stats",
+      "http": 200
+    },
+    {
+      "route_id": "c8a2f5fea95e32480cbf157b5ec59f90",
+      "detail": "revisions",
+      "http": 200
+    },
+    {
+      "route_id": "c8a2f5fea95e32480cbf157b5ec59f90",
+      "detail": "alerts",
+      "http": 200
+    },
+    {
+      "route_id": "c36203381baf78794eb1b9e76f6504bb",
+      "detail": "stats",
+      "http": 200
+    },
+    {
+      "route_id": "c36203381baf78794eb1b9e76f6504bb",
+      "detail": "revisions",
+      "http": 200
+    },
+    {
+      "route_id": "c36203381baf78794eb1b9e76f6504bb",
+      "detail": "alerts",
+      "http": 200
+    },
+    {
+      "development_list_tasks": 12
+    },
+    {
+      "protected_records_unchanged": true
+    }
+  ],
+  "skipped": [],
+  "status": "passed"
+}

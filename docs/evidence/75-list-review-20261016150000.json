@@ -1,0 +1,67 @@
+{
+  "captured_at": "2026-10-16T06:59:35.532489+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "LIST-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-BE-005",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "LIST-QA-002",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "版本20261016145139-2dda41f已部署API/Web且Ready；93项后端、74项前端测试、14项实际HTTP检查、15项真实浏览器检查通过；PostgreSQL独立Schema告警生命周期/幂等/并发/审计3组通过并清理；保护订单及产品指纹一致。代码项及验证部署均待用户前端验收，不代表用户已验收。"
+}

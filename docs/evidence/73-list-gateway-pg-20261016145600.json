@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "schema": "qa_list_237a31108088d39ad166099ec5ec7725",
+  "checks": [
+    "acknowledge/process/close and exact-key replay",
+    "PostgreSQL concurrent first action has one winner",
+    "deduplicated durable actions and unified audit"
+  ],
+  "cleanup": true
+}
