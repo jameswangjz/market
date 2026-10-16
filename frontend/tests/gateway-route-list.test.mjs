@@ -54,12 +54,12 @@ test("closing and reopening the same route ignores stale detail and prompt resul
   let resolveDetail, resolvePrompt, writes = 0;
   const state = harness({ get: () => new Promise(done => { resolveDetail = done; }), post: async () => { writes++; } }, () => new Promise(done => { resolvePrompt = done; }));
   const old = state.select({ id: "r1" });
-  await nextTick();
+  await new Promise(setImmediate);
   const finishOld = resolveDetail;
   const action = state.act({ id: "alert", version: 1 }, "close");
   state.closeDetail();
   const fresh = state.select({ id: "r1" });
-  await nextTick();
+  await new Promise(setImmediate);
   finishOld({ data: { items: [{ id: "stale" }], total: 1 } });
   resolvePrompt("reason"); await old; await action;
   assert.equal(state.details.stats.length, 0); assert.equal(writes, 0);
