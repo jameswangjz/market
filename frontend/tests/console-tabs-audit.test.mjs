@@ -20,7 +20,7 @@ test('audit display accepts Chinese server labels and preserves raw event codes'
   assert.equal(auditActionLabel({ action: 'future_action', action_label: '企业到期恢复标准' }), '企业到期恢复标准');
   assert.equal(auditActionLabel({ action: 'future_action', action_label: 'future_action' }), '其他操作（future_action）');
   assert.equal(auditActionLabel(null), '未记录动作');
-  for (const code of ['create_product', 'generate_settlement_batch', 'assign_service_level', 'update_sla_matrix', 'expire_service_level_assignment', 'after_sales_request_intervention']) assert.doesNotMatch(auditActionLabel(code), /其他操作/);
+  for (const code of ['create_product', 'generate_settlement_batch', 'assign_service_level', 'update_sla_matrix', 'expire_service_level_assignment', 'after_sales_request_intervention', 'verify_version_gateway', 'evaluate_order_sla', 'freeze_order_sla_contract', 'ordinary_refund_negative_settlement']) assert.doesNotMatch(auditActionLabel(code), /其他操作/);
   assert.equal(auditActionLabel({ action: 'create_product', action_label: '后端中文动作' }), '后端中文动作');
   assert.match(read('ConsoleApp.vue'), /<code>\{\{ auditSelected.action \}\}<\/code>/);
 });

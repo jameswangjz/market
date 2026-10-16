@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { Plus } from "lucide-vue-next";
+import { Plus, Search, RotateCcw } from "lucide-vue-next";
 import ActionDialog from "./ActionDialog.vue";
 import { createDialogController } from "./dialogController.js";
 import RefundList from "./RefundList.vue";
@@ -61,8 +61,8 @@ async function execute(action) {
       <label>状态<select v-model="filters.status"><option value="">全部</option><option v-for="(name, code) in {requested:'待审核',approved:'已批准',rejected:'已拒绝',executing:'执行中',completed:'已退款',failed:'执行失败',pending:'历史待处理'}" :key="code" :value="code">{{ name }}</option></select></label>
       <label>申请开始日期<input v-model="filters.start" type="date" /></label>
       <label>申请结束日期<input v-model="filters.end" type="date" /></label>
-      <button class="primary-btn" type="submit" :disabled="state.listBusy">检索</button>
-      <button class="secondary-btn" type="button" :disabled="state.listBusy" @click="resetFilters">重置</button>
+      <button class="primary-btn" type="submit" :disabled="state.listBusy"><Search :size="15" />检索</button>
+      <button class="secondary-btn" type="button" :disabled="state.listBusy" @click="resetFilters"><RotateCcw :size="15" />重置</button>
     </form>
     <button v-if="requestAllowed && !createOpen" class="secondary-btn" :disabled="state.busy" @click="createOpen = true"><Plus :size="15" />申请退款</button>
     <RefundRequestForm v-if="createOpen" :busy="state.busy" :quote-busy="state.quoteBusy" :preview="state.quote" :enabled="requestAllowed" :order-no="order?.order_no" :error="state.error" @submit="request" @quote="session.quote" @amount-change="session.clearQuote" />
@@ -74,4 +74,4 @@ async function execute(action) {
   </section>
   <ActionDialog :dialog="executionDialog" @submit="dialogs.submit" @cancel="dialogs.cancel" />
 </template>
-<style scoped>.refund-center{padding:16px 0;border-top:1px solid #e5e6eb;min-width:0}.refund-center>p{overflow-wrap:anywhere}.refund-filters{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:12px}.refund-filters label{display:flex;flex-direction:column;gap:4px;font-size:12px;min-width:120px;flex:1 1 130px}.refund-filters input,.refund-filters select{box-sizing:border-box;width:100%;min-width:0;height:30px;padding:4px 6px;font-size:12px;border:1px solid #e5e6eb;border-radius:4px}.refund-filters button{height:30px;font-size:12px}</style>
+<style scoped>.refund-center{padding:0;min-width:0}.refund-center>p{overflow-wrap:anywhere}.refund-filters{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin:12px 0 18px}.refund-filters.refund-filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;line-height:18px;width:170px;max-width:100%;min-width:0;margin:0}.refund-filters.refund-filters input,.refund-filters.refund-filters select{box-sizing:border-box;width:100%;min-width:0;height:34px;padding:6px 8px;font-size:12px;line-height:20px;border:1px solid #d9dde3;border-radius:4px;background:#fff}@media(max-width:600px){.refund-filters.refund-filters label{width:calc(50% - 6px)}}</style>

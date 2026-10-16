@@ -49,6 +49,13 @@ try {
     Js 'document.querySelectorAll(".sla-management [role=tab]")[3].click();true'|Out-Null
     WaitJs '!!document.querySelector(".sla-evidence-panel,.sla-evidence")' 30
     $result.checks+=,'Frozen promises and evidence tab opens'
+    Open-View 'delivery' 'document.querySelectorAll(".console-tabs [role=tab]").length===3'
+    foreach($index in @(0,1,2)) {
+        Js "document.querySelectorAll('.console-tabs [role=tab]')[$index].click();true"|Out-Null
+        WaitJs '(()=>{const p=[...document.querySelectorAll(".pagination-controls")].filter(e=>e.getBoundingClientRect().height>0);return p.length===1&&p[0].getAttribute("aria-busy")==="false"})()' 30
+        Check '(()=>{const f=[...document.querySelectorAll(".main-list-filters,.refund-filters")].find(e=>e.getBoundingClientRect().height>0);return !!f&&[...f.querySelectorAll("input,select")].every(e=>Math.abs(e.getBoundingClientRect().height-34)<1)})()' ('Delivery tab '+$index+' uses consistent compact filters')
+        Check '(()=>{const p=[...document.querySelectorAll(".pagination-controls")].find(e=>e.getBoundingClientRect().height>0);return !!p&&!p.querySelector(".pagination-error")&&[...p.querySelectorAll("label")].every(e=>getComputedStyle(e).display==="flex")})()' ('Delivery tab '+$index+' pagination has no empty error row')
+    }
     Open-View 'users' 'document.querySelectorAll("[role=tab]").length>=2'
     foreach($index in @(0,1)) {
         Js "document.querySelectorAll('[role=tab]')[$index].click();true"|Out-Null
@@ -60,7 +67,7 @@ try {
     New-Item -ItemType Directory -Force -Path $OutputDir|Out-Null
     foreach($viewport in @(@{name='desktop';width=1440;height=1000},@{name='mobile';width=390;height=844})) {
         Cdp 'Emulation.setDeviceMetricsOverride' @{width=$viewport.width;height=$viewport.height;deviceScaleFactor=1;mobile=$false}|Out-Null
-        Js '(async()=>{await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const f=document.querySelector(".audit-search-grid");window.scrollTo(0,Math.max(0,f.getBoundingClientRect().top+scrollY-20));return true})()'|Out-Null
+        Js '(async()=>{await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));const f=document.querySelector(".audit-search-grid"),h=document.querySelector(".topbar")?.getBoundingClientRect().height||66;window.scrollTo(0,Math.max(0,f.getBoundingClientRect().top+scrollY-h-16));return true})()'|Out-Null
         Check '(()=>{const f=document.querySelector(".audit-search-grid"),p=f.getBoundingClientRect();return [...f.querySelectorAll("input,select")].every(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.left>=p.left-2&&r.right<=p.right+2})})()' ($viewport.name+' audit controls fit parent')
         if($viewport.name -ceq 'desktop') {Check 'new Set([...document.querySelectorAll(".audit-search-grid label")].map(e=>Math.round(e.getBoundingClientRect().top))).size===2' 'Desktop audit filters use two rows'}
         $shot=Cdp 'Page.captureScreenshot' @{format='png';captureBeyondViewport=$false}
