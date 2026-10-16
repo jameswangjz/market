@@ -43,6 +43,23 @@ class OnlineWorkerTests(unittest.TestCase):
             self.assertEqual(worker.run(self.ns)['status'], 'incomplete')
         self.evaluate.assert_not_called()
 
+    def test_expiry_audit_commits_even_when_probes_are_incomplete(self):
+        expire = MagicMock(return_value=1)
+        self.ns['enterprise_sla'] = {'expire_due': expire}
+        with patch.object(worker, 'collect', return_value={'complete': False, 'failures': 0}):
+            self.assertEqual(worker.run(self.ns)['status'], 'incomplete')
+        expire.assert_called_once_with(self.db)
+        self.db.commit.assert_called_once()
+        self.evaluate.assert_not_called()
+
+    def test_expiry_failure_rolls_back_before_probing(self):
+        self.ns['enterprise_sla'] = {'expire_due': MagicMock(side_effect=RuntimeError('expiry failed'))}
+        with patch.object(worker, 'collect') as collect:
+            with self.assertRaises(RuntimeError):
+                worker.run(self.ns)
+        self.db.rollback.assert_called_once()
+        collect.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

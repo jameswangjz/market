@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { Save, RefreshCw } from "lucide-vue-next";
+import { activeMatrixLevels } from "./slaManagement.js";
 const props = defineProps({ api: Object, enterprise: Object, user: Object });
 const levels = ref([]), assignments = ref([]), levelId = ref(""), reason = ref("");
 const loading = ref(false), saving = ref(false), error = ref(""), message = ref("");
@@ -12,9 +13,9 @@ async function load() {
   const current = ++epoch, id = props.enterprise.id;
   loading.value = true; error.value = "";
   try {
-    const [configuration, history] = await Promise.all([props.api.get("/sla/service-levels"), props.api.get("/sla/service-level-assignments")]);
+    const [configuration, history] = await Promise.all([props.api.get("/sla/matrices"), props.api.get("/sla/service-level-assignments")]);
     if (current !== epoch) return;
-    levels.value = configuration.data.items.filter(item => item.status === "active" && ["standard", "enterprise", "strategic"].includes(item.code));
+    levels.value = activeMatrixLevels(configuration.data.items);
     assignments.value = history.data.items.filter(item => item.enterprise_id === id);
   } catch (failure) { if (current === epoch) error.value = failure.response?.data?.detail || "企业SLA读取失败"; }
   finally { if (current === epoch) loading.value = false; }

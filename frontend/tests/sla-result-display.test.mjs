@@ -5,18 +5,17 @@ import { compile, createSSRApp } from "vue";
 import { renderToString } from "@vue/server-renderer";
 import { parse, compileScript, compileTemplate } from "@vue/compiler-sfc";
 import { slaResultState, slaMetric, slaResultReason } from "../src/slaResultDisplay.js";
+import { metricRows } from "../src/slaEvidence.js";
 
-const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
-const listStart = source.indexOf('<div class="panel sla-results-panel">');
-const listEnd = source.indexOf('\n          </div><div v-if="selectedSlaResult"', listStart);
-const drawerStart = source.indexOf('<div v-if="selectedSlaResult"', listEnd);
-const drawerEnd = source.indexOf('<div class="panel service-level-panel">', drawerStart);
-assert.ok(listStart >= 0 && listEnd > listStart && drawerEnd > drawerStart);
-const render = compile(`<section>${source.slice(listStart, listEnd)}${source.slice(drawerStart, drawerEnd)}</section>`);
+const source = readFileSync(new URL("../src/SlaManagement.vue", import.meta.url), "utf8");
+const listStart = source.indexOf('<section><h3>周期考核结果');
+const detailEnd = source.indexOf('<details class="sla-history"', listStart);
+assert.ok(listStart >= 0 && detailEnd > listStart);
+const render = compile(`<section>${source.slice(listStart, detailEnd)}</section>`);
 async function resultHtml(result) {
-  return renderToString(createSSRApp({ components: { X: { render: () => null } },
-    setup: () => ({ slaOverview: { results: [result] }, selectedSlaResult: result,
-      slaResultState, slaMetric, slaResultReason, fmtDate: () => "-", openSlaResult: () => {} }), render }));
+  return renderToString(createSSRApp({ components: { X: { render: () => null }, ExternalLink: { render: () => null } },
+    setup: () => ({ overviewData: { results: [result] }, selected: result, selectedMetrics: metricRows(result), openEvidence: () => {},
+      slaResultState, slaMetric, slaResultReason, date: () => "-" }), render }));
 }
 
 test("five explicit SLA states have consistent titles, labels and safe neutral fallbacks", () => {

@@ -107,7 +107,7 @@ function providerProducts(api) {
     enterprise: { value: { id: "provider" } }, token: { value: "provider-token" }, businessView: { value: "provider" },
     products: { value: [] }, productDirectories: { value: [] }, settlementRules: { value: [] }, productForm: { value: { category_id: "" } },
   });
-  vm.runInContext(source.slice(source.indexOf("async function loadViewData(view)"), source.indexOf("async function createSlaProfile()")), state);
+  vm.runInContext(source.slice(source.indexOf("async function loadViewData(view)"), source.indexOf("function departmentNames(")), state);
   return state;
 }
 

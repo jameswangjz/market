@@ -6,20 +6,24 @@ import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import PaginationControls from "./PaginationControls.vue";
+import ConsoleTabs from "./ConsoleTabs.vue";
+import AuditFilters from "./AuditFilters.vue";
+import { deliveryTabs, identityTabs } from "./consoleTabs.js";
+import { auditActionLabel } from "./auditDisplay.js";
 import MainListFilters from "./MainListFilters.vue";
 import GatewayRouteList from "./GatewayRouteList.vue";
 import { listState, applyListFilters, changeListPage, fetchListPage, methodLabel, partyName } from "./mainList.js";
 import AfterSalesDetail from "./AfterSalesDetail.vue";
 import AfterSalesCreate from "./AfterSalesCreate.vue";
 import { ticketStatus, canCreateAfterSales, afterSalesStatuses } from "./afterSales.js";
-import SlaEvidencePanel from "./SlaEvidencePanel.vue";
+import SlaManagement from "./SlaManagement.vue";
+import { activeMatrixLevels } from "./slaManagement.js";
 import SlaEnterpriseAdjustment from "./SlaEnterpriseAdjustment.vue";
 import SlaTicketEvidence from "./SlaTicketEvidence.vue";
 import RefundCenter from "./RefundCenter.vue";
 import { canViewRefunds } from "./refunds.js";
 import { reviewSlaPayload } from "./slaEvidence.js";
 import { pageCount, validPage } from "./pagination.js";
-import { slaResultState, slaMetric, slaResultReason } from "./slaResultDisplay.js";
 import { taskSubtasks, useDevelopmentSubtasks } from "./developmentSubtasks.js";
 import ProductIntegrationPanel from "./ProductIntegrationPanel.vue";
 import SaaSSyncManagement from "./SaaSSyncManagement.vue";
@@ -425,12 +429,6 @@ const apiOrderState = ref({
 const apiCredentialReveal = ref(null);
 const apiCredentialDownloading = ref("");
 const slaOverview = ref({ summary: {}, profiles: [], results: [] });
-const selectedSlaResult = ref(null);
-const serviceLevelForm = ref({ code: "", name: "", description: "", customer_scope: "all", support_days_per_week: 5, support_hours_per_day: 8, online_docs: true, knowledge_base: true, standard_api: true, online_customer_service: true, dedicated_manager: false, technical_support: false, initial_response_minutes: 2880, urgent_initial_response_minutes: null, problem_response_hours: 48, quarterly_report: false, annual_optimization: false, status: "active" });
-const serviceAssignmentForm = ref({ enterprise_id: "", service_level_id: "", user_id: "", expires_at: null, reason: "" });
-const serviceAssignmentSaving = ref(false);
-const slaEnterprises = ref([]);
-const slaForm = ref({ name: "", service_scope: "platform", product_id: "", evaluation_period: "daily", availability_target: 99.9, latency_target_ms: 1000, error_rate_target: 1, delivery_hours: 24, recovery_minutes: 60, warning_margin: 0.5, description: "", status: "active" });
 const development = ref({
   total: 0,
   counts: {},
@@ -544,6 +542,34 @@ const auditNavigating = ref(false);
 const auditFilters = ref({ q: "", actor: "", order_id: "", batch_no: "", rule_version: "", risk_level: "", start: "", end: "", page: 1, page_size: 50, total: 0, pages: 0 });
 const userItems = ref([]);
 const enterpriseItems = ref([]);
+const identityLists = reactive({
+  users: listState({ q: "", activation_status: "", verified_status: "", platform_role: "", enterprise_name: "" }),
+  enterprises: listState({ q: "", verification_status: "", enterprise_type: "" }),
+});
+const identityTabItems = computed(() => identityTabs.map(tab => ({ ...tab, count: identityLists[tab.key].total })));
+const identityFields = computed(() => ({
+  users: [{ key: "q", label: "姓名 / 登录名 / 联系方式" }, { key: "activation_status", label: "账户状态", options: [{ value: "active", label: "正常" }, { value: "pending_activation", label: "待激活" }, { value: "disabled", label: "已禁用" }, { value: "deleted", label: "已删除" }, { value: "expired", label: "邀请过期" }] }, { key: "verified_status", label: "实名状态", options: [{ value: "verified", label: "已实名" }, { value: "pending", label: "待实名" }, { value: "pending_review", label: "待审核" }, { value: "rejected", label: "已拒绝" }] }, ...(user.value?.platform_role ? [{ key: "platform_role", label: "平台角色", options: [{ value: "super_admin", label: "平台管理员" }, { value: "platform_operator", label: "平台运营" }, { value: "finance_settlement", label: "财务清算" }, { value: "delivery_monitor", label: "交付监控" }, { value: "security_compliance", label: "安全合规" }, { value: "product_manager", label: "产品管理员" }, { value: "quality_reviewer", label: "质量审核" }] }] : []), { key: "enterprise_name", label: "企业名称" }],
+  enterprises: [{ key: "q", label: "企业名称 / 信用代码" }, { key: "verification_status", label: "认证状态", options: [{ value: "verified", label: "已认证" }, { value: "pending_review", label: "待审核" }, { value: "rejected", label: "已拒绝" }] }, { key: "enterprise_type", label: "企业类型" }],
+}));
+async function queryIdentityList(key, reset = false) {
+  applyListFilters(identityLists[key], reset);
+  await loadIdentityList(key);
+}
+async function pageIdentityList(key, page, size) {
+  if (changeListPage(identityLists[key], page, size)) await loadIdentityList(key);
+}
+async function loadIdentityList(key) {
+  const context = JSON.stringify([user.value?.id, token.value, enterprise.value?.id]);
+  const target = key === "users" ? userItems : enterpriseItems;
+  target.value = [];
+  await fetchListPage(api, key === "users" ? "/users" : "/admin/enterprises", identityLists[key], {},
+    () => context === JSON.stringify([user.value?.id, token.value, enterprise.value?.id]),
+    (items, data) => { target.value = items; if (data?.page) identityLists[key].page = data.page; });
+}
+watch(() => [user.value?.id, token.value, enterprise.value?.id], () => {
+  for (const state of Object.values(identityLists)) { state.generation++; state.page = 1; state.total = 0; state.busy = false; state.error = ""; }
+  userItems.value = []; enterpriseItems.value = [];
+}, { flush: "sync" });
 const enterpriseMembers = ref([]);
 const enterpriseDepartments = ref([]);
 const enterpriseInvitations = ref([]);
@@ -1139,6 +1165,8 @@ async function loadViewData(view) {
   }
   if (view === "delivery") {
     const tab = deliveryTab.value;
+    if (tab === "tasks") deliveryItems.value = [];
+    if (tab === "aftersales") afterSalesItems.value = [];
     if (tab !== "refunds") await fetchListPage(api, tab === "tasks" ? "/delivery-tasks" : "/after-sales", mainLists[tab], businessViewParams(user.value, enterprise.value, businessView.value), () => contextCurrent() && deliveryTab.value === tab, items => {
       if (tab === "tasks") deliveryItems.value = items;
       else afterSalesItems.value = items;
@@ -1178,14 +1206,14 @@ async function loadViewData(view) {
     return;
   }
   if (view === "sla") {
-    const [sla, enterprises] = await Promise.all([api.get("/sla/overview"), api.get("/admin/enterprises").catch(() => ({ data: { items: [] } }))]);
+    const sla = await api.get("/sla/overview");
+    if (!contextCurrent()) return;
     slaOverview.value = sla.data;
-    slaEnterprises.value = enterprises.data.items;
   }
   if (view === "users") {
     const [usersData, enterpriseData, personalData, memberData, departmentData, invitationData, myInvitationData] = await Promise.all([
-      api.get("/users"),
-      api.get("/admin/enterprises").catch(() => ({ data: { items: [] } })),
+      loadIdentityList("users"),
+      loadIdentityList("enterprises"),
       api
         .get("/admin/verifications/personal")
         .catch(() => ({ data: { items: [] } })),
@@ -1194,8 +1222,7 @@ async function loadViewData(view) {
       api.get("/enterprise/invitations").catch(() => ({ data: { items: [] } })),
       api.get("/enterprise/my-invitations").catch(() => ({ data: { items: [] } })),
     ]);
-    userItems.value = usersData.data.items;
-    enterpriseItems.value = enterpriseData.data.items;
+    if (!contextCurrent()) return;
     personalVerificationItems.value = personalData.data.items;
     enterpriseMembers.value = memberData.data.items;
     enterpriseDepartments.value = departmentData.data.items;
@@ -1236,54 +1263,6 @@ async function loadViewData(view) {
   }
 }
 
-async function createSlaProfile() {
-  if (!slaForm.value.name.trim()) return notify("请输入 SLA 规则名称");
-  try {
-    await api.post("/sla/profiles", slaForm.value);
-    notify("SLA 规则已创建");
-    slaForm.value = { name: "", service_scope: "platform", product_id: "", evaluation_period: "daily", availability_target: 99.9, latency_target_ms: 1000, error_rate_target: 1, delivery_hours: 24, recovery_minutes: 60, warning_margin: 0.5, description: "", status: "active" };
-    await loadViewData("sla");
-  } catch (error) { notify(error.response?.data?.detail || "SLA 规则创建失败"); }
-}
-async function evaluateSla() {
-  try {
-    await api.post("/sla/evaluate");
-    notify("SLA 已重新考核");
-    await loadViewData("sla");
-  } catch (error) { notify(error.response?.data?.detail || "SLA 考核失败"); }
-}
-async function toggleSlaProfile(profile) {
-  try {
-    await api.patch(`/sla/profiles/${profile.id}`, { ...profile, status: profile.status === "active" ? "disabled" : "active" });
-    notify("SLA 规则状态已更新");
-    await loadViewData("sla");
-  } catch (error) { notify(error.response?.data?.detail || "SLA 规则更新失败"); }
-}
-function openSlaResult(result) {
-  selectedSlaResult.value = result;
-}
-async function createServiceLevel() {
-  if (!serviceLevelForm.value.code || !serviceLevelForm.value.name) return notify("请输入服务级别编码和名称");
-  try {
-    await api.post("/sla/service-levels", { ...serviceLevelForm.value, urgent_initial_response_minutes: serviceLevelForm.value.urgent_initial_response_minutes === "" ? null : serviceLevelForm.value.urgent_initial_response_minutes });
-    notify("服务级别已创建");
-    serviceLevelForm.value = { code: "", name: "", description: "", customer_scope: "all", support_days_per_week: 5, support_hours_per_day: 8, online_docs: true, knowledge_base: true, standard_api: true, online_customer_service: true, dedicated_manager: false, technical_support: false, initial_response_minutes: 2880, urgent_initial_response_minutes: null, problem_response_hours: 48, quarterly_report: false, annual_optimization: false, status: "active" };
-    await loadViewData("sla");
-  } catch (error) { notify(error.response?.data?.detail || "服务级别创建失败"); }
-}
-async function assignServiceLevel() {
-  if (serviceAssignmentSaving.value || !["super_admin", "platform_operator"].includes(user.value?.platform_role)) return;
-  if (!serviceAssignmentForm.value.enterprise_id || !serviceAssignmentForm.value.service_level_id) return notify("请选择企业和服务级别");
-  const reason = serviceAssignmentForm.value.reason.trim();
-  if (!reason || reason.length > 2000) return notify("请填写调整原因（最多2000字符）");
-  serviceAssignmentSaving.value = true;
-  try {
-    await api.post("/sla/service-level-assignments", { ...serviceAssignmentForm.value, reason });
-    notify("服务级别已绑定到企业");
-    await loadViewData("sla");
-  } catch (error) { notify(error.response?.data?.detail || "服务级别绑定失败"); }
-  finally { serviceAssignmentSaving.value = false; }
-}
 function departmentNames(ids) {
   return (ids || []).map(id => enterpriseDepartments.value.find(item => item.id === id)?.name).filter(Boolean);
 }
@@ -1333,6 +1312,7 @@ async function updateMemberDepartment(item, departmentId) {
 }
 function memberAccountStatusLabel(item) {
   if (item.account_status === "deleted" || item.activation_status === "deleted") return "已删除";
+  if (item.activation_status === "expired") return "邀请过期";
   if (!item.is_active || item.account_status === "disabled" || item.activation_status === "disabled") return "已禁用";
   if (item.activation_status === "pending_activation") return "待激活";
   return "正常";
@@ -1454,6 +1434,7 @@ function auditFailure(error, fallback) {
 async function loadAuditLogs() {
   const version = ++auditLoadVersion;
   auditBusy.value = true;
+  auditItems.value = [];
   auditError.value = "";
   try {
     const params = auditQuery();
@@ -1504,6 +1485,7 @@ function closeAuditEvent() {
   auditTimelineRoot.value = ""; auditTimelineTotal.value = 0; auditTimelinePage.value = 1;
 }
 async function openAuditEvent(item) {
+  if (auditBusy.value) return;
   ++auditDetailVersion;
   auditSelected.value = item; auditTimeline.value = []; auditTimelineError.value = "";
   auditTimelineRoot.value = item.id; auditTimelinePage.value = 1; auditTimelineTotal.value = 0;
@@ -2706,9 +2688,9 @@ async function openEnterpriseReview(item) {
   identityReviewLevels.value = [];
   identityReviewLevelsLoading.value = true;
   try {
-    const response = await api.get("/sla/service-levels");
+    const response = await api.get("/sla/matrices");
     if (identityReview.value?.kind === "enterprise" && identityReview.value.item.id === item.id)
-      identityReviewLevels.value = response.data.items.filter(level => level.status === "active" && ["standard", "enterprise", "strategic"].includes(level.code));
+      identityReviewLevels.value = activeMatrixLevels(response.data.items);
   } catch (error) { notify(error.response?.data?.detail || "SLA等级加载失败；未指定时使用标准级"); }
   finally { identityReviewLevelsLoading.value = false; }
   identityReviewImages.value = { front: "", back: "", license: "" };
@@ -3248,39 +3230,9 @@ onUnmounted(() => {
         <template v-else-if="activeView === 'gateway'">
           <GatewayRouteList :key="`${user?.id}:${enterprise?.id}:${businessView}:${token}`" :api="api" :dialogs="dialogs" />
         </template>
-        <template v-else-if="activeView === 'sla'"
-          ><div class="page-heading">
-            <div><div class="eyebrow">SERVICE ASSURANCE · SLA</div><h1>平台服务与 SLA 保障</h1><p>统一配置服务等级目标，按 API 调用质量和交付及时率进行周期考核。</p></div>
-            <button class="primary-btn" @click="evaluateSla"><RefreshCw :size="15" />立即考核</button>
-          </div>
-          <SlaEvidencePanel :results="slaOverview.results" :assignments="slaOverview.service_level_assignments" :api="api" :params="afterSalesScope" />
-          <div class="metric-grid">
-            <div class="metric-card"><div class="metric-icon blue"><Activity :size="17" /></div><span>启用规则</span><strong>{{ slaOverview.summary.active_profiles || 0 }}</strong><small>共 {{ slaOverview.summary.profiles || 0 }} 条规则</small></div>
-            <div class="metric-card"><div class="metric-icon green"><CheckCircle2 :size="17" /></div><span>达标结果</span><strong>{{ slaOverview.summary.met || 0 }}</strong><small>最近考核周期</small></div>
-            <div class="metric-card"><div class="metric-icon orange"><CircleAlert :size="17" /></div><span>预警结果</span><strong>{{ slaOverview.summary.warning || 0 }}</strong><small>需要关注</small></div>
-            <div class="metric-card"><div class="metric-icon red"><CircleAlert :size="17" /></div><span>违约结果</span><strong>{{ slaOverview.summary.breached || 0 }}</strong><small>需要处置</small></div>
-          </div>
-          <div class="two-column-panels">
-            <div class="panel sla-policy-panel">
-              <div class="panel-heading sla-panel-heading"><div><span class="section-kicker">SLA POLICY</span><h3>规则配置</h3></div><span class="muted">平台管理员</span></div>
-              <div class="form-grid sla-rule-form">
-                <label>规则名称<input v-model="slaForm.name" placeholder="如 API 核心服务等级" /></label>
-                <label>适用范围<select v-model="slaForm.service_scope"><option value="platform">平台服务</option><option value="api">API 服务</option><option value="delivery">交付服务</option><option value="product">指定产品</option></select></label>
-                <label v-if="slaForm.service_scope === 'product'">绑定产品<select v-model="slaForm.product_id"><option value="">请选择产品</option><option v-for="product in products" :key="product.id" :value="product.id">{{ product.name }}</option></select></label>
-                <label>可用性目标（%）<input v-model.number="slaForm.availability_target" type="number" step="0.01" min="0" max="100" /></label>
-                <label>延迟目标（ms）<input v-model.number="slaForm.latency_target_ms" type="number" min="1" /></label>
-                <label>错误率上限（%）<input v-model.number="slaForm.error_rate_target" type="number" step="0.01" min="0" /></label>
-                <label>交付时限（小时）<input v-model.number="slaForm.delivery_hours" type="number" min="1" /></label>
-                <label>恢复目标（分钟）<input v-model.number="slaForm.recovery_minutes" type="number" min="1" /></label>
-                <label>预警裕量（百分点）<input v-model.number="slaForm.warning_margin" type="number" step="0.1" min="0" /></label>
-                <label class="wide">说明<textarea v-model="slaForm.description" rows="2" placeholder="描述服务范围、考核口径和处置要求"></textarea></label>
-              </div>
-              <div class="sla-form-actions"><button class="primary-btn" @click="createSlaProfile"><CheckCircle2 :size="15" />创建规则</button></div>
-              <div class="sla-rule-table"><div class="sla-subheading"><strong>已配置规则</strong><span>{{ slaOverview.profiles.length }} 条</span></div><div class="table-wrap"><table class="data-table compact"><thead><tr><th>规则</th><th>范围</th><th>目标</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="item in slaOverview.profiles" :key="item.id"><td><strong>{{ item.name }}</strong><small>{{ item.description || '无说明' }}</small></td><td>{{ item.service_scope }}</td><td>可用 {{ item.availability_target }}% · 延迟 {{ item.latency_target_ms }}ms · 错误 {{ item.error_rate_target }}%</td><td><span :class="['status-pill', item.status === 'active' ? 'status-done' : 'status-todo']">{{ item.status === 'active' ? '启用' : '停用' }}</span></td><td><button class="text-btn" @click="toggleSlaProfile(item)">{{ item.status === 'active' ? '停用' : '启用' }}</button></td></tr><tr v-if="!slaOverview.profiles.length"><td colspan="5"><div class="empty-state">暂无 SLA 规则</div></td></tr></tbody></table></div></div>
-            </div>
-            <div class="panel sla-results-panel"><div class="panel-heading"><div><span class="section-kicker">SLA RESULTS</span><h3>周期考核结果</h3></div><span class="muted">最近 100 条</span></div><div class="table-wrap"><table class="data-table compact"><thead><tr><th>规则</th><th>可用性</th><th>平均延迟</th><th>错误率</th><th>交付及时率</th><th>结论</th></tr></thead><tbody><tr v-for="item in slaOverview.results" :key="item.id"><td><strong>{{ item.profile_name }}</strong><small>{{ fmtDate(item.calculated_at) }}</small></td><td>{{ slaMetric(item.availability, '%') }}</td><td>{{ slaMetric(item.avg_latency_ms, ' ms') }}</td><td>{{ slaMetric(item.error_rate, '%') }}</td><td>{{ slaMetric(item.delivery_compliance, '%') }}</td><td><button class="sla-result-button" @click="openSlaResult(item)"><span :class="['status-pill', slaResultState(item.status).className]">{{ slaResultState(item.status).label }}</span><small>{{ slaResultReason(item) }}</small></button></td></tr><tr v-if="!slaOverview.results.length"><td colspan="6"><div class="empty-state">暂无考核结果，请先执行考核</div></td></tr></tbody></table></div></div>
-          </div><div v-if="selectedSlaResult" class="drawer-scrim" @click.self="selectedSlaResult = null"><aside class="order-drawer sla-result-drawer"><div class="drawer-head"><div><div class="eyebrow">SLA RESULT DETAIL</div><h2>{{ slaResultState(selectedSlaResult.status).title }}</h2></div><button class="icon-btn" @click="selectedSlaResult = null"><X :size="18" /></button></div><div class="drawer-summary"><strong>{{ selectedSlaResult.profile_name }}</strong><span>{{ fmtDate(selectedSlaResult.period_start) }} 至 {{ fmtDate(selectedSlaResult.period_end) }}</span><span :class="['status-pill', slaResultState(selectedSlaResult.status).className]">{{ slaResultState(selectedSlaResult.status).label }}</span></div><div class="drawer-section"><div class="drawer-section-title">异常内容</div><p class="sla-result-reason">{{ slaResultReason(selectedSlaResult) }}</p></div><div class="drawer-section"><div class="drawer-section-title">考核指标</div><div class="state-grid"><div><small>可用性</small><strong>{{ slaMetric(selectedSlaResult.availability, '%') }}</strong></div><div><small>平均延迟</small><strong>{{ slaMetric(selectedSlaResult.avg_latency_ms, ' ms') }}</strong></div><div><small>错误率</small><strong>{{ slaMetric(selectedSlaResult.error_rate, '%') }}</strong></div><div><small>交付及时率</small><strong>{{ slaMetric(selectedSlaResult.delivery_compliance, '%') }}</strong></div><div><small>请求样本</small><strong>{{ slaMetric(selectedSlaResult.sample_count) }}</strong></div><div><small>成功请求</small><strong>{{ slaMetric(selectedSlaResult.success_count) }}</strong></div></div></div><div class="drawer-section"><div class="drawer-section-title">处理建议</div><p class="sla-result-advice">{{ slaResultState(selectedSlaResult.status).advice }}</p></div></aside></div><div class="panel service-level-panel"><div class="panel-heading"><div><span class="section-kicker">SERVICE LEVEL</span><h3>服务级别与支持权益</h3></div><span class="muted">时长均可配置</span></div><div class="service-level-cards"><article v-for="level in slaOverview.service_levels" :key="level.id" class="service-level-card"><div class="service-level-card-head"><div><strong>{{ level.name }}</strong><small>{{ level.code }} · {{ level.support_schedule }} 支持</small></div><span :class="['status-pill', level.status === 'active' ? 'status-done' : 'status-todo']">{{ level.status === 'active' ? '启用' : '停用' }}</span></div><p>{{ level.description }}</p><div class="service-level-meta"><span>普通首响 {{ level.initial_response_minutes }} 分钟（支持时间）</span><span v-if="level.urgent_initial_response_minutes != null">紧急首响 {{ level.urgent_initial_response_minutes }} 分钟（自然时间）</span><span v-if="level.dedicated_manager">专属经理</span><span v-if="level.quarterly_report">季度报告</span><span v-if="level.annual_optimization">年度优化</span></div></article></div><div class="service-level-config"><div class="service-level-config-title">新增可配置级别</div><div class="form-grid service-level-form"><label>编码<input v-model="serviceLevelForm.code" placeholder="如 premium" /></label><label>名称<input v-model="serviceLevelForm.name" placeholder="如 专业级" /></label><label>每周支持天数<input v-model.number="serviceLevelForm.support_days_per_week" type="number" min="1" max="7" /></label><label>每天支持小时<input v-model.number="serviceLevelForm.support_hours_per_day" type="number" min="1" max="24" /></label><label>普通首次响应（分钟，支持时间）<input v-model.number="serviceLevelForm.initial_response_minutes" type="number" min="1" /></label><label>紧急首次响应（分钟，自然时间）<input v-model.number="serviceLevelForm.urgent_initial_response_minutes" type="number" min="1" /></label><label>问题响应（小时）<input v-model.number="serviceLevelForm.problem_response_hours" type="number" min="1" /></label><label class="wide">说明<input v-model="serviceLevelForm.description" placeholder="支持权益说明" /></label></div><div class="service-level-options"><label><input v-model="serviceLevelForm.dedicated_manager" type="checkbox" />专属技术支持经理</label><label><input v-model="serviceLevelForm.quarterly_report" type="checkbox" />季度服务报告</label><label><input v-model="serviceLevelForm.annual_optimization" type="checkbox" />年度服务优化建议</label></div><button class="primary-btn" @click="createServiceLevel"><CheckCircle2 :size="15" />创建服务级别</button></div><div class="service-level-assignment"><div class="service-level-config-title">企业服务级别绑定</div><div class="form-grid"><label>企业<select v-model="serviceAssignmentForm.enterprise_id" :disabled="serviceAssignmentSaving" required><option value="">请选择企业</option><option v-for="enterprise in slaEnterprises" :key="enterprise.id" :value="enterprise.id">{{ enterprise.name }}</option></select></label><label>服务级别<select v-model="serviceAssignmentForm.service_level_id" :disabled="serviceAssignmentSaving" required><option value="">请选择级别</option><option v-for="level in slaOverview.service_levels" :key="level.id" :value="level.id">{{ level.name }}</option></select></label><label class="wide">调整原因<textarea v-model="serviceAssignmentForm.reason" rows="2" maxlength="2000" :disabled="serviceAssignmentSaving" required></textarea></label></div><button class="secondary-btn" :disabled="serviceAssignmentSaving || !serviceAssignmentForm.reason.trim()" :aria-busy="serviceAssignmentSaving" @click="assignServiceLevel"><Users :size="15" />{{ serviceAssignmentSaving ? "绑定中" : "绑定企业级别" }}</button></div></div></template
-        >
+        <template v-else-if="activeView === 'sla'">
+          <SlaManagement :key="`${user?.id}:${token}`" :api="api" :user="user" :overview="slaOverview" :params="afterSalesScope" @refresh="loadViewData('sla')" />
+        </template>
         <template v-else-if="activeView === 'development' && canAccessConsoleView(user, enterprise, 'development')"
           ><div class="page-heading">
             <div>
@@ -3711,7 +3663,7 @@ onUnmounted(() => {
               <RefreshCw :size="16" />刷新
             </button>
           </div>
-          <div class="settings-tabs" role="tablist" aria-label="交付与售后"><button role="tab" :aria-selected="deliveryTab === 'tasks'" :class="{ active: deliveryTab === 'tasks' }" @click="deliveryTab = 'tasks'">交付任务</button><button role="tab" :aria-selected="deliveryTab === 'aftersales'" :class="{ active: deliveryTab === 'aftersales' }" @click="deliveryTab = 'aftersales'">售后工单</button><button v-if="canViewRefunds(user, enterprise?.id)" role="tab" :aria-selected="deliveryTab === 'refunds'" :class="{ active: deliveryTab === 'refunds' }" @click="deliveryTab = 'refunds'">退款申请</button></div>
+          <ConsoleTabs v-model="deliveryTab" :tabs="deliveryTabs(canViewRefunds(user, enterprise?.id))" label="交付与售后" />
           <div v-show="deliveryTab === 'refunds'"><RefundCenter v-if="canViewRefunds(user, enterprise?.id) && refundsVisited" :key="`refunds:${user?.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :params="afterSalesScope" /></div>
           <div>
             <div v-show="deliveryTab === 'tasks'" class="panel">
@@ -3960,24 +3912,7 @@ onUnmounted(() => {
             </button>
           </div>
           <div class="panel audit-panel">
-            <form @submit.prevent="searchAuditLogs">
-              <div class="audit-filter-grid">
-                <label>关键词<input v-model="auditFilters.q" placeholder="动作、对象或说明" /></label>
-                <label>操作人<input v-model="auditFilters.actor" placeholder="用户名/邮箱" /></label>
-                <label>订单号<input v-model="auditFilters.order_id" placeholder="ORD…" /></label>
-                <label>清算批次<input v-model="auditFilters.batch_no" placeholder="批次号" /></label>
-                <label>规则版本<input v-model="auditFilters.rule_version" placeholder="如 v1" /></label>
-                <label>风险级别<select v-model="auditFilters.risk_level"><option value="">全部</option><option value="normal">正常</option><option value="warning">预警</option><option value="high">高风险</option></select></label>
-                <label>开始时间<input v-model="auditFilters.start" type="datetime-local" :max="auditFilters.end || undefined" /></label>
-                <label>结束时间<input v-model="auditFilters.end" type="datetime-local" :min="auditFilters.start || undefined" /></label>
-              </div>
-              <div class="audit-filter-actions">
-                <button class="primary-btn" :disabled="auditBusy"><Search :size="15" />检索</button>
-                <button type="button" class="secondary-btn" :disabled="auditBusy" @click="resetAuditFilters">清空条件</button>
-                <button v-if="user.platform_role" type="button" class="secondary-btn" :disabled="auditExporting || auditBusy" @click="exportAuditLogs"><Download :size="15" />{{ auditExporting ? "导出中" : "导出 CSV" }}</button>
-                <span class="muted">共 {{ auditFilters.total }} 条，当前第 {{ auditFilters.page }} / {{ auditFilters.pages || 1 }} 页</span>
-              </div>
-            </form>
+            <AuditFilters :filters="auditFilters" :busy="auditBusy" :exporting="auditExporting" :can-export="!!user.platform_role" @update="(key, value) => auditFilters[key] = value" @search="searchAuditLogs" @reset="resetAuditFilters" @export="exportAuditLogs" />
             <p v-if="auditError" class="error-text" role="alert">{{ auditError }}</p>
             <div class="panel-heading audit-list-heading"><h3>{{ auditCategoryLabels[auditSelectedCategory] || "审计事件" }}</h3></div>
             <div class="table-wrap" :aria-busy="auditBusy">
@@ -3988,7 +3923,7 @@ onUnmounted(() => {
                     <td>{{ fmtDate(item.created_at) }}</td>
                     <td><span class="quality-tag">{{ auditCategoryName(item.category) }}</span></td>
                     <td>{{ item.actor }}</td>
-                    <td><span class="task-code">{{ item.action }}</span></td>
+                    <td>{{ auditActionLabel(item) }}</td>
                     <td><strong v-if="item.order_no">订单 {{ item.order_no }}</strong><small v-if="item.batch_no">批次 {{ item.batch_no }}</small><small v-if="item.rule_version">规则 {{ item.rule_version }}</small></td>
                     <td><span class="status-pill" :class="item.risk_level === 'high' ? 'status-blocked' : item.risk_level === 'warning' ? 'status-review' : 'status-done'">{{ item.risk_level === 'high' ? '高风险' : item.risk_level === 'warning' ? '预警' : auditValue(item.result, 'result') }}</span></td>
                     <td>{{ item.detail || "-" }}</td>
@@ -4001,7 +3936,7 @@ onUnmounted(() => {
           </div>
           <div v-if="auditSelected" class="drawer-scrim" @click.self="closeAuditEvent" @keydown.esc.stop="closeAuditEvent">
             <aside class="order-drawer audit-drawer" role="dialog" aria-modal="true" aria-label="审计事件详情" tabindex="-1">
-              <div class="drawer-head"><div><div class="eyebrow">AUDIT EVENT</div><h2>{{ auditSelected.action }}</h2></div><button class="icon-btn" title="关闭" aria-label="关闭审计详情" @click="closeAuditEvent"><X :size="18" /></button></div>
+              <div class="drawer-head"><div><div class="eyebrow">AUDIT EVENT</div><h2>{{ auditActionLabel(auditSelected) }}</h2><code>{{ auditSelected.action }}</code></div><button class="icon-btn" title="关闭" aria-label="关闭审计详情" @click="closeAuditEvent"><X :size="18" /></button></div>
               <div class="drawer-summary"><strong>{{ auditCategoryName(auditSelected.category) }}</strong><span>{{ fmtDate(auditSelected.created_at) }} · {{ auditSelected.actor }}</span><span>{{ auditSelected.detail || "-" }}</span></div>
               <div class="drawer-section">
                 <div class="drawer-section-title">业务关联</div>
@@ -4029,7 +3964,7 @@ onUnmounted(() => {
                 <p v-if="auditTimelineBusy" class="muted" role="status">加载中</p>
                 <ol v-else class="audit-event-timeline">
                   <li v-for="event in auditTimeline" :key="event.id" :class="{ active: event.id === auditSelected.id }">
-                    <button class="audit-event-button" :aria-current="event.id === auditSelected.id ? 'true' : undefined" @click="auditSelected = event"><time>{{ fmtDate(event.created_at) }}</time><strong>{{ event.action }}</strong><span>{{ event.actor }} · {{ auditValue(event.result, 'result') }}</span><span v-if="event.order_no || event.batch_no">{{ event.order_no }}{{ event.order_no && event.batch_no ? ' · ' : '' }}{{ event.batch_no }}</span><span v-if="event.detail">{{ event.detail }}</span></button>
+                    <button class="audit-event-button" :aria-current="event.id === auditSelected.id ? 'true' : undefined" @click="auditSelected = event"><time>{{ fmtDate(event.created_at) }}</time><strong>{{ auditActionLabel(event) }}</strong><span>{{ event.actor }} · {{ auditValue(event.result, 'result') }}</span><span v-if="event.order_no || event.batch_no">{{ event.order_no }}{{ event.order_no && event.batch_no ? ' · ' : '' }}{{ event.batch_no }}</span><span v-if="event.detail">{{ event.detail }}</span></button>
                   </li>
                 </ol>
                 <PaginationControls :page="auditTimelinePage" :page-size="auditTimelinePageSize" :total="auditTimelineTotal" :busy="auditTimelineBusy" label="审计时间线分页" @page="loadAuditTimeline($event)" @size="auditTimelinePageSize = $event; loadAuditTimeline(1)" />
@@ -4048,21 +3983,10 @@ onUnmounted(() => {
               <RefreshCw :size="16" />刷新
             </button>
           </div>
-          <div class="tabs">
-            <button
-              :class="{ active: userEnterpriseTab === 'users' }"
-              @click="userEnterpriseTab = 'users'"
-            >
-              平台注册用户 {{ userItems.length }} 人</button
-            ><button
-              :class="{ active: userEnterpriseTab === 'enterprises' }"
-              @click="userEnterpriseTab = 'enterprises'"
-            >
-              平台注册企业 {{ enterpriseItems.length }} 个
-            </button>
-          </div>
+          <ConsoleTabs v-model="userEnterpriseTab" :tabs="identityTabItems" label="用户与企业" />
           <div v-if="userEnterpriseTab === 'users' && myEnterpriseInvitations.length" class="panel received-invitations-panel"><div class="panel-heading"><div><span class="section-kicker">MY INVITATIONS</span><h3>待接受的企业邀请</h3></div><span class="muted">接受后默认加入为企业普通成员</span></div><div class="received-invitations"><div v-for="item in myEnterpriseInvitations" :key="item.id" class="received-invitation"><span>{{ item.enterprise_name }}</span><span class="table-actions"><button class="text-btn" @click="acceptEnterpriseInvitation(item)">接受并加入</button><button class="text-btn danger-text" @click="rejectEnterpriseInvitation(item)">拒绝邀请</button></span></div></div></div>
           <div v-if="userEnterpriseTab === 'users'" class="panel">
+            <MainListFilters :state="identityLists.users" :fields="identityFields.users" @search="queryIdentityList('users')" @reset="queryIdentityList('users', true)" />
             <div class="panel-heading">
               <h3>平台注册用户</h3>
               <span class="muted">实名状态可按流程操作</span>
@@ -4154,8 +4078,11 @@ onUnmounted(() => {
                 </tbody>
               </table>
             </div>
+            <div v-if="!userItems.length" class="empty-state">{{ identityLists.users.busy ? '读取中' : '暂无匹配用户' }}</div>
+            <PaginationControls :page="identityLists.users.page" :page-size="identityLists.users.page_size" :total="identityLists.users.total" :busy="identityLists.users.busy" label="用户分页" @page="pageIdentityList('users', $event)" @size="pageIdentityList('users', 1, $event)" />
           </div>
-          <div v-else class="panel">
+          <div v-else-if="userEnterpriseTab === 'enterprises'" class="panel">
+            <MainListFilters :state="identityLists.enterprises" :fields="identityFields.enterprises" @search="queryIdentityList('enterprises')" @reset="queryIdentityList('enterprises', true)" />
             <div class="panel-heading">
               <h3>平台注册企业</h3>
               <button
@@ -4219,6 +4146,8 @@ onUnmounted(() => {
                 </tbody>
               </table>
             </div>
+            <div v-if="!enterpriseItems.length" class="empty-state">{{ identityLists.enterprises.busy ? '读取中' : '暂无匹配企业' }}</div>
+            <PaginationControls :page="identityLists.enterprises.page" :page-size="identityLists.enterprises.page_size" :total="identityLists.enterprises.total" :busy="identityLists.enterprises.busy" label="企业分页" @page="pageIdentityList('enterprises', $event)" @size="pageIdentityList('enterprises', 1, $event)" />
           </div></template
         >
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'message-center'"><MessageSettings /></template>

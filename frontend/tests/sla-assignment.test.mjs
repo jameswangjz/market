@@ -1,70 +1,58 @@
-import test from "node:test";
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import vm from "node:vm";
-import { ref } from "vue";
-import { parse, compileScript, compileTemplate } from "@vue/compiler-sfc";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import { ref, reactive } from 'vue';
+import { bindingPayload } from '../src/slaManagement.js';
 
-const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
-const assignment = source.slice(source.indexOf("async function assignServiceLevel()"), source.indexOf("function departmentNames("));
-function harness(role = "super_admin") {
-  const calls = [], notices = [], refreshes = [];
+const source = readFileSync(new URL('../src/SlaBindingsPanel.vue', import.meta.url), 'utf8');
+const assignment = source.slice(source.indexOf('async function save()'), source.indexOf('watch(()'));
+function harness(role = 'super_admin') {
+  const calls = [], refreshes = [];
   const state = vm.createContext({
-    user: ref({ platform_role: role }), serviceAssignmentSaving: ref(false),
-    serviceAssignmentForm: ref({ enterprise_id: "enterprise", service_level_id: "enterprise-level", user_id: "", expires_at: null, reason: "  企业升级支持权益  " }),
-    api: { post: async (...args) => { calls.push(args); } },
-    notify: text => notices.push(text), loadViewData: async view => refreshes.push(view),
+    allowed: ref(['super_admin', 'platform_operator'].includes(role)), saving: ref(false),
+    form: reactive({ enterprise_id: 'enterprise', service_level_id: 'enterprise-level', expires_at: '', reason: '  企业升级支持权益  ' }),
+    bindingPayload, error: ref(''), notice: ref(''), editing: ref({}), disposed: false,
+    props: { api: { post: async (...args) => { calls.push(args); } } },
+    emit: event => refreshes.push(event), load: async () => {},
   });
   vm.runInContext(assignment, state);
-  return { state, calls, notices, refreshes };
+  return { state, calls, refreshes };
 }
-
-test("SLA assignment validates enterprise, level and nonblank bounded reason before requesting", async () => {
-  for (const changes of [{ enterprise_id: "" }, { service_level_id: "" }, { reason: "" }, { reason: " \n\t " }, { reason: "x".repeat(2001) }]) {
-    const h = harness(); Object.assign(h.state.serviceAssignmentForm.value, changes);
-    await h.state.assignServiceLevel();
-    assert.equal(h.calls.length, 0); assert.equal(h.notices.length, 1);
-    assert.equal(h.state.serviceAssignmentSaving.value, false);
+test('SLA binding validates enterprise, level and bounded reason', async () => {
+  for (const changes of [{ enterprise_id: '' }, { service_level_id: '' }, { reason: '' }, { reason: ' \n\t ' }, { reason: 'x'.repeat(2001) }]) {
+    const h = harness(); Object.assign(h.state.form, changes); await h.state.save();
+    assert.equal(h.calls.length, 0); assert.ok(h.state.error.value); assert.equal(h.state.saving.value, false);
   }
 });
-
-test("both platform managers send trimmed reason and preserve existing assignment fields", async () => {
-  for (const role of ["super_admin", "platform_operator"]) {
-    const h = harness(role); await h.state.assignServiceLevel();
-    assert.equal(h.calls[0][0], "/sla/service-level-assignments");
-    assert.deepEqual({ ...h.calls[0][1] }, { enterprise_id: "enterprise", service_level_id: "enterprise-level", user_id: "", expires_at: null, reason: "企业升级支持权益" });
-    assert.deepEqual(h.refreshes, ["sla"]);
-    assert.equal(h.state.serviceAssignmentSaving.value, false);
+test('both platform managers send trimmed reason with enterprise-wide binding', async () => {
+  for (const role of ['super_admin', 'platform_operator']) {
+    const h = harness(role); await h.state.save();
+    assert.deepEqual(h.calls[0], ['/sla/service-level-assignments', { enterprise_id: 'enterprise', service_level_id: 'enterprise-level', user_id: '', expires_at: null, reason: '企业升级支持权益' }]);
+    assert.deepEqual(h.refreshes, ['changed']); assert.equal(h.state.saving.value, false);
   }
 });
-
-test("non-manager platform and enterprise identities cannot assign SLA", async () => {
-  for (const role of ["finance_settlement", "delivery_monitor", "security_compliance", "quality_reviewer", "product_manager", ""]) {
-    const h = harness(role); await h.state.assignServiceLevel();
-    assert.equal(h.calls.length, 0);
+test('non-managers cannot assign and duplicate requests are single-flight', async () => {
+  for (const role of ['finance_settlement', 'delivery_monitor', 'security_compliance', 'quality_reviewer', 'product_manager', '']) {
+    const h = harness(role); await h.state.save(); assert.equal(h.calls.length, 0);
   }
+  const h = harness(); let reject, requests = 0;
+  h.state.props.api.post = () => { requests++; return new Promise((_yes, no) => { reject = no; }); };
+  const before = JSON.stringify(h.state.form), first = h.state.save();
+  await h.state.save(); assert.equal(requests, 1);
+  reject({ response: { data: { detail: '模拟失败' } } }); await first;
+  assert.equal(h.state.saving.value, false); assert.equal(JSON.stringify(h.state.form), before);
+  assert.equal(h.state.error.value, '模拟失败'); assert.deepEqual(h.refreshes, []);
 });
-
-test("duplicate SLA submissions are blocked and a failed request keeps all entered fields", async () => {
-  const h = harness(); let reject; let requests = 0;
-  const before = JSON.stringify(h.state.serviceAssignmentForm.value);
-  h.state.api.post = () => { requests++; return new Promise((_resolve, fail) => { reject = fail; }); };
-  const first = h.state.assignServiceLevel();
-  assert.equal(h.state.serviceAssignmentSaving.value, true);
-  await h.state.assignServiceLevel(); assert.equal(requests, 1);
-  reject({ response: { data: { detail: "模拟失败" } } }); await first;
-  assert.equal(h.state.serviceAssignmentSaving.value, false);
-  assert.equal(JSON.stringify(h.state.serviceAssignmentForm.value), before);
-  assert.deepEqual(h.notices, ["模拟失败"]); assert.deepEqual(h.refreshes, []);
-  h.state.api.post = async () => { requests++; };
-  await h.state.assignServiceLevel(); assert.equal(requests, 2);
+test('expiry uses timezone-aware ISO and rejects expired or malformed values', () => {
+  const input = { enterprise_id: 'e', service_level_id: 'custom', reason: '升级', expires_at: '2099-01-01T12:30' };
+  assert.equal(bindingPayload(input).expires_at, new Date(input.expires_at).toISOString());
+  for (const expires_at of ['invalid', '2000-01-01T00:00']) assert.throws(() => bindingPayload({ ...input, expires_at }), /到期时间/);
 });
-
-test("existing SLA form includes required reason input and the merged SFC compiles", () => {
-  assert.match(source, /v-model="serviceAssignmentForm.reason"[^>]*maxlength="2000"[^>]*required/);
-  assert.match(source, /:disabled="serviceAssignmentSaving \|\| !serviceAssignmentForm.reason.trim\(\)"/);
-  const { descriptor, errors } = parse(source, { filename: "ConsoleApp.vue" });
-  assert.deepEqual(errors, []);
-  compileScript(descriptor, { id: "sla-assignment" });
-  assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: "ConsoleApp.vue", id: "sla-assignment" }).errors, []);
+test('binding form requires bounded reason and historic profiles have no write surface', () => {
+  assert.match(source, /v-model="form.reason"[^>]*maxlength="2000"[^>]*required/);
+  const management = readFileSync(new URL('../src/SlaManagement.vue', import.meta.url), 'utf8');
+  const consoleSource = readFileSync(new URL('../src/ConsoleApp.vue', import.meta.url), 'utf8');
+  assert.ok(management.includes('历史规则（只读）'));
+  assert.doesNotMatch(management + consoleSource, /createSlaProfile|toggleSlaProfile|\/sla\/profiles/);
 });

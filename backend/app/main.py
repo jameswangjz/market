@@ -1000,6 +1000,24 @@ class ServiceLevel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
 
+class SLAMatrixVersion(Base):
+    __tablename__ = "sla_matrix_versions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
+    service_level_id: Mapped[str] = mapped_column(ForeignKey("service_levels.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    base_code: Mapped[str] = mapped_column(String(30))
+    rules_json: Mapped[str] = mapped_column(Text)
+    created_by: Mapped[str] = mapped_column(String(180))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (UniqueConstraint("service_level_id", "version", name="uq_sla_matrix_version"),)
+
+
+class SLAExpiryFallback(Base):
+    __tablename__ = "sla_expiry_fallbacks"
+    assignment_id: Mapped[str] = mapped_column(ForeignKey("service_level_assignments.id"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class ServiceLevelAssignment(Base):
     __tablename__ = "service_level_assignments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
@@ -1386,6 +1404,8 @@ class SLAProfileUpdate(SLAProfileBody):
 
 
 class ServiceLevelBody(BaseModel):
+    model_config = {"extra": "forbid"}
+    base_code: str | None = None
     code: str = Field(min_length=2, max_length=30, pattern="^[a-z0-9_]+$")
     name: str = Field(min_length=2, max_length=80)
     description: str = ""
@@ -2487,6 +2507,7 @@ def startup():
                 db.add(ServiceLevel(code=code, name=name, description=description, customer_scope=scope, support_days_per_week=days, support_hours_per_day=hours, online_docs=True, knowledge_base=True, standard_api=True, online_customer_service=True, dedicated_manager=manager, technical_support=code != "standard", initial_response_minutes=response_minutes, urgent_initial_response_minutes=response_defaults(code)[1], problem_response_hours=response_hours, quarterly_report=quarterly, annual_optimization=annual, status="active", created_by="system"))
         db.flush()
         standard_level = db.scalar(select(ServiceLevel).where(ServiceLevel.code == "standard"))
+        sla_matrix['initialize'](db)
         if standard_level:
             for enterprise in db.scalars(select(Enterprise)).all():
                 if not db.scalar(select(ServiceLevelAssignment.id).where(ServiceLevelAssignment.enterprise_id == enterprise.id, ServiceLevelAssignment.user_id == "")):
@@ -7056,24 +7077,74 @@ def audit_log_categories(request: Request, enterprise_id: str = Query(default=""
 
 
 @app.get("/api/users")
-def users(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def users(user: User = Depends(current_user), db: Session = Depends(db_session),
+          q: str = '', activation_status: str = '', verified_status: str = '', platform_role: str = '',
+          enterprise_id: str = '', enterprise_name: str = '', page: int | None = Query(None, ge=1),
+          page_size: int | None = Query(None, ge=1, le=200)):
+    query = select(User)
+    own_enterprises = set()
     if user.platform_role in {"super_admin", "platform_operator"}:
-        items = db.scalars(select(User).order_by(User.created_at.desc())).all()
+        pass
     else:
+        own_enterprises = set(db.scalars(select(Membership.enterprise_id).where(
+            Membership.user_id == user.id, Membership.status == 'active')).all())
         managed_enterprises = db.scalars(select(Membership.enterprise_id).where(Membership.user_id == user.id, Membership.status == "active", Membership.role.in_(["super_admin", "enterprise_admin"]))).all()
         if managed_enterprises:
             member_user_ids = db.scalars(select(Membership.user_id).where(Membership.enterprise_id.in_(managed_enterprises), Membership.status.in_(["active", "pending_activation"]))).all()
             invited_user_ids = db.scalars(select(EnterpriseInvitation.invitee_id).where(EnterpriseInvitation.enterprise_id.in_(managed_enterprises), EnterpriseInvitation.status == "pending")).all()
             visible_user_ids = set(member_user_ids) | set(invited_user_ids) | {user.id}
-            items = db.scalars(select(User).where(User.id.in_(visible_user_ids)).order_by(User.created_at.desc())).all()
+            query = query.where(User.id.in_(visible_user_ids))
         else:
-            items = [user]
+            query = query.where(User.id == user.id)
+    if q:
+        query = query.where(or_(*(field.icontains(q, autoescape=True) for field in
+            (User.name, User.username, User.email, User.phone))))
+    for field, value in ((User.activation_status, activation_status), (User.verified_status, verified_status),
+                         (User.platform_role, platform_role)):
+        if value:
+            query = query.where(field == value)
+    if enterprise_id:
+        if user.platform_role not in {'super_admin', 'platform_operator'} and enterprise_id not in managed_enterprises:
+            query = query.where(User.id == (user.id if enterprise_id in own_enterprises else ''))
+        query = query.where(User.id.in_(select(Membership.user_id).where(
+            Membership.enterprise_id == enterprise_id, Membership.status.in_(['active', 'pending_activation', 'disabled'])).union(
+                select(EnterpriseInvitation.invitee_id).where(EnterpriseInvitation.enterprise_id == enterprise_id,
+                    EnterpriseInvitation.status == 'pending'))))
+    if enterprise_name:
+        enterprise_members = select(Membership.user_id).join(Enterprise,
+            Enterprise.id == Membership.enterprise_id).where(
+                Enterprise.name.icontains(enterprise_name, autoescape=True),
+                Membership.status.in_(['active', 'pending_activation', 'disabled']))
+        if user.platform_role not in {'super_admin', 'platform_operator'}:
+            enterprise_members = enterprise_members.where(or_(
+                Membership.enterprise_id.in_(managed_enterprises),
+                (Membership.user_id == user.id) & (Membership.status == 'active')))
+        invited_members = select(EnterpriseInvitation.invitee_id).join(Enterprise,
+            Enterprise.id == EnterpriseInvitation.enterprise_id).where(
+                Enterprise.name.icontains(enterprise_name, autoescape=True),
+                EnterpriseInvitation.status == 'pending')
+        if user.platform_role not in {'super_admin', 'platform_operator'}:
+            invited_members = invited_members.where(EnterpriseInvitation.enterprise_id.in_(managed_enterprises))
+        query = query.where(User.id.in_(enterprise_members.union(invited_members)))
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    pagination = {}
+    if page is not None or page_size is not None:
+        page_size = page_size or 20
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page or 1, pages)
+        pagination = {'total': total, 'page': page, 'page_size': page_size, 'pages': pages}
+        query = query.offset((page - 1) * page_size).limit(page_size)
+    items = db.scalars(query.order_by(User.created_at.desc(), User.id)).all()
     user_ids = [item.id for item in items]
     role_priority = {"super_admin": 3, "enterprise_admin": 2, "member": 1}
     role_names = {"super_admin": "超级管理员", "enterprise_admin": "管理员", "member": "普通用户"}
     memberships = db.scalars(select(Membership).where(Membership.user_id.in_(user_ids), Membership.status.in_(["active", "pending_activation", "disabled"]))).all() if user_ids else []
     roles_by_user: dict[str, str] = {}
     for membership in memberships:
+        if (user.platform_role not in {'super_admin', 'platform_operator'}
+                and membership.enterprise_id not in managed_enterprises
+                and not (membership.user_id == user.id and membership.status == 'active')):
+            continue
         current = roles_by_user.get(membership.user_id, "")
         if role_priority.get(membership.role, 0) > role_priority.get(current, 0):
             roles_by_user[membership.user_id] = membership.role
@@ -7086,17 +7157,42 @@ def users(user: User = Depends(current_user), db: Session = Depends(db_session))
     if user_ids:
         detail_rows = db.execute(select(Membership, Enterprise).join(Enterprise, Enterprise.id == Membership.enterprise_id).where(Membership.user_id.in_(user_ids), Membership.status.in_(["active", "pending_activation", "disabled"]))).all()
         for membership, enterprise in detail_rows:
+            if (user.platform_role not in {'super_admin', 'platform_operator'}
+                    and enterprise.id not in managed_enterprises
+                    and not (membership.user_id == user.id and membership.status == 'active')):
+                continue
             membership_details.setdefault(membership.user_id, []).append({"membership_id": membership.id, "enterprise_id": enterprise.id, "enterprise_name": enterprise.name, "role": membership.role, "status": membership.status})
-    return {"items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "enterprise_name": "平台" if x.platform_role else "、".join(dict.fromkeys(enterprise_names.get(x.id, []))), "enterprise_memberships": membership_details.get(x.id, []), "created_at": x.created_at} for x in items]}
+    if user.platform_role not in {'super_admin', 'platform_operator'}:
+        enterprise_names = {uid: [row['enterprise_name'] for row in details] for uid, details in membership_details.items()}
+    return {**pagination, "items": [{"id": x.id, "username": x.username, "name": x.name, "email": x.email, "phone": x.phone, "verified_status": x.verified_status, "activation_status": x.activation_status, "is_active": x.is_active, "platform_role": x.platform_role, "user_role": "平台角色账号" if x.platform_role else role_names.get(roles_by_user.get(x.id, ""), "未加入企业"), "enterprise_name": "平台" if x.platform_role else "、".join(dict.fromkeys(enterprise_names.get(x.id, []))), "enterprise_memberships": membership_details.get(x.id, []), "created_at": x.created_at} for x in items]}
 
 
 @app.get("/api/admin/enterprises")
-def admin_enterprises(user: User = Depends(current_user), db: Session = Depends(db_session)):
+def admin_enterprises(user: User = Depends(current_user), db: Session = Depends(db_session),
+                      q: str = '', verification_status: str = '', enterprise_type: str = '',
+                      page: int | None = Query(None, ge=1), page_size: int | None = Query(None, ge=1, le=200)):
+    query = select(Enterprise)
     if user.platform_role in {"super_admin", "platform_operator"}:
-        items = db.scalars(select(Enterprise).order_by(Enterprise.created_at.desc())).all()
+        pass
     else:
-        items = db.scalars(select(Enterprise).join(Membership, Membership.enterprise_id == Enterprise.id).where(Membership.user_id == user.id, Membership.status == "active").order_by(Enterprise.created_at.desc())).all()
-    return {"items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "registered_capital": x.registered_capital, "establishment_date": x.establishment_date, "business_address": x.business_address, "business_scope": x.business_scope, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
+        query = query.where(Enterprise.id.in_(select(Membership.enterprise_id).where(
+            Membership.user_id == user.id, Membership.status == 'active')))
+    if q:
+        query = query.where(or_(Enterprise.name.icontains(q, autoescape=True), Enterprise.credit_code.icontains(q, autoescape=True)))
+    if verification_status:
+        query = query.where(Enterprise.verification_status == verification_status)
+    if enterprise_type:
+        query = query.where(Enterprise.enterprise_type == enterprise_type)
+    total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    pagination = {}
+    if page is not None or page_size is not None:
+        page_size = page_size or 20
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page or 1, pages)
+        pagination = {'total': total, 'page': page, 'page_size': page_size, 'pages': pages}
+        query = query.offset((page - 1) * page_size).limit(page_size)
+    items = db.scalars(query.order_by(Enterprise.created_at.desc(), Enterprise.id)).all()
+    return {**pagination, "items": [{"id": x.id, "name": x.name, "credit_code": x.credit_code, "enterprise_type": x.enterprise_type, "legal_representative": x.legal_representative, "registered_capital": x.registered_capital, "establishment_date": x.establishment_date, "business_address": x.business_address, "business_scope": x.business_scope, "license_file_id": x.license_file_id, "verification_status": x.verification_status, "verified_by": x.verified_by, "verified_at": x.verified_at, "created_at": x.created_at} for x in items]}
 
 
 def can_manage_development(user: User) -> bool:
@@ -7179,10 +7275,7 @@ def service_level_assignment_out(item: ServiceLevelAssignment, level: ServiceLev
 
 
 def current_service_level(db: Session, enterprise_id: str, user_id: str = "") -> ServiceLevel:
-    statement = select(ServiceLevelAssignment).where(ServiceLevelAssignment.enterprise_id == enterprise_id, ServiceLevelAssignment.effective_at <= now(), or_(ServiceLevelAssignment.expires_at.is_(None), ServiceLevelAssignment.expires_at >= now()))
-    if user_id:
-        statement = statement.where(or_(ServiceLevelAssignment.user_id == user_id, ServiceLevelAssignment.user_id == ""))
-    assignment = db.scalar(statement.order_by(ServiceLevelAssignment.user_id.desc(), ServiceLevelAssignment.effective_at.desc()))
+    assignment = enterprise_sla['current_assignment'](db, enterprise_id, now())
     level = db.get(ServiceLevel, assignment.service_level_id) if assignment else None
     return level or db.scalar(select(ServiceLevel).where(ServiceLevel.code == "standard"))
 
@@ -7205,7 +7298,9 @@ def sla_overview(user: User = Depends(current_user), db: Session = Depends(db_se
     results = sla_online_assessments["results"](db)
     legacy = db.scalars(select(SLAResult).order_by(SLAResult.calculated_at.desc(), SLAResult.id).limit(100)).all()
     legacy_results = [sla_result_out(row, db.get(SLAProfile, row.profile_id)) for row in legacy]
-    service_levels = db.scalars(select(ServiceLevel).order_by(ServiceLevel.code)).all()
+    service_levels = db.scalars(select(ServiceLevel).order_by(case(
+        (ServiceLevel.code == 'standard', 0), (ServiceLevel.code == 'enterprise', 1),
+        (ServiceLevel.code == 'strategic', 2), else_=3), ServiceLevel.code, ServiceLevel.id)).all()
     assignments = db.scalars(select(ServiceLevelAssignment).order_by(ServiceLevelAssignment.created_at.desc()).limit(100)).all()
     return {"summary": {"profiles": len(profiles), "active_profiles": sum(x.status == "active" for x in profiles),
                          "met": sum(x["status"] == "met" for x in results), "warning": sum(x["status"] == "warning" for x in results),
@@ -7220,36 +7315,33 @@ def sla_overview(user: User = Depends(current_user), db: Session = Depends(db_se
 @app.post("/api/sla/profiles")
 def create_sla_profile(body: SLAProfileBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    if db.scalar(select(SLAProfile).where(SLAProfile.name == body.name)):
-        raise HTTPException(409, "SLA 规则名称已存在")
-    item = SLAProfile(**body.model_dump(), created_by=user.email)
-    db.add(item)
-    audit(db, user.email, "create_sla_profile", "sla_profile", item.id, f"创建 SLA 规则：{item.name}", category="sla", business_domain="sla")
-    db.commit()
-    return {"item": sla_profile_out(item)}
+    raise HTTPException(410, "Legacy SLA profiles are read-only; use service-level matrices")
 
 
 @app.patch("/api/sla/profiles/{profile_id}")
 def update_sla_profile(profile_id: str, body: SLAProfileUpdate, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    item = db.get(SLAProfile, profile_id)
-    if not item:
-        raise HTTPException(404, "SLA 规则不存在")
-    before = sla_profile_out(item)
-    for key, value in body.model_dump().items():
-        setattr(item, key, value)
-    audit(db, user.email, "update_sla_profile", "sla_profile", item.id, f"更新 SLA 规则：{item.name}", category="sla", business_domain="sla", before=before, after=sla_profile_out(item))
-    db.commit()
-    return {"item": sla_profile_out(item)}
+    raise HTTPException(410, "Legacy SLA profiles are read-only; use service-level matrices")
 
 
 @app.post("/api/sla/service-levels")
 def create_service_level(body: ServiceLevelBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
+    if body.code in {"standard", "enterprise", "strategic"} or body.base_code not in {"standard", "enterprise", "strategic"}:
+        raise HTTPException(400, "Custom levels require a built-in base_code")
+    if body.model_fields_set - {"code", "name", "base_code", "description"}:
+        raise HTTPException(422, "Only code, name, description and base_code may be supplied")
     if db.scalar(select(ServiceLevel).where(or_(ServiceLevel.code == body.code, ServiceLevel.name == body.name))):
         raise HTTPException(409, "服务级别编码或名称已存在")
-    item = ServiceLevel(**body.model_dump(), created_by=user.email)
+    parent = db.scalar(select(ServiceLevel).where(ServiceLevel.code == body.base_code))
+    if parent is None:
+        raise HTTPException(409, "Source service level is unavailable")
+    values = {column.name: getattr(parent, column.name) for column in ServiceLevel.__table__.columns
+              if column.name not in {"id", "code", "name", "description", "created_by", "created_at", "updated_at"}}
+    item = ServiceLevel(**values, code=body.code, name=body.name, description=body.description, created_by=user.email)
     db.add(item)
+    db.flush()
+    sla_matrix['copy_matrix'](db, item, body.base_code, user.email or user.id)
     audit(db, user.email, "create_service_level", "service_level", item.id, f"创建服务级别：{item.name}", category="sla", business_domain="service_level")
     db.commit()
     return {"item": service_level_out(item)}
@@ -7258,22 +7350,14 @@ def create_service_level(body: ServiceLevelBody, user: User = Depends(current_us
 @app.patch("/api/sla/service-levels/{level_id}")
 def update_service_level(level_id: str, body: ServiceLevelBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_platform_admin(user)
-    item = db.get(ServiceLevel, level_id)
-    if not item:
-        raise HTTPException(404, "服务级别不存在")
-    before = service_level_out(item)
-    for key, value in body.model_dump().items():
-        if key == "urgent_initial_response_minutes" and key not in body.model_fields_set:
-            continue
-        setattr(item, key, value)
-    audit(db, user.email, "update_service_level", "service_level", item.id, f"更新服务级别：{item.name}", category="sla", business_domain="service_level", before=before, after=service_level_out(item))
-    db.commit()
-    return {"item": service_level_out(item)}
+    raise HTTPException(410, "Service-level metadata is read-only; use the versioned matrix endpoint")
 
 
 @app.get("/api/sla/service-levels")
 def list_service_levels(user: User = Depends(current_user), db: Session = Depends(db_session)):
-    levels = db.scalars(select(ServiceLevel).order_by(ServiceLevel.code)).all()
+    levels = db.scalars(select(ServiceLevel).order_by(case(
+        (ServiceLevel.code == 'standard', 0), (ServiceLevel.code == 'enterprise', 1),
+        (ServiceLevel.code == 'strategic', 2), else_=3), ServiceLevel.code, ServiceLevel.id)).all()
     return {"items": [service_level_out(x) for x in levels]}
 
 
@@ -7865,6 +7949,10 @@ ticket_calendar = install_ticket_calendar(globals())
 from .enterprise_sla import install as install_enterprise_sla
 
 enterprise_sla = install_enterprise_sla(globals())
+
+from .sla_matrix import install as install_sla_matrix
+
+sla_matrix = install_sla_matrix(globals())
 
 from .order_sla_contracts import install as install_order_sla_contracts
 

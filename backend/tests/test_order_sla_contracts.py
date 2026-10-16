@@ -60,6 +60,20 @@ class OrderSlaContractTests(unittest.TestCase):
         after = self.contract(order_id)
         self.assertEqual((after.id, after.snapshot_json, after.paid_at, after.deadline_at), before)
 
+    def test_matrix_revision_changes_only_new_payment_deadlines(self):
+        old_id = self.create_order()
+        self.pay(old_id)
+        old = self.contract(old_id)
+        self.request('PATCH', '/api/sla/service-levels/strategic/matrix', actor='ops', json={
+            'expected_version': 0, 'metrics': {'delivery': {'target': 6, 'warning': 5}}})
+        new_id = self.create_order()
+        self.pay(new_id)
+        new = self.contract(new_id)
+        self.assertEqual(old.deadline_at - old.paid_at, timedelta(minutes=4))
+        self.assertEqual(new.deadline_at - new.paid_at, timedelta(minutes=6))
+        self.assertEqual(self.contract(old_id).snapshot_json, old.snapshot_json)
+        self.assertEqual(json.loads(new.snapshot_json)['metrics']['delivery']['warning_seconds'], 300)
+
     def test_real_freeze_snapshot_integrates_with_order_assessment_and_never_follows_tier_change(self):
         order_id = self.create_order()
         self.pay(order_id)

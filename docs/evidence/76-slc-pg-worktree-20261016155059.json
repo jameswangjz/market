@@ -1,0 +1,9 @@
+{
+  "status": "passed",
+  "schema": "qa_slc_02a1e9ca021cdfab1c375f14d3dc596c",
+  "checks": [
+    "PG concurrent matrix edit: one 200 and one 409; frozen before/after differ",
+    "PG concurrent expiry audited once; exact-boundary fallback standard"
+  ],
+  "cleanup": true
+}

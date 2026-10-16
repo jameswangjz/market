@@ -6,12 +6,13 @@ import SlaSourcesDrawer from "./SlaSourcesDrawer.vue";
 import SlaTicketEvidence from "./SlaTicketEvidence.vue";
 import { metricRows, createSlaReadSession } from "./slaEvidence.js";
 import { slaMetric, slaResultState, slaResultReason } from "./slaResultDisplay.js";
-const props = defineProps({ results: { type: Array, default: () => [] }, assignments: { type: Array, default: () => [] }, api: Object, params: Object });
+const props = defineProps({ results: { type: Array, default: () => [] }, assignments: { type: Array, default: () => [] }, focusedResult: Object, api: Object, params: Object });
+const emit = defineEmits(['clear-focus']);
 const state = reactive({ data: null, busy: false, error: "" });
 const session = props.api ? createSlaReadSession(props.api, state) : null;
 const page = ref(1), size = ref(20), activeTab = ref("results"), selectedSource = ref(null);
-const displayResults = computed(() => props.api ? state.data?.items || [] : props.results);
-function load() { return session?.read("/sla/results", { page: page.value, page_size: size.value }); }
+const displayResults = computed(() => props.focusedResult ? [props.focusedResult] : props.api ? state.data?.items || [] : props.results);
+function load() { return session?.read("/sla/results", { ...props.params, page: page.value, page_size: size.value }); }
 function go(value) { page.value = value; selectedSource.value = null; load(); }
 watch(() => JSON.stringify(props.params), () => { selectedSource.value = null; go(1); }, { immediate: true });
 onBeforeUnmount(() => session?.dispose());
@@ -21,13 +22,14 @@ const date = value => value ? new Date(value).toLocaleString() : "—";
 <template>
   <section class="sla-evidence">
     <h3>冻结承诺与指标证据</h3>
+    <button v-if="focusedResult" type="button" class="secondary-btn" @click="emit('clear-focus')">返回全部周期证据</button>
     <p class="muted">企业等级调整仅影响新工单，已有工单与订单仍按各自冻结承诺考核。</p>
     <div v-if="api" class="tabs" role="tablist" aria-label="SLA证据视图"><button role="tab" :aria-selected="activeTab === 'results'" @click="activeTab = 'results'">周期来源</button><button role="tab" :aria-selected="activeTab === 'tickets'" @click="activeTab = 'tickets'">工单责任</button></div>
     <SlaTicketEvidence v-if="api && activeTab === 'tickets'" :api="api" :params="params" />
     <div v-else>
     <button v-if="api" class="icon-btn" title="刷新周期证据列表" aria-label="刷新周期证据列表" :disabled="state.busy" @click="load"><RefreshCw :size="16" /></button>
     <p v-if="state.busy" role="status">读取中</p><p v-if="state.error" role="alert" class="error-text">{{ state.error }}</p>
-    <details v-for="result in displayResults" :key="result.id">
+    <details v-for="result in displayResults" :key="result.id" :open="!!focusedResult">
       <summary>{{ result.order_no || result.profile_name || result.id }} · {{ slaResultState(result.status).label }}</summary>
       <dl class="evidence-meta">
         <div><dt>订单</dt><dd>{{ result.order_no || result.order_id || '—' }}</dd></div>
@@ -50,13 +52,8 @@ const date = value => value ? new Date(value).toLocaleString() : "—";
       <p class="muted">探测采样可用性不等于精确请求可用率。历史未保存的逐条证据不以当前数据补造。</p>
     </details>
     <p v-if="!displayResults.length && !state.busy" class="muted">暂无周期证据。</p>
-    <PaginationControls v-if="api" :page="page" :page-size="size" :total="state.data?.total || 0" :busy="state.busy" label="周期SLA证据分页" @page="go" @size="value => { size = value; go(1); }" />
+    <PaginationControls v-if="api && !focusedResult" :page="page" :page-size="size" :total="state.data?.total || 0" :busy="state.busy" label="周期SLA证据分页" @page="go" @size="value => { size = value; go(1); }" />
     </div>
-    <h3>企业等级生效记录</h3>
-    <div class="table-wrap"><table class="data-table compact"><thead><tr><th>企业</th><th>等级</th><th>生效时间</th><th>到期时间</th><th>操作人 / 来源</th></tr></thead><tbody>
-      <tr v-for="item in assignments" :key="item.id"><td>{{ item.enterprise_name || item.enterprise_id }}</td><td>{{ item.service_level?.name || '—' }}</td><td>{{ date(item.effective_at) }}</td><td>{{ date(item.expires_at) }}</td><td>{{ item.created_by || '—' }} / {{ item.source || '—' }}</td></tr>
-      <tr v-if="!assignments.length"><td colspan="5">暂无等级生效记录。</td></tr>
-    </tbody></table></div>
     <SlaSourcesDrawer v-if="selectedSource" :api="api" :result="selectedSource.result" :metric="selectedSource.metric" @close="selectedSource = null" />
   </section>
 </template>

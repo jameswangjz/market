@@ -68,6 +68,18 @@ class OnlineAssessmentTests(unittest.TestCase):
         self.assertEqual(rows[old]['p95_latency_ms'], 2000)
         self.assertIsNone(rows[old]['avg_latency_ms'])
 
+    def test_matrix_revision_changes_only_new_frozen_order_assessments(self):
+        old = self.paid()
+        self.request('PATCH', '/api/sla/service-levels/strategic/matrix', actor='ops', json={
+            'expected_version': 0, 'metrics': {'availability': {'target': 95, 'warning': 96}}})
+        new = self.paid()
+        self.api_contracts()
+        with patch.dict(vars(self.m), {'sla_online_sources': {'measure_order': lambda *args: self.sources()}}):
+            rows = {row['order_id']: row for row in self.evaluate()['items']}
+        self.assertEqual(rows[old]['metrics']['availability']['status'], 'breached')
+        self.assertEqual(rows[new]['metrics']['availability']['status'], 'met')
+        self.assertNotEqual(rows[old]['rule_version'], rows[new]['rule_version'])
+
     def test_persistence_idempotence_and_changed_evidence_versions_audit(self):
         self.paid()
         self.api_contracts()

@@ -4,8 +4,8 @@ from decimal import Decimal
 import hashlib
 import json
 
-from fastapi import HTTPException
-from sqlalchemy import or_, select
+from fastapi import Depends, HTTPException, Query
+from sqlalchemy import func, or_, select
 
 
 MATRIX_VERSION = 'sla-warning-matrix-20261014'
@@ -114,17 +114,44 @@ def install(ns):
                 'effective_at': _iso(item.effective_at), 'expires_at': _iso(item.expires_at),
                 'source': item.source, 'assigned_by': item.created_by}
 
-    def current_assignment(db, enterprise_id, instant):
+    def latest_assignment(db, enterprise_id, instant):
         return db.scalar(select(Assignment).where(Assignment.enterprise_id == enterprise_id,
-            Assignment.user_id == '', Assignment.effective_at <= instant,
-            or_(Assignment.expires_at.is_(None), Assignment.expires_at > instant))
+            Assignment.user_id == '', Assignment.effective_at <= instant)
             .order_by(Assignment.effective_at.desc(), Assignment.created_at.desc(), Assignment.id.desc())
+            .limit(1)
             .execution_options(populate_existing=True))
+
+    def current_assignment(db, enterprise_id, instant):
+        item = latest_assignment(db, enterprise_id, instant)
+        return item if item is not None and (item.expires_at is None or _utc(item.expires_at) > _utc(instant)) else None
+
+    def audit_expiry(db, enterprise_id, instant):
+        item = latest_assignment(db, enterprise_id, instant)
+        Marker = ns['SLAExpiryFallback']
+        if (item is None or item.expires_at is None or _utc(item.expires_at) > _utc(instant)
+                or db.get(Marker, item.id) is not None):
+            return False
+        db.add(Marker(assignment_id=item.id))
+        ns['audit'](db, 'system', 'expire_service_level_assignment', 'service_level_assignment', item.id,
+            'Expired SLA binding; new promises use standard', category='sla', business_domain='service_level',
+            tenant_id=enterprise_id, before={'assignment': assignment_value(item)},
+            after={'service_level_code': 'standard', 'event_key': 'sla-expiry:' + item.id})
+        db.flush()
+        return True
 
     def frozen_rules(level, db=None):
         code = level.code if level is not None else 'standard'
-        metrics, calendar = _promise(code)
-        if level is not None:
+        matrix_version = MATRIX_VERSION
+        matrix = ns.get('sla_matrix')
+        if matrix and db is not None and level is not None:
+            rules, _, _ = matrix['matrix'](db, level)
+            metrics, calendar = rules['metrics'], rules['calendar']
+            revision = matrix['latest'](db, level.id)
+            if revision:
+                matrix_version = revision.id
+        else:
+            metrics, calendar = _promise(code)
+        if level is not None and not (matrix and db is not None):
             response = response_configuration(level)
             for key, field in (('first_response', 'initial_response_minutes'),
                                ('urgent_first_response', 'urgent_initial_response_minutes')):
@@ -141,7 +168,7 @@ def install(ns):
         # JSON round trip detaches ORM data and preserves original legacy units.
         if legacy is not None:
             legacy = json.loads(json.dumps(legacy, default=lambda value: _iso(value)))
-        rules = {'matrix_version': MATRIX_VERSION, 'service_level_code': code,
+        rules = {'matrix_version': matrix_version, 'service_level_code': code,
                  'calendar': calendar, 'metrics': metrics, 'legacy_level_config': legacy}
         contract_version = hashlib.sha256(json.dumps(rules, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         if db is not None and ns.get('enrich_support_calendar'):
@@ -159,10 +186,11 @@ def install(ns):
         instant = ns['now']()
         # Observe assignments added earlier in the caller's transaction.
         db.flush()
+        audit_expiry(db, enterprise_id, instant)
         assignment = current_assignment(db, enterprise_id, instant)
         level = db.get(Level, assignment.service_level_id, populate_existing=True) if assignment else db.scalar(
             select(Level).where(Level.code == 'standard').execution_options(populate_existing=True))
-        if level is not None and (level.status != 'active' or level.code not in LEVELS):
+        if level is not None and level.status != 'active':
             raise HTTPException(409, '当前服务级别未启用或无已确认SLA矩阵')
         return {'schema_version': 1, **frozen_rules(level, db),
                 'enterprise_id': enterprise_id, 'service_level_id': level.id if level is not None else None,
@@ -175,9 +203,10 @@ def install(ns):
             .execution_options(populate_existing=True))
         if level is None or level.status != 'active':
             raise HTTPException(404, '服务级别不存在或未启用')
-        if level.code not in LEVELS:
+        if level.code not in LEVELS and (not ns.get('sla_matrix') or ns['sla_matrix']['latest'](db, level.id) is None):
             raise HTTPException(409, '服务级别尚无已确认SLA矩阵')
         instant = ns['now']()
+        audit_expiry(db, enterprise.id, instant)
         if expires_at is not None:
             expires_at = _utc(expires_at)
             if expires_at <= _utc(instant):
@@ -227,7 +256,74 @@ def install(ns):
                     reason or 'Enterprise verification approval', source='verification')
 
     ns['freeze_sla_snapshot'] = freeze_sla_snapshot
+    def expire_due(db):
+        instant = ns['now']()
+        count = 0
+        ids = db.scalars(select(Assignment.enterprise_id).where(Assignment.user_id == '',
+            Assignment.expires_at <= instant).distinct().order_by(Assignment.enterprise_id)).all()
+        for enterprise_id in ids:
+            locked_enterprise(db, enterprise_id)
+            count += int(audit_expiry(db, enterprise_id, instant))
+        return count
+
     hooks = {'freeze_sla_snapshot': freeze_sla_snapshot, 'adjust_assignment': adjust_assignment,
-             'review_binding': review_binding}
+             'review_binding': review_binding, 'current_assignment': current_assignment,
+             'frozen_rules': frozen_rules, 'audit_expiry': audit_expiry, 'expire_due': expire_due}
+
+    @ns['app'].get('/api/sla/enterprise-bindings')
+    def bindings(q: str = '', service_level_id: str = '', assigned_by: str = '',
+                 expires_before: str = '', expires_after: str = '',
+                 page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=200),
+                 user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+        require_manager(user)
+        from datetime import datetime
+        bounds = []
+        for raw in (expires_after, expires_before):
+            try:
+                value = datetime.fromisoformat(raw.replace('Z', '+00:00')) if raw else None
+                if value is not None and value.tzinfo is None:
+                    raise ValueError('Timezone required')
+                bounds.append(value)
+            except ValueError:
+                raise HTTPException(422, 'Expiry filters require ISO timestamps with timezone')
+        instant = ns['now']()
+        ranked = select(Assignment.id.label('assignment_id'), Assignment.enterprise_id,
+            func.row_number().over(partition_by=Assignment.enterprise_id, order_by=(
+                Assignment.effective_at.desc(), Assignment.created_at.desc(), Assignment.id.desc())).label('rank')).where(
+                    Assignment.user_id == '', Assignment.effective_at <= instant).subquery()
+        current = select(Assignment).join(ranked, ranked.c.assignment_id == Assignment.id).where(
+            ranked.c.rank == 1, or_(Assignment.expires_at.is_(None), Assignment.expires_at > instant)).subquery()
+        standard = db.scalar(select(Level.id).where(Level.code == 'standard'))
+        effective_id = func.coalesce(current.c.service_level_id, standard)
+        query = select(Enterprise, current.c.id, effective_id.label('level_id'),
+            current.c.effective_at, current.c.expires_at, current.c.created_by, current.c.source).outerjoin(
+                current, current.c.enterprise_id == Enterprise.id)
+        if q:
+            query = query.where(Enterprise.name.icontains(q, autoescape=True))
+        if service_level_id:
+            query = query.where(effective_id == service_level_id)
+        if assigned_by:
+            query = query.where(current.c.created_by.icontains(assigned_by, autoescape=True))
+        if bounds[0]:
+            query = query.where(current.c.expires_at >= bounds[0])
+        if bounds[1]:
+            query = query.where(current.c.expires_at <= bounds[1])
+        total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, pages)
+        rows = db.execute(query.order_by(Enterprise.name, Enterprise.id).offset((page - 1) * page_size).limit(page_size)).all()
+        return {'items': [{'enterprise_id': row[0].id, 'enterprise_name': row[0].name,
+            'verification_status': row[0].verification_status, 'assignment_id': row[1],
+            'service_level_id': row[2], 'service_level': ns['service_level_out'](db.get(Level, row[2])) if row[2] else None,
+            'effective_at': _iso(row[3]), 'expires_at': _iso(row[4]),
+            'assigned_by': row[5] or '', 'source': row[6] or 'default'} for row in rows],
+            'total': total, 'page': page, 'page_size': page_size, 'pages': pages}
+
+    @ns['app'].post('/api/sla/expire-bindings')
+    def expire_bindings(user=Depends(ns['current_user']), db=Depends(ns['db_session'])):
+        require_manager(user)
+        count = expire_due(db)
+        db.commit()
+        return {'audited': count}
     ns['enterprise_sla'] = hooks
     return hooks

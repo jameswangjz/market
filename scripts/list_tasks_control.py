@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 
+DOCUMENT_BASIS = '28 列表检索分页与网关监控需求及任务-20261016143205.md'
+
 TASKS = (
     ('LIST-ARC-001', '列表消费者、分页字段和权限契约', 'ARC', '', '旧调用兼容；服务端权限内计数；中文和日期范围契约'),
     ('LIST-BE-001', '产品列表分页及五条件检索', 'BE', 'LIST-ARC-001', '名称目录提供方类型状态；企业隔离；稳定排序'),
@@ -52,7 +54,7 @@ def main():
             if task is None:
                 task = m.DevelopmentTask(code=code, title=title, area=area, dependencies=dependencies,
                     owner='主Agent/开发与验证Agent', priority='P1', status='todo', progress=0,
-                    acceptance=acceptance + '\n依据：28 列表检索分页与网关监控需求及任务-20261016143205.md')
+                    acceptance=acceptance + '\n依据：' + DOCUMENT_BASIS)
                 db.add(task)
                 created.append(code)
                 m.audit(db, actor.email, 'register_list_task', 'development_task', code,
@@ -66,6 +68,18 @@ def main():
                 task.acceptance = (task.acceptance or '') + '\n执行记录：' + args.note
                 m.audit(db, actor.email, 'checkpoint_list_task', 'development_task', code,
                     args.note, before=before, after={'status': task.status, 'progress': task.progress})
+            basis = '\n依据：' + DOCUMENT_BASIS
+            previous = task.acceptance or ''
+            legacy_basis = '\n依据：28 列表检索分页与网关监控需求及任务-20261016143205.md'
+            corrected = previous
+            if basis != legacy_basis and legacy_basis in corrected:
+                corrected = corrected.replace(legacy_basis, '')
+            if basis not in corrected:
+                corrected += basis
+            if corrected != previous:
+                task.acceptance = corrected
+                m.audit(db, actor.email, 'document_task_basis', 'development_task', code,
+                        args.note, before={'acceptance': previous}, after={'acceptance': task.acceptance})
         db.flush()
         items = [{'code': row.code, 'status': row.status, 'progress': row.progress}
                  for row in db.scalars(select(m.DevelopmentTask).where(

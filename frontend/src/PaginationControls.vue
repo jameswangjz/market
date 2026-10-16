@@ -28,7 +28,7 @@ function resize(event) {
     <div class="pagination-navigation"><button type="button" class="icon-btn" title="上一页" aria-label="上一页" :disabled="!canJump || page <= 1" @click="go(page - 1)"><ArrowLeft :size="16" /></button><span class="pagination-position">{{ page }} / {{ pages }}</span><button type="button" class="icon-btn" title="下一页" aria-label="下一页" :disabled="!canJump || page >= pages" @click="go(page + 1)"><ArrowRight :size="16" /></button></div>
     <label>跳至<input v-model="jump" type="text" inputmode="numeric" aria-label="跳转页码" :aria-invalid="!!error" :disabled="!canJump" @input="error = ''" @keydown.enter.prevent="go(jump)" /></label>
     <button type="button" class="icon-btn" title="跳转到指定页" aria-label="跳转到指定页" :disabled="!canJump" @click="go(jump)"><CornerDownLeft :size="16" /></button>
-    <span class="pagination-error" role="alert">{{ error }}</span>
+    <span v-if="error" class="pagination-error" role="alert">{{ error }}</span>
   </nav>
 </template>
 <style scoped>

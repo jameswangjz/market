@@ -106,9 +106,9 @@ test("actual detail template escapes evidence, shows Chinese timeline and no hid
   const source = readFileSync(new URL("../src/AfterSalesDetail.vue", import.meta.url), "utf8");
   const { descriptor } = parse(source);
   const output = await renderToString(createSSRApp({ components: {
-    AfterSalesModalShell: { template: "<section><slot /></section>" }, Download: { render: () => null }, RefreshCw: { render: () => null }, Upload: { render: () => null }, Send: { render: () => null },
+    AfterSalesModalShell: { template: "<section><slot /></section>" }, TicketSlaEvidence: { render: () => null }, Download: { render: () => null }, RefreshCw: { render: () => null }, Upload: { render: () => null }, Send: { render: () => null },
   }, setup: () => ({ state: { ticket: { ...ticket, description: "<script>safe</script>", cost_price: "SECRET-COST" }, timeline: [{ id: "event", action: "request_intervention", before: { status: "processing" }, after: { status: "platform_intervention" }, reason: "争议", actor_role: "enterprise_admin" }], attachments: [], comments: [], loading: false, busy: false, error: "" },
-    ticketStatus, afterSalesActions, timelineActor, timelineFrom, session: {}, action: "", upload: () => {}, allowed: [], collaborate: false, terminal: false, date: () => "—", emit: () => {} }), render: compile(descriptor.template.content) }));
+    ticketStatus, afterSalesActions, timelineActor, timelineFrom, session: {}, action: "", reason: "", comment: "", selectedAttachments: [], slaExpanded: false, upload: () => {}, allowed: [], collaborate: false, terminal: false, date: () => "—", emit: () => {} }), render: compile(descriptor.template.content) }));
   assert.match(output, /平台介入中/); assert.match(output, /申请平台介入/); assert.match(output, /&lt;script&gt;/);
   assert.doesNotMatch(output, /SECRET-COST|<script>/); assert.match(output, /无可用处理动作/);
 });

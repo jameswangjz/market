@@ -311,15 +311,13 @@ class EnterpriseSLATests(unittest.TestCase):
             initial_response_minutes=777, urgent_initial_response_minutes=333)
         self.assertEqual((custom.initial_response_minutes, custom.urgent_initial_response_minutes), (777, 333))
 
-    def test_legacy_update_omitting_urgent_preserves_custom_value_and_api_distinguishes_clocks(self):
+    def test_legacy_update_is_readonly_and_api_distinguishes_clocks(self):
         with self.m.SessionLocal() as db:
             level = db.get(self.m.ServiceLevel, 'strategic')
             level.urgent_initial_response_minutes = 333
             db.commit()
-        response = self.request('PATCH', '/api/sla/service-levels/strategic', actor='platform',
+        self.request('PATCH', '/api/sla/service-levels/strategic', actor='platform', expected=410,
             json={'code': 'strategic', 'name': 'strategic', 'initial_response_minutes': 720})
-        self.assertEqual(response['item']['initial_response_minutes'], 720)
-        self.assertEqual(response['item']['urgent_initial_response_minutes'], 333)
         listed = self.request('GET', '/api/sla/service-levels', actor='platform')
         item = next(row for row in listed['items'] if row['code'] == 'strategic')
         self.assertEqual((item['initial_response_minutes'], item['urgent_initial_response_minutes']), (720, 333))

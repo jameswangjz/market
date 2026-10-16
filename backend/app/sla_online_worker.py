@@ -9,6 +9,16 @@ from .sla_probe_worker import run as collect
 
 def run(ns, *, max_seconds=210):
     started = time.monotonic()
+    expire = ns.get('enterprise_sla', {}).get('expire_due')
+    if expire is not None:
+        # Expiry audit must also run when collection is unavailable or incomplete.
+        with ns['SessionLocal']() as db:
+            try:
+                expire(db)
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
     probes = collect(ns, max_seconds=max_seconds)
     if not probes['complete'] or probes['failures']:
         return {'status': 'incomplete', 'probes': probes, 'assessments': 0}
