@@ -1,5 +1,6 @@
 """Focused state, authorization, idempotency and atomicity tests on isolated SQLite."""
 import json
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
 
@@ -170,8 +171,14 @@ class AfterSalesWorkflowTests(unittest.TestCase):
             "metrics": {"urgent_first_response": rule, "urgent_resolution": {**rule, "clock": "support"}},
             "calendar": {"version": "not-configured", "timezone": "Asia/Shanghai", "weekdays": [0, 1, 2, 3, 4],
                          "windows": [["09:00", "17:00"]], "covered_years": []}}
-        ticket = self.create(priority="urgent")
-        result = self.request("GET", f"/api/after-sales/{ticket['id']}/sla")
+        # Exercise an actual support interval, independent of wall time and annual seeds.
+        calendar = self.m.freeze_sla_snapshot.return_value["calendar"]
+        started = datetime(2026, 10, 12, 1, tzinfo=timezone.utc)
+        with patch.object(self.m, "resolve_ticket_calendar", return_value=calendar), \
+                patch.object(self.m, "now", return_value=started) as clock:
+            ticket = self.create(priority="urgent")
+            clock.return_value = started + timedelta(minutes=1)
+            result = self.request("GET", f"/api/after-sales/{ticket['id']}/sla")
         self.assertEqual(result["calendar_status"], "not_ready")
         response, resolution = result["items"]
         self.assertIsNotNone(response["elapsed_seconds"])

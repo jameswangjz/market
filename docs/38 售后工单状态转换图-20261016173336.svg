@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="1710" viewBox="0 0 1640 1710" role="img" aria-labelledby="title desc">
+  <title id="title">售后工单状态转换图</title>
+  <desc id="desc">主流程、补充材料与整改回路、动态恢复的平台介入流程，以及包含平台介入的全部未结束状态的撤回和强制关闭规则。</desc>
+  <defs>
+    <style>
+      text { font-family: 'Noto Sans CJK SC','Microsoft YaHei','PingFang SC','WenQuanYi Micro Hei',sans-serif; fill: #172b35; font-size: 20px; letter-spacing: 0; }
+      .title { font-size: 38px; font-weight: 700; }
+      .section { font-size: 25px; font-weight: 700; }
+      .name { font-size: 23px; font-weight: 700; }
+      .code { font-family: 'DejaVu Sans Mono',Consolas,monospace; font-size: 17px; fill: #45616c; }
+      .small { font-size: 18px; fill: #45616c; }
+      .label { font-size: 19px; font-weight: 600; }
+      .node { fill: #fff; stroke: #75939e; stroke-width: 2; rx: 8; }
+      .flow { fill: none; stroke: #267a80; stroke-width: 2.5; marker-end: url(#arrow); }
+      .back { fill: none; stroke: #a35b25; stroke-width: 2.5; marker-end: url(#return); }
+      .rule { stroke: #d4e0e3; stroke-width: 1; }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M1 1 L9 5 L1 9 Z" fill="#267a80"/></marker>
+    <marker id="return" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M1 1 L9 5 L1 9 Z" fill="#a35b25"/></marker>
+  </defs>
+  <rect width="1640" height="1710" fill="#f6f9fa"/>
+  <rect width="1640" height="12" fill="#267a80"/>
+  <text x="60" y="76" class="title">售后工单 · 状态转换图</text>
+  <text x="60" y="116" class="small">当前代码口径 / 2026-10-16 / 箭头标注「操作者 · 动作」；英文为实际状态或动作标识</text>
+  <line x1="60" y1="145" x2="1580" y2="145" class="rule"/>
+
+  <g id="main-workflow">
+    <text x="60" y="190" class="section">01  主流程与买方协作</text>
+    <text x="60" y="226" class="small">买方企业管理员创建 → 待提供方响应；拒绝方案后进入整改轮次，仍使用 processing。</text>
+    <rect x="60" y="310" width="280" height="110" class="node"/>
+    <text x="200" y="351" text-anchor="middle" class="name">待提供方响应</text>
+    <text x="200" y="386" text-anchor="middle" class="code">awaiting_response</text>
+    <rect x="470" y="310" width="280" height="110" class="node"/>
+    <text x="610" y="351" text-anchor="middle" class="name">处理中</text>
+    <text x="610" y="386" text-anchor="middle" class="code">processing</text>
+    <rect x="900" y="310" width="330" height="110" class="node"/>
+    <text x="1065" y="351" text-anchor="middle" class="name">待买方确认</text>
+    <text x="1065" y="386" text-anchor="middle" class="code">awaiting_buyer_confirmation</text>
+    <rect x="1370" y="310" width="210" height="110" fill="#e4f4eb" stroke="#50916b" stroke-width="2" rx="8"/>
+    <text x="1475" y="351" text-anchor="middle" class="name">已完成</text>
+    <text x="1475" y="386" text-anchor="middle" class="code">completed</text>
+    <path d="M340 365 H470" class="flow"/>
+    <text x="405" y="264" text-anchor="middle" class="label">提供方 · 响应</text>
+    <text x="405" y="291" text-anchor="middle" class="code">respond</text>
+    <path d="M750 365 H900" class="flow"/>
+    <text x="825" y="264" text-anchor="middle" class="label">提供方 · 提交方案</text>
+    <text x="825" y="291" text-anchor="middle" class="code">submit_resolution</text>
+    <path d="M1230 365 H1370" class="flow"/>
+    <text x="1300" y="264" text-anchor="middle" class="label">买方 · 确认解决</text>
+    <text x="1300" y="291" text-anchor="middle" class="code">confirm</text>
+    <path d="M1065 420 V478 H690 V420" class="back"/>
+    <text x="1120" y="457" class="label">买方 · 拒绝方案</text>
+    <text x="1120" y="486" class="code">reject_resolution</text>
+    <rect x="450" y="560" width="320" height="100" class="node"/>
+    <text x="610" y="600" text-anchor="middle" class="name">待买方补充材料</text>
+    <text x="610" y="635" text-anchor="middle" class="code">awaiting_buyer_info</text>
+    <path d="M530 420 V560" class="flow"/>
+    <text x="270" y="517" class="label">提供方 · 要求补充材料</text>
+    <text x="270" y="546" class="code">request_info</text>
+    <path d="M770 610 H840 V515 H610 V420" class="back"/>
+    <text x="890" y="567" class="label">买方 · 补充材料 → 回到处理中</text>
+    <text x="890" y="599" class="code">supplement</text>
+    <text x="890" y="640" class="small">整改：拒绝方案 → 再次提交方案；无独立整改状态。</text>
+  </g>
+
+  <line x1="60" y1="700" x2="1580" y2="700" class="rule"/>
+  <g id="platform-intervention">
+    <text x="60" y="745" class="section">02  平台介入与动态恢复</text>
+    <rect x="60" y="790" width="440" height="180" class="node"/>
+    <text x="85" y="828" class="name">四个常规未结束状态 · 任一</text>
+    <text x="85" y="864" class="code">awaiting_response / processing</text>
+    <text x="85" y="900" class="code">awaiting_buyer_info</text>
+    <text x="85" y="936" class="code">awaiting_buyer_confirmation</text>
+    <rect x="890" y="805" width="340" height="135" fill="#eef0fb" stroke="#777bb0" stroke-width="2" rx="8"/>
+    <text x="1060" y="849" text-anchor="middle" class="name">平台介入中</text>
+    <text x="1060" y="885" text-anchor="middle" class="code">platform_intervention</text>
+    <text x="1060" y="919" text-anchor="middle" class="small">进入时保存 previous_status</text>
+    <path d="M500 840 H890" class="flow"/>
+    <text x="695" y="787" text-anchor="middle" class="label">买方 / 提供方 · 申请平台介入</text>
+    <text x="695" y="817" text-anchor="middle" class="code">request_intervention</text>
+    <path d="M1230 835 H1510 V915 H1230" class="flow"/>
+    <text x="1400" y="770" text-anchor="middle" class="label">平台 · 介入响应（自环）</text>
+    <text x="1400" y="800" text-anchor="middle" class="code">respond_intervention</text>
+    <text x="1400" y="956" text-anchor="middle" class="small">每轮首次响应仅记录一次</text>
+    <path d="M1060 940 V1015 H280 V970" class="back"/>
+    <text x="670" y="1053" text-anchor="middle" class="label">平台 · 完成审查 review_intervention → 恢复本轮 previous_status</text>
+    <text x="670" y="1084" text-anchor="middle" class="small">可回到左侧任一原状态，并非固定回到 processing；原状态缺失则拒绝操作。</text>
+    <text x="60" y="1124" class="small">平台介入角色：super_admin / platform_operator / delivery_monitor（均须账号已激活、已实名）</text>
+  </g>
+
+  <line x1="60" y1="1150" x2="1580" y2="1150" class="rule"/>
+  <g id="terminal-rules">
+    <text x="60" y="1195" class="section">03  所有未结束状态均可终止</text>
+    <rect x="60" y="1230" width="620" height="160" class="node"/>
+    <text x="85" y="1270" class="name">全部五个未结束状态（包含平台介入中）</text>
+    <text x="85" y="1306" class="code">awaiting_response / processing / awaiting_buyer_info</text>
+    <text x="85" y="1342" class="code">awaiting_buyer_confirmation / platform_intervention</text>
+    <text x="85" y="1375" class="small">此分组代表任意一个成员状态，非新增工单状态。</text>
+    <rect x="1260" y="1215" width="320" height="80" class="node"/>
+    <text x="1420" y="1248" text-anchor="middle" class="name">已撤回</text>
+    <text x="1420" y="1278" text-anchor="middle" class="code">withdrawn</text>
+    <rect x="1260" y="1340" width="320" height="80" class="node"/>
+    <text x="1420" y="1373" text-anchor="middle" class="name">已强制关闭</text>
+    <text x="1420" y="1403" text-anchor="middle" class="code">force_closed</text>
+    <path d="M680 1265 H960 V1255 H1260" class="flow"/>
+    <text x="970" y="1235" text-anchor="middle" class="label">买方 · 撤回 withdraw</text>
+    <path d="M680 1365 H960 V1380 H1260" class="back"/>
+    <text x="970" y="1321" text-anchor="middle" class="label">平台管理员 / 运营 · force_close</text>
+    <text x="970" y="1416" text-anchor="middle" class="small">delivery_monitor 无强制关闭权限</text>
+  </g>
+  <line x1="60" y1="1450" x2="1580" y2="1450" class="rule"/>
+  <g id="sla-notes">
+    <text x="60" y="1493" class="section">计时与证据边界</text>
+    <text x="60" y="1534">• 待补材料、待买方确认：暂停解决时钟，不暂停首次响应；平台介入不暂停解决时钟。</text>
+    <text x="60" y="1572">• completed / withdrawn / force_closed 均为终态；撤回、强关不等于确认解决，无超时自动确认。</text>
+    <text x="60" y="1610">• SLA 使用创建时冻结的买方企业承诺；整改与平台介入按轮次、事件证据计量，不虚构时限数值。</text>
+    <text x="60" y="1655" class="small">实现依据：after_sales_workflow.py · ticket_sla_clocks.py · sla_clock.py · sla_milestones.py · afterSales.js</text>
+  </g>
+</svg>
