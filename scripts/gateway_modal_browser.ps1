@@ -43,6 +43,7 @@ try {
     $result.layout=Js 'JSON.stringify([...document.querySelectorAll(".pagination-controls")].map(p=>({label:p.getAttribute("aria-label"),width:p.clientWidth,children:[...p.children].map(e=>({tag:e.tagName,top:e.getBoundingClientRect().top,width:e.getBoundingClientRect().width,direction:getComputedStyle(e).flexDirection}))})))'
     if($Before){Shot 'gateway-before.png';$result.status='passed'}
     else {
+        Check 'document.querySelector(".route-details").contains(document.activeElement)' 'Opening details moves keyboard focus into dialog'
         Check 'document.querySelectorAll(".route-details [role=tab]").length===3' 'Gateway details use three standard tabs'
         Check '!!document.querySelector(".route-details[role=dialog], [role=dialog] .route-details")' 'Gateway details open in a dialog'
         Check '[...document.querySelectorAll(".pagination-controls")].every(p=>{const y=[...p.children].filter(e=>!e.classList.contains("pagination-error")).map(e=>e.getBoundingClientRect().top+e.getBoundingClientRect().height/2);return Math.max(...y)-Math.min(...y)<2})' 'Desktop list and dialog pagination align on one row'

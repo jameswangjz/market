@@ -16,12 +16,10 @@ let alive = true;
 let session = 0, previousFocus;
 const panel = ref(null);
 const detailTabs = [{ key: "stats", label: "调用统计" }, { key: "revisions", label: "发布记录" }, { key: "alerts", label: "告警" }];
-watch(selected, async (row, old) => {
-  const current = ++session;
+watch(selected, (row, old) => {
+  ++session;
   if (row) {
     if (!old) previousFocus = document.activeElement;
-    await nextTick();
-    if (alive && session === current) panel.value?.focus();
   } else if (panel.value?.contains(document.activeElement)) {
     previousFocus?.isConnected && previousFocus.focus();
   }
@@ -65,7 +63,12 @@ async function loadDetail(kind = tab.value) {
 }
 async function select(row) {
   selected.value = row; auditAlert.value = null; stats.value = {}; actionError.value = "";
+  const current = session;
   for (const kind of ["stats", "revisions", "alerts", "audit"]) { lists[kind].generation++; lists[kind].page = 1; lists[kind].total = 0; lists[kind].busy = false; lists[kind].error = ""; details[kind] = []; }
+  // Wait after the reactive update queues rendering, not inside its sync watcher.
+  await nextTick();
+  if (!alive || session !== current) return;
+  panel.value?.focus();
   await loadDetail();
 }
 async function page(kind, value, size) { if (changeListPage(lists[kind], value, size)) await (kind === "routes" ? loadRoutes() : loadDetail(kind)); }
