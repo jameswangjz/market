@@ -55,9 +55,11 @@ try {
     Check-Layout 'collapsed-sidebar'
     Check 'document.querySelector(".sidebar").classList.contains("collapsed")' 'Sidebar collapse remains supported'
     Js 'document.querySelector(".desktop-collapse").click();true'|Out-Null
+    $viewLabels=@{orders='\u8ba2\u5355\u4e2d\u5fc3';gateway='API \u7f51\u5173';sla='SLA \u4fdd\u969c';settings='\u7cfb\u7edf\u8bbe\u7f6e'}
     foreach($view in @('orders','gateway','sla','settings')) {
-        Cdp 'Page.navigate' @{url="$BaseUrl/console?view=$view"}|Out-Null
-        WaitJs '!!document.querySelector(".content .page-heading")' 30
+        $label=$viewLabels[$view]
+        Js "(()=>{const b=[...document.querySelectorAll('.sidebar .nav-item')].find(e=>e.textContent.includes('$label'));if(!b)throw new Error('Navigation entry missing');b.click();return true})()"|Out-Null
+        WaitJs "!!document.querySelector('.sidebar .nav-item.active')?.textContent.includes('$label')" 30
         Js '(async()=>{await new Promise(r=>setTimeout(r,500));return true})()'|Out-Null
         Check-Layout $view
         if($view -ceq 'settings'){Check '!!document.querySelector(".content .settings-tabs")' 'Settings-specific width cap removed';Shot 'settings-qhd.png'}

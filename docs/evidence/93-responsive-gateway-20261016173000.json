@@ -1,0 +1,21 @@
+{
+  "checks": [
+    "Opening details moves keyboard focus into dialog",
+    "Gateway details use three standard tabs",
+    "Gateway details open in a dialog",
+    "Desktop list and dialog pagination align on one row",
+    "Tab 1 is selectable",
+    "Tab 2 is selectable",
+    "Tab 0 is selectable",
+    "Mobile dialog stays within viewport",
+    "Mobile pagination labels remain compact horizontal controls",
+    "Escape closes gateway details"
+  ],
+  "screenshots": [
+    "gateway-modal-desktop.png",
+    "gateway-modal-mobile.png"
+  ],
+  "layout": "[{\"label\":\"网关路由分页\",\"width\":1101,\"children\":[{\"tag\":\"SPAN\",\"top\":935.59375,\"width\":38.140625,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":929.59375,\"width\":96,\"direction\":\"row\"},{\"tag\":\"DIV\",\"top\":929.59375,\"width\":138,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":929.59375,\"width\":88,\"direction\":\"row\"},{\"tag\":\"BUTTON\",\"top\":929.59375,\"width\":30,\"direction\":\"row\"}]},{\"label\":\"调用统计分页\",\"width\":1018,\"children\":[{\"tag\":\"SPAN\",\"top\":714.5,\"width\":38.140625,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":708.5,\"width\":96,\"direction\":\"row\"},{\"tag\":\"DIV\",\"top\":708.5,\"width\":138,\"direction\":\"row\"},{\"tag\":\"LABEL\",\"top\":708.5,\"width\":88,\"direction\":\"row\"},{\"tag\":\"BUTTON\",\"top\":708.5,\"width\":30,\"direction\":\"row\"}]}]",
+  "scope": "installed gateway read-only UI; no business writes",
+  "status": "passed"
+}

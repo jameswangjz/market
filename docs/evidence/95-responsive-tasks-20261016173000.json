@@ -1,0 +1,22 @@
+{
+  "captured_at": "2026-10-16T09:31:10.245082+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "RSP-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "RSP-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "RSP-QA-001",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "已部署20261016173000-52f6ef6；38项局部测试、41项多屏浏览器检查、10项网关回归通过，等待实际双屏验收"
+}
