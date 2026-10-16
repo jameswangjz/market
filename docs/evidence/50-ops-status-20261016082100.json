@@ -1,0 +1,1123 @@
+{
+  "captured_at": "2026-10-16T00:19:10.389940+00:00",
+  "r3_total": 32,
+  "r3_counts": {
+    "todo": 0,
+    "in_progress": 1,
+    "review": 31,
+    "blocked": 0,
+    "done": 0
+  },
+  "global_total": 220,
+  "global_counts": {
+    "todo": 0,
+    "in_progress": 1,
+    "review": 72,
+    "blocked": 5,
+    "done": 142
+  },
+  "stale_findings": [],
+  "items": [
+    {
+      "id": "a3ed01904cdb4b62cc3a294a1f839f86",
+      "code": "TRD-R3-OPS-003",
+      "owner": "部署测试Agent",
+      "title": "market部署与证据归档",
+      "area": "OPS",
+      "priority": "P1",
+      "status": "in_progress",
+      "dependencies": "TRD-R3-QA-001,TRD-R3-QA-002,TRD-R3-QA-003,TRD-R3-QA-004,TRD-R3-QA-006",
+      "acceptance": "规定镜像标签、版本证明、实际链路证据；不可测单列\n执行清单：检查依赖及备份；执行范围内操作并核对结果；保存脱敏证据及回退步骤\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-16T00:14:34.812566+00:00；Read-only inventory: zero legacy report/application products; one historical ticket remains evidence-unknown, no migration. Backup created; restore tool nerdctl compatibility fixed and rerun pending. Deployment archive preserves Redis continuity finding and not-ready ledger worker; frontend acceptance checklist drafted, no done claims.\nOPS review evidence_sha256={\"archive\": \"4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92\", \"checklist\": \"8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c\", \"inventory\": \"12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb\", \"restore\": \"3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15\", \"snapshot\": \"94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6\"}; OPS002/ARC002 submitted for review only. No historical migration approved or executed; historical tickets review_only. OPS003 remains in_progress at 90, waiting for explicit user confirmation of Redis source continuity recovery versus a new epoch; no reset authorized. Release not ready; simulated bank/storage/monthly provider boundaries remain; no browser claims.",
+      "progress": 90,
+      "updated_at": "2026-10-16 00:18:50.582296+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-OPS-003-S01",
+          "title": "检查依赖及备份",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-OPS-003-S02",
+          "title": "执行范围内操作并核对结果",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-OPS-003-S03",
+          "title": "保存脱敏证据及回退步骤",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "f1a50f049fd5216b2fb9cb727df573a6",
+      "code": "TRD-R3-ARC-001",
+      "owner": "主Agent",
+      "title": "新版基线与接口权限契约",
+      "area": "ARC",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "",
+      "acceptance": "11项需求、确认及旧规则替代可追溯；接口状态枚举冻结\n执行清单：核对最新确认及历史冲突；输出边界契约和逐项验收标准；复核任务依赖与待确认条件\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：设计与只读盘点范围已完成：32项124子步骤、DAG校验；历史报告/应用0对象，无需迁移；售后1条processing且截止时间完整，退款0；保留受保护订单。仅提交文档/盘点待验收，不代表业务代码或部署完成。证据r3-metadata-review-proof-20261014.json。",
+      "progress": 100,
+      "updated_at": "2026-10-15 01:20:41.000987+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-ARC-001-S01",
+          "title": "核对最新确认及历史冲突",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-ARC-001-S02",
+          "title": "输出边界契约和逐项验收标准",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-ARC-001-S03",
+          "title": "复核任务依赖与待确认条件",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "9923d195ca5c4ee863c27d08405aeca1",
+      "code": "TRD-R3-BE-001",
+      "owner": "后端Agent",
+      "title": "开发进度服务端权限收敛",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "除super_admin外列表详情导出SSE修改均403；原权限不回归\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T02:35:56.876089+00:00；最新需求范围部署后专项通过：12类非管理员GET/PATCH拒绝、类型组合20次拒绝且历史可读、5个既有分页75次翻页及跨企业审计隔离。真实部署ASGI与隔离PostgreSQL验证，不冒充浏览器全链路或用户验收。；证据SHA256=3d6ac614d3690d27353368d4730e80d9240d2ad38caa26a333d22444257499d9",
+      "progress": 100,
+      "updated_at": "2026-10-15 02:35:56.876089+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-001-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-001-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-001-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-001-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "7d126adb40036f94bcfd4a29d3488c1f",
+      "code": "TRD-R3-BE-002",
+      "owner": "后端Agent",
+      "title": "产品类型禁新增与固定交付校验",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "禁止新增report/application；伪造映射失败，旧快照可读\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T02:35:56.878534+00:00；最新需求范围部署后专项通过：12类非管理员GET/PATCH拒绝、类型组合20次拒绝且历史可读、5个既有分页75次翻页及跨企业审计隔离。真实部署ASGI与隔离PostgreSQL验证，不冒充浏览器全链路或用户验收。；证据SHA256=3d6ac614d3690d27353368d4730e80d9240d2ad38caa26a333d22444257499d9",
+      "progress": 100,
+      "updated_at": "2026-10-15 02:35:56.878534+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-002-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-002-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-002-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-002-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "8bc2ffdacdc237d777f6cba550c276dc",
+      "code": "TRD-R3-BE-003",
+      "owner": "后端Agent",
+      "title": "分页接口统一与范围鉴权",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "逐页清单；真实total、页大小边界、跨企业拒绝、稳定排序\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T02:35:56.882077+00:00；最新需求范围部署后专项通过：12类非管理员GET/PATCH拒绝、类型组合20次拒绝且历史可读、5个既有分页75次翻页及跨企业审计隔离。真实部署ASGI与隔离PostgreSQL验证，不冒充浏览器全链路或用户验收。；证据SHA256=3d6ac614d3690d27353368d4730e80d9240d2ad38caa26a333d22444257499d9",
+      "progress": 100,
+      "updated_at": "2026-10-15 02:35:56.882077+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-003-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-003-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-003-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-003-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "931d2901b48c8609f002b865e0d6ca31",
+      "code": "TRD-R3-BE-004",
+      "owner": "后端Agent",
+      "title": "授权成员我的应用与SSO统一鉴权",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "非购买人授权可见可登录；禁用退出到期撤销禁止；无Secret\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:45:59.513218+00:00；c801实际代码真实PG负测及普通非购买人桌面移动SSO通过；撤销使RP旧会话与列表失效；精确夹具已清理；无Secret，待用户验收；证据SHA256=87240ab4c617cdb3a3afb4192e329019fc7ed4464afac8d20be1157ed447dcc4",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:45:59.513218+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-004-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-004-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-004-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-004-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "1a2bed465924a143f52817643b7d099c",
+      "code": "TRD-R3-BE-005",
+      "owner": "后端Agent",
+      "title": "售后数据迁移与状态动作服务",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001,TRD-R3-OPS-001",
+      "acceptance": "状态迁移、有效事件、乐观锁幂等、旧缺证不伪造\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:17:25.117253+00:00；已部署a28aaf2；真实隔离PG和已安装HTTP路由专项通过，另有并发/回滚专项；旧快照不变；待用户验收，未含BE009完整评估；证据SHA256=648b9123fba430d51d98625604d8a8d03a4519e940ffcb594f2a783a8e24b2f3",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:17:25.117253+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-005-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-005-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-005-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-005-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "21ed1851995d6f38f3bcbbe428e0e70e",
+      "code": "TRD-R3-BE-006",
+      "owner": "后端Agent",
+      "title": "售后权限与平台介入强制关闭",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-005",
+      "acceptance": "买方发起卖方处理买方确认；双方介入；监控不能强关\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T07:13:35.802978+00:00；售后组分层验证通过：52后端、66前端、8修复专项；13真实PG、4真实扫描存储、16桌面移动组件场景与部署桌面只读详情；APIbc05455/Web1d579ab；不是同一次浏览器写入E2E；精准清理，待用户验收；证据SHA256=fceb4a2db38793c15eecfafdf4204e10409b4ada0cd3a380feeb3b8e91d37a07",
+      "progress": 100,
+      "updated_at": "2026-10-15 07:13:35.802978+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-006-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-006-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-006-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-006-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "35c35491f226a351edbb923f40ef657c",
+      "code": "TRD-R3-BE-007",
+      "owner": "后端Agent",
+      "title": "工单附件评论消息与审计",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-006",
+      "acceptance": "受控附件、逐动作日志、站内邮件去重、买方不见成本\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T07:13:35.805715+00:00；售后组分层验证通过：52后端、66前端、8修复专项；13真实PG、4真实扫描存储、16桌面移动组件场景与部署桌面只读详情；APIbc05455/Web1d579ab；不是同一次浏览器写入E2E；精准清理，待用户验收；证据SHA256=fceb4a2db38793c15eecfafdf4204e10409b4ada0cd3a380feeb3b8e91d37a07",
+      "progress": 100,
+      "updated_at": "2026-10-15 07:13:35.805715+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-007-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-007-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-007-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-007-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "b306d5647105f094e0b9fbc974ddf51e",
+      "code": "TRD-R3-BE-008",
+      "owner": "后端Agent",
+      "title": "企业SLA审核绑定及后续调整",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "系统管理员运营调整及审计；新工单生效、旧快照不变\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:17:25.119201+00:00；已部署a28aaf2；真实隔离PG和已安装HTTP路由专项通过，另有并发/回滚专项；旧快照不变；待用户验收，未含BE009完整评估；证据SHA256=648b9123fba430d51d98625604d8a8d03a4519e940ffcb594f2a783a8e24b2f3",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:17:25.119201+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-008-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-008-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-008-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-008-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "d6930803fb6eb650bddc3e8daa817ec2",
+      "code": "TRD-R3-BE-009",
+      "owner": "后端Agent",
+      "title": "三方SLA日历时钟及评估",
+      "area": "BE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-005,TRD-R3-BE-008",
+      "acceptance": "首响/介入审查不暂停、解决暂停；探测与网关请求来源分离；100样本/90%探测覆盖/95%耗时完整/10交付门槛；错误排除及归责；P95非均值；deadline归月含失败未完成；不足不默认达标，线下售后纳入\n执行清单：保存独立探测/请求样本及数据来源、排除原因和归责；按冻结规则计算P95、采样可用率及样本完整性；实现支持日历/暂停区间和介入审查不暂停；按交付deadline归月聚合，失败未完成入分母；验证100样本、90%覆盖、95%耗时完整和10订单边界\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T06:36:32.846825+00:00；实际签名探测2条、企业业务日志4条、冻结订单评估4条落库及旧入口真实HTTP验证通过；样本不足不判达标；测试夹具精确清理；生产HA和第三方缺源边界见证据，提交待验收；证据SHA256=8078ae98a0c9eec281f1daa654d94de51aceba493b9a8b70d5f56c3942b9dbc4",
+      "progress": 100,
+      "updated_at": "2026-10-15 06:36:32.846825+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-009-S01",
+          "title": "保存独立探测/请求样本及数据来源、排除原因和归责",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-009-S02",
+          "title": "按冻结规则计算P95、采样可用率及样本完整性",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-009-S03",
+          "title": "实现支持日历/暂停区间和介入审查不暂停",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-009-S04",
+          "title": "按交付deadline归月聚合，失败未完成入分母",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-009-S05",
+          "title": "验证100样本、90%覆盖、95%耗时完整和10订单边界",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "3fb9a2699ab7fdc0f1a3890fdad011aa",
+      "code": "TRD-R3-FE-001",
+      "owner": "前端Agent",
+      "title": "商城目录名称类型紧凑过滤",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "两级联动、类型过滤无交付过滤；桌面移动可用\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:29:17.460954+00:00；a28部署后桌面移动对应功能专项通过；保存失败和单次提交由6项隔离自动化覆盖；组合脚本后续SLA失败独立披露，未代用户验收；证据SHA256=77cbf9392437fd95719906f64e2f75985eda241ebc54d5266ff80e8b6b653e56",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:29:17.460954+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-001-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-001-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-001-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-001-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "e7d5e3701b3728aacd3d75b54c1f4f4b",
+      "code": "TRD-R3-FE-002",
+      "owner": "前端Agent",
+      "title": "工作台身份与提供方菜单调整",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-001",
+      "acceptance": "非管理员无开发进度；提供方无我的应用；身份字体统一\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:49:46.096325+00:00；前端c6已部署，提供方桌面移动24项通过；修复辅助标签显露及身份文字截断，12px/78px；结合角色权限矩阵待用户验收；证据SHA256=f0dedc86eaa13ec33388e0e08a3a7b8f103bd326763025c0ca28e8f88e669796",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:49:46.096325+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-002-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-002-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-002-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-002-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "025f78207df087a39426f7a20ea0f1f7",
+      "code": "TRD-R3-FE-003",
+      "owner": "前端Agent",
+      "title": "登记类型交付联动及防误关闭",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-002",
+      "acceptance": "固定只读交付、遮罩ESC不关、dirty确认、失败保留、单次提交\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:29:17.463306+00:00；a28部署后桌面移动对应功能专项通过；保存失败和单次提交由6项隔离自动化覆盖；组合脚本后续SLA失败独立披露，未代用户验收；证据SHA256=77cbf9392437fd95719906f64e2f75985eda241ebc54d5266ff80e8b6b653e56",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:29:17.463306+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-003-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-003-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-003-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-003-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "3201fc97ccd4a51548adc462662ddf3d",
+      "code": "TRD-R3-FE-004",
+      "owner": "前端Agent",
+      "title": "全分页页面条数及跳页",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-003",
+      "acceptance": "10/20/50/100；跳页、空页、筛选重置、移动布局\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:39:31.311451+00:00；商城/消息/审计列表与时间线桌面移动验证通过；审计第2页及筛选重置通过；账单本地分页由真实函数与SSR隔离夹具覆盖，未在开发库创建对账报告；组合会话问题单独披露；证据SHA256=bf24548f641cd7e3c69cae1bdbb74e2d65ad64b0dd352923096d8a08132b1882",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:39:31.311451+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-004-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-004-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-004-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-004-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "b02621f3252a668fd5c7c6eff07254c2",
+      "code": "TRD-R3-FE-005",
+      "owner": "前端Agent",
+      "title": "普通成员我的应用访问入口",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-004",
+      "acceptance": "授权应用列表、不可用原因、OIDC实际跳转\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T03:48:00.165206+00:00；真实普通成员列表、OIDC/RP登录及撤销已浏览器通过；不可用原因/禁用按钮与多企业陈旧响应由23项隔离SSR/实际函数测试覆盖；多企业切换不冒充浏览器E2E，待用户验收；证据SHA256=5b954c7bf2a02f4cff38184dabf1dc3b39f44b7a99fc435336541e884c40f7ee",
+      "progress": 100,
+      "updated_at": "2026-10-15 03:48:00.165206+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-005-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-005-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-005-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-005-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "23cd5c43830790c048e2c3b37b050546",
+      "code": "TRD-R3-FE-006",
+      "owner": "前端Agent",
+      "title": "售后列表详情及动作页面",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-007",
+      "acceptance": "按身份按钮、状态、时间线、附件、介入理由及拒绝\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T07:13:35.807863+00:00；售后组分层验证通过：52后端、66前端、8修复专项；13真实PG、4真实扫描存储、16桌面移动组件场景与部署桌面只读详情；APIbc05455/Web1d579ab；不是同一次浏览器写入E2E；精准清理，待用户验收；证据SHA256=fceb4a2db38793c15eecfafdf4204e10409b4ada0cd3a380feeb3b8e91d37a07",
+      "progress": 100,
+      "updated_at": "2026-10-15 07:13:35.807863+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-006-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-006-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-006-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-006-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "e2d5c3cccd2aaff2ee6c417e91bd16bb",
+      "code": "TRD-R3-FE-007",
+      "owner": "前端Agent",
+      "title": "企业SLA调整及工单指标展示",
+      "area": "FE",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-008,TRD-R3-BE-009",
+      "acceptance": "实名审核等级、后续调整原因、责任指标及异常定位；样本不足及无数据源独立展示，周期结论可追溯探测/请求/订单/工单证据\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T07:53:45.909003+00:00；SLA组部署和分层验证已通过等待用户验收；证据SHA256=a0bf1563b35b9976ec3037b94d38cf7627736bc835ad8f89653bcd147a851a35",
+      "progress": 100,
+      "updated_at": "2026-10-15 07:53:45.909003+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-007-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-007-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-007-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-007-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "1dd828d4f936660267b05547cf5575d0",
+      "code": "TRD-R3-OPS-001",
+      "owner": "部署测试Agent",
+      "title": "历史类型及工单退款只读盘点",
+      "area": "OPS",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-ARC-001",
+      "acceptance": "输出report/application及关联数量、旧状态、缺证；不修改业务数据\n执行清单：只读盘点历史report/application及关联对象；只读盘点旧售后/退款状态和缺证；输出原数据未修改证明及迁移建议\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：设计与只读盘点范围已完成：32项124子步骤、DAG校验；历史报告/应用0对象，无需迁移；售后1条processing且截止时间完整，退款0；保留受保护订单。仅提交文档/盘点待验收，不代表业务代码或部署完成。证据r3-metadata-review-proof-20261014.json。",
+      "progress": 100,
+      "updated_at": "2026-10-15 01:20:41.004727+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-OPS-001-S01",
+          "title": "只读盘点历史report/application及关联对象",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-OPS-001-S02",
+          "title": "只读盘点旧售后/退款状态和缺证",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-OPS-001-S03",
+          "title": "输出原数据未修改证明及迁移建议",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "f73bb53d560d9e2e0f21af0349c897ca",
+      "code": "TRD-R3-QA-001",
+      "owner": "部署测试Agent",
+      "title": "商城分页弹框及菜单浏览器回归",
+      "area": "QA",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-FE-001,TRD-R3-FE-002,TRD-R3-FE-003,TRD-R3-FE-004",
+      "acceptance": "桌面移动、F5、一次保存一条、分页搜索及越权负测\n执行清单：准备隔离身份和对象，禁止改动受保护订单；执行验收条件逐项正向与负向测试；记录真实环境版本、结果及未具备条件；清理仅本任务创建的夹具\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T13:37:23.303954+00:00；商城与普通成员SSO真实浏览器验证通过_测试夹具已清理_待用户验收；证据SHA256=4b1bb917117f038946d269d35715a9237e1fca219a7a3b0143ee8d7a6cfb6344",
+      "progress": 100,
+      "updated_at": "2026-10-15 13:37:23.303954+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-QA-001-S01",
+          "title": "准备隔离身份和对象，禁止改动受保护订单",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-001-S02",
+          "title": "执行验收条件逐项正向与负向测试",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-001-S03",
+          "title": "记录真实环境版本、结果及未具备条件",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-001-S04",
+          "title": "清理仅本任务创建的夹具",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "b4b3eda1117f4a7474fbfae0cb109be4",
+      "code": "TRD-R3-QA-002",
+      "owner": "部署测试Agent",
+      "title": "授权SaaS普通成员浏览器SSO",
+      "area": "QA",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-FE-005",
+      "acceptance": "非订单拥有者登录模拟SaaS；取消授权/到期/禁用负测\n执行清单：准备隔离身份和对象，禁止改动受保护订单；执行验收条件逐项正向与负向测试；记录真实环境版本、结果及未具备条件；清理仅本任务创建的夹具\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T13:37:23.306596+00:00；商城与普通成员SSO真实浏览器验证通过_测试夹具已清理_待用户验收；证据SHA256=4b1bb917117f038946d269d35715a9237e1fca219a7a3b0143ee8d7a6cfb6344",
+      "progress": 100,
+      "updated_at": "2026-10-15 13:37:23.306596+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-QA-002-S01",
+          "title": "准备隔离身份和对象，禁止改动受保护订单",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-002-S02",
+          "title": "执行验收条件逐项正向与负向测试",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-002-S03",
+          "title": "记录真实环境版本、结果及未具备条件",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-002-S04",
+          "title": "清理仅本任务创建的夹具",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "9cca075de5635828ebe5171b5eaa742d",
+      "code": "TRD-R3-QA-003",
+      "owner": "部署测试Agent",
+      "title": "售后全状态权限并发回归",
+      "area": "QA",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-FE-006",
+      "acceptance": "双方处理确认拒绝介入强关；每事件审计、越权403及冲突409\n执行清单：准备隔离身份和对象，禁止改动受保护订单；执行验收条件逐项正向与负向测试；记录真实环境版本、结果及未具备条件；清理仅本任务创建的夹具\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T07:13:35.809991+00:00；售后组分层验证通过：52后端、66前端、8修复专项；13真实PG、4真实扫描存储、16桌面移动组件场景与部署桌面只读详情；APIbc05455/Web1d579ab；不是同一次浏览器写入E2E；精准清理，待用户验收；证据SHA256=fceb4a2db38793c15eecfafdf4204e10409b4ada0cd3a380feeb3b8e91d37a07",
+      "progress": 100,
+      "updated_at": "2026-10-15 07:13:35.809991+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-QA-003-S01",
+          "title": "准备隔离身份和对象，禁止改动受保护订单",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-003-S02",
+          "title": "执行验收条件逐项正向与负向测试",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-003-S03",
+          "title": "记录真实环境版本、结果及未具备条件",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-003-S04",
+          "title": "清理仅本任务创建的夹具",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "7cbe495bd69506ccd2793e230dcd71b1",
+      "code": "TRD-R3-QA-004",
+      "owner": "部署测试Agent",
+      "title": "三方SLA日历暂停快照验证",
+      "area": "QA",
+      "priority": "P0",
+      "status": "review",
+      "dependencies": "TRD-R3-FE-007",
+      "acceptance": "跨夜跨周闰月、冻结规则、暂停恢复、介入审查不暂停；100/90%/95%/10门槛边界、4xx/429排除证据、P95、跨月deadline、失败订单入分母；线下交付排除但售后纳入；新矩阵小数分钟及预警/违约优先级\n执行清单：准备隔离身份和对象，禁止改动受保护订单；执行验收条件逐项正向与负向测试；记录真实环境版本、结果及未具备条件；清理仅本任务创建的夹具\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T07:53:45.912558+00:00；SLA组部署和分层验证已通过等待用户验收；证据SHA256=a0bf1563b35b9976ec3037b94d38cf7627736bc835ad8f89653bcd147a851a35",
+      "progress": 100,
+      "updated_at": "2026-10-15 07:53:45.912558+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-QA-004-S01",
+          "title": "准备隔离身份和对象，禁止改动受保护订单",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-004-S02",
+          "title": "执行验收条件逐项正向与负向测试",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-004-S03",
+          "title": "记录真实环境版本、结果及未具备条件",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-004-S04",
+          "title": "清理仅本任务创建的夹具",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "4061635803b146ebedd49a0fbb6a4690",
+      "code": "TRD-R3-ARC-002",
+      "owner": "主Agent",
+      "title": "前端验收清单与任务状态复核",
+      "area": "ARC",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-OPS-003",
+      "acceptance": "逐项入口角色操作预期证据；review非done；真实银行待后续\n执行清单：核对最新确认及历史冲突；输出边界契约和逐项验收标准；复核任务依赖与待确认条件\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\nOPS review evidence_sha256={\"archive\": \"4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92\", \"checklist\": \"8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c\", \"inventory\": \"12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb\", \"restore\": \"3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15\", \"snapshot\": \"94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6\"}; OPS002/ARC002 submitted for review only. No historical migration approved or executed; historical tickets review_only. OPS003 remains in_progress at 90, waiting for explicit user confirmation of Redis source continuity recovery versus a new epoch; no reset authorized. Release not ready; simulated bank/storage/monthly provider boundaries remain; no browser claims.",
+      "progress": 100,
+      "updated_at": "2026-10-16 00:18:50.582296+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-ARC-002-S01",
+          "title": "核对最新确认及历史冲突",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-ARC-002-S02",
+          "title": "输出边界契约和逐项验收标准",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-ARC-002-S03",
+          "title": "复核任务依赖与待确认条件",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "1237a18b8b58bd21a21381c376679394",
+      "code": "TRD-R3-BE-010",
+      "owner": "后端Agent",
+      "title": "独立退款申请审批与权限",
+      "area": "BE",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-006",
+      "acceptance": "REF关联订单，买方申请、管理员运营审批；财务403\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T09:03:43.116498+00:00；独立退款申请审核及权限已部署并通过分层验证仅申请审核不含资金执行；证据SHA256=04f3002c04f9d6401b2225d6e23d00f13aadc4efbc5e4966bf89000433991b29",
+      "progress": 100,
+      "updated_at": "2026-10-15 09:03:43.116498+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-010-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-010-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-010-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-010-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "80522680bc44aa53b839778ebc7d672f",
+      "code": "TRD-R3-BE-011",
+      "owner": "后端Agent",
+      "title": "SaaS时长及API额度退款试算",
+      "area": "BE",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-010",
+      "acceptance": "成交快照、历史计量、累计超退；有限额度以月额度乘购买月数、不限额度按时长；跨段不重复计量\n执行清单：加载原经济段成交价、完整时段、月配额及历史用量；有限API用量/月额度乘月数；不限API及SaaS按时长；冻结累计已退与在途占用，校验退款不超可退余额；累计退款比例计算额度或尾部时长回收，避免重复取整\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T14:12:40.844602+00:00；SaaS独立PG试算预留审批及负向校验通过_结合API计量和多来源冻结证据转待验收_资源执行归BE012及QA跟踪；证据SHA256=282fe05e25d2b1f82f1d2afd6357834d9379913e9c27bf5a45b5bfea3a939b42",
+      "progress": 100,
+      "updated_at": "2026-10-15 14:12:40.844602+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-011-S01",
+          "title": "加载原经济段成交价、完整时段、月配额及历史用量",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-011-S02",
+          "title": "有限API用量/月额度乘月数；不限API及SaaS按时长",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-011-S03",
+          "title": "冻结累计已退与在途占用，校验退款不超可退余额",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-011-S04",
+          "title": "累计退款比例计算额度或尾部时长回收，避免重复取整",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "4a52db77aa11d2b1aff99df78760f762",
+      "code": "TRD-R3-BE-012",
+      "owner": "后端Agent",
+      "title": "部分退款经济方案与资源补偿",
+      "area": "BE",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-011",
+      "acceptance": "按确认方案回收；并发及故障可恢复；无已确认方案拒绝执行\n执行清单：实现冻结经济方案和幂等步骤台账；同步订单权益及APISIX/第三方资源，不清空已用量；资金与资源切换失败重试和补偿，重启后恢复；执行成功才进入退款完成并记录原值新值\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T17:06:06.440684+00:00；SaaS实际HTTP退款与OAuth及先后订单约束通过_跨四个自然月真实财务Saga组合PG通过_源代码与部署5706151哈希一致_文件自动退款已部署且48加60项组件测试通过_正在补FILE真实PG并发与最终原生API关联回归_尚未提交整项验收\nCurrent execution record: 2026-10-15T17:15:47.169620+00:00; evidence_bundle_sha256=33c6c997d7bef4fecc69ce6b95f4aee32f05195a9e88d83ecadc02b4cb2a28c3; evidence_sha256={\"file\": \"cd0a17d06039fdbd8f9a745973f3c3b021725e58b30a538a97ae5419d3f6d1c9\", \"monthly\": \"bd0afb7bfe36eae8387b2d7ab957a12599c69a1c4ffa53aabf0438d2a249ef8d\", \"native\": \"97a095c97a24380904e431062761f7430d87d0f682af36053fbf38730f58aa73\", \"saas\": \"45b3536aa5e6f95e4b5e256725ba0849f724415ddd8f8f0f3f68ace0562280fa\"}; financial combination uses real handlers/PostgreSQL; SaaS uses deployed OAuth/HTTP but is not a complete browser journey. FILE storage and monthly supplier are synthetic; funds simulated. Submitted as review for user frontend acceptance; no bank or complete browser automation acceptance is claimed.",
+      "progress": 100,
+      "updated_at": "2026-10-15 17:15:47.169620+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-012-S01",
+          "title": "实现冻结经济方案和幂等步骤台账",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-012-S02",
+          "title": "同步订单权益及APISIX/第三方资源，不清空已用量",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-012-S03",
+          "title": "资金与资源切换失败重试和补偿，重启后恢复",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-012-S04",
+          "title": "执行成功才进入退款完成并记录原值新值",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "b57a8b87729c876939bc5e455f3dde46",
+      "code": "TRD-R3-BE-013",
+      "owner": "后端Agent",
+      "title": "退款负清算及月度报表接入",
+      "area": "BE",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-012",
+      "acceptance": "完成月唯一负单、原规则收入成本；降级不重复冲回\n执行清单：核对现有数据与入口，冻结接口状态契约；实现服务端权限、校验、幂等和事务；实现审计及必要消息，不泄漏敏感信息；完成正向、越权、并发或失败测试\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T12:42:38.083090+00:00；普通退款负向月清算已开发部署；122项测试及PG四案例通过；待用户前端验收；实际银行和完整供应商链路不在通过范围；证据SHA256=ec2da7577ad268708ad13a45591fa77b4c8621c5d12e7494cf8d3d7dadd8a980",
+      "progress": 100,
+      "updated_at": "2026-10-15 12:42:38.083090+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-BE-013-S01",
+          "title": "核对现有数据与入口，冻结接口状态契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-013-S02",
+          "title": "实现服务端权限、校验、幂等和事务",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-013-S03",
+          "title": "实现审计及必要消息，不泄漏敏感信息",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-BE-013-S04",
+          "title": "完成正向、越权、并发或失败测试",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "9ba458cb73743671f68d5320c906cf1c",
+      "code": "TRD-R3-FE-008",
+      "owner": "前端Agent",
+      "title": "退款申请审核执行及关联展示",
+      "area": "FE",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-010,TRD-R3-BE-011",
+      "acceptance": "金额预览原因、审批通知、模拟标识、失败重试\n执行清单：核对现有组件和服务端契约；实现任务指定界面及角色动作；覆盖加载/空/错误/并发提交状态；执行组件测试与构建，补浏览器桌面移动验证\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T14:01:58.039255+00:00；前端42项及真实Chrome两组通过_已部署0e6c98e_模拟API和资金边界已列明_待用户前端验收；证据SHA256=2760e625afa6811c2d7a54a43d10aaf59fec8e0b2fa6519bd150d35c8f0b0484",
+      "progress": 100,
+      "updated_at": "2026-10-15 14:01:58.039255+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-FE-008-S01",
+          "title": "核对现有组件和服务端契约",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-008-S02",
+          "title": "实现任务指定界面及角色动作",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-008-S03",
+          "title": "覆盖加载/空/错误/并发提交状态",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-FE-008-S04",
+          "title": "执行组件测试与构建，补浏览器桌面移动验证",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "fb1c33628b2d8dd2c727ebd98f9ef0f8",
+      "code": "TRD-R3-OPS-002",
+      "owner": "部署测试Agent",
+      "title": "历史迁移审批及隔离回退演练",
+      "area": "OPS",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-OPS-001,TRD-R3-BE-005",
+      "acceptance": "先用户批准再迁移；备份隔离恢复、保留原经济快照\n执行清单：检查依赖及备份；执行范围内操作并核对结果；保存脱敏证据及回退步骤\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-16T00:14:34.810408+00:00；Read-only inventory: zero legacy report/application products; one historical ticket remains evidence-unknown, no migration. Backup created; restore tool nerdctl compatibility fixed and rerun pending. Deployment archive preserves Redis continuity finding and not-ready ledger worker; frontend acceptance checklist drafted, no done claims.\nOPS review evidence_sha256={\"archive\": \"4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92\", \"checklist\": \"8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c\", \"inventory\": \"12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb\", \"restore\": \"3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15\", \"snapshot\": \"94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6\"}; OPS002/ARC002 submitted for review only. No historical migration approved or executed; historical tickets review_only. OPS003 remains in_progress at 90, waiting for explicit user confirmation of Redis source continuity recovery versus a new epoch; no reset authorized. Release not ready; simulated bank/storage/monthly provider boundaries remain; no browser claims.",
+      "progress": 100,
+      "updated_at": "2026-10-16 00:18:50.582296+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-OPS-002-S01",
+          "title": "检查依赖及备份",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-OPS-002-S02",
+          "title": "执行范围内操作并核对结果",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-OPS-002-S03",
+          "title": "保存脱敏证据及回退步骤",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "7cdc67611a8087885b94b6e8f915f791",
+      "code": "TRD-R3-QA-005",
+      "owner": "部署测试Agent",
+      "title": "普通退款模拟资金故障测试",
+      "area": "QA",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-012,TRD-R3-FE-008",
+      "acceptance": "审批拒绝、部分/全额、超退并发、资源失败资金失败重启恢复\n执行清单：准备隔离身份和对象，禁止改动受保护订单；执行验收条件逐项正向与负向测试；记录真实环境版本、结果及未具备条件；清理仅本任务创建的夹具\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T17:06:06.442527+00:00；SaaS实际HTTP退款与OAuth及先后订单约束通过_跨四个自然月真实财务Saga组合PG通过_源代码与部署5706151哈希一致_文件自动退款已部署且48加60项组件测试通过_正在补FILE真实PG并发与最终原生API关联回归_尚未提交整项验收\nCurrent execution record: 2026-10-15T17:15:47.169620+00:00; evidence_bundle_sha256=33c6c997d7bef4fecc69ce6b95f4aee32f05195a9e88d83ecadc02b4cb2a28c3; evidence_sha256={\"file\": \"cd0a17d06039fdbd8f9a745973f3c3b021725e58b30a538a97ae5419d3f6d1c9\", \"monthly\": \"bd0afb7bfe36eae8387b2d7ab957a12599c69a1c4ffa53aabf0438d2a249ef8d\", \"native\": \"97a095c97a24380904e431062761f7430d87d0f682af36053fbf38730f58aa73\", \"saas\": \"45b3536aa5e6f95e4b5e256725ba0849f724415ddd8f8f0f3f68ace0562280fa\"}; financial combination uses real handlers/PostgreSQL; SaaS uses deployed OAuth/HTTP but is not a complete browser journey. FILE storage and monthly supplier are synthetic; funds simulated. Submitted as review for user frontend acceptance; no bank or complete browser automation acceptance is claimed.",
+      "progress": 100,
+      "updated_at": "2026-10-15 17:15:47.169620+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-QA-005-S01",
+          "title": "准备隔离身份和对象，禁止改动受保护订单",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-005-S02",
+          "title": "执行验收条件逐项正向与负向测试",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-005-S03",
+          "title": "记录真实环境版本、结果及未具备条件",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-005-S04",
+          "title": "清理仅本任务创建的夹具",
+          "status": "untracked"
+        }
+      ]
+    },
+    {
+      "id": "7b71130eb04116546d0b14e65fb47dcb",
+      "code": "TRD-R3-QA-006",
+      "owner": "部署测试Agent",
+      "title": "退款升降级月度清算完整回归",
+      "area": "QA",
+      "priority": "P1",
+      "status": "review",
+      "dependencies": "TRD-R3-BE-013,TRD-R3-QA-005",
+      "acceptance": "跨月正负五方报表、成本冲回、双腿不重计、原已付批次不改\n执行清单：准备隔离身份和对象，禁止改动受保护订单；执行验收条件逐项正向与负向测试；记录真实环境版本、结果及未具备条件；清理仅本任务创建的夹具\n定义SHA256：453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n当前执行记录：2026-10-15T17:06:06.444240+00:00；SaaS实际HTTP退款与OAuth及先后订单约束通过_跨四个自然月真实财务Saga组合PG通过_源代码与部署5706151哈希一致_文件自动退款已部署且48加60项组件测试通过_正在补FILE真实PG并发与最终原生API关联回归_尚未提交整项验收\nCurrent execution record: 2026-10-15T17:15:47.169620+00:00; evidence_bundle_sha256=33c6c997d7bef4fecc69ce6b95f4aee32f05195a9e88d83ecadc02b4cb2a28c3; evidence_sha256={\"file\": \"cd0a17d06039fdbd8f9a745973f3c3b021725e58b30a538a97ae5419d3f6d1c9\", \"monthly\": \"bd0afb7bfe36eae8387b2d7ab957a12599c69a1c4ffa53aabf0438d2a249ef8d\", \"native\": \"97a095c97a24380904e431062761f7430d87d0f682af36053fbf38730f58aa73\", \"saas\": \"45b3536aa5e6f95e4b5e256725ba0849f724415ddd8f8f0f3f68ace0562280fa\"}; financial combination uses real handlers/PostgreSQL; SaaS uses deployed OAuth/HTTP but is not a complete browser journey. FILE storage and monthly supplier are synthetic; funds simulated. Submitted as review for user frontend acceptance; no bank or complete browser automation acceptance is claimed.",
+      "progress": 100,
+      "updated_at": "2026-10-15 17:15:47.169620+00:00",
+      "subtasks": [
+        {
+          "id": "TRD-R3-QA-006-S01",
+          "title": "准备隔离身份和对象，禁止改动受保护订单",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-006-S02",
+          "title": "执行验收条件逐项正向与负向测试",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-006-S03",
+          "title": "记录真实环境版本、结果及未具备条件",
+          "status": "untracked"
+        },
+        {
+          "id": "TRD-R3-QA-006-S04",
+          "title": "清理仅本任务创建的夹具",
+          "status": "untracked"
+        }
+      ]
+    }
+  ],
+  "monitor_boundary": "本次实时巡检；未宣称已部署无人值守持续调度器"
+}

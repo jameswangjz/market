@@ -1,0 +1,7 @@
+{
+  "status": "failed",
+  "scope": "isolated backup rehearsal",
+  "reason": "nerdctl inspection NetworkMode and name-filter compatibility; no successful restore claimed",
+  "recovery_evidence": "44-restore-initial-cleanup-20261016081720.json",
+  "historical_migration_executed": false
+}

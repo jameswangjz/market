@@ -1,0 +1,55 @@
+{
+  "affected_worker": "api-charge-ledger-worker",
+  "all_business_release_passed": false,
+  "blockers": [
+    "api_charge_source_continuity_lost"
+  ],
+  "claim_boundaries": {
+    "backups": "Snapshot backup SHA declarations only; no restore or content verification.",
+    "bank": "Simulated payment/refund records; no real bank movement certified.",
+    "browser": "No browser acceptance or browser coverage claimed.",
+    "deployment": "Parent-supplied snapshot only; no live fetch or freshness certification.",
+    "monthly_provider": "In-memory CHANGE/STATUS/RENEW simulator; no supplier HTTP certified.",
+    "review": "Submitted for review is not approval or business release acceptance.",
+    "storage": "FILE storage is in-memory; no actual MinIO/upload/scan certified."
+  },
+  "deployed_commit": "5706151e08a177f0a9219bcb182391dc114d3f7d",
+  "evidence": {
+    "file": {
+      "path": "docs/evidence/36-file-refund-pg-20261016011200.json",
+      "sha256": "cd0a17d06039fdbd8f9a745973f3c3b021725e58b30a538a97ae5419d3f6d1c9",
+      "status": "passed"
+    },
+    "monthly": {
+      "path": "docs/evidence/37-monthly-final-20261016011210.json",
+      "sha256": "bd0afb7bfe36eae8387b2d7ab957a12599c69a1c4ffa53aabf0438d2a249ef8d",
+      "status": "passed"
+    },
+    "native": {
+      "path": "docs/evidence/35-native-release-final-20261016011200.json",
+      "sha256": "97a095c97a24380904e431062761f7430d87d0f682af36053fbf38730f58aa73",
+      "status": "passed"
+    },
+    "review": {
+      "path": "docs/evidence/38-refund-review-20261016011530.json",
+      "sha256": "8e70b833651500ba6f60d534214be181201c676562df60aa6df2125fb1953672",
+      "status": "submitted_for_review"
+    },
+    "saas": {
+      "path": "docs/evidence/32-saas-refund-live-20261016010230.json",
+      "sha256": "45b3536aa5e6f95e4b5e256725ba0849f724415ddd8f8f0f3f68ace0562280fa",
+      "status": "passed"
+    },
+    "snapshot": {
+      "path": "docs/evidence/40-release-live-20261016081035.json",
+      "sha256": "94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6",
+      "status": "passed_with_findings"
+    }
+  },
+  "release_ready": false,
+  "remaining_condition": "Recover API charge source continuity or obtain explicit approval for a new epoch; offline archive does not authorize reset.",
+  "schema_version": 1,
+  "status": "passed_with_findings",
+  "tag": "20261016005810-5706151",
+  "task_states_changed": false
+}

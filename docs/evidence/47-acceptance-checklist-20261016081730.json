@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "captured_at": "2026-10-16T00:17:02.332039+00:00",
+  "checklist_unique_tasks": 32,
+  "checklist_sha256": "8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c",
+  "protected_order_boundary_present": true,
+  "strategic_response_minutes": 360,
+  "review_is_not_done": true,
+  "api_continuity_gap_disclosed": true
+}

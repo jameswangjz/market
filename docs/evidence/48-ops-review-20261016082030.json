@@ -1,0 +1,100 @@
+{
+  "captured_at": "2026-10-16T00:18:50.582296+00:00",
+  "changed": 3,
+  "changes": [
+    {
+      "after": {
+        "acceptance": "\u9010\u9879\u5165\u53e3\u89d2\u8272\u64cd\u4f5c\u9884\u671f\u8bc1\u636e\uff1breview\u975edone\uff1b\u771f\u5b9e\u94f6\u884c\u5f85\u540e\u7eed\n\u6267\u884c\u6e05\u5355\uff1a\u6838\u5bf9\u6700\u65b0\u786e\u8ba4\u53ca\u5386\u53f2\u51b2\u7a81\uff1b\u8f93\u51fa\u8fb9\u754c\u5951\u7ea6\u548c\u9010\u9879\u9a8c\u6536\u6807\u51c6\uff1b\u590d\u6838\u4efb\u52a1\u4f9d\u8d56\u4e0e\u5f85\u786e\u8ba4\u6761\u4ef6\n\u5b9a\u4e49SHA256\uff1a453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\nOPS review evidence_sha256={\"archive\": \"4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92\", \"checklist\": \"8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c\", \"inventory\": \"12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb\", \"restore\": \"3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15\", \"snapshot\": \"94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6\"}; OPS002/ARC002 submitted for review only. No historical migration approved or executed; historical tickets review_only. OPS003 remains in_progress at 90, waiting for explicit user confirmation of Redis source continuity recovery versus a new epoch; no reset authorized. Release not ready; simulated bank/storage/monthly provider boundaries remain; no browser claims.",
+        "evidence_sha256": {
+          "archive": "4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92",
+          "checklist": "8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c",
+          "inventory": "12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb",
+          "restore": "3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15",
+          "snapshot": "94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6"
+        },
+        "progress": 100,
+        "status": "review"
+      },
+      "before": {
+        "acceptance": "\u9010\u9879\u5165\u53e3\u89d2\u8272\u64cd\u4f5c\u9884\u671f\u8bc1\u636e\uff1breview\u975edone\uff1b\u771f\u5b9e\u94f6\u884c\u5f85\u540e\u7eed\n\u6267\u884c\u6e05\u5355\uff1a\u6838\u5bf9\u6700\u65b0\u786e\u8ba4\u53ca\u5386\u53f2\u51b2\u7a81\uff1b\u8f93\u51fa\u8fb9\u754c\u5951\u7ea6\u548c\u9010\u9879\u9a8c\u6536\u6807\u51c6\uff1b\u590d\u6838\u4efb\u52a1\u4f9d\u8d56\u4e0e\u5f85\u786e\u8ba4\u6761\u4ef6\n\u5b9a\u4e49SHA256\uff1a453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725",
+        "progress": 5,
+        "status": "in_progress"
+      },
+      "code": "TRD-R3-ARC-002"
+    },
+    {
+      "after": {
+        "acceptance": "\u5148\u7528\u6237\u6279\u51c6\u518d\u8fc1\u79fb\uff1b\u5907\u4efd\u9694\u79bb\u6062\u590d\u3001\u4fdd\u7559\u539f\u7ecf\u6d4e\u5feb\u7167\n\u6267\u884c\u6e05\u5355\uff1a\u68c0\u67e5\u4f9d\u8d56\u53ca\u5907\u4efd\uff1b\u6267\u884c\u8303\u56f4\u5185\u64cd\u4f5c\u5e76\u6838\u5bf9\u7ed3\u679c\uff1b\u4fdd\u5b58\u8131\u654f\u8bc1\u636e\u53ca\u56de\u9000\u6b65\u9aa4\n\u5b9a\u4e49SHA256\uff1a453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n\u5f53\u524d\u6267\u884c\u8bb0\u5f55\uff1a2026-10-16T00:14:34.810408+00:00\uff1bRead-only inventory: zero legacy report/application products; one historical ticket remains evidence-unknown, no migration. Backup created; restore tool nerdctl compatibility fixed and rerun pending. Deployment archive preserves Redis continuity finding and not-ready ledger worker; frontend acceptance checklist drafted, no done claims.\nOPS review evidence_sha256={\"archive\": \"4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92\", \"checklist\": \"8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c\", \"inventory\": \"12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb\", \"restore\": \"3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15\", \"snapshot\": \"94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6\"}; OPS002/ARC002 submitted for review only. No historical migration approved or executed; historical tickets review_only. OPS003 remains in_progress at 90, waiting for explicit user confirmation of Redis source continuity recovery versus a new epoch; no reset authorized. Release not ready; simulated bank/storage/monthly provider boundaries remain; no browser claims.",
+        "evidence_sha256": {
+          "archive": "4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92",
+          "checklist": "8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c",
+          "inventory": "12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb",
+          "restore": "3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15",
+          "snapshot": "94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6"
+        },
+        "progress": 100,
+        "status": "review"
+      },
+      "before": {
+        "acceptance": "\u5148\u7528\u6237\u6279\u51c6\u518d\u8fc1\u79fb\uff1b\u5907\u4efd\u9694\u79bb\u6062\u590d\u3001\u4fdd\u7559\u539f\u7ecf\u6d4e\u5feb\u7167\n\u6267\u884c\u6e05\u5355\uff1a\u68c0\u67e5\u4f9d\u8d56\u53ca\u5907\u4efd\uff1b\u6267\u884c\u8303\u56f4\u5185\u64cd\u4f5c\u5e76\u6838\u5bf9\u7ed3\u679c\uff1b\u4fdd\u5b58\u8131\u654f\u8bc1\u636e\u53ca\u56de\u9000\u6b65\u9aa4\n\u5b9a\u4e49SHA256\uff1a453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n\u5f53\u524d\u6267\u884c\u8bb0\u5f55\uff1a2026-10-16T00:14:34.810408+00:00\uff1bRead-only inventory: zero legacy report/application products; one historical ticket remains evidence-unknown, no migration. Backup created; restore tool nerdctl compatibility fixed and rerun pending. Deployment archive preserves Redis continuity finding and not-ready ledger worker; frontend acceptance checklist drafted, no done claims.",
+        "progress": 60,
+        "status": "in_progress"
+      },
+      "code": "TRD-R3-OPS-002"
+    },
+    {
+      "after": {
+        "acceptance": "\u89c4\u5b9a\u955c\u50cf\u6807\u7b7e\u3001\u7248\u672c\u8bc1\u660e\u3001\u5b9e\u9645\u94fe\u8def\u8bc1\u636e\uff1b\u4e0d\u53ef\u6d4b\u5355\u5217\n\u6267\u884c\u6e05\u5355\uff1a\u68c0\u67e5\u4f9d\u8d56\u53ca\u5907\u4efd\uff1b\u6267\u884c\u8303\u56f4\u5185\u64cd\u4f5c\u5e76\u6838\u5bf9\u7ed3\u679c\uff1b\u4fdd\u5b58\u8131\u654f\u8bc1\u636e\u53ca\u56de\u9000\u6b65\u9aa4\n\u5b9a\u4e49SHA256\uff1a453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n\u5f53\u524d\u6267\u884c\u8bb0\u5f55\uff1a2026-10-16T00:14:34.812566+00:00\uff1bRead-only inventory: zero legacy report/application products; one historical ticket remains evidence-unknown, no migration. Backup created; restore tool nerdctl compatibility fixed and rerun pending. Deployment archive preserves Redis continuity finding and not-ready ledger worker; frontend acceptance checklist drafted, no done claims.\nOPS review evidence_sha256={\"archive\": \"4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92\", \"checklist\": \"8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c\", \"inventory\": \"12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb\", \"restore\": \"3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15\", \"snapshot\": \"94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6\"}; OPS002/ARC002 submitted for review only. No historical migration approved or executed; historical tickets review_only. OPS003 remains in_progress at 90, waiting for explicit user confirmation of Redis source continuity recovery versus a new epoch; no reset authorized. Release not ready; simulated bank/storage/monthly provider boundaries remain; no browser claims.",
+        "evidence_sha256": {
+          "archive": "4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92",
+          "checklist": "8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c",
+          "inventory": "12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb",
+          "restore": "3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15",
+          "snapshot": "94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6"
+        },
+        "progress": 90,
+        "status": "in_progress"
+      },
+      "before": {
+        "acceptance": "\u89c4\u5b9a\u955c\u50cf\u6807\u7b7e\u3001\u7248\u672c\u8bc1\u660e\u3001\u5b9e\u9645\u94fe\u8def\u8bc1\u636e\uff1b\u4e0d\u53ef\u6d4b\u5355\u5217\n\u6267\u884c\u6e05\u5355\uff1a\u68c0\u67e5\u4f9d\u8d56\u53ca\u5907\u4efd\uff1b\u6267\u884c\u8303\u56f4\u5185\u64cd\u4f5c\u5e76\u6838\u5bf9\u7ed3\u679c\uff1b\u4fdd\u5b58\u8131\u654f\u8bc1\u636e\u53ca\u56de\u9000\u6b65\u9aa4\n\u5b9a\u4e49SHA256\uff1a453e168ba7b8f86e9319b0d0c179cee29ac67cf3ec255445411955466958f725\n\u5f53\u524d\u6267\u884c\u8bb0\u5f55\uff1a2026-10-16T00:14:34.812566+00:00\uff1bRead-only inventory: zero legacy report/application products; one historical ticket remains evidence-unknown, no migration. Backup created; restore tool nerdctl compatibility fixed and rerun pending. Deployment archive preserves Redis continuity finding and not-ready ledger worker; frontend acceptance checklist drafted, no done claims.",
+        "progress": 80,
+        "status": "in_progress"
+      },
+      "code": "TRD-R3-OPS-003"
+    }
+  ],
+  "evidence": {
+    "archive": {
+      "path": "/tmp/43-manifest.json",
+      "sha256": "4e5e8a0561c6419e3079db38d3e9fe5e641ec2455f0887424a6aea7330625b92"
+    },
+    "checklist": {
+      "path": "/tmp/checklist.md",
+      "sha256": "8d253b890561cfd3e274dd994cde6d7fbce61f7c5a1b3e20dfecd6c405828c2c"
+    },
+    "inventory": {
+      "path": "/tmp/46.json",
+      "sha256": "12a9a98b22a5276d283552d0b90facf6f22c6bb0d020447c579d11020bfdf0eb"
+    },
+    "restore": {
+      "path": "/tmp/45.json",
+      "sha256": "3a5d4617c45eb38b2fd8267e792a3b018fe6cdf139307263775f5eb5bee56f15"
+    },
+    "snapshot": {
+      "path": "/tmp/40.json",
+      "sha256": "94e53ab8cbcd3ffc357d561eb1928b6745c29c1d9b4b678bec96edf89b96dcc6"
+    }
+  },
+  "historical_migration_executed": false,
+  "protected_after": {
+    "count": 1,
+    "sha256": "9bafc16202b3eb1df076b3cbff21f108907992b0dd2fba5352b2704bdbaced07"
+  },
+  "protected_before": {
+    "count": 1,
+    "sha256": "9bafc16202b3eb1df076b3cbff21f108907992b0dd2fba5352b2704bdbaced07"
+  },
+  "release_ready": false,
+  "review_submitted": 2,
+  "status": "submitted_for_review"
+}

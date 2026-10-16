@@ -1,0 +1,1 @@
+{"status": "recovered_cleanup", "removed": ["market-ops002-db92fb9daa564e7fb5f84305293d6d86", "market-ops002-a133848665f0449f86a826febf3a0c2a"], "cleanup_verified": true, "reason": "nerdctl inspection and name-filter compatibility; no live business changes"}

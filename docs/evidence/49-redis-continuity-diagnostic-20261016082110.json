@@ -1,0 +1,12 @@
+{
+  "status": "observed_failure",
+  "captured_at": "2026-10-16T00:19:22.568494+00:00",
+  "cursor_count": 1,
+  "old_cursor_present": true,
+  "source_run_matches": false,
+  "epoch_present": false,
+  "charge_stream_length": 0,
+  "historical_reset_performed": false,
+  "scope": "read-only diagnostic; no continuity inferred",
+  "persistent_volume_mounted": false
+}
