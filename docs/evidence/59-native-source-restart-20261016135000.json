@@ -1,0 +1,21 @@
+{
+  "status": "failed",
+  "error": {
+    "stage": "cleanup",
+    "error_type": "AcceptanceFailure",
+    "safe_detail": "runtime_cleanup_failed",
+    "failure": {
+      "error_type": "AcceptanceFailure",
+      "safe_detail": "restart_financial_snapshot_changed",
+      "stage": "cleanup"
+    }
+  },
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "a333482ed7800d98e9cec98b69864aaf9d8f8f87f03d8e0248d29d0f634f612e",
+    "r3_native_refund_runtime_acceptance": "3efd853e016fc87ff19e222853d311b264f4ebf88e4d5d9eae779630babc5e2a",
+    "r3_native_refund_flow": "0064fa0ce628cc5ebd1d0e191039c4be82fa91664fc4939ea2fc55b09d09554d",
+    "redis_native_restart_acceptance": "5cb3daedc08e7790f9306a52d1b1baf78af5d6769238a12c4e40d45e2b3bb621"
+  }
+}

@@ -87,6 +87,56 @@ def validate_charge_row(row, state, event_id, values):
           'missing_event_charge_unproven')
 
 
+def retain_financial_events(manifest):
+    state = manifest['database_ids'].get('native_refund', {})
+    flag = state.get('retain_financial_events_as_audit', False)
+    check(type(flag) is bool, 'invalid_financial_audit_flag')
+    if not flag:
+        return False
+    receipt = state.get('restart_receipt', {})
+    events, records = state.get('event_ids', []), state.get('validated_events', {})
+    check(source_stream(state) != STREAM and state.get('local_flow_done') is True
+          and state.get('proof', {}).get('charges') == 2
+          and state.get('proof', {}).get('monthly_used') == 2
+          and isinstance(events, list) and len(events) == 2 and len(set(events)) == 2
+          and isinstance(records, dict) and set(records) == set(events)
+          and receipt.get('source_id') == state['source_run_id']
+          and receipt.get('after_physical_run_id') == state['physical_run_id']
+          and isinstance(receipt.get('before_physical_run_id'), str)
+          and re.fullmatch(r'[0-9a-f]{40}', receipt['before_physical_run_id'])
+          and receipt['before_physical_run_id'] != state['physical_run_id']
+          and all(isinstance(receipt.get(key), str) and re.fullmatch(r'[0-9a-f]{64}', receipt[key])
+                  for key in ('seal_sha256', 'snapshot_sha256')), 'financial_audit_retention_unproven')
+    check(state['order_ids'] == [state['order_id']], 'financial_audit_owner_unproven')
+    for event in events:
+        validate_charge(event, records[event], start=state['stream_start'], end=state['stream_end'],
+            order_id=state['order_id'], term_id=state['term_id'], combination_id=state['combination_id'],
+            route_key=manifest['routes']['api']['source'], source_run_id=state['source_run_id'])
+    return True
+
+
+def verify_financial_audit(redis, manifest):
+    check(retain_financial_events(manifest), 'financial_audit_retention_unproven')
+    state = manifest['database_ids']['native_refund']
+    stream = source_stream(state)
+    for event in state['event_ids']:
+        rows = redis.xrange(stream, min=event, max=event, count=1)
+        check(len(rows) == 1 and rows[0][0] == event
+              and rows[0][1] == state['validated_events'][event], 'retained_financial_event_changed')
+
+
+def cleanup_financial_events(redis, manifest, events):
+    state = manifest['database_ids'].get('native_refund', {})
+    if retain_financial_events(manifest):
+        check(set(events) == set(state['event_ids']), 'retained_financial_event_set_changed')
+        verify_financial_audit(redis, manifest)
+        return
+    if events:
+        redis.xdel(source_stream(state), *events)
+    check(all(not redis.xrange(source_stream(state), min=e, max=e, count=1) for e in events),
+          'owned_stream_event_remains')
+
+
 def extra_keys(*, combination_id, generation, period_index, refund_id):
     """Derive a whitelist, never accept arbitrary caller-provided Redis keys."""
     exact_id(combination_id)
@@ -324,6 +374,8 @@ def _protected(m, db, manifest):
 
 def _redis_preflight(m, db, redis, manifest, executions, *, wait_for_cursor=True):
     state = manifest['database_ids'].get('native_refund', {})
+    if retain_financial_events(manifest):
+        verify_financial_audit(redis, manifest)
     expected = set()
     combo = state.get('combination_id')
     if combo:
@@ -454,9 +506,12 @@ def _verify_sla(m, db, manifest):
 
 
 def _cleanup_result(manifest, counts):
-    return dict(deleted_tablecounts=counts, retained_sla_count=len(
+    result = dict(deleted_tablecounts=counts, retained_sla_count=len(
         manifest['database_ids'].get('native_refund', {}).get('retained_sla_facts', [])),
         not_tested=SLA_NOT_TESTED)
+    if retain_financial_events(manifest):
+        result['retained_financial_events'] = 2
+    return result
 
 
 def _probe_identity(m, manifest, item):
@@ -595,12 +650,9 @@ def cleanup(m, manifest, path, *, dry_run=False):
                     base.apisix_admin(m, 'DELETE', '/consumers/' + item['name'], absent=True)
                 check(base.apisix_admin(m, 'GET', '/consumers/' + item['name'], absent=True)
                       is None, 'probe_consumer_remains')
-            if events:
-                redis.xdel(source_stream(state), *events)
+            cleanup_financial_events(redis, manifest, events)
             check(not any(redis.exists(key) for key in set(manifest['external']['redis_keys']) | extra),
                   'owned_redis_key_remains')
-            check(all(not redis.xrange(source_stream(state), min=e, max=e, count=1) for e in events),
-                  'owned_stream_event_remains')
         finally:
             redis.close()
     def journal(rows):
@@ -645,9 +697,12 @@ def _verify_finished(m, db, manifest):
     try:
         check(not any(redis.exists(k) for k in base.redis_key_journal(manifest) | expected),
               'owned_redis_key_remains')
-        for event_id in state.get('event_ids', []):
-            stream_position(event_id)
-            check(not redis.xrange(source_stream(state), min=event_id, max=event_id, count=1),
-                  'owned_stream_event_remains')
+        if retain_financial_events(manifest):
+            verify_financial_audit(redis, manifest)
+        else:
+            for event_id in state.get('event_ids', []):
+                stream_position(event_id)
+                check(not redis.xrange(source_stream(state), min=event_id, max=event_id, count=1),
+                      'owned_stream_event_remains')
     finally:
         redis.close()

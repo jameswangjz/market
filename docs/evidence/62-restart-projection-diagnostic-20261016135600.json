@@ -1,0 +1,11 @@
+{
+  "status": "diagnostic",
+  "only_derived_monthly_projection": true,
+  "current_digest": "a239d99b91d809a26e90e26bc9bbabf9509010216626e6197fa4b6cd47f05a75",
+  "old_digest": "521af025733ced5f487e06bdaa4d7ed7a830d1bd50b33111b19860adfb5e6117",
+  "original_projection": "10",
+  "current_projection": "2",
+  "current_period_quota": 2,
+  "stream_events": 2,
+  "monthly_used": "2"
+}

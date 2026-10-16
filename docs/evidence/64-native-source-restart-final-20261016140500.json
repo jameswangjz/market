@@ -1,0 +1,94 @@
+{
+  "status": "passed",
+  "proof": {
+    "charges": 2,
+    "refunded_amount": 16,
+    "monthly_quota": 2,
+    "monthly_used": 2,
+    "next_http_status": 429,
+    "simulated_payment_legs": 1,
+    "negative_settlement": {
+      "gross_amount": -16.0,
+      "cost_amount": -4.0,
+      "profit_amount": -12.0,
+      "platform_fee": -2.4,
+      "provider_share": -6.0,
+      "service_share": -1.2,
+      "expert_fee": -1.2,
+      "channel_fee": -1.2
+    },
+    "negative_settlement_source": "flow_invoked_production_adapter",
+    "cross_month_coverage_claim": false,
+    "report_csv_verified": 1,
+    "delivery_audit_identity_verified": 1,
+    "retained_sla_count": 3,
+    "not_tested": [
+      "SLA metrics, completeness, attribution and window sealing"
+    ],
+    "retained_financial_events": 2
+  },
+  "cleanup": {
+    "deleted_tablecounts": {
+      "api_credentials": 1,
+      "api_financial_charges": 2,
+      "api_gateway_routes": 1,
+      "audit_logs": 22,
+      "delivery_tasks": 1,
+      "enterprises": 2,
+      "gateway_config_revisions": 1,
+      "gateway_publish_records": 1,
+      "memberships": 2,
+      "notification_deliveries": 4,
+      "notification_delivery_attempts": 4,
+      "notification_messages": 1,
+      "notification_preferences": 4,
+      "notification_recipients": 2,
+      "oauth_clients": 2,
+      "order_sla_contracts": 1,
+      "order_state_logs": 5,
+      "orders": 1,
+      "ordinary_refund_cases": 1,
+      "ordinary_refund_events": 8,
+      "ordinary_refund_executions": 1,
+      "ordinary_refund_local_completions": 1,
+      "ordinary_refund_payment_legs": 1,
+      "ordinary_refund_settlement_links": 1,
+      "payments": 1,
+      "product_release_versions": 4,
+      "products": 2,
+      "refund_resource_recoveries": 1,
+      "refunds": 1,
+      "settlement_measurements": 4,
+      "settlements": 1,
+      "subscription_combinations": 1,
+      "subscription_terms": 1,
+      "users": 4,
+      "version_gateway_configs": 1
+    },
+    "retained_sla_count": 3,
+    "not_tested": [
+      "SLA metrics, completeness, attribution and window sealing"
+    ],
+    "retained_financial_events": 2
+  },
+  "protected_preserved": true,
+  "manifest": "/tmp/qa-native-source-final-20261016.json",
+  "manifest_mode": "0600",
+  "metadata_projection": {
+    "reason": "current_period_monthly_quota_projection",
+    "field": "monthly_quota",
+    "before": "10",
+    "after": "2",
+    "frozen_target": "10",
+    "effective_period": "2"
+  },
+  "retained_financial_events": 2,
+  "helper_sources_sha256": {
+    "version_change_quote_acceptance": "8535bbfb163389fcd560e4ea919910d8bc845a9a8765d9434079de7cb7bf5551",
+    "version_change_saga_runtime_acceptance": "198db74195c2e1735651686abecbcc5ee90ee975db299b24b0ddeeb17a798c8d",
+    "r3_native_refund_cleanup": "a333482ed7800d98e9cec98b69864aaf9d8f8f87f03d8e0248d29d0f634f612e",
+    "r3_native_refund_runtime_acceptance": "0a53af0737d55edd3ba2f376ab5247a61953e7d46b1895e6b63341a1c058c0e1",
+    "r3_native_refund_flow": "0064fa0ce628cc5ebd1d0e191039c4be82fa91664fc4939ea2fc55b09d09554d",
+    "redis_native_restart_acceptance": "ce38907e1263c87ff8d57da3bea0d6ab12f6d2833368f106e0771080910263e1"
+  }
+}

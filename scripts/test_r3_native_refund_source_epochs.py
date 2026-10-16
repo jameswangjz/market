@@ -116,6 +116,84 @@ class NativeSourceTests(unittest.TestCase):
             native.source_context(m, db, redis)
 
 
+class FinancialAuditRetentionTests(unittest.TestCase):
+    def setUp(self):
+        fixture = NativeSourceTests()
+        fixture.setUp()
+        self.manifest, self.state, self.redis, _, _, _ = fixture.fixture()
+        self.state.update(retain_financial_events_as_audit=True, local_flow_done=True,
+            proof=dict(charges=2, monthly_used=2), event_ids=['101-1', '101-2'],
+            validated_events={'101-1': dict(fixture.raw), '101-2': dict(fixture.raw)},
+            restart_receipt=dict(source_id=self.state['source_run_id'],
+                before_physical_run_id='f' * 40, after_physical_run_id=self.state['physical_run_id'],
+                seal_sha256='a' * 64, snapshot_sha256='b' * 64))
+        self.redis.xrange.side_effect = lambda stream, min, max, count: [
+            (min, dict(self.state['validated_events'][min]))]
+
+    def test_only_exact_owned_raw_events_retained_and_disclosed(self):
+        native.cleanup_financial_events(self.redis, self.manifest, self.state['event_ids'])
+        native.verify_financial_audit(self.redis, self.manifest)
+        self.redis.xdel.assert_not_called()
+        self.redis.delete.assert_not_called()
+        self.assertTrue(all(call.args[0] == self.state['source_stream']
+                            for call in self.redis.xrange.call_args_list))
+        result = native._cleanup_result(self.manifest, {'orders': 1, 'api_financial_charges': 2})
+        self.assertEqual(2, result['retained_financial_events'])
+        self.assertEqual(2, result['deleted_tablecounts']['api_financial_charges'])
+
+    def test_flag_must_be_boolean_and_managed(self):
+        for value in (1, 'true', None, []):
+            with self.subTest(value=value):
+                self.state['retain_financial_events_as_audit'] = value
+                with self.assertRaises(native.base.AcceptanceFailure):
+                    native.cleanup_financial_events(self.redis, self.manifest, self.state['event_ids'])
+        self.state['retain_financial_events_as_audit'] = True
+        self.state['source_stream'] = native.STREAM
+        with self.assertRaises(native.base.AcceptanceFailure):
+            native.retain_financial_events(self.manifest)
+        self.redis.xrange.assert_not_called()
+        self.redis.xdel.assert_not_called()
+
+    def test_restart_receipt_and_exact_two_records_required(self):
+        for key in ('restart_receipt', 'proof', 'validated_events'):
+            with self.subTest(key=key):
+                original = self.state.pop(key)
+                with self.assertRaises(native.base.AcceptanceFailure):
+                    native.retain_financial_events(self.manifest)
+                self.state[key] = original
+        self.state['validated_events']['999-1'] = dict(self.state['validated_events']['101-1'])
+        with self.assertRaises(native.base.AcceptanceFailure):
+            native.retain_financial_events(self.manifest)
+
+    def test_foreign_record_or_unexpected_event_set_refused(self):
+        with self.assertRaises(native.base.AcceptanceFailure):
+            native.cleanup_financial_events(self.redis, self.manifest, ['101-1'])
+        self.state['validated_events']['101-1']['order_id'] = 'f' * 32
+        with self.assertRaises(native.base.AcceptanceFailure):
+            native.cleanup_financial_events(self.redis, self.manifest, self.state['event_ids'])
+        self.redis.xdel.assert_not_called()
+
+    def test_missing_or_changed_retained_raw_record_fails_verification(self):
+        for rows in ([], [('101-1', self.state['validated_events']['101-1'] | {'quantity': '2'})]):
+            self.redis.xrange.side_effect = None
+            self.redis.xrange.return_value = rows
+            with self.assertRaises(native.base.AcceptanceFailure):
+                native.verify_financial_audit(self.redis, self.manifest)
+
+    def test_default_and_explicit_false_still_delete_only_owned_ids(self):
+        for mode in ('absent', False):
+            if mode == 'absent':
+                self.state.pop('retain_financial_events_as_audit')
+            else:
+                self.state['retain_financial_events_as_audit'] = False
+            self.redis.xrange.side_effect = None
+            self.redis.xrange.return_value = []
+            native.cleanup_financial_events(self.redis, self.manifest, self.state['event_ids'])
+            self.redis.xdel.assert_called_with(self.state['source_stream'], '101-1', '101-2')
+            self.assertNotIn('retained_financial_events', native._cleanup_result(self.manifest, {}))
+        self.redis.delete.assert_not_called()
+
+
 @unittest.skipUnless(importlib.util.find_spec('sqlalchemy'), 'SQLAlchemy required for owned graph tests')
 class ManagedCleanupTests(unittest.TestCase):
     def setUp(self):

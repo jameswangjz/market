@@ -1,0 +1,53 @@
+{
+  "status": "recovered_cleanup",
+  "protected_preserved": true,
+  "derived_projection_only": true,
+  "cleanup": {
+    "deleted_tablecounts": {
+      "api_credentials": 1,
+      "api_financial_charges": 2,
+      "api_gateway_routes": 1,
+      "application_health_observations": 1,
+      "application_health_slots": 2,
+      "audit_logs": 24,
+      "delivery_tasks": 1,
+      "enterprises": 2,
+      "gateway_config_revisions": 1,
+      "gateway_publish_records": 1,
+      "memberships": 2,
+      "notification_deliveries": 4,
+      "notification_delivery_attempts": 4,
+      "notification_messages": 1,
+      "notification_preferences": 4,
+      "notification_recipients": 2,
+      "oauth_clients": 2,
+      "order_sla_contracts": 1,
+      "order_state_logs": 5,
+      "orders": 1,
+      "ordinary_refund_cases": 1,
+      "ordinary_refund_events": 8,
+      "ordinary_refund_executions": 1,
+      "ordinary_refund_local_completions": 1,
+      "ordinary_refund_payment_legs": 1,
+      "ordinary_refund_settlement_links": 1,
+      "payments": 1,
+      "product_release_versions": 4,
+      "products": 2,
+      "refund_resource_recoveries": 1,
+      "refunds": 1,
+      "settlement_measurements": 4,
+      "settlements": 1,
+      "sla_assessment_evidence": 2,
+      "sla_online_assessments": 1,
+      "subscription_combinations": 1,
+      "subscription_terms": 1,
+      "users": 4,
+      "version_gateway_configs": 1
+    },
+    "retained_sla_count": 5,
+    "not_tested": [
+      "SLA metrics, completeness, attribution and window sealing"
+    ]
+  },
+  "original_test_passed": false
+}

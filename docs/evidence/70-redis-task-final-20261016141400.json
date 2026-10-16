@@ -1,0 +1,37 @@
+{
+  "status": "verified",
+  "captured_at": "2026-10-16T06:14:05.874269+00:00",
+  "global_total": 223,
+  "global_counts": {
+    "todo": 0,
+    "in_progress": 0,
+    "review": 76,
+    "blocked": 5,
+    "done": 142
+  },
+  "r3_total": 32,
+  "r3_counts": {
+    "todo": 0,
+    "in_progress": 0,
+    "review": 32,
+    "blocked": 0,
+    "done": 0
+  },
+  "repair": [
+    {
+      "code": "REDIS-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REDIS-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REDIS-BE-001",
+      "status": "review",
+      "progress": 100
+    }
+  ]
+}

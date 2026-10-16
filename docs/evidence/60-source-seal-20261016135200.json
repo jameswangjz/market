@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "action": "seal",
+  "captured_at": "2026-10-16T05:49:28.092560+00:00",
+  "generations": [
+    {
+      "source_id": "be58b226a84236331731e3b203869d0b5e545508",
+      "stream": "market:apisix:charges:v1:be58b226a84236331731e3b203869d0b5e545508",
+      "status": "paused",
+      "cutover": "2026-10-16T05:46:07+00:00",
+      "old_stream": "market:apisix:charges:v1",
+      "old_cursor": "1792084135110-0"
+    }
+  ],
+  "gap_count": 1,
+  "source": {
+    "source_id": "be58b226a84236331731e3b203869d0b5e545508",
+    "stream": "market:apisix:charges:v1:be58b226a84236331731e3b203869d0b5e545508",
+    "status": "paused",
+    "process_run_id": "e1643639991bbeef6ca0edc444000ca8913b76af",
+    "not_before_us": "1792129567000000",
+    "gap_status": "unresolved",
+    "missing_count": null,
+    "sealed_hash": "600b8c62cb8b9f1399231fd236827c7060e0af42eefaff302ebc9a903796db4f",
+    "audits": [
+      {
+        "action": "open",
+        "actor": "admin@market.local",
+        "reason": "User-approved recovery: Redis restart lost source stream; preserve legacy cursor and ledger, record unresolved gap; do not infer zero usage or reset old quotas.",
+        "at": "2026-10-16T05:46:06.923579+00:00"
+      },
+      {
+        "action": "seal",
+        "actor": "admin@market.local",
+        "reason": "Approved planned restart verification with two real owned gateway financial events; preserve source, quotas and evidence.",
+        "at": "2026-10-16T05:49:28.061960+00:00",
+        "evidence_sha256": "600b8c62cb8b9f1399231fd236827c7060e0af42eefaff302ebc9a903796db4f"
+      }
+    ]
+  },
+  "quotas_reset": false,
+  "usage_fabricated": false
+}
