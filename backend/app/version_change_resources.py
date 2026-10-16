@@ -436,7 +436,8 @@ def install(ns):
                     credential_key='market:apisix:credential:' + item['consumer'],
                     change_id=change.id, direction=direction,
                     expected_policy=descriptor['original' if target else 'target'],
-                    target_policy=descriptor[direction], periods=boundary_periods(descriptor[direction]))
+                    target_policy=descriptor[direction], periods=boundary_periods(descriptor[direction]),
+                    source_context=ns['api_charge_ledger']['source_context'](db, redis))
             else:
                 redis.hset('market:apisix:credential:' + item['consumer'], mapping=mapping)
         final_route = unwrap(ns['apisix_admin_request']('GET', f'/routes/{route_key}'))

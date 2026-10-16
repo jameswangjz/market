@@ -1,0 +1,41 @@
+# Prerequisites for the Redis Deployment in all-in-one.yaml.
+# Existing installations: pause charge admission, SAVE the live Redis dataset,
+# seed dump.rdb into this PVC using a temporary pod, and verify the copy before
+# switching the Deployment. RDB-only bootstrap must temporarily override the
+# Redis arguments with: redis-server /etc/redis/redis.conf --appendonly no
+# Verify restored keys, counters, source marker, and streams before issuing
+# CONFIG SET appendonly yes. Wait for the initial AOF rewrite to finish:
+# INFO persistence must report aof_enabled:1, aof_rewrite_in_progress:0,
+# aof_rewrite_scheduled:0, aof_last_bgrewrite_status:ok, and aof_last_write_status:ok.
+# Then remove the temporary override, perform a planned restart with the normal
+# appendonly yes configuration, and verify the restored dataset again.
+# Starting with appendonly yes can ignore the seeded RDB; do not skip bootstrap.
+# Never start with an empty PVC or clear live data.
+# Keep admission paused until counters, source marker, and streams are verified.
+# Recreate entails a maintenance window; do not blindly apply to a live system.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: market-redis-config
+  namespace: market
+data:
+  redis.conf: |
+    dir /data
+    appendonly yes
+    appendfsync everysec
+    save 3600 1
+    stop-writes-on-bgsave-error yes
+    maxmemory 256mb
+    maxmemory-policy noeviction
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: market-redis-data
+  namespace: market
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi

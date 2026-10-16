@@ -326,8 +326,13 @@ def charge(m, ids, path, manifest, redis, invoke):
     keys = base.journal_counter(m, path, manifest, redis, combo, period, combo, 'api', fresh=True)
     coverage = guards.COVERAGE + guards.quota_token(combo) + ':' + guards.quota_token(period)
     check(coverage in state['extra_keys'], 'Coverage was not journaled before delivery')
-    state['source_run_id'] = redis.info('server')['run_id']
-    latest = redis.xrevrange(guards.STREAM, count=1)
+    state['physical_run_id'] = redis.info('server')['run_id']
+    with m.SessionLocal() as db:
+        stream, cursor = guards.source_context(m, db, redis)
+    state['source_run_id'] = cursor.redis_run_id if cursor is not None else state['physical_run_id']
+    state['source_stream'] = stream
+    stream = guards.source_stream(state)
+    latest = redis.xrevrange(stream, count=1)
     state['stream_start'] = latest[0][0] if latest else '0-0'
     base.write_manifest(path, manifest)
     try:
@@ -337,9 +342,9 @@ def charge(m, ids, path, manifest, redis, invoke):
                   and response.json().get('data', {}).get('provider') == 'mock-api',
                   'Real gateway charge failed')
     finally:
-        latest = redis.xrevrange(guards.STREAM, count=1)
+        latest = redis.xrevrange(guards.source_stream(state), count=1)
         state['stream_end'] = latest[0][0] if latest else state['stream_start']
-        bounded_events = redis.xrange(guards.STREAM, min='(' + state['stream_start'],
+        bounded_events = redis.xrange(guards.source_stream(state), min='(' + state['stream_start'],
                                      max=state['stream_end'], count=200)
         state['event_ids'] = [event_id for event_id, values in bounded_events
             if values.get('order_id') == oid]
@@ -357,11 +362,16 @@ def charge(m, ids, path, manifest, redis, invoke):
     base.write_manifest(path, manifest)
     check(len(events) == 2 and redis.get(keys[-1]) == '2', 'Expected two actual charges')
     Charge = m.api_charge_ledger['Charge']
+    charge_ids = {guards.charge_id(state, event_id): event_id for event_id in events}
     deadline = time.monotonic() + 90
     while True:
         with m.SessionLocal() as db:
-            rows = db.scalars(select(Charge).where(Charge.id.in_(events))).all()
+            rows = db.scalars(select(Charge).where(Charge.id.in_(charge_ids))).all()
             if len(rows) == 2:
+                raw = dict(bounded_events)
+                for row in rows:
+                    event_id = charge_ids[row.id]
+                    guards.validate_charge_row(row, state, event_id, raw[event_id])
                 check(all(row.order_id == oid and row.segment_id == term and row.scope == combo
                           and row.quantity == 1 and row.period_key == period
                           and row.route_key == ids['routes']['api']['source']

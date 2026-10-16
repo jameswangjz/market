@@ -1,6 +1,7 @@
 """Financial charge facts, distinct from best-effort online SLA request logs."""
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
 import re
 
 from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String, cast, func, select, text, tuple_
@@ -99,6 +100,7 @@ def install(ns):
         __table_args__ = (Index('ix_charge_scope_period', 'scope', 'period_key'),
                           Index('ix_charge_segment_time', 'segment_id', 'charged_at_us'))
         id = mapped_column(String(48), primary_key=True)
+        event_id = mapped_column(String(48), nullable=True)
         order_id = mapped_column(ForeignKey('orders.id'), nullable=False, index=True)
         segment_id = mapped_column(ForeignKey('subscription_terms.id'), nullable=False, index=True)
         scope = mapped_column(String(256), nullable=False, index=True)
@@ -131,12 +133,14 @@ def install(ns):
             raise PlanUnavailable('original_generation_anchor_unavailable')
         return CalendarAnchor(anchors[0])
 
-    def ingest(db, client, limit=500):
+    def ingest(db, client, limit=500, _sealed=False):
         if type(limit) is not int or not 1 <= limit <= 2000:
             raise ValueError('Bounded ingest batch required')
         if db.bind.dialect.name == 'postgresql':
             db.execute(text('SELECT pg_advisory_xact_lock(723401830031)'))
-        cursor = db.scalar(select(Cursor).where(Cursor.stream == STREAM).with_for_update())
+        managed = sources['source_context'](db, client, allow_paused=_sealed)
+        active_stream = managed[0] if managed else STREAM
+        cursor = managed[1] if managed else db.scalar(select(Cursor).where(Cursor.stream == STREAM).with_for_update())
         identity = run_id(client)
         if cursor is None:
             client.hsetnx(EPOCH, 'run_id', identity)
@@ -145,14 +149,16 @@ def install(ns):
             cursor = Cursor(stream=STREAM, last_id='0-0', redis_run_id=identity, activated_at=ns['now']())
             db.add(cursor)
             db.flush()
-        elif cursor.redis_run_id != identity or client.hget(EPOCH, 'run_id') != identity:
+        elif not managed and (cursor.redis_run_id != identity or client.hget(EPOCH, 'run_id') != identity):
             raise ValueError('Redis charge source restarted; explicit continuity review required')
-        rows = client.xread({STREAM: cursor.last_id}, count=limit)
+        rows = client.xread({active_stream: cursor.last_id}, count=limit)
         inserted = 0
+        read = 0
         for stream, events in rows:
-            if stream != STREAM:
+            if stream != active_stream:
                 raise ValueError('Unexpected charge stream')
             for event_id, raw in events:
+                read += 1
                 values = event_values(event_id, raw)
                 if values['source_run_id'] != cursor.redis_run_id:
                     raise ValueError('Charge event does not belong to the registered source epoch')
@@ -162,22 +168,27 @@ def install(ns):
                     raise ValueError('Charge cannot be allocated to a unique order segment')
                 anchor = calendar(db, term)
                 at = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=values['charged_at_us'])
+                if managed and at < cursor.activated_at:
+                    raise ValueError('Charge precedes managed source cutover')
                 matches = [index for index in range(term.start_month, term.start_month + term.months)
                     if values['period_key'] == f'{term.combination_id}:{term.generation}:{index}'
                     and anchor.period(index).start <= at < anchor.period(index).end
                     and term.starts_at <= at < term.ends_at]
                 if len(matches) != 1:
                     raise ValueError('Charge is outside its attributed subscription period')
-                existing = db.get(Charge, event_id)
+                charge_id = hashlib.sha256((cursor.redis_run_id + '|' + event_id).encode()).hexdigest()[:40] if managed else event_id
+                if managed:
+                    values['event_id'] = event_id
+                existing = db.get(Charge, charge_id)
                 if existing is None:
-                    db.add(Charge(id=event_id, **values))
+                    db.add(Charge(id=charge_id, **values))
                     inserted += 1
                 elif any(getattr(existing, key) != value for key, value in values.items()):
                     raise ValueError('Financial charge identity cannot be rewritten')
                 cursor.last_id = event_id
         # Caller commits charge facts and cursor together; no Redis deletion/ack.
         db.flush()
-        return {'inserted': inserted, 'last_id': cursor.last_id}
+        return {'inserted': inserted, 'last_id': cursor.last_id, 'read': read}
 
     def summary(db, *, order_id, segment_id, start, end, as_of):
         def unavailable():
@@ -193,13 +204,17 @@ def install(ns):
         if end < start or (end > as_of and not future) or start != term.starts_at:
             unavailable()
         cursor = db.get(Cursor, STREAM)
-        if cursor is None or start < cursor.activated_at:
-            unavailable()
         anchor = calendar(db, term)
         evidence = []
         client = bounded_client(ns)
         try:
-            if run_id(client) != cursor.redis_run_id or client.hget(EPOCH, 'run_id') != cursor.redis_run_id:
+            managed = sources['source_context'](db, client)
+            original_source = (managed[0], managed[1].redis_run_id) if managed else None
+            if managed:
+                cursor = managed[1]
+            if cursor is None or start < cursor.activated_at:
+                unavailable()
+            if not managed and (run_id(client) != cursor.redis_run_id or client.hget(EPOCH, 'run_id') != cursor.redis_run_id):
                 unavailable()
             for index in range(term.start_month, term.start_month + term.months):
                 period = anchor.period(index)
@@ -213,12 +228,21 @@ def install(ns):
                 if baseline != '0' or (current is not None and not re.fullmatch(r'\d+', current)):
                     unavailable()
                 stored = db.scalar(select(func.coalesce(func.sum(Charge.quantity), 0)).where(
-                    Charge.scope == combo.id, Charge.period_key == period_key))
+                    Charge.scope == combo.id, Charge.period_key == period_key,
+                    Charge.source_run_id == cursor.redis_run_id))
                 if stored != int(current or 0) or (future and stored != 0):
                     unavailable()
                 evidence.append('charge-period:' + period_key + ':' + str(stored))
-            if run_id(client) != cursor.redis_run_id or client.hget(EPOCH, 'run_id') != cursor.redis_run_id:
+            if managed:
+                current = sources['source_context'](db, client)
+                if current is None or (current[0], current[1].redis_run_id) != original_source:
+                    unavailable()
+            elif run_id(client) != cursor.redis_run_id or client.hget(EPOCH, 'run_id') != cursor.redis_run_id:
                 unavailable()
+        except PlanUnavailable:
+            raise
+        except Exception as exc:
+            raise PlanUnavailable('charge_ledger_incomplete_or_unallocated') from exc
         finally:
             client.close()
         if not evidence:
@@ -226,6 +250,7 @@ def install(ns):
         low, high = microseconds(start), microseconds(end)
         used = db.scalar(select(func.coalesce(func.sum(Charge.quantity), 0)).where(
             Charge.order_id == order_id, Charge.segment_id == segment_id,
+            Charge.source_run_id == cursor.redis_run_id,
             Charge.charged_at_us >= low, Charge.charged_at_us < high))
         return ChargeSummary(order_id, segment_id, start, end, as_of, int(used), True,
                              POLICY, tuple(evidence))
@@ -260,7 +285,11 @@ def install(ns):
             if (not isinstance(receipt_evidence, (tuple, list)) or not receipt_evidence
                     or any(not isinstance(v, str) or not v for v in receipt_evidence)):
                 unavailable()
-            cursor = db.get(Cursor, STREAM)
+            client = bounded_client(ns)
+            managed = sources['source_context'](db, client)
+            original_source = (managed[0], managed[1].redis_run_id) if managed else None
+            active_stream = managed[0] if managed else STREAM
+            cursor = managed[1] if managed else db.get(Cursor, STREAM)
             if cursor is None or cursor.redis_run_id != source_run_id or cursor.activated_at > start:
                 unavailable()
             watermark = stream_position(cursor.last_id)
@@ -292,12 +321,15 @@ def install(ns):
             required = {key for key, p in expected.items() if p.end > start}
             if not required.issubset(selected) or not selected:
                 unavailable()
-            client = bounded_client(ns)
 
             def source_tail():
-                if run_id(client) != source_run_id or client.hget(EPOCH, 'run_id') != source_run_id:
+                if managed:
+                    current = sources['source_context'](db, client)
+                    if current is None or (current[0], current[1].redis_run_id) != original_source:
+                        unavailable()
+                elif run_id(client) != source_run_id or client.hget(EPOCH, 'run_id') != source_run_id:
                     unavailable()
-                rows = client.xrevrange(STREAM, count=1)
+                rows = client.xrevrange(active_stream, count=1)
                 if not isinstance(rows, list):
                     unavailable()
                 tail = rows[0][0] if rows else '0-0'
@@ -308,12 +340,13 @@ def install(ns):
                 return tail
 
             tail = source_tail()
-            position = stream_position_sql(Charge.id, db.bind.dialect.name)
+            position = stream_position_sql(func.coalesce(Charge.event_id, Charge.id), db.bind.dialect.name)
             evidence = list(receipt_evidence) + ['charge-boundary:' + boundary_id,
                 'charge-cursor:' + cursor.last_id, 'charge-source:' + source_run_id]
             calls = 0
             for key, row in selected.items():
-                bucket = (Charge.scope == scope, Charge.period_key == key)
+                bucket = (Charge.scope == scope, Charge.period_key == key,
+                          Charge.source_run_id == source_run_id)
                 def total(*conditions):
                     return int(db.scalar(select(func.coalesce(func.sum(Charge.quantity), 0)).where(
                         *bucket, *conditions)))
@@ -353,5 +386,20 @@ def install(ns):
     ns['refund_charge_summary'] = summary
     hooks = dict(Charge=Charge, Cursor=Cursor, ingest=ingest, summary=summary,
                  window_summary=window_summary)
+    from .api_charge_sources import install as install_sources
+    sources = install_sources(ns, hooks, run_id, STREAM, EPOCH, microseconds)
+    hooks.update(sources)
+    def source_context(db, client):
+        managed = sources['source_context'](db, client)
+        if managed:
+            return managed
+        cursor = db.get(Cursor, STREAM)
+        if cursor is None:
+            return STREAM, None
+        identity = run_id(client)
+        if cursor.redis_run_id != identity or client.hget(EPOCH, 'run_id') != identity:
+            raise ValueError('Redis source continuity unavailable')
+        return STREAM, cursor
+    hooks['source_context'] = source_context
     ns['api_charge_ledger'] = hooks
     return hooks

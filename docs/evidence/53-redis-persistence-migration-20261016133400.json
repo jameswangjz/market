@@ -1,0 +1,14 @@
+{
+  "phase": "complete",
+  "owner": "7115a5af575f48c78edf041783fc6c38",
+  "ok": true,
+  "helper_cleanup_verified": false,
+  "original_service_selector": {
+    "app": "market-redis"
+  },
+  "backup_dir": "/root/market/backups/redis-7115a5af575f48c78edf041783fc6c38",
+  "dump_sha256": "5bd3ea223f06216acd1895d42784f2942fab67a2336c8a5c17d08d6d908fa7b2",
+  "service_isolated": false,
+  "key_count": 2,
+  "helper_cleanup": "not confirmed"
+}

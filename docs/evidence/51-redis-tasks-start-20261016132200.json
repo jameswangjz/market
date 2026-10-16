@@ -1,0 +1,26 @@
+{
+  "status": "registered",
+  "created": [
+    "REDIS-OPS-001",
+    "REDIS-BE-001",
+    "REDIS-QA-001"
+  ],
+  "captured_at": "2026-10-16T05:20:59.858663+00:00",
+  "items": [
+    {
+      "code": "REDIS-BE-001",
+      "status": "in_progress",
+      "progress": 5
+    },
+    {
+      "code": "REDIS-OPS-001",
+      "status": "in_progress",
+      "progress": 5
+    },
+    {
+      "code": "REDIS-QA-001",
+      "status": "todo",
+      "progress": 0
+    }
+  ]
+}

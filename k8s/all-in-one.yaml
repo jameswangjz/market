@@ -176,6 +176,7 @@ metadata:
   labels: {app: market-redis}
 spec:
   replicas: 1
+  strategy: {type: Recreate}
   selector: {matchLabels: {app: market-redis}}
   template:
     metadata: {labels: {app: market-redis}}
@@ -184,8 +185,22 @@ spec:
         - name: redis
           image: redis:7-alpine
           imagePullPolicy: IfNotPresent
+          args: ["redis-server", "/etc/redis/redis.conf"]
           ports: [{containerPort: 6379}]
           readinessProbe: {exec: {command: ["redis-cli", "ping"]}, initialDelaySeconds: 5, periodSeconds: 5}
+          livenessProbe: {exec: {command: ["redis-cli", "ping"]}, initialDelaySeconds: 30, periodSeconds: 10}
+          startupProbe: {exec: {command: ["redis-cli", "ping"]}, periodSeconds: 5, failureThreshold: 120}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: config, mountPath: /etc/redis, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: market-redis-data}
+        - name: config
+          configMap: {name: market-redis-config}
 ---
 apiVersion: v1
 kind: Service

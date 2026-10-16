@@ -7,6 +7,7 @@ fixture User (read-only opposite parent), and exact startup default
 assignments referencing the read-only standard ServiceLevel catalog entry.
 """
 import re
+from types import SimpleNamespace
 
 from sqlalchemy import delete, func, or_, select, text, tuple_
 
@@ -154,6 +155,25 @@ def validate(m, db, manifest, owned, *, retained_routes=None):
         require(row['id'] != PROTECTED and row['order_no'] != PROTECTED, 'protected_order_selected')
     by_id = {name: {r['id']: r for r in records} for name, records in rows.items()
              if 'id' in tables[name].c}
+    charges = rows.get('api_financial_charges', [])
+    if charges:
+        import r3_native_refund_runtime_acceptance as native
+        state = manifest.get('database_ids', {}).get('native_refund', {})
+        require(len(state.get('event_ids', [])) <= 200, 'charge_event_bound_exceeded')
+        allowed = {native.charge_id(state, event_id): event_id for event_id in state.get('event_ids', [])}
+        for row in charges:
+            require(row['order_id'] in by_id.get('orders', {}), 'charge_order_unowned')
+            require(row['id'] in allowed, 'charge_event_unjournaled')
+            event_id = allowed[row['id']]
+            record = state.get('validated_events', {}).get(event_id)
+            if record is None:
+                record = {key: str(row[key]) for key in (
+                    'order_id', 'segment_id', 'scope', 'period_key', 'route_key',
+                    'source_run_id', 'quantity', 'policy', 'charged_at_us')}
+            native.validate_charge(event_id, record, start=state['stream_start'], end=state['stream_end'],
+                order_id=state['order_id'], term_id=state['term_id'], combination_id=state['combination_id'],
+                route_key=manifest['routes']['api']['source'], source_run_id=state['source_run_id'])
+            native.validate_charge_row(SimpleNamespace(**row), state, event_id, record)
     for row in rows.get('service_level_assignments', []):
         require(row['enterprise_id'] in ids['enterprises'] and row['source'] == 'default' and
                 row['created_by'] == 'system' and row['user_id'] == '', 'default_assignment_mismatch')

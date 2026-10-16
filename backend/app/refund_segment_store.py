@@ -22,6 +22,19 @@ STREAM = 'market:apisix:charges:v1'
 EPOCH = 'market:apisix:charges:source'
 
 
+def source_context(ns, db, client):
+    ledger = ns.get('api_charge_ledger', {})
+    hook = ledger.get('source_context')
+    if callable(hook):
+        return hook(db, client)
+    model = ledger.get('Cursor')
+    cursor = db.get(model, STREAM) if model is not None else None
+    if cursor and (client.info('server')['run_id'] != cursor.redis_run_id
+                   or client.hget(EPOCH, 'run_id') != cursor.redis_run_id):
+        raise HTTPException(409, 'Charge source epoch continuity changed')
+    return STREAM, cursor
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False)
 
@@ -128,10 +141,6 @@ def install(ns):
         event.listen(model, 'before_update', immutable)
         event.listen(model, 'before_delete', immutable)
 
-    def cursor_for(db):
-        model = ns.get('api_charge_ledger', {}).get('Cursor')
-        return db.get(model, STREAM) if model is not None else None
-
     def descriptor(db, change, plan, client):
         legacy = {'mode': 'legacy', 'reason': 'continuous_attributed_charge_evidence_unavailable'}
         active = [item for item in plan['credentials'] if item['status'] == 'active']
@@ -139,17 +148,13 @@ def install(ns):
             return legacy
         item = active[0]
         key = 'market:apisix:credential:' + item['consumer']
-        cursor = cursor_for(db)
-        if cursor and (client.info('server')['run_id'] != cursor.redis_run_id
-                       or client.hget(EPOCH, 'run_id') != cursor.redis_run_id):
-            raise HTTPException(409, 'Charge source epoch continuity changed')
+        stream, cursor = source_context(ns, db, client)
         try:
             original = safe_policy(client.hgetall(key))
             rows = boundary._policy(original)
-            cursor = cursor_for(db)
+            stream, cursor = source_context(ns, db, client)
             now = ns['now']()
             if (not cursor or cursor.activated_at >= now
-                    or client.info('server')['run_id'] != cursor.redis_run_id
                     or client.hget(EPOCH, 'run_id') != cursor.redis_run_id
                     or original['quota_scope'] != change.combination_id
                     or client.pttl(key) != -1):
@@ -158,6 +163,9 @@ def install(ns):
             if len(rows) != len(expected):
                 return legacy
             for row, frozen in zip(rows, expected):
+                if (stream != STREAM and row['start_at'] < cursor.activated_at.timestamp()
+                        and row['end_at'] > now.timestamp()):
+                    raise HTTPException(409, 'Charge period predates source activation')
                 if (any(row.get(k) != frozen.get(k) for k in frozen)
                         or not row.get('order_id') or not row.get('segment_id')):
                     return legacy
@@ -172,6 +180,7 @@ def install(ns):
                           daily_quota=str(current['daily_quota']), monthly_quota=str(current['monthly_quota']),
                           total_quota='0')
             return {'mode': 'strict', 'credential_id': item['id'], 'original': original,
+                    'source_stream': stream, 'source_run_id': cursor.redis_run_id,
                     'target': safe_policy(target)}
         except (ValueError, TypeError, KeyError, StopIteration):
             return legacy
@@ -277,14 +286,19 @@ def install(ns):
             raise ValueError('invalid receipt identity')
         boundary._integer(parsed['cutover_us'])
         cutover = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=parsed['cutover_us'])
-        cursor = cursor_for(db)
+        try:
+            stream, cursor = source_context(ns, db, client)
+        except (HTTPException, ValueError) as exc:
+            raise ValueError('unregistered source epoch before cutover') from exc
         if (not cursor or cursor.activated_at >= cutover or cursor.redis_run_id != parsed['source_run_id']
-                or client.info('server')['run_id'] != cursor.redis_run_id
                 or client.hget(EPOCH, 'run_id') != cursor.redis_run_id):
             raise ValueError('unregistered source epoch before cutover')
         target = desc[direction]
         expected = desc['original' if direction == 'target' else 'target']
         periods = boundary_periods(target)
+        if stream != STREAM and any(p['start_at'] < cursor.activated_at.timestamp()
+                                   and p['end_at'] * 1000000 > parsed['cutover_us'] for p in periods):
+            raise ValueError('receipt period predates source activation')
         payload = dict(change_id=change.id, direction=direction, expected=expected, target=target,
                        periods=periods, credential_key=key)
         payload['period_json'] = [canonical(p) for p in periods]

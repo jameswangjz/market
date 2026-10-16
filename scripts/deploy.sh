@@ -2,6 +2,14 @@
 set -euo pipefail
 
 NAMESPACE=market
+# Existing ephemeral Redis must be migrated with a verified SAVE/seed procedure.
+if kubectl -n "$NAMESPACE" get deployment market-redis >/dev/null 2>&1; then
+  REDIS_CLAIM=$(kubectl -n "$NAMESPACE" get deployment market-redis -o jsonpath='{.spec.template.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}')
+  if [[ "$REDIS_CLAIM" != "market-redis-data" ]]; then
+    echo "Refusing to replace ephemeral Redis: back up and seed market-redis-data first." >&2
+    exit 1
+  fi
+fi
 GIT_SHA="${GIT_SHA:-$(git rev-parse --short=12 HEAD 2>/dev/null || true)}"
 if [[ ! "$GIT_SHA" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
   echo "GIT_SHA is required when deploying from a directory without Git metadata" >&2
@@ -33,6 +41,8 @@ sed \
   -e "s#market-mock-api:dev#market-mock-api:${IMAGE_TAG}#g" \
   k8s/all-in-one.yaml > "$RENDERED_MANIFEST"
 
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s/redis-persistence.yaml
 kubectl apply -f "$RENDERED_MANIFEST"
 kubectl apply -f k8s/apisix.yaml
 kubectl -n "$NAMESPACE" create configmap market-apisix-policy-plugin --from-file=market-gateway-quota.lua=k8s/market-gateway-quota.lua --from-file=market-gateway-oauth.lua=k8s/market-gateway-oauth.lua --from-file=market-sla-logger.lua=k8s/market-sla-logger.lua --dry-run=client -o yaml | kubectl apply -f -

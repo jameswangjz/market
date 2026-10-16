@@ -259,12 +259,14 @@ def install(ns):
                         )
                     )
                 )
-                Cursor = ns.get("api_charge_ledger", {}).get("Cursor")
-                if (
-                    len(credentials) != 1
-                    or Cursor is None
-                    or db.get(Cursor, "market:apisix:charges:v1") is None
-                ):
+                ledger = ns.get('api_charge_ledger', {})
+                Cursor, Generation = ledger.get('Cursor'), ledger.get('SourceGeneration')
+                generation = db.scalar(select(Generation).order_by(
+                    Generation.cutover.desc(), Generation.id.desc()).limit(1)) if Generation else None
+                stream = generation.stream if generation else 'market:apisix:charges:v1'
+                cursor = db.get(Cursor, stream) if Cursor is not None else None
+                # GET advertises persisted eligibility only; execution verifies live continuity.
+                if len(credentials) != 1 or cursor is None or (generation and generation.status != 'active'):
                     return False
             else:
                 Sub, Config = ns["SaaSSubscription"], ns["SaaSIntegrationConfig"]

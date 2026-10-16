@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from sqlalchemy import select, Column, String, Text, ForeignKey, Integer, UniqueConstraint, CheckConstraint, event
 
-from .refund_segment_store import canonical, digest, safe_policy, strict_json
+from .refund_segment_store import canonical, digest, safe_policy, strict_json, source_context, STREAM
 from .quota_cutover import token
 from .subscription_terms import UTCDateTime
 
@@ -65,7 +65,7 @@ if redis.call('PTTL', KEYS[1]) ~= -1 then fail('missing or temporary metadata') 
 if redis.call('PTTL', KEYS[3]) ~= -1 then fail('missing or temporary source epoch') end
 local actual_run = redis.call('INFO', 'server'):match('run_id:([a-f0-9]+)')
 if actual_run ~= p.run_id then fail('Redis process epoch changed') end
-if redis.call('HGET', KEYS[3], 'run_id') ~= p.run_id then fail('source epoch changed') end
+if redis.call('HGET', KEYS[3], 'run_id') ~= (p.source_run_id or p.run_id) then fail('source epoch changed') end
 local saved = redis.call('GET', KEYS[2])
 if saved then
     local receipt = cjson.decode(saved)
@@ -83,7 +83,7 @@ if saved then
     return saved
 end
 if redis.call('PTTL', KEYS[1]) ~= -1 or not matches(p.expected) then fail('stale policy') end
-if redis.call('HGET', KEYS[3], 'run_id') ~= p.run_id then fail('source epoch changed') end
+if redis.call('HGET', KEYS[3], 'run_id') ~= (p.source_run_id or p.run_id) then fail('source epoch changed') end
 local now = redis.call('TIME')
 local observed = {}
 for i, row in ipairs(p.checks) do
@@ -189,13 +189,14 @@ def install(ns):
             if expected['quota_scope'] != combo.id:
                 fail('Refund quota scope changed')
             run_id = client.info('server')['run_id']
-            cursor_model = ns.get('api_charge_ledger', {}).get('Cursor')
-            cursor = db.get(cursor_model, 'market:apisix:charges:v1') if cursor_model is not None else None
-            if (not cursor or cursor.redis_run_id != run_id or client.hget(EPOCH, 'run_id') != run_id
+            stream, cursor = source_context(ns, db, client)
+            if (not cursor or client.hget(EPOCH, 'run_id') != cursor.redis_run_id
                     or cursor.activated_at > aware(economic['as_of'])):
                 fail('Refund charge source is not continuous')
             periods = strict_json(expected['subscription_periods'])
             selected = [p for p in periods if p.get('order_id') == order.id and p.get('segment_id') == term.id]
+            if stream != STREAM and any(p['start_at'] < cursor.activated_at.timestamp() for p in selected):
+                fail('Refund period predates charge source activation')
             if not selected or any(p['route_key'] != route.route_key for p in selected):
                 fail('Refund periods are not attributed to this order and route')
             for p in periods:
@@ -256,7 +257,8 @@ def install(ns):
             target = dict(expected, subscription_periods=json.dumps(target_periods, separators=(',', ':')))
             return dict(kind='api', credential_id=credential.id, consumer=credential.apisix_consumer_name,
                 route_id=route.id, key=key, expected=expected, target=target, checks=checks,
-                run_id=run_id, basis=economic['basis'], target_hash=digest(target),
+                run_id=run_id, source_run_id=cursor.redis_run_id, source_stream=stream,
+                basis=economic['basis'], target_hash=digest(target),
                 call_recovery_accounting=accounting, **rounding)
         finally:
             client.close()
@@ -430,6 +432,10 @@ def install(ns):
                 try:
                     if client.info('server')['run_id'] != plan['run_id']:
                         fail('Refund recovery Redis source restarted')
+                    stream, cursor = source_context(ns, db, client)
+                    if (not cursor or cursor.redis_run_id != plan.get('source_run_id', plan['run_id'])
+                            or stream != plan.get('source_stream', STREAM)):
+                        fail('Refund recovery financial source changed')
                     keys = [plan['key'], PREFIX + refund.id, EPOCH]
                     for check in plan['checks']:
                         suffix = token(combo.id) + ':' + token(check['period_key'])

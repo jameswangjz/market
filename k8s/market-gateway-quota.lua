@@ -73,6 +73,40 @@ if tracking then
     if not epoch or #epoch ~= 40 or not epoch:match('^[a-f0-9]+$') then
         return redis.error_reply('扣额账本来源尚未就绪')
     end
+    local stream = redis.call('HGET', KEYS[6], 'stream')
+    local status = redis.call('HGET', KEYS[6], 'status')
+    if stream or status then
+        local cutoff = redis.call('HGET', KEYS[6], 'not_before_us')
+        local physical = redis.call('INFO', 'server'):match('run_id:([a-f0-9]+)')
+        local registered = redis.call('HGET', KEYS[6], 'process_run_id')
+        if status ~= 'ready' or stream ~= 'market:apisix:charges:v1:' .. epoch
+            or KEYS[4] ~= stream or not cutoff or not cutoff:match('^%d+$')
+            or tonumber(cutoff) > 9007199254740991 or not physical or registered ~= physical then
+            return redis.error_reply('Managed charge source unavailable')
+        end
+        local ok, periods = pcall(cjson.decode, ARGV[15])
+        local matched = false
+        if ok and type(periods) == 'table' then
+            for _, period in ipairs(periods) do
+                if type(period) == 'table' and period.order_id == ARGV[6]
+                    and period.segment_id == ARGV[7] and period.period_key == ARGV[9]
+                    and period.route_key == ARGV[10] then
+                    local start = period.start_at
+                    local charged = tonumber(ARGV[11])
+                    if matched or type(start) ~= 'number' or start < 0
+                        or start ~= math.floor(start) or start * 1000000 < tonumber(cutoff)
+                        or not charged or charged < start * 1000000
+                        or type(period.end_at) ~= 'number' or charged >= period.end_at * 1000000 then
+                        return redis.error_reply('Managed charge period unavailable')
+                    end
+                    matched = true
+                end
+            end
+        end
+        if not matched then return redis.error_reply('Managed charge period unavailable') end
+    elseif KEYS[4] ~= 'market:apisix:charges:v1' then
+        return redis.error_reply('Legacy charge stream mismatch')
+    end
     local stream_type = redis.call('TYPE', KEYS[4]).ok
     local coverage_type = redis.call('TYPE', KEYS[5]).ok
     if (stream_type ~= 'none' and stream_type ~= 'stream')
@@ -208,6 +242,18 @@ local function subscription_access(red, conf, ctx, values, metadata_key)
         args[4] = 'market:apisix:charges:v1'
         args[5] = 'market:apisix:charges:coverage:' .. scope .. ':' .. token(active.period_key)
         args[6] = 'market:apisix:charges:source'
+        local marker = red:hgetall(args[6])
+        if not marker then return finish(503, 'Charge source unavailable') end
+        local source = {}
+        for i = 1, #marker, 2 do source[marker[i]] = marker[i + 1] end
+        if source.stream or source.status then
+            if source.status ~= 'ready' or type(source.run_id) ~= 'string'
+                or #source.run_id ~= 40 or not source.run_id:match('^[a-f0-9]+$')
+                or source.stream ~= 'market:apisix:charges:v1:' .. source.run_id then
+                return finish(503, 'Charge source unavailable')
+            end
+            args[4] = source.stream
+        end
     end
     local arguments = {
         (math.floor(now / 60) + 1) * 60 + 10,

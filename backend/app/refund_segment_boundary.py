@@ -90,6 +90,9 @@ end
 local identity = {'mode', 'status', 'quota_scope', 'subscription_periods'}
 local run = redis.call('HGET', KEYS[3], 'run_id')
 if not run or #run ~= 40 or not run:match('^[a-f0-9]+$') then fail('invalid source epoch') end
+if p.source_run_id and p.source_run_id ~= run then fail('source epoch changed') end
+if KEYS[4] ~= 'market:apisix:charges:v1'
+    and KEYS[4] ~= 'market:apisix:charges:v1:' .. run then fail('source stream changed') end
 local tail = redis.call('XREVRANGE', KEYS[4], '+', '-', 'COUNT', 1)
 local boundary = '0-0'
 if #tail > 0 then boundary = tail[1][1] end
@@ -161,7 +164,8 @@ return receipt
 
 
 def freeze_policy_switch(client, *, credential_key, change_id, direction,
-                         expected_policy: dict, target_policy: dict, periods: list):
+                         expected_policy: dict, target_policy: dict, periods: list,
+                         source_context=None):
     """Return a JSON-compatible receipt dict, or raise without speculative writes.
 
     Policies contain Redis string fields; selected identity compares exact bytes.
@@ -219,12 +223,24 @@ def freeze_policy_switch(client, *, credential_key, change_id, direction,
     payload['period_json'] = [_json(period) for period in periods]
     payload['target_fingerprint'] = hashlib.sha256(_json(target_policy).encode()).hexdigest()
     payload['fingerprint'] = hashlib.sha256(_json(payload).encode()).hexdigest()
+    stream = 'market:apisix:charges:v1'
+    if source_context is not None:
+        stream, cursor = source_context
+        if (cursor is None or not re.fullmatch(r'[a-f0-9]{40}', cursor.redis_run_id)
+                or stream not in ('market:apisix:charges:v1',
+                                  'market:apisix:charges:v1:' + cursor.redis_run_id)):
+            raise ValueError('invalid boundary source context')
+        if stream != 'market:apisix:charges:v1' and any(
+                p['start_at'] < cursor.activated_at.timestamp() for p in periods
+                if p['end_at'] > cursor.activated_at.timestamp()):
+            raise ValueError('boundary period predates source activation')
+        payload['source_run_id'] = cursor.redis_run_id
     encoded = _json(payload)
     if len(encoded.encode()) > 262144:
         raise ValueError('boundary payload budget exceeded')
     credential_hash = hashlib.sha256(credential_key.encode()).hexdigest()
     keys = [credential_key, f'{NAMESPACE}{change_id}:{direction}:{credential_hash}',
-            'market:apisix:charges:source', 'market:apisix:charges:v1']
+            'market:apisix:charges:source', stream]
     scope = token(expected_policy['quota_scope'])
     for period in periods:
         suffix = scope + ':' + token(period['period_key'])

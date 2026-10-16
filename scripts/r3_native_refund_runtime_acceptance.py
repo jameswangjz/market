@@ -1,5 +1,6 @@
 """Reviewed native refund runtime composer and exact ownership guards."""
 from datetime import timedelta
+import hashlib
 import hmac
 import importlib
 import json
@@ -40,6 +41,50 @@ def stream_position(value):
 
 def quota_token(value):
     return value.replace('%', '%25').replace(':', '%3A')
+
+
+def source_stream(state):
+    """Allow only the legacy stream or the exact journaled financial epoch."""
+    stream = state.get('source_stream', STREAM)
+    source = state.get('source_run_id')
+    check(isinstance(stream, str) and (stream == STREAM or
+          (isinstance(source, str) and re.fullmatch(r'[0-9a-f]{40}', source)
+           and stream == STREAM + ':' + source)), 'invalid_source_stream')
+    if stream != STREAM:
+        physical = state.get('physical_run_id')
+        check(isinstance(physical, str) and re.fullmatch(r'[0-9a-f]{40}', physical),
+              'invalid_physical_run_id')
+    return stream
+
+
+def charge_id(state, event_id):
+    stream_position(event_id)
+    if source_stream(state) == STREAM:
+        return event_id
+    return hashlib.sha256((state['source_run_id'] + '|' + event_id).encode()).hexdigest()[:40]
+
+
+def source_context(m, db, redis):
+    ledger = getattr(m, 'api_charge_ledger', {})
+    hook = ledger.get('source_context') if isinstance(ledger, dict) else None
+    if callable(hook):
+        return hook(db, redis)
+    Cursor = ledger.get('Cursor') if isinstance(ledger, dict) else ledger['Cursor']
+    cursor = db.get(Cursor, STREAM) if Cursor is not None else None
+    if cursor is not None:
+        check(redis.info('server')['run_id'] == cursor.redis_run_id and
+              redis.hget('market:apisix:charges:source', 'run_id') == cursor.redis_run_id,
+              'charge_source_epoch_changed')
+    return STREAM, cursor
+
+
+def validate_charge_row(row, state, event_id, values):
+    expected_id = charge_id(state, event_id)
+    check(row is not None and row.id == expected_id and
+          (getattr(row, 'event_id', None) in (None, event_id) if source_stream(state) == STREAM
+           else getattr(row, 'event_id', None) == event_id) and
+          all(str(getattr(row, key)) == value for key, value in values.items()),
+          'missing_event_charge_unproven')
 
 
 def extra_keys(*, combination_id, generation, period_index, refund_id):
@@ -307,10 +352,17 @@ def _redis_preflight(m, db, redis, manifest, executions, *, wait_for_cursor=True
             check(plan['refund_id'] == rid and receipt.get('refund_id') == rid and
                   receipt.get('plan_hash') == plan['plan_hash'], 'foreign_refund_intent')
     events = []
+    stream = source_stream(state)
     if 'stream_start' in state or 'stream_end' in state:
+        if stream != STREAM:
+            check(redis.info('server')['run_id'] == state['physical_run_id'],
+                  'charge_source_epoch_changed')
+            current_stream, cursor = source_context(m, db, redis)
+            check(current_stream == stream and cursor is not None and
+                  cursor.redis_run_id == state['source_run_id'], 'charge_source_stream_changed')
         start, end = state['stream_start'], state['stream_end']
         check(stream_position(start) <= stream_position(end), 'invalid_stream_bounds')
-        entries = redis.xrange(STREAM, min='(' + start, max=end, count=201)
+        entries = redis.xrange(stream, min='(' + start, max=end, count=201)
         check(len(entries) <= 200, 'stream_scan_bound_exceeded')
         for event_id, values in entries:
             if values.get('order_id') in state.get('order_ids', []):
@@ -325,20 +377,19 @@ def _redis_preflight(m, db, redis, manifest, executions, *, wait_for_cursor=True
             validate_charge(event_id, record, start=start, end=end, order_id=state['order_id'],
                 term_id=state['term_id'], combination_id=combo,
                 route_key=manifest['routes']['api']['source'], source_run_id=state['source_run_id'])
-            charge = db.get(m.api_charge_ledger['Charge'], event_id)
-            check(charge is not None and charge.id == event_id and all(
-                str(getattr(charge, key)) == value for key, value in record.items()),
-                'missing_event_charge_unproven')
+            charge = db.get(m.api_charge_ledger['Charge'], charge_id(state, event_id))
+            validate_charge_row(charge, state, event_id, record)
     else:
         check(not state.get('event_ids'), 'events_without_bounds')
     if events:
-        check(redis.info('server')['run_id'] == state['source_run_id'] and
+        check(redis.info('server')['run_id'] == state.get('physical_run_id', state['source_run_id']) and
               redis.hget('market:apisix:charges:source', 'run_id') == state['source_run_id'],
               'charge_source_epoch_changed')
         deadline = time.monotonic() + 30
         while True:
             db.expire_all()
-            cursor = db.get(m.api_charge_ledger['Cursor'], STREAM)
+            current_stream, cursor = source_context(m, db, redis)
+            check(current_stream == stream, 'charge_source_stream_changed')
             if (cursor is not None and cursor.redis_run_id == state['source_run_id'] and
                     stream_position(cursor.last_id) >= max(map(stream_position, events))):
                 break
@@ -514,10 +565,11 @@ def cleanup(m, manifest, path, *, dry_run=False):
             _verify_sla(m, db, manifest)
             state = manifest['database_ids'].get('native_refund')
             if state is not None:
+                stream = source_stream(state)
                 state['probe_consumers'] = probes
                 records = state.setdefault('validated_events', {})
                 for event_id in events:
-                    entry = redis.xrange(STREAM, min=event_id, max=event_id, count=1)
+                    entry = redis.xrange(stream, min=event_id, max=event_id, count=1)
                     check(len(entry) == 1 and entry[0][0] == event_id, 'event_changed_before_journal')
                     validate_charge(event_id, entry[0][1], start=state['stream_start'],
                         end=state['stream_end'], order_id=state['order_id'], term_id=state['term_id'],
@@ -544,10 +596,10 @@ def cleanup(m, manifest, path, *, dry_run=False):
                 check(base.apisix_admin(m, 'GET', '/consumers/' + item['name'], absent=True)
                       is None, 'probe_consumer_remains')
             if events:
-                redis.xdel(STREAM, *events)
+                redis.xdel(source_stream(state), *events)
             check(not any(redis.exists(key) for key in set(manifest['external']['redis_keys']) | extra),
                   'owned_redis_key_remains')
-            check(all(not redis.xrange(STREAM, min=e, max=e, count=1) for e in events),
+            check(all(not redis.xrange(source_stream(state), min=e, max=e, count=1) for e in events),
                   'owned_stream_event_remains')
         finally:
             redis.close()
@@ -595,7 +647,7 @@ def _verify_finished(m, db, manifest):
               'owned_redis_key_remains')
         for event_id in state.get('event_ids', []):
             stream_position(event_id)
-            check(not redis.xrange(STREAM, min=event_id, max=event_id, count=1),
+            check(not redis.xrange(source_stream(state), min=event_id, max=event_id, count=1),
                   'owned_stream_event_remains')
     finally:
         redis.close()

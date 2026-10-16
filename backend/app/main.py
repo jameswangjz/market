@@ -2104,6 +2104,9 @@ def ensure_product_metadata_schema():
 
 def ensure_review_and_file_schema():
     tables = {
+        "api_financial_charges": {
+            "event_id": "VARCHAR(48)",
+        },
         "users": {
             "username": "VARCHAR(80)",
             "activation_status": "VARCHAR(30) DEFAULT 'active'",

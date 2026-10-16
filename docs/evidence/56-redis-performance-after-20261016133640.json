@@ -1,0 +1,25 @@
+{
+  "schema": "redis_persistence_microbenchmark_v1",
+  "label": "after",
+  "scope": "Bounded Redis SET/GET microbenchmark, not production capacity or platform impact.",
+  "samples": 1000,
+  "warmup_pairs": 100,
+  "payload_bytes": 64,
+  "ttl_seconds": 600,
+  "status": "passed",
+  "redis_version": "7.4.11",
+  "aof_enabled": true,
+  "pair_latency": {
+    "unit": "ns",
+    "percentile_method": "nearest_rank",
+    "p50": 1171812,
+    "p95": 1586654,
+    "p99": 1855903,
+    "mean": 1106761.936
+  },
+  "elapsed_ns": 1108087954,
+  "measured_pairs": 1000,
+  "measured_operations": 2000,
+  "operations_per_second": 1804.9108762353715,
+  "cleanup": "deleted"
+}
