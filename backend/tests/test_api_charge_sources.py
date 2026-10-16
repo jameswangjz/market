@@ -6,6 +6,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from app.api_charge_ledger import EPOCH, STREAM
+from app.api_charge_sources import wait_for_cutover
 import test_api_charge_ledger as legacy
 
 
@@ -19,6 +20,47 @@ class SourceTests(legacy.ChargeLedgerTests):
         self.ledger_client.xread.return_value = []
         self.ledger_client.pttl.return_value = -1
         self.ledger_client.eval.side_effect = self.cas
+        cutover_patch = patch(self.m.__package__ + '.api_charge_sources.wait_for_cutover', return_value=None)
+        self.cutover_wait = cutover_patch.start()
+        self.addCleanup(cutover_patch.stop)
+
+    def test_whole_second_cutover_waits_before_ready_and_guards_activation(self):
+        from app.api_charge_ledger import microseconds
+        at = self.at.replace(microsecond=500000)
+        wall = [at]
+        sleeps = []
+        def sleep(seconds):
+            self.assertNotIn('status', self.marker)
+            sleeps.append(seconds)
+            wall[0] += timedelta(seconds=seconds)
+        self.cutover_wait.side_effect = lambda cutover: wait_for_cutover(
+            cutover, clock=lambda: wall[0], sleep=sleep)
+        with self.m.SessionLocal() as db, patch.object(self.m, 'now', return_value=at):
+            result = self.hooks['open_epoch'](db, self.ledger_client, 'op', 'gap')
+            cursor = db.get(self.hooks['Cursor'], result['stream'])
+            self.assertEqual(cursor.activated_at, at.replace(microsecond=0) + timedelta(seconds=1))
+            self.assertEqual(sleeps, [0.5])
+            self.assertEqual(self.marker['status'], 'ready')
+            self.assertGreaterEqual(int(wall[0].timestamp()) * 1000000, int(result['not_before_us']))
+            first_cutover = cursor.activated_at
+            # A stale business clock still advances monotonically to a whole second.
+            self.cutover_wait.side_effect = lambda cutover: wait_for_cutover(
+                cutover, clock=lambda: cutover - timedelta(seconds=6), sleep=sleep)
+            with self.assertRaisesRegex(ValueError, 'too far ahead'):
+                self.hooks['open_epoch'](db, self.ledger_client, 'op', 'second gap')
+            pending = db.scalar(select(self.hooks['SourceGeneration']).where(
+                self.hooks['SourceGeneration'].status == 'pending'))
+            self.assertEqual(pending.cutover, first_cutover + timedelta(seconds=1))
+            self.assertEqual(microseconds(pending.cutover) % 1000000, 0)
+            before = dict(self.marker)
+            self.ledger_client.eval.reset_mock()
+            def restarted(cutover):
+                self.ledger_client.info.return_value = {'run_id': 'b' * 40}
+            self.cutover_wait.side_effect = restarted
+            with self.assertRaisesRegex(ValueError, 'process changed'):
+                self.hooks['open_epoch'](db, self.ledger_client, 'op', 'retry')
+            self.ledger_client.eval.assert_not_called()
+            self.assertEqual(self.marker, before)
 
     def cas(self, script, count, key, before, after, size):
         import json
@@ -79,12 +121,13 @@ class SourceTests(legacy.ChargeLedgerTests):
             self.assertEqual(snapshot, (cursor.last_id, cursor.redis_run_id, cursor.activated_at))
             import json
             self.assertEqual(json.loads(pending.audit_log)[-1],
-                dict(action='abandon', actor='admin', reason='pending process lost'))
+                dict(action='abandon', actor='admin', reason='pending process lost', at=self.m.now().isoformat()))
             gaps = list(db.scalars(select(self.hooks['Gap'])))
             self.assertEqual(len(gaps), 2)
             new_gap = next(g for g in gaps if g.source_id == result['source_id'])
             self.assertEqual(new_gap.old_source_id, pending.id)
-            self.assertEqual(result['audits'], [dict(action='open', actor='admin', reason='pending process lost')])
+            self.assertEqual(result['audits'], [dict(action='open', actor='admin',
+                reason='pending process lost', at=self.m.now().isoformat())])
             self.hooks['source_context'](db, self.ledger_client)
 
     def rotate_on_counter_read(self, db):
@@ -222,11 +265,23 @@ class SourceTests(legacy.ChargeLedgerTests):
     def test_planned_restart_rebinds_only_sealed_unchanged_evidence(self):
         with self.m.SessionLocal() as db:
             self.hooks['open_epoch'](db, self.ledger_client, 'op', 'initial gap')
-            self.hooks['seal_epoch'](db, self.ledger_client, 'op', 'maintenance')
+            sealed = self.hooks['seal_epoch'](db, self.ledger_client, 'op', 'maintenance')
             self.assertEqual(self.marker['status'], 'paused')
             self.ledger_client.info.return_value = {'run_id': 'b' * 40}
-            self.hooks['resume_epoch'](db, self.ledger_client, 'op', 'restart complete')
+            resumed = self.hooks['resume_epoch'](db, self.ledger_client, 'op', 'restart complete')
             self.assertEqual(self.marker['process_run_id'], 'b' * 40)
+            self.assertIsNone(resumed['sealed_hash'])
+            self.assertIsNotNone(sealed['sealed_hash'])
+            self.assertEqual(resumed['audits'][-2]['evidence_sha256'], sealed['sealed_hash'])
+            self.assertEqual(resumed['audits'][-1], dict(action='resume', actor='op',
+                reason='restart complete', at=self.m.now().isoformat(),
+                evidence_sha256=sealed['sealed_hash'], before_process_run_id='a' * 40,
+                after_process_run_id='b' * 40))
+            self.assertTrue(all(entry['at'] for entry in resumed['audits']))
+            import json
+            row = db.get(self.hooks['SourceGeneration'], resumed['source_id'])
+            db.refresh(row)
+            self.assertEqual(json.loads(row.audit_log), resumed['audits'])
             self.hooks['source_context'](db, self.ledger_client)
 
     def test_unplanned_restart_requires_gap(self):

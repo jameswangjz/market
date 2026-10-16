@@ -2,7 +2,8 @@
 import hashlib
 import json
 import uuid
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import BigInteger, String, Text, select, text
 from sqlalchemy.orm import mapped_column
@@ -22,6 +23,19 @@ local target = cjson.decode(ARGV[2])
 for k,v in pairs(target) do redis.call('HSET', KEYS[1], k, v) end
 return 1
 """
+
+
+def wait_for_cutover(cutover, *, clock=None, sleep=None):
+    """Use wall time, independent of the application's overridable business clock."""
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    sleep = sleep or time.sleep
+    remaining = (cutover - clock()).total_seconds()
+    if remaining > 5:
+        raise ValueError('Source cutover too far ahead of UTC wall clock; epoch remains pending')
+    if remaining > 0:
+        sleep(min(remaining, 1.0))
+    if clock() < cutover:
+        raise ValueError('Source cutover boundary not reached; epoch remains pending')
 
 
 def install(ns, hooks, run_id, stream, epoch, microseconds):
@@ -96,7 +110,8 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
         # Unknown missing usage is NULL, never an inferred zero.
         return dict(source_id=row.id, stream=row.stream, status=row.status,
                     process_run_id=row.process_run_id, not_before_us=str(microseconds(row.cutover)),
-                    gap_status='unresolved', missing_count=None, audits=json.loads(row.audit_log))
+                    gap_status='unresolved', missing_count=None, sealed_hash=row.sealed_hash,
+                    audits=json.loads(row.audit_log))
 
     def open_epoch(db, client, actor, reason):
         audit(actor, reason)
@@ -112,18 +127,21 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
             cutover = ns['now']()
             if previous is not None and cutover <= previous.cutover:
                 cutover = previous.cutover + timedelta(microseconds=1)
+            if cutover.microsecond:
+                cutover = cutover.replace(microsecond=0) + timedelta(seconds=1)
             identity = hashlib.sha1(uuid.uuid4().bytes).hexdigest()
             row = SourceGeneration(id=identity, stream=stream + ':' + identity,
                 status='pending', process_run_id=physical, cutover=cutover,
                 old_stream=old_stream, old_cursor=old.last_id if old else None,
-                audit_log=json.dumps([dict(action='open', actor=actor, reason=reason)]),
+                audit_log=json.dumps([dict(action='open', actor=actor, reason=reason,
+                                          at=ns['now']().isoformat())]),
                 marker_snapshot=json.dumps(before, sort_keys=True))
             if previous:
                 if previous.status == 'pending':
                     # Only explicit admin open may abandon a pending source after process loss.
                     previous.status = 'abandoned'
                     previous.audit_log = json.dumps(json.loads(previous.audit_log) + [
-                        dict(action='abandon', actor=actor, reason=reason)])
+                        dict(action='abandon', actor=actor, reason=reason, at=ns['now']().isoformat())])
                 else:
                     previous.status = 'paused'
             db.add(row)
@@ -133,6 +151,9 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
                 status='unresolved', missing_count=None))
             db.add(Cursor(stream=row.stream, last_id='0-0', redis_run_id=identity, activated_at=cutover))
             db.commit()
+        wait_for_cutover(row.cutover)
+        if run_id(client) != row.process_run_id:
+            raise ValueError('Redis process changed before activation; epoch remains pending')
         cas(client, json.loads(row.marker_snapshot), marker(row))
         row.status = 'active'
         db.commit()
@@ -185,7 +206,8 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
         sealed_hash = seal_hash(client, row)
         row.status = 'paused'
         row.sealed_hash = sealed_hash
-        row.audit_log = json.dumps(json.loads(row.audit_log) + [dict(action='seal', actor=actor, reason=reason)])
+        row.audit_log = json.dumps(json.loads(row.audit_log) + [dict(action='seal', actor=actor,
+            reason=reason, at=ns['now']().isoformat(), evidence_sha256=sealed_hash)])
         db.commit()
         return info(row)
 
@@ -204,6 +226,8 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
         if before not in allowed or seal_hash(client, row) != row.sealed_hash:
             raise ValueError('Sealed financial evidence changed; explicit gap epoch required')
         physical = run_id(client)
+        prior_binding = row.process_run_id
+        prior_seal_hash = row.sealed_hash
         # Persist the new physical binding before Redis can advertise readiness.
         row.marker_snapshot = json.dumps(before, sort_keys=True)
         row.process_run_id = physical
@@ -211,7 +235,9 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
         cas(client, before, marker(row))
         row.status = 'active'
         row.sealed_hash = None
-        row.audit_log = json.dumps(json.loads(row.audit_log) + [dict(action='resume', actor=actor, reason=reason)])
+        row.audit_log = json.dumps(json.loads(row.audit_log) + [dict(action='resume', actor=actor,
+            reason=reason, at=ns['now']().isoformat(), evidence_sha256=prior_seal_hash,
+            before_process_run_id=prior_binding, after_process_run_id=physical)])
         db.commit()
         return info(row)
 
