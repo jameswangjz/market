@@ -1,0 +1,22 @@
+{
+  "screenshots": [
+    "sla-overview.png",
+    "sla-matrix.png",
+    "sla-bindings.png",
+    "sla-mobile.png"
+  ],
+  "status": "passed",
+  "scope": "installed administrator read-only UI; no configuration writes",
+  "checks": [
+    "SLA exposes four workspaces",
+    "Obsolete rule history and counter removed",
+    "Complete metric matrix is rendered",
+    "Fixed calendar and support metadata are read-only",
+    "Matrix field labels, inputs and native options consistently use 12px",
+    "Enterprise binding filters and server pagination exist",
+    "Redundant assignment history table removed",
+    "Binding filters and edit form consistently use 12px",
+    "Frozen promises and evidence tab opens",
+    "Evidence controls consistently use 12px"
+  ]
+}

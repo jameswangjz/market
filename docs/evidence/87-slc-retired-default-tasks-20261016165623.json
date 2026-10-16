@@ -1,0 +1,62 @@
+{
+  "captured_at": "2026-10-16T09:02:40.173771+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "SLC-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "SLC-QA-002",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "最新SLA反馈已完成：控件12px及编辑样式统一、旧区块移除；1条默认规则和5条考核已备份删除，startup不再创建，新实例复核零数据；6组HTTP和10项SLA浏览器检查通过。Web为20261016165623-2b7033b，API和SLA周期任务为20261016164931-701a2a4（后端内容相同）；详见文档35"
+}
