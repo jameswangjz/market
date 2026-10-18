@@ -352,6 +352,64 @@ def install(ns):
             raise HTTPException(409, 'unique_positive_final_baseline_required')
         return rows[0]
 
+    def ordinary_segment_transfer(db, b):
+        """A verified VC transfer is not a supplement; funded ancestry never is."""
+        vc = ns.get('version_change_settlement', {})
+        context_hook, Binding = vc.get('financial_context'), vc.get('SegmentBaselineLink')
+        if not callable(context_hook) or Binding is None:
+            return False
+        Baseline = ns['settlement_finance']['Baseline']
+        Proof = ns['settlement_finance'].get('FundingProof')
+        seen = set()
+        try:
+            while b is not None:
+                if b.settlement_id in seen or Proof is not None and db.get(Proof, b.settlement_id):
+                    return False
+                seen.add(b.settlement_id)
+                snapshot = json.loads(b.snapshot_json)
+                if hashlib.sha256(b.snapshot_json.encode()).hexdigest() != b.snapshot_hash:
+                    return False
+                bindings = db.scalars(select(Binding).where(Binding.settlement_id == b.settlement_id)).all()
+                if not bindings:
+                    receipts = snapshot.get('actual_receipts')
+                    return len(seen) > 1 and receipts is not None and number(receipts) == number(b.revenue)
+                if len(bindings) != 1:
+                    return False
+                binding = bindings[0]
+                context = context_hook(db, db.get(ns['Settlement'], b.settlement_id))
+                if (context.get('status') != 'ready' or context.get('side') != 'target'
+                        or context.get('context_hash') != snapshot.get('segment_context_hash')
+                        or binding.context_hash != context['context_hash'] or binding.baseline_hash != b.snapshot_hash
+                        or binding.source_settlement_id != context['source_settlement_id']):
+                    return False
+                projection = context.get('version_funding_projection')
+                if projection:
+                    FundingLink = ns['settlement_finance'].get('SegmentFundingLink')
+                    describe = ns.get('settlement_version_funding', {}).get('describe')
+                    if FundingLink is None or not callable(describe):
+                        return False
+                    links = db.scalars(select(FundingLink).where(FundingLink.target_settlement_id == b.settlement_id)).all()
+                    if len(links) != 1 or links[0].context_hash != context['context_hash']:
+                        return False
+                    old_id = links[0].source_negative_id
+                    old = db.get(ns['Settlement'], old_id)
+                    evidence = describe(db, old_id)
+                    # v2 returns unused supplement on the old side. This exact
+                    # immutable bridge ends funding ancestry, not its cash claim.
+                    return bool(old is not None and old.status in ('locked', 'paid')
+                        and evidence is not None and old_id == projection['settlement_id']
+                        and projection['source_settlement_id'] == context['source_settlement_id']
+                        and projection['source_hash'] == context['source_baseline_hash']
+                        and projection['window_id'] == context['window_id']
+                        and projection['change_id'] == context['change_id']
+                        and all(evidence.get(k) == v for k, v in projection.items()))
+                b = db.get(Baseline, context['source_settlement_id'])
+                if b is None or b.snapshot_hash != context['source_baseline_hash']:
+                    return False
+        except (HTTPException, ValueError, KeyError, TypeError, AttributeError):
+            return False
+        return False
+
     def validate_exception(db, e, order):
         unposted(db, e.refund_id)
         payload = json.loads(e.payload_json)
@@ -516,7 +574,8 @@ def install(ns):
             b = None if multi else baseline(db, order, refund)
             if b is not None and hasattr(b, 'snapshot_json'):
                 receipts = json.loads(b.snapshot_json).get('actual_receipts')
-                if receipts is not None and number(receipts) != number(b.revenue):
+                if (receipts is not None and number(receipts) != number(b.revenue)
+                        and not ordinary_segment_transfer(db, b)):
                     raise HTTPException(422, 'funded_source_allocations_required')
             currency = 'CNY' if multi else b.currency
             retained = number(body.get('retained_cost'), cents=True, positive=True)
