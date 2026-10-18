@@ -13,6 +13,38 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
     PERIOD = dict(cycle='monthly', period_start='2026-09-01T00:00:00+00:00',
                   period_end='2026-10-01T00:00:00+00:00')
 
+    def setUp(self):
+        super().setUp()
+        rows = []
+        for kind in ('service', 'expert', 'channel'):
+            p = self.request('POST', '/api/settlement-parties', actor='ops', json=dict(
+                request_id='party-' + kind, name='Actual ' + kind, enterprise_id='provider_tenant',
+                kind=kind, currency='CNY'))
+            rows.append(dict(participant_id=p['id'], participant_type=kind, weight='100'))
+        self.request('POST', '/api/settlement-parties/products/product/allocations', actor='ops',
+                     json=dict(request_id='fixture-mapping', allocations=rows))
+
+    def record_payments(self, bid):
+        ids = {row['id'] for row in self.batch_settlements(bid)}
+        with self.m.SessionLocal() as db:
+            model = self.m.settlement_finance['Position']
+            positions = db.scalars(self.select(model).where(model.settlement_id.in_(ids),
+                model.direction == 'payable')).all()
+            groups = {}
+            for p in positions:
+                groups.setdefault((p.participant_type, p.participant_id, p.currency), []).append(
+                    dict(position_id=p.id, amount=str(p.amount)))
+        for index, allocations in enumerate(groups.values()):
+            tx = self.request('POST', '/api/settlement-finance/transactions', actor='finance', json=dict(
+                request_id=f'payout-{bid}-{index}', kind='payout', mode='simulated',
+                reference='Isolated simulated voucher', allocations=allocations))
+            self.request('POST', f'/api/settlement-finance/transactions/{tx["id"]}/confirm', actor='ops',
+                         json=dict(request_id=f'confirm-{bid}-{index}', expected_version=1, note='Independent check'))
+
+    def pay_batch(self, bid):
+        self.record_payments(bid)
+        return self.request('POST', f'/api/settlement-batches/{bid}/pay', actor='finance', json={})
+
     def paid_order(self, paid_at='2026-09-15T12:00:00+00:00', created_at=None):
         oid = self.create_order()
         self.pay(oid)
@@ -64,7 +96,7 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         original = self.batch_settlements(original_batch['id'])[0]
         self.lock_all(original_batch['id'])
         self.request('POST', f'/api/settlement-batches/{original_batch["id"]}/confirm', actor='finance', json={})
-        self.request('POST', f'/api/settlement-batches/{original_batch["id"]}/pay', actor='finance', json={})
+        self.pay_batch(original_batch['id'])
         self.request('POST', f'/api/orders/{oid}/transition', actor='platform',
                      expected=409, json={'action': 'approve_refund', 'refund_amount': 20, 'reason': 'Partial refund'})
         self.request('POST', f'/api/orders/{oid}/transition', actor='platform', expected=409,
@@ -136,7 +168,7 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         evidence = {'lock_status': response.status_code}
         if response.status_code == 200:
             self.request('POST', f'/api/settlement-batches/{bid}/confirm', actor='finance', json={})
-            self.request('POST', f'/api/settlement-batches/{bid}/pay', actor='finance', json={})
+            self.pay_batch(bid)
             evidence['settlement_status'] = self.rows(self.m.Settlement, id=sid)[0].status
             evidence['proposal_status'] = self.rows(self.m.SettlementAdjustmentProposal, id=proposal['id'])[0].status
         self.assertEqual(response.status_code, 409, evidence)
@@ -148,7 +180,7 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         sid = self.batch_settlements(bid)[0]['id']
         self.lock_all(bid)
         self.request('POST', f'/api/settlement-batches/{bid}/confirm', actor='finance', json={})
-        self.request('POST', f'/api/settlement-batches/{bid}/pay', actor='finance', json={})
+        self.pay_batch(bid)
         self.request('POST', f'/api/settlements/generate/{oid}', actor='finance', expected=409, json={})
         self.assertEqual(self.rows(self.m.Settlement, id=sid)[0].status, 'paid')
 
@@ -161,11 +193,12 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         self.lock_all(bid)
         self.assertEqual(self.rows(self.m.SettlementBatch, id=bid)[0].status, 'pending_confirm')
         self.request('POST', f'/api/settlement-batches/{bid}/confirm', actor='finance', json={})
-        self.request('POST', f'/api/settlement-batches/{bid}/pay', actor='finance', json={})
+        self.pay_batch(bid)
         self.assertTrue(all(row['status'] == 'paid' for row in self.batch_settlements(bid)))
         lines = self.rows(self.m.SettlementLine, batch_id=bid)
         self.assertEqual(len(lines), 10)
-        self.assertTrue(all(line.status == 'paid' and line.payment_no.startswith('SIM-PAY-') for line in lines))
+        self.assertTrue(all(line.status == 'paid' and not line.payment_no for line in lines))
+        self.assertTrue(self.rows(self.m.settlement_finance['Confirmation']))
         before = self.counts()
         ids = {line.id: line.payment_no for line in lines}
         self.request('POST', f'/api/settlement-batches/{bid}/pay', actor='finance', expected=409, json={})
@@ -201,6 +234,27 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         self.request('POST', '/api/settlement-batches', actor='finance', expected=409,
                      json=self.PERIOD | {'idempotency_key': 'rebuild-confirmed', 'rebuild': True})
         self.assertEqual(len(self.rows(self.m.SettlementBatch)), before)
+
+    def test_pending_confirm_rebuild_preserves_baselines_and_rejects_old_positions(self):
+        self.paid_order()
+        first = self.batch(idempotency_key='frozen-rebuild-first')
+        self.lock_all(first['id'])
+        sid = self.batch_settlements(first['id'])[0]['id']
+        finance = self.m.settlement_finance
+        with self.m.SessionLocal() as db:
+            baseline = db.get(finance['Baseline'], sid).snapshot_json
+            position = db.scalar(self.select(finance['Position']).where(
+                finance['Position'].settlement_id == sid, finance['Position'].kind == 'cost'))
+            pid = position.id
+        second = self.batch(idempotency_key='frozen-rebuild-second', rebuild=True)
+        self.assertNotEqual(second['id'], first['id'])
+        self.assertEqual(self.rows(self.m.Settlement, id=sid)[0].status, 'superseded')
+        self.assertEqual(self.rows(finance['Baseline'], settlement_id=sid)[0].snapshot_json, baseline)
+        positions = self.request('GET', '/api/settlement-finance/positions', actor='finance')['items']
+        self.assertNotIn(pid, {p['id'] for p in positions})
+        self.request('POST', '/api/settlement-finance/transactions', actor='finance', expected=409, json=dict(
+            request_id='old-draft', kind='payout', mode='simulated', reference='Superseded position',
+            allocations=[dict(position_id=pid, amount='10.00')]))
 
     def test_same_batch_request_is_idempotent_without_duplicate_lines_or_notifications(self):
         self.paid_order()
@@ -287,6 +341,7 @@ class SettlementAcceptanceTests(harness.AcceptanceHTTPCase):
         bid = self.batch(idempotency_key='rollback-payment')['id']
         self.lock_all(bid)
         self.request('POST', f'/api/settlement-batches/{bid}/confirm', actor='finance', json={})
+        self.record_payments(bid)
         before = self.counts()
         audit_count = len(self.rows(self.m.AuditLog))
         with self.fail_after_create('settlement'):

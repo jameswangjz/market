@@ -14,6 +14,9 @@ const actions = Object.freeze({
   generate_settlement: '生成清算单', adjust_settlement: '调整清算单', lock_settlement: '锁定清算单', create_settlement_adjustment_proposal: '提出清算调整', decide_settlement_adjustment_proposal: '审核清算调整', create_refund_negative_settlement: '生成退款负向清算单',
   generate_settlement_batch: '生成批次清算单', create_settlement_batch: '创建清算批次', confirm_settlement_batch: '确认清算批次', rollback_settlement_batch: '回滚清算批次', pay_settlement_batch: '清算批次付款', reconcile_settlement_batch: '清算批次对账', settlement_batch_ready_for_confirmation: '清算批次待确认', supersede_settlement_batch: '替换清算批次', supersede_legacy_settlement_batch: '替换历史清算批次', skip_finalized_settlement_order: '跳过已完成清算订单', generate_refund_settlement_line: '生成退款清算明细',
   create_settlement_rule: '创建清算规则', approve_settlement_rule: '审批清算规则', reject_settlement_rule: '拒绝清算规则', activate_settlement_rule: '启用清算规则', simulate_settlement_rule: '试算清算规则', close_reconciliation_difference: '关闭对账差异', create_settlement_correction: '创建清算更正', approve_settlement_correction: '批准清算更正', reject_settlement_correction: '拒绝清算更正', export_settlement_report: '导出清算报表',
+  finance_draft: '登记资金凭证草稿', finance_confirm: '复核资金凭证', finance_baseline_capture: '冻结清算资金基线', refund_final_baseline_review: '复核退款最终清算基线',
+  create_settlement_participant: '创建清算收益主体', configure_settlement_participants: '配置清算收益主体', export_settlement_reporting: '导出清算分析报表',
+  create_settlement_annual_report: '创建年度清算报告草稿', export_settlement_annual_report: '导出年度清算报告', finalize_settlement_annual_report: '正式确认年度清算报告',
   create_service_level: '创建服务级别', update_service_level: '更新服务级别', assign_service_level: '绑定企业级别', expire_service_level_assignment: '企业级别到期恢复标准', update_sla_matrix: '更新 SLA 指标矩阵', create_sla_profile: '创建历史 SLA 规则', update_sla_profile: '更新历史 SLA 规则',
   activate_email: '激活邮箱', update_profile_contact: '更新联系方式', submit_personal_verification: '提交个人实名', resubmit_personal_verification: '重新提交个人实名', review_personal_verification: '审核个人实名', submit_enterprise_verification: '提交企业实名', review_enterprise_verification: '审核企业实名',
   invite_enterprise_member: '邀请企业成员', resend_enterprise_invitation: '重发企业邀请', accept_enterprise_invitation: '接受企业邀请', reject_enterprise_invitation: '拒绝企业邀请', update_enterprise_member_role: '修改成员角色', disable_enterprise_member: '禁用企业成员', enable_enterprise_member: '解禁企业成员', delete_enterprise_member: '删除企业成员', transfer_enterprise_super_admin: '转移企业超级管理员', create_enterprise_department: '创建企业部门', update_enterprise_department: '更新企业部门', delete_enterprise_department: '删除企业部门', update_enterprise_member_department: '更新成员部门', retire_business_review_account: '停用历史审核账号',
@@ -36,5 +39,6 @@ export function auditActionLabel(event) {
   const code = typeof event === 'string' ? event : event?.action;
   const label = typeof event === 'object' && (event?.action_label || event?.action_display || event?.action_name);
   if (typeof label === 'string' && /[\u3400-\u9fff]/.test(label)) return label;
-  return (Object.hasOwn(actions, code) ? actions[code] : null) || (typeof code === 'string' && /[\u3400-\u9fff]/.test(code) ? code : code ? `其他操作（${code}）` : '未记录动作');
+  const lookup = typeof code === 'string' && code.startsWith('configure_settlement_participants:') ? 'configure_settlement_participants' : code;
+  return (Object.hasOwn(actions, lookup) ? actions[lookup] : null) || (typeof code === 'string' && /[\u3400-\u9fff]/.test(code) ? code : code ? `其他操作（${code}）` : '未记录动作');
 }

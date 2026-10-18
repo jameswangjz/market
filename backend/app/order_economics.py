@@ -89,6 +89,9 @@ def install(ns):
                     "subscription_months": months, "unit_price": str(unit_price), "unit_cost": str(unit_cost),
                     "amount": str(amount), "total_cost": str(cost), "currency": product.currency,
                     "settlement_rule": settlement_snapshot(db, product, lock)}
+        parties = ns.get('settlement_parties', {}).get('configuration')
+        if callable(parties):
+            economic['settlement_parties'] = parties(db, product.id)
         file_stmt = select(File).where(File.product_id == product.id, File.version_id == version.id,
                                       File.file_role == "product_data", File.status != "deleted").order_by(File.id)
         files = db.scalars(file_stmt.with_for_update() if lock else file_stmt).all()

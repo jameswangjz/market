@@ -14,7 +14,13 @@ class DevelopmentSubtask(TypedDict):
 @cache
 def _definitions() -> dict[str, tuple[str, ...]]:
     document = json.loads(Path(__file__).with_suffix('.json').read_text(encoding='utf-8'))
-    tasks = document['tasks']
+    tasks = dict(document['tasks'])
+    extra = Path(__file__).with_name('clearing_development_steps.json')
+    if extra.is_file():
+        additional = json.loads(extra.read_text(encoding='utf-8'))['tasks']
+        if not isinstance(additional, dict) or tasks.keys() & additional.keys():
+            raise ValueError('Additional development steps must have unique task codes')
+        tasks.update(additional)
     if not isinstance(tasks, dict):
         raise ValueError('Development step definitions must be keyed by task code')
     definitions = {}

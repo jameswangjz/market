@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import calendar
+import csv
 from contextvars import ContextVar
 import os
 import re
@@ -20,7 +21,7 @@ import threading
 import time
 import zipfile
 from email.message import EmailMessage
-from io import BytesIO
+from io import BytesIO, StringIO
 from urllib.parse import parse_qs, quote
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
@@ -42,6 +43,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 from .enterprise_console_scope import resolve_enterprise_membership, require_enterprise_super_admin, require_enterprise_editor
 from .console_business_scope import resolve_business_scope, order_predicate, audit_predicate
 from .enterprise_settlement_scope import settlement_access, proposal_identity, require_counterparty, proposal_amounts, workflow_actions
+from . import settlement_finance_adapter
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./market.db")
@@ -6199,6 +6201,7 @@ def settlements(batch_id: str | None = None, settlement_id: str | None = None, o
 @app.get("/api/settlements/{settlement_id}/detail")
 def settlement_detail(settlement_id: str, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
     settlement, scope = settlement_access(globals(), request, db, user, settlement_id)
+    finance = settlement_finance_adapter.describe(globals(), db, settlement.id)
     order = db.get(Order, settlement.order_id)
     lines = db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded").order_by(SettlementLine.created_at)).all()
     batch = db.get(SettlementBatch, lines[0].batch_id) if lines else None
@@ -6242,9 +6245,9 @@ def settlement_detail(settlement_id: str, user: User = Depends(current_user), db
                 "values": {k: v for k, v in json.loads(p.values_json or "{}").items() if not k.startswith("_")},
                 "proposer_side": json.loads(p.values_json or "{}").get("_proposer", {}).get("side", ""),
                 "reviewed_by": p.reviewed_by, "reviewed_at": p.reviewed_at, "review_comment": p.review_comment, "created_at": p.created_at} for p in proposals],
-            "lifecycle": lifecycle, "version_change": None,
+            "lifecycle": lifecycle, "version_change": None, "finance": finance,
             "refund_adjustment": refund_settlement["describe"](db, settlement.id)}
-    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "actions": proposal_actions[item.id], "proposer_side": json.loads(item.values_json or "{}").get("_proposer", {}).get("side", ""), "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle, "version_change": version_change_settlement["describe"](db, settlement.id), "actions": actions, "refund_adjustment": refund_settlement["describe"](db, settlement.id)}
+    return {"id": settlement.id, "settlement_no": settlement.settlement_no, "status": settlement.status, "created_at": settlement.created_at, "batch": {"id": batch.id, "batch_no": batch.batch_no, "status": batch.status, "cycle": batch.cycle, "period_start": batch.period_start, "period_end": batch.period_end, "created_at": batch.created_at} if batch else None, "order": {"id": order.id, "order_no": order.order_no, "buyer_name": order.buyer_name, "product_name": order.product_name, "payment_status": order.payment_status, "created_at": order.created_at} if order else None, "amounts": {"gross_amount": float(settlement.gross_amount or 0), "cost_amount": float(settlement.cost_amount or 0), "profit_amount": float(settlement.profit_amount or 0), "refund_amount": float(settlement.refund_amount or 0), "net_amount": float(settlement.net_amount or 0)}, "participants": participants, "proposals": [{"id": item.id, "status": item.status, "proposed_by": item.proposed_by, "actions": proposal_actions[item.id], "proposer_side": json.loads(item.values_json or "{}").get("_proposer", {}).get("side", ""), "reason": item.reason, "values": json.loads(item.values_json or "{}"), "reviewed_by": item.reviewed_by, "reviewed_at": item.reviewed_at, "review_comment": item.review_comment, "created_at": item.created_at} for item in proposals], "lifecycle": lifecycle, "version_change": version_change_settlement["describe"](db, settlement.id), "actions": actions, "finance": finance, "refund_adjustment": refund_settlement["describe"](db, settlement.id)}
 
 
 @app.post("/api/settlements/generate/{order_id}")
@@ -6256,14 +6259,15 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
     if version_change_settlement["is_funding_order"](order):
         raise HTTPException(409, "版本变更差价支付单不单独清算，请按月清算关联的经济调整")
     existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()).with_for_update().execution_options(populate_existing=True))
+    settlement_finance_adapter.protect(globals(), db, [existing.id] if existing else [])
     if existing and existing.status in {"locked", "paid", "archived", "disputed"}:
         raise HTTPException(409, "订单清算单已锁定、付款或存在待处理提案，不允许覆盖")
     if existing and db.scalar(select(SettlementLine.id).where(SettlementLine.settlement_id == existing.id, SettlementLine.status != "superseded")):
         raise HTTPException(409, "清算单已关联清算批次，请通过批次重算或调整提案处理")
     body = body or SettlementRuleBody()
     gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    refund_amount = min(Decimal(str(order.refunded_amount or 0)), gross).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    net_amount = max(gross - refund_amount, Decimal("0.00"))
+    refund_amount = Decimal('0.00')
+    net_amount = gross
     cost_amount = order_cost(db, order)
     profit_amount = (net_amount - cost_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     distributable = max(profit_amount, Decimal("0.00"))
@@ -6306,6 +6310,7 @@ def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: 
     settlement = db.get(Settlement, settlement_id)
     if not settlement:
         raise HTTPException(404, "清算单不存在")
+    settlement_finance_adapter.protect(globals(), db, [settlement.id])
     if settlement.status in {"locked", "paid", "superseded"}:
         raise HTTPException(409, "当前清算单已锁定、付款或作废，不能直接调整")
     line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id))
@@ -6350,6 +6355,7 @@ def adjust_settlement(settlement_id: str, body: SettlementAdjustmentBody, user: 
 @app.post("/api/settlements/{settlement_id}/proposals")
 def create_settlement_adjustment_proposal(settlement_id: str, body: SettlementAdjustmentBody, user: User = Depends(current_user), db: Session = Depends(db_session), request: Request = None):
     settlement, scope = settlement_access(globals(), request, db, user, settlement_id, write=True)
+    settlement_finance_adapter.protect(globals(), db, [settlement.id])
     if settlement.status in {"locked", "paid", "superseded"}:
         raise HTTPException(409, "当前清算单已锁定、付款或作废，不能提交调整提案")
     line = db.scalar(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded"))
@@ -6395,6 +6401,7 @@ def decide_settlement_adjustment_proposal(proposal_id: str, body: SettlementProp
     if not proposal:
         raise HTTPException(404, "调整提案不存在")
     settlement, scope = settlement_access(globals(), request, db, user, proposal.settlement_id, write=True)
+    settlement_finance_adapter.protect(globals(), db, [settlement.id])
     proposal = db.scalar(select(SettlementAdjustmentProposal).where(SettlementAdjustmentProposal.id == proposal_id)
         .with_for_update().execution_options(populate_existing=True))
     if proposal.status != "pending":
@@ -6444,8 +6451,14 @@ def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: 
     batch = db.get(SettlementBatch, line.batch_id) if line else None
     if batch and batch.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
         raise HTTPException(409, "当前清算批次已确认或进入付款流程")
+    is_version_change = version_change_settlement['describe'](db, settlement.id) is not None
+    if settlement.refund_id and not is_version_change:
+        refund_settlement['prepare_lock'](db, settlement, user.id)
     before = {"status": settlement.status}
     settlement.status = "locked"
+    db.flush()
+    if not is_version_change:
+        settlement_finance_adapter.capture(globals(), db, settlement, user.id)
     if line:
         for related_line in db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded")).all():
             related_line.status = "locked"
@@ -6583,6 +6596,9 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
             if not body.rebuild:
                 raise HTTPException(409, f"该月份已有未完成清算批次 {existing_period.batch_no}，如需重算请确认作废原批次")
             old_settlement_ids = select(SettlementLine.settlement_id).where(SettlementLine.batch_id == existing_period.id)
+            protected_ids = db.scalars(select(Settlement.id).where(Settlement.id.in_(old_settlement_ids))
+                .order_by(Settlement.id).with_for_update()).all()
+            settlement_finance_adapter.protect_rebuild(globals(), db, protected_ids)
             if (db.scalar(select(SettlementLine.id).where(SettlementLine.batch_id == existing_period.id, SettlementLine.status.in_(["payment_processing", "partial_paid", "paid", "archived"]))) or
                     db.scalar(select(Settlement.id).where(Settlement.id.in_(old_settlement_ids), Settlement.status.in_(["payment_processing", "partial_paid", "paid", "archived"])))):
                 raise HTTPException(409, "该月份批次存在已付款清算明细，不允许重新生成")
@@ -6608,6 +6624,8 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
     if body.cycle == "monthly" and order_ids:
         legacy_batches = db.scalars(select(SettlementBatch).where(SettlementBatch.status.notin_(["superseded", "confirmed", "payment_processing", "partial_paid", "paid", "archived"]), SettlementBatch.id != (existing_period.id if body.cycle == "monthly" and existing_period else ""), SettlementBatch.id.in_(select(SettlementLine.batch_id).where(SettlementLine.settlement_id.in_(select(Settlement.id).where(Settlement.order_id.in_(order_ids), Settlement.id.not_in(linked_version_change_ids)))))).order_by(SettlementBatch.id).with_for_update().execution_options(populate_existing=True)).all()
         for legacy in legacy_batches:
+            legacy_ids = db.scalars(select(SettlementLine.settlement_id).where(SettlementLine.batch_id == legacy.id)).all()
+            settlement_finance_adapter.protect_rebuild(globals(), db, legacy_ids)
             legacy.status = "superseded"
             audit(db, user.email, "supersede_legacy_settlement_batch", "settlement_batch", legacy.batch_no, "月度批次覆盖旧手工批次", category="settlement", business_domain="settlement", batch_no=legacy.batch_no, risk_level="warning")
     batch = SettlementBatch(batch_no="BATCH-" + secrets.token_hex(6).upper(), cycle=body.cycle, period_start=body.period_start, period_end=body.period_end, rule_id=rule.id, status="generated", idempotency_key=key, request_digest=request_digest, created_by=user.email or user.name)
@@ -6629,6 +6647,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
             audit(db, user.email, "skip_finalized_settlement_order", "settlement", finalized.settlement_no, "订单已有已完成清算，批次不重复生成", category="settlement", business_domain="settlement", order_id=order.id, risk_level="warning")
             continue
         for prior in prior_settlements:
+            settlement_finance_adapter.protect(globals(), db, [prior.id])
             prior.status = "superseded"
         gross = Decimal(str(order.paid_amount or order.amount or 0)).quantize(Decimal("0.01"))
         # The original paid order is settled positively. Completed refunds are
@@ -6698,7 +6717,7 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
 def settlement_batches(user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_viewer(user)
     items = db.scalars(select(SettlementBatch).order_by(SettlementBatch.created_at.desc()).limit(200)).all()
-    return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "total_profit": float(x.total_profit or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at} for x in items]}
+    return {"items": [{"id": x.id, "batch_no": x.batch_no, "cycle": x.cycle, "rule_id": x.rule_id, "status": x.status, "total_amount": float(x.total_amount or 0), "total_profit": float(x.total_profit or 0), "exception_count": x.exception_count, "confirmed_at": x.confirmed_at, "paid_at": x.paid_at, "created_at": x.created_at, "funds": settlement_finance_adapter.funds(globals(), db, x.id)} for x in items]}
 
 
 @app.get("/api/settlement-batches/{batch_id}/lines")
@@ -6727,9 +6746,8 @@ def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
         raise HTTPException(409, "批次存在未处理调整提案，不能确认锁定")
     before = {"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}}
     for item in settlements:
-        if item.status == "paid":
-            raise HTTPException(409, "批次存在已付款清算单，不能重新确认")
-        item.status = "locked"
+        if item.status != 'locked':
+            raise HTTPException(409, 'all_settlements_must_be_locked')
     for line in db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id, SettlementLine.status != "superseded")).all():
         line.status = "locked"
     batch.status = "confirmed"
@@ -6776,17 +6794,23 @@ def pay_settlement_batch(batch_id: str, body: SettlementActionBody, user: User =
         raise HTTPException(409, "所有清算单锁定后才可以付款")
     if db.scalar(select(SettlementAdjustmentProposal.id).where(SettlementAdjustmentProposal.settlement_id.in_(settlement_ids), SettlementAdjustmentProposal.status == "pending")):
         raise HTTPException(409, "批次存在未处理调整提案，不能付款")
+    funds = settlement_finance_adapter.funds(globals(), db, batch.id)
+    if not funds['positive_payment_complete']:
+        raise HTTPException(409, dict(code='positive_payment_evidence_required', funds=funds))
     before = {"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}}
     batch.status = "paid"
     batch.paid_at = now()
     for item in settlements:
-        item.status = "paid"
-    for line in db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id)).all():
-        line.status = "paid"
-        line.payment_no = "SIM-PAY-" + secrets.token_hex(5).upper()
+        if Decimal(str(item.gross_amount)) >= 0:
+            item.status = "paid"
+    positive_ids = {item.id for item in settlements if Decimal(str(item.gross_amount)) >= 0}
+    for line in db.scalars(select(SettlementLine).where(SettlementLine.batch_id == batch.id,
+            SettlementLine.status != 'superseded')).all():
+        if line.settlement_id in positive_ids:
+            line.status = "paid"
     audit(db, user.email, "pay_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement_payment", business_domain="settlement", batch_no=batch.batch_no, before=before, after={"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}})
     db.commit()
-    return {"batch_no": batch.batch_no, "status": batch.status, "paid_at": batch.paid_at}
+    return {"batch_no": batch.batch_no, "status": batch.status, "paid_at": batch.paid_at, "funds": funds}
 
 
 @app.post("/api/settlement-batches/{batch_id}/reconcile")
@@ -6914,7 +6938,7 @@ def settlement_reports(status: str | None = None, start: str | None = None, end:
         stmt = stmt.where(accounting_date >= filter_date(start))
     if end:
         stmt = stmt.where(accounting_date < filter_date(end) + timedelta(days=1))
-    items = db.scalars(stmt.order_by(Settlement.created_at.desc()).limit(2000)).all()
+    items = db.scalars(stmt.order_by(Settlement.created_at.desc())).all()
     report_lines = db.scalars(select(SettlementLine).where(
         SettlementLine.settlement_id.in_([item.id for item in items]),
         SettlementLine.status != "superseded").order_by(SettlementLine.created_at)).all() if items else []
@@ -7011,30 +7035,55 @@ def settlement_reports(status: str | None = None, start: str | None = None, end:
 
 @app.get("/api/settlement-reports/export")
 def export_settlement_report(status: str | None = None, start: str | None = None, end: str | None = None, kind: str = "details", user: User = Depends(current_user), db: Session = Depends(db_session)):
+    if kind not in {'summary', 'products', 'details'}:
+        raise HTTPException(422, 'invalid_settlement_export_kind')
     data = settlement_reports(status=status, start=start, end=end, user=user, db=db)
+    output = StringIO(newline='')
+    writer = csv.writer(output)
+
+    def cell(value):
+        if isinstance(value, str):
+            stripped = value.lstrip()
+            leading = value[:len(value) - len(stripped)]
+            if stripped.startswith(('=', '+', '-', '@')) or any(c in leading for c in '\t\r\n'):
+                return "'" + value
+        return value
+
+    def row(values):
+        writer.writerow([cell(value) for value in values])
+
     if kind == "summary":
-        lines = ["总体订单清算汇总", "指标,金额", f"订单金额,{data['summary']['gross_amount']}", f"订单成本,{data['summary']['cost_amount']}", f"订单利润,{data['summary']['profit_amount']}", "", "总体参与方汇总"]
-        lines.append("participant_type,participant_name,order_count,settlement_amount")
+        row(['总体订单清算汇总'])
+        row(['指标', '金额'])
+        for label, key in [('订单金额', 'gross_amount'), ('订单成本', 'cost_amount'), ('订单利润', 'profit_amount')]:
+            row([label, data['summary'][key]])
+        row([])
+        row(['总体参与方汇总'])
+        row(['participant_type', 'participant_name', 'order_count', 'settlement_amount'])
         for item in data["summary"]["participants"]:
-            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["participant_type", "participant_name", "order_count", "amount"]))
-        lines.append("")
-        lines.append("自然月汇总")
-        lines.append("月份,订单数量,订单金额,订单成本,订单利润,平台运营方,数据/服务提供方,数据服务方,专家,渠道")
+            row([item.get(key, '') for key in ['participant_type', 'participant_name', 'order_count', 'amount']])
+        row([])
+        row(['自然月汇总'])
+        row(['月份', '订单数量', '订单金额', '订单成本', '订单利润', '平台运营方', '数据/服务提供方', '数据服务方', '专家', '渠道'])
         for item in data["monthly"]:
-            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["label", "order_count", "gross_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee"]))
+            row([item.get(key, '') for key in ['label', 'order_count', 'gross_amount', 'cost_amount', 'profit_amount', 'platform_fee', 'provider_share', 'service_share', 'expert_fee', 'channel_fee']])
     elif kind == "products":
-        lines = ["产品维度清算汇总", "product_id,product_name,订单数量,订单金额,订单成本,订单利润,平台运营方,数据/服务提供方,数据服务方,专家,渠道"]
+        row(['产品维度清算汇总'])
+        row(['product_id', 'product_name', '订单数量', '订单金额', '订单成本', '订单利润', '平台运营方', '数据/服务提供方', '数据服务方', '专家', '渠道'])
         for item in data["products"]:
-            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["product_id", "product_name", "order_count", "gross_amount", "cost_amount", "profit_amount", "platform_fee", "provider_share", "service_share", "expert_fee", "channel_fee"]))
+            row([item.get(key, '') for key in ['product_id', 'product_name', 'order_count', 'gross_amount', 'cost_amount', 'profit_amount', 'platform_fee', 'provider_share', 'service_share', 'expert_fee', 'channel_fee']])
     else:
-        lines = ["settlement_no,order_id,order_no,product_name,status,order_amount,refund_amount,net_amount,cost_amount,profit_amount,平台运营方,数据/服务提供方,数据服务方,专家,渠道,created_at,source_kind,refund_id,refund_no,is_refund"]
+        row(['settlement_no', 'order_id', 'order_no', 'product_name', 'status', 'order_amount', 'refund_amount', 'net_amount', 'cost_amount', 'profit_amount', '平台运营方', '数据/服务提供方', '数据服务方', '专家', '渠道', 'created_at', 'source_kind', 'refund_id', 'refund_no', 'is_refund'])
         for item in data["items"]:
             amounts = {p["participant_type"]: p["amount"] for p in item["participants"]}
-            lines.append(",".join(str(item.get(key, "")).replace(",", " ") for key in ["settlement_no", "order_id", "order_no", "product_name", "status", "gross_amount", "refund_amount", "net_amount", "cost_amount", "profit_amount"]) + "," + ",".join(str(amounts.get(key, 0)).replace(",", " ") for key in ["platform", "provider", "service", "expert", "channel"]) + "," + str(item.get("created_at", "")) + "," + ",".join(str(item.get(key, "")).replace(",", " ") for key in ["source_kind", "refund_id", "refund_no", "is_refund"]))
+            row([item.get(key, '') for key in ['settlement_no', 'order_id', 'order_no', 'product_name', 'status', 'gross_amount', 'refund_amount', 'net_amount', 'cost_amount', 'profit_amount']]
+                + [amounts.get(key, 0) for key in ['platform', 'provider', 'service', 'expert', 'channel']]
+                + [item.get('created_at', '')]
+                + [item.get(key, '') for key in ['source_kind', 'refund_id', 'refund_no', 'is_refund']])
     audit(db, user.email, "export_settlement_report", "settlement_report", "", f"status={status or 'all'} rows={len(data['items'])}", category="settlement_report", business_domain="settlement")
     db.commit()
     filename = "settlement-summary.csv" if kind == "summary" else "settlement-products.csv" if kind == "products" else "settlement-details.csv"
-    return Response(content="\ufeff" + "\n".join(lines), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+    return Response(content="\ufeff" + output.getvalue(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
 
 
 @app.get("/api/audit-logs")
@@ -8001,3 +8050,11 @@ refund_file_resources = install_refund_file_resources(globals())
 from .refund_settlement import install as install_refund_settlement
 
 refund_settlement = install_refund_settlement(globals())
+
+from .settlement_parties import install as install_settlement_parties
+from .settlement_finance import install as install_settlement_finance
+from .settlement_reporting import install as install_settlement_reporting
+
+settlement_parties = install_settlement_parties(globals())
+settlement_finance = install_settlement_finance(globals())
+settlement_reporting = install_settlement_reporting(globals())

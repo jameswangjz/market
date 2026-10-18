@@ -31,6 +31,8 @@ import ApplicationsCenter from "./ApplicationsCenter.vue";
 import { canManageProviderSaas, canViewProductIntegration, createReadinessController, readinessLabel } from "./productIntegration.js";
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
+import SettlementFinanceWorkspace from "./SettlementFinanceWorkspace.vue";
+import { safeError } from "./settlementFinance.js";
 import { useNotificationStream } from "./useNotificationStream.js";
 import { notificationScope, notificationScopeKey, notificationRequest } from "./notificationScope.js";
 import { settlementSide, settlementContextKey, settlementDetailRequest, canProposeSettlement, canDecideSettlement, canLockSettlement, settlementAdjustmentItem } from "./settlementParticipation.js";
@@ -521,8 +523,6 @@ const settlementReconciliations = ref([]);
 const settlementCorrections = ref([]);
 const settlementAdjusting = ref(null);
 const settlementAdjustForm = ref({ gross_amount: 0, cost_amount: 0, profit_amount: 0, platform_rate: 0, provider_rate: 0, service_rate: 0, expert_rate: 0, channel_rate: 0, reason: "" });
-const settlementReport = ref({ summary: {}, items: [] });
-const settlementReportFilters = ref({ start: "", end: "" });
 const settlementMeasurements = ref([]);
 const auditItems = ref([]);
 const auditCategories = ref([]);
@@ -826,9 +826,17 @@ const typeLabels = {
 function fmtMoney(value) {
   return `¥${Number(value || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2 })}`;
 }
-const settlementLifecycleLabels = { generate_settlement_batch: "生成清算单", generate_refund_settlement_line: "生成退款负向清算单", create_refund_negative_settlement: "创建退款负向清算单", create_settlement_batch: "生成清算批次", lock_settlement: "锁定清算单", settlement_batch_ready_for_confirmation: "清算批次待确认", confirm_settlement_batch: "确认清算批次", pay_settlement_batch: "支付清算批次", create_settlement_adjustment_proposal: "提交调整提案", decide_settlement_adjustment_proposal: "处理调整提案" };
+const settlementLifecycleLabels = {
+  generate_settlement_batch: "生成清算单", generate_refund_settlement_line: "生成退款负向清算单", create_refund_negative_settlement: "创建退款负向清算单", create_settlement_batch: "生成清算批次", lock_settlement: "锁定清算单", settlement_batch_ready_for_confirmation: "清算批次待确认", confirm_settlement_batch: "确认清算批次", pay_settlement_batch: "支付清算批次", create_settlement_adjustment_proposal: "提交调整提案", decide_settlement_adjustment_proposal: "处理调整提案",
+  finance_draft: "登记资金凭证草稿", finance_confirm: "复核资金凭证", finance_baseline_capture: "冻结清算资金基线", refund_final_baseline_review: "复核退款最终清算基线",
+  create_settlement_participant: "创建清算收益主体", configure_settlement_participants: "配置清算收益主体", export_settlement_reporting: "导出清算分析报表",
+  create_settlement_annual_report: "创建年度清算报告草稿", export_settlement_annual_report: "导出年度清算报告", finalize_settlement_annual_report: "正式确认年度清算报告",
+};
 const settlementLifecycleFieldLabels = { status: "状态", net_amount: "净金额", gross_amount: "订单金额", cost_amount: "订单成本", profit_amount: "订单利润", distributable_profit: "可分配利润", refund_amount: "退款金额", platform_fee: "平台运营方", provider_share: "数据/服务提供方", service_share: "数据服务方", expert_fee: "专家", channel_fee: "渠道", batch_status: "批次状态", settlement_statuses: "清算单状态" };
-function settlementLifecycleAction(action) { return settlementLifecycleLabels[action] || action; }
+function settlementLifecycleAction(action) {
+  const code = typeof action === "string" && action.startsWith("configure_settlement_participants:") ? "configure_settlement_participants" : action;
+  return settlementLifecycleLabels[code] || action;
+}
 function settlementLifecycleValue(value, key) {
   if (value === undefined || value === null || value === "") return "-";
   if (typeof value === "object") return JSON.stringify(value);
@@ -857,7 +865,7 @@ const productReviewActionLabels = { submit_product_review: "提交审核", enter
 function productReviewActionLabel(value) { return productReviewActionLabels[value] || value; }
 function productReviewResult(item) { const status = item.after?.status; if (item.action.includes("reject") || status === "rejected") return "拒绝"; if (item.action.includes("approve") || status === "published" || status === "quality_review" || status === "security_review" || status === "operation_review") return "通过"; if (item.action === "withdraw_product_review") return "撤回"; return item.result === "success" ? "已提交" : item.result || "已记录"; }
 function notify(message) {
-  toast.value = message;
+  toast.value = typeof message === "string" ? message : safeError({ response: { data: { detail: message } } });
   window.setTimeout(() => {
     toast.value = "";
   }, 2600);
@@ -1179,14 +1187,13 @@ async function loadViewData(view) {
       settlementItems.value = data.items;
       return;
     }
-    const [settlements, allSettlements, rules, batches, reconciliations, corrections, report, measurements] = await Promise.all([
+    const [settlements, allSettlements, rules, batches, reconciliations, corrections, measurements] = await Promise.all([
       api.get("/settlements", { params: settlementFilters.value }),
       api.get("/settlements"),
       api.get("/settlement-rules").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-batches").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-reconciliations").catch(() => ({ data: { items: [] } })),
       api.get("/settlement-corrections").catch(() => ({ data: { items: [] } })),
-      api.get("/settlement-reports", { params: settlementReportFilters.value }).catch(() => ({ data: { summary: {}, items: [] } })),
       api.get("/settlement-measurements").catch(() => ({ data: { items: [] } })),
     ]);
     if (!contextCurrent()) return;
@@ -1196,7 +1203,6 @@ async function loadViewData(view) {
     settlementBatches.value = batches.data.items;
     settlementReconciliations.value = reconciliations.data.items;
     settlementCorrections.value = corrections.data.items;
-    settlementReport.value = report.data;
     settlementMeasurements.value = measurements.data.items;
   }
   if (view === "audit") {
@@ -2339,7 +2345,7 @@ async function generateSettlement(order) {
     notify("清算单已生成");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算生成失败");
+    notify(safeError(error, "清算生成失败"));
   }
 }
 async function searchSettlements() {
@@ -2356,7 +2362,7 @@ async function openSettlementDetail(item) {
     if (context !== settlementContext() || version !== settlementDetailRequestVersion) return;
     settlementDetail.value = data;
   } catch (error) {
-    if (context === settlementContext() && version === settlementDetailRequestVersion) notify(error.response?.data?.detail || "清算单详情加载失败");
+    if (context === settlementContext() && version === settlementDetailRequestVersion) notify(safeError(error, "清算单详情加载失败"));
   }
 }
 function closeSettlementDetail() {
@@ -2395,7 +2401,7 @@ async function adjustSettlement() {
     if (context !== settlementContext()) return;
     await loadViewData("settlements");
   } catch (error) {
-    if (context === settlementContext()) notify(error.response?.data?.detail || "清算调整失败");
+    if (context === settlementContext()) notify(safeError(error, "清算调整失败"));
   } finally { if (context === settlementContext()) settlementSubmitting.value = false; }
 }
 async function lockSettlement(item) {
@@ -2416,7 +2422,7 @@ async function lockSettlement(item) {
     if (context !== settlementContext()) return;
     await loadViewData("settlements");
   } catch (error) {
-    if (context === settlementContext()) notify(error.response?.data?.detail || "清算锁定失败");
+    if (context === settlementContext()) notify(safeError(error, "清算锁定失败"));
   } finally { if (context === settlementContext()) settlementSubmitting.value = false; }
 }
 async function decideSettlementProposal(proposal, decision) {
@@ -2435,7 +2441,7 @@ async function decideSettlementProposal(proposal, decision) {
     if (context !== settlementContext()) return;
     await loadViewData("settlements");
   } catch (error) {
-    if (context === settlementContext()) notify(error.response?.data?.detail || "调整提案处理失败");
+    if (context === settlementContext()) notify(safeError(error, "调整提案处理失败"));
   } finally { if (context === settlementContext()) settlementSubmitting.value = false; }
 }
 async function createSettlementRule() {
@@ -2446,7 +2452,7 @@ async function createSettlementRule() {
     settlementRuleForm.value.name = "";
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算规则保存失败");
+    notify(safeError(error, "清算规则保存失败"));
   }
 }
 async function decideSettlementRule(rule, decision) {
@@ -2455,7 +2461,7 @@ async function decideSettlementRule(rule, decision) {
     notify("清算规则状态已更新");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算规则操作失败");
+    notify(safeError(error, "清算规则操作失败"));
   }
 }
 async function simulateSettlementRule(rule) {
@@ -2463,7 +2469,7 @@ async function simulateSettlementRule(rule) {
     const { data } = await api.post(`/settlement-rules/${rule.id}/simulate`, { cycle: "manual" });
     notify(`试算完成，共 ${data.total} 条订单`);
   } catch (error) {
-    notify(error.response?.data?.detail || "清算规则试算失败");
+    notify(safeError(error, "清算规则试算失败"));
   }
 }
 async function generateSettlementBatch() {
@@ -2493,16 +2499,16 @@ async function generateSettlementBatch() {
         return;
       }
     }
-    notify(error.response?.data?.detail || "清算批次生成失败");
+    notify(safeError(error, "清算批次生成失败"));
   }
 }
 async function batchAction(batch, action) {
   try {
     await api.post(`/settlement-batches/${batch.id}/${action}`, { comment: "工作台操作" });
-    notify(action === "pay" ? "批次已完成模拟付款" : action === "dispute" ? "批次已标记异议" : "批次已确认");
+    notify(action === "pay" ? "批次正向付款已核验，回收进度请单独核对" : action === "dispute" ? "批次已标记异议" : "批次已确认");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算批次操作失败");
+    notify(safeError(error, "清算批次操作失败"));
   }
 }
 async function closeReconciliation(item) {
@@ -2513,7 +2519,7 @@ async function closeReconciliation(item) {
     notify("对账差异已关闭");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "差异关闭失败");
+    notify(safeError(error, "差异关闭失败"));
   }
 }
 async function createCorrection(item) {
@@ -2526,7 +2532,7 @@ async function createCorrection(item) {
     notify("清算冲正已提交审批");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算冲正提交失败");
+    notify(safeError(error, "清算冲正提交失败"));
   }
 }
 async function approveCorrection(item) {
@@ -2535,24 +2541,7 @@ async function approveCorrection(item) {
     notify("清算调整已审批");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "清算调整审批失败");
-  }
-}
-async function loadSettlementReport() {
-  try { const { data } = await api.get("/settlement-reports", { params: settlementReportFilters.value }); settlementReport.value = data; } catch (error) { notify(error.response?.data?.detail || "清算报表加载失败"); }
-}
-async function exportSettlementReport(kind = "details") {
-  try {
-    const response = await api.get("/settlement-reports/export", { params: { ...settlementReportFilters.value, kind }, responseType: "blob" });
-    const url = URL.createObjectURL(response.data);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = kind === "summary" ? "settlement-summary.csv" : "settlement-details.csv";
-    link.click();
-    URL.revokeObjectURL(url);
-    notify("清算报表已导出");
-  } catch (error) {
-    notify(error.response?.data?.detail || "清算报表导出失败");
+    notify(safeError(error, "清算调整审批失败"));
   }
 }
 async function createMeasurement() {
@@ -2566,7 +2555,7 @@ async function createMeasurement() {
     notify("计量数据已登记");
     await loadViewData("settlements");
   } catch (error) {
-    notify(error.response?.data?.detail || "计量数据登记失败");
+    notify(safeError(error, "计量数据登记失败"));
   }
 }
 async function saveNotificationSettings() {
@@ -3733,7 +3722,9 @@ onUnmounted(() => {
         >
         <template v-else-if="activeView === 'settlements' && !user?.platform_role">
           <div class="page-heading"><h1>企业清算</h1><button class="secondary-btn" @click="loadViewData('settlements')"><RefreshCw :size="16" />刷新</button></div>
-          <div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>产品</th><th>提供方分账</th><th>状态</th><th>时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementItems" :key="item.id"><td><button class="text-btn task-code" @click="openSettlementDetail(item)">{{ item.settlement_no || item.id }}</button></td><td>{{ item.order_no }}</td><td>{{ item.product_name }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ settlementStatusLabels[item.status] || item.status }}</td><td>{{ fmtDate(item.created_at) }}</td><td><button class="text-btn" @click="openSettlementDetail(item)"><Eye :size="14" />详情</button></td></tr><tr v-if="!settlementItems.length"><td colspan="7"><div class="empty-state">暂无企业清算数据</div></td></tr></tbody></table></div>
+          <ConsoleTabs v-model="settlementTab" :tabs="[{ key: 'settlements', label: '清算单' }, { key: 'reports', label: '报表与资金' }]" label="企业清算" />
+          <SettlementFinanceWorkspace v-if="settlementTab === 'reports'" :key="settlementContextKey(user, enterprise, businessView, token)" :api="api" :user="user" :enterprise="enterprise" :business-view="businessView" :dialogs="dialogs" @changed="loadViewData('settlements')" />
+          <div v-else class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>产品</th><th>提供方分账</th><th>状态</th><th>时间</th><th>操作</th></tr></thead><tbody><tr v-for="item in settlementItems" :key="item.id"><td><button class="text-btn task-code" @click="openSettlementDetail(item)">{{ item.settlement_no || item.id }}</button></td><td>{{ item.order_no }}</td><td>{{ item.product_name }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ settlementStatusLabels[item.status] || item.status }}</td><td>{{ fmtDate(item.created_at) }}</td><td><button class="text-btn" @click="openSettlementDetail(item)"><Eye :size="14" />详情</button></td></tr><tr v-if="!settlementItems.length"><td colspan="7"><div class="empty-state">暂无企业清算数据</div></td></tr></tbody></table></div>
         </template>
         <template v-else-if="activeView === 'settlements'"
           ><div class="page-heading">
@@ -3751,7 +3742,7 @@ onUnmounted(() => {
             <button :class="{ active: settlementTab === 'rules' }" @click="settlementTab = 'rules'">规则与试算 {{ settlementRules.length }}</button>
             <button :class="{ active: settlementTab === 'batches' }" @click="settlementTab = 'batches'">清算批次 {{ settlementBatches.length }}</button>
             <button :class="{ active: settlementTab === 'reconciliation' }" @click="settlementTab = 'reconciliation'">对账差异 {{ settlementReconciliations.filter((x) => x.status !== 'closed').length }}</button>
-            <button :class="{ active: settlementTab === 'corrections' }" @click="settlementTab = 'corrections'">退款与冲正（预留） {{ settlementCorrections.length }}</button>
+            <button :class="{ active: settlementTab === 'corrections' }" @click="settlementTab = 'corrections'">退款与冲正 {{ settlementCorrections.length }}</button>
             <button :class="{ active: settlementTab === 'reports' }" @click="settlementTab = 'reports'">清算报表</button>
             <button :class="{ active: settlementTab === 'measurements' }" @click="settlementTab = 'measurements'">计量计费 {{ settlementMeasurements.length }}</button>
           </div>
@@ -3773,8 +3764,8 @@ onUnmounted(() => {
           </div>
           <div v-else-if="settlementTab === 'batches'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT BATCHES</span><h3>清算批次</h3></div><button class="primary-btn" @click="generateSettlementBatch">生成批次</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次号</th><th>周期</th><th>总额</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody><tr v-for="batch in settlementBatches" :key="batch.id"><td><span class="task-code">{{ batch.batch_no }}</span></td><td>{{ batch.cycle }}</td><td>{{ fmtMoney(batch.total_amount) }}</td><td><span class="status-pill" :class="batch.status === 'paid' ? 'status-done' : 'status-review'">{{ batch.status }}</span></td><td>{{ fmtDate(batch.created_at) }}</td><td><div class="table-actions"><button v-if="batch.status === 'pending_confirm'" class="text-btn" @click="batchAction(batch, 'confirm')">确认</button><button v-if="batch.status === 'confirmed'" class="text-btn" @click="batchAction(batch, 'pay')">模拟付款</button></div></td></tr></tbody></table></div><div v-if="!settlementBatches.length" class="empty-state">暂无清算批次</div></div>
           <div v-else-if="settlementTab === 'reconciliation'" class="panel"><div class="panel-heading"><div><span class="section-kicker">FOUR LEDGER RECONCILIATION</span><h3>对账差异</h3></div><span class="muted">差异关闭前不得付款</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>批次</th><th>账簿</th><th>应有金额</th><th>实际金额</th><th>差额</th><th>状态</th><th>处理</th></tr></thead><tbody><tr v-for="item in settlementReconciliations" :key="item.id"><td>{{ item.batch_id.slice(0, 12) }}</td><td>{{ item.ledger_type }}</td><td>{{ fmtMoney(item.expected_amount) }}</td><td>{{ fmtMoney(item.actual_amount) }}</td><td>{{ fmtMoney(item.difference_amount) }}</td><td><span class="status-pill" :class="item.status === 'closed' || item.status === 'matched' ? 'status-done' : 'status-blocked'">{{ item.status }}</span></td><td><button v-if="item.status !== 'closed'" class="text-btn" @click="closeReconciliation(item)">关闭差异</button></td></tr></tbody></table></div><div v-if="!settlementReconciliations.length" class="empty-state">暂无对账记录</div><LedgerComparison :batches="settlementBatches" :can-operate="['super_admin', 'platform_operator', 'finance_settlement'].includes(user?.platform_role)" /></div>
-          <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REFUND AND REVERSAL · RESERVED</span><h3>退款与冲正（预留）</h3></div><span class="muted">退款流程尚未上线；现有清算调整请在清算单中处理</span></div><div class="empty-state">当前版本尚未实现退款、原路退回和负向清算单。已发生的清算金额调整，请通过清算单的“调整提案”完成并保留审计记录。</div><div v-if="settlementCorrections.length" class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td></tr></tbody></table></div></div>
-          <div v-else-if="settlementTab === 'reports'" class="panel"><div class="panel-heading"><div><span class="section-kicker">SETTLEMENT REPORTS</span><h3>清算报表</h3><span class="muted">支持按清算周期在线核对和下载</span></div><div class="table-actions"><button class="secondary-btn" @click="exportSettlementReport('summary')"><FileText :size="15" />下载参与方总表</button><button class="secondary-btn" @click="exportSettlementReport('details')"><FileText :size="15" />下载订单明细</button><button class="secondary-btn" @click="exportSettlementReport('products')"><FileText :size="15" />下载产品汇总</button></div></div><div class="report-filter-bar"><label>周期开始<input v-model="settlementReportFilters.start" type="date" /></label><label>周期结束<input v-model="settlementReportFilters.end" type="date" /></label><button class="primary-btn" @click="loadSettlementReport"><RefreshCw :size="15" />查询周期</button></div><div class="metric-grid report-metrics"><div class="metric-card"><span>订单总额</span><strong>{{ fmtMoney(settlementReport.summary.gross_amount) }}</strong></div><div class="metric-card"><span>订单数量</span><strong>{{ settlementReport.summary.count || 0 }}</strong></div><div class="metric-card"><span>总成本</span><strong>{{ fmtMoney(settlementReport.summary.cost_amount) }}</strong></div><div class="metric-card"><span>总利润</span><strong>{{ fmtMoney(settlementReport.summary.profit_amount) }}</strong></div></div><div class="report-section-heading"><strong>自然月清算汇总</strong><span class="muted">按订单清算明细的创建月份统计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>自然月</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.monthly || []" :key="item.label"><td>{{ item.label }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.monthly || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无自然月汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>产品维度清算汇总</strong><span class="muted">按产品统计订单、成本、利润和参与方金额</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>产品</th><th>订单数</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>平台运营方</th><th>数据/服务提供方</th><th>数据服务方</th><th>专家</th><th>渠道</th></tr></thead><tbody><tr v-for="item in settlementReport.products || []" :key="item.product_id || item.product_name"><td>{{ item.product_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.platform_fee) }}</td><td>{{ fmtMoney(item.provider_share) }}</td><td>{{ fmtMoney(item.service_share) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td></tr><tr v-if="!(settlementReport.products || []).length"><td colspan="10"><div class="empty-state">当前筛选周期暂无产品汇总数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>参与清算各方汇总</strong><span class="muted">按参与方分别合计</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>参与方类型</th><th>参与方</th><th>订单数</th><th>清算小计金额</th></tr></thead><tbody><tr v-for="item in settlementReport.summary.participants || []" :key="`${item.participant_type}-${item.participant_name}`"><td>{{ participantLabel(item.participant_type) }}</td><td>{{ item.participant_name }}</td><td>{{ item.order_count }}</td><td>{{ fmtMoney(item.amount) }}</td></tr><tr v-if="!(settlementReport.summary.participants || []).length"><td colspan="4"><div class="empty-state">当前周期暂无参与方清算数据</div></td></tr></tbody></table></div><div class="report-section-heading"><strong>订单清算明细</strong><span class="muted">每个订单的金额、成本、利润和参与方分配</span></div><div class="table-wrap"><table class="data-table"><thead><tr><th>清算单</th><th>订单</th><th>订单金额</th><th>订单成本</th><th>订单利润</th><th>专家</th><th>渠道</th><th>参与方清算小计</th><th>参与方明细</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementReport.items" :key="item.id"><td>{{ item.settlement_no }}</td><td>{{ item.order_no || item.order_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.gross_amount) }}</td><td>{{ fmtMoney(item.cost_amount) }}</td><td>{{ fmtMoney(item.profit_amount) }}</td><td>{{ fmtMoney(item.expert_fee) }}</td><td>{{ fmtMoney(item.channel_fee) }}</td><td>{{ fmtMoney(item.participant_total) }}</td><td><div class="report-participant-list"><span v-for="participant in item.participants" :key="`${item.id}-${participant.participant_type}-${participant.participant_name}`">{{ participant.participant_name }}：{{ fmtMoney(participant.amount) }}</span></div></td><td>{{ item.status }}</td></tr><tr v-if="!settlementReport.items.length"><td colspan="10"><div class="empty-state">当前周期暂无订单清算数据</div></td></tr></tbody></table></div></div>
+          <div v-else-if="settlementTab === 'corrections'" class="panel"><div class="panel-heading"><div><span class="section-kicker">REFUND AND REVERSAL</span><h3>退款与冲正</h3></div><span class="muted">买方退款与参与方追款独立跟踪</span></div><div class="muted">买方退款按退款流程处理；退款冲回、参与方应追回、已回收及抵扣分别在报表与资金台账中跟踪。参与方尚未返款不阻塞已获批的买方退款；清算金额调整仍通过清算单的“调整提案”保留审计记录。</div><div v-if="settlementCorrections.length" class="table-wrap"><table class="data-table"><thead><tr><th>类型</th><th>清算单</th><th>金额</th><th>追回方式</th><th>原因</th><th>状态</th></tr></thead><tbody><tr v-for="item in settlementCorrections" :key="item.id"><td>{{ item.correction_type }}</td><td>{{ item.settlement_id.slice(0, 12) }}</td><td>{{ fmtMoney(item.amount) }}</td><td>{{ item.recovery_mode }}</td><td>{{ item.reason }}</td><td><span class="status-pill" :class="item.status === 'approved' ? 'status-done' : 'status-review'">{{ item.status }}</span></td></tr></tbody></table></div></div>
+          <SettlementFinanceWorkspace v-else-if="settlementTab === 'reports'" :key="settlementContextKey(user, enterprise, businessView, token)" :api="api" :user="user" :enterprise="enterprise" :business-view="businessView" :dialogs="dialogs" @changed="loadViewData('settlements')" />
           <div v-else-if="settlementTab === 'measurements'" class="panel"><div class="panel-heading"><div><span class="section-kicker">MEASUREMENT AND BILLING</span><h3>计量计费数据</h3></div><button class="primary-btn" @click="createMeasurement">登记计量</button></div><div class="table-wrap"><table class="data-table"><thead><tr><th>订单</th><th>计量类型</th><th>数量</th><th>单位</th><th>来源</th><th>校验状态</th><th>时间</th></tr></thead><tbody><tr v-for="item in settlementMeasurements" :key="item.id"><td>{{ item.order_id.slice(0, 12) }}</td><td>{{ item.measurement_type }}</td><td>{{ item.quantity }}</td><td>{{ item.unit }}</td><td>{{ item.source }}</td><td><span class="status-pill status-done">{{ item.validation_status }}</span></td><td>{{ fmtDate(item.created_at) }}</td></tr></tbody></table></div><div v-if="!settlementMeasurements.length" class="empty-state">暂无计量数据</div></div>
           <div v-else class="panel">
             <div class="panel-heading">

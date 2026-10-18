@@ -193,7 +193,8 @@ class RefundMonthlySettlementTests(unittest.TestCase):
         old_ids = {line.settlement_id for line in old_lines}
         self.assertEqual(len(old_ids), 2)
         self.assertEqual(len(old_lines), 10)
-        self.request("POST", f"/api/settlements/{negative.id}/lock", actor="finance")
+        positive_id = next(sid for sid in old_ids if sid != negative.id)
+        self.request("POST", f"/api/settlements/{positive_id}/lock", actor="finance")
         self.assertIn(self.rows(self.m.SettlementBatch, id=first["id"])[0].status,
                       {"generated", "pending_confirm"})
         children = [self.rows(self.m.Settlement, id=sid)[0] for sid in old_ids]
@@ -229,11 +230,33 @@ class RefundMonthlySettlementTests(unittest.TestCase):
     def test_confirmed_and_paid_batches_block_rebuild_without_rewrite(self):
         refund = self.complete()
         batch = self.batch("refund-finalize")
-        for sid in {line.settlement_id for line in self.rows(self.m.SettlementLine, batch_id=batch["id"])}:
-            self.request("POST", f"/api/settlements/{sid}/lock", actor="finance")
+        children = [self.rows(self.m.Settlement, id=sid)[0] for sid in
+                    {line.settlement_id for line in self.rows(self.m.SettlementLine, batch_id=batch['id'])}]
+        for child in sorted(children, key=lambda row: row.is_refund):
+            if not child.is_refund:
+                # Freeze a bilateral final agreement with explicit provider
+                # and internal-platform recipients; never backfill old orders.
+                proposal = self.request('POST', f'/api/settlements/{child.id}/proposals', actor='finance', json=dict(
+                    gross_amount=100, cost_amount=10, profit_amount=90, platform_rate=20,
+                    provider_rate=80, service_rate=0, expert_rate=0, channel_rate=0,
+                    reason='Documented final allocation for fixture'))
+                self.request('POST', f'/api/settlement-proposals/{proposal["id"]}/decision', actor='provider',
+                             json=dict(decision='approve', comment='Agreed'))
+            self.request('POST', f'/api/settlements/{child.id}/lock', actor='finance')
         self.request("POST", f"/api/settlement-batches/{batch['id']}/confirm", actor="finance", json={})
         for state in ("confirmed", "paid"):
             if state == "paid":
+                with self.m.SessionLocal() as db:
+                    h = self.m.settlement_finance
+                    positions = db.scalars(select(h['Position']).where(h['Position'].settlement_id.in_(
+                        [child.id for child in children]), h['Position'].direction == 'payable')).all()
+                    allocations = [dict(position_id=p.id, amount=str(h['balance'](db, p)))
+                                   for p in positions if h['balance'](db, p) > 0]
+                tx = self.request('POST', '/api/settlement-finance/transactions', actor='finance', json=dict(
+                    request_id='monthly-payout', kind='payout', mode='simulated', reference='Isolated simulated voucher',
+                    allocations=allocations))
+                self.request('POST', f'/api/settlement-finance/transactions/{tx["id"]}/confirm', actor='ops',
+                             json=dict(request_id='monthly-payout-review', expected_version=1, note='Independent check'))
                 self.request("POST", f"/api/settlement-batches/{batch['id']}/pay", actor="finance", json={})
             before = self.economics(self.negative(refund))
             lines = [(r.id, r.amount, r.status, r.payment_no) for r in

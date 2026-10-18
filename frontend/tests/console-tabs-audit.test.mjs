@@ -37,6 +37,30 @@ test('tab keyboard navigation wraps, skips disabled tabs and focuses its new sel
   assert.deepEqual(calls, [['update:modelValue', 'c'], ['update:modelValue', 'a'], ['update:modelValue', 'c']]);
   assert.deepEqual(focus, [2, 0, 2]);
 });
+test('finance, participant configuration and annual report actions stay Chinese in audit and lifecycle views', () => {
+  const expected = {
+    finance_draft: '登记资金凭证草稿', finance_confirm: '复核资金凭证', finance_baseline_capture: '冻结清算资金基线',
+    refund_final_baseline_review: '复核退款最终清算基线', create_settlement_participant: '创建清算收益主体',
+    configure_settlement_participants: '配置清算收益主体', 'configure_settlement_participants:product-42': '配置清算收益主体',
+    export_settlement_reporting: '导出清算分析报表', create_settlement_annual_report: '创建年度清算报告草稿',
+    export_settlement_annual_report: '导出年度清算报告', finalize_settlement_annual_report: '正式确认年度清算报告',
+  };
+  const source = read('ConsoleApp.vue');
+  const context = vm.createContext({});
+  vm.runInContext(source.slice(source.indexOf('const settlementLifecycleLabels ='), source.indexOf('const settlementLifecycleFieldLabels =')) +
+    source.slice(source.indexOf('function settlementLifecycleAction('), source.indexOf('function settlementLifecycleValue(')), context);
+  for (const [action, label] of Object.entries(expected)) {
+    const event = { action, action_label: action };
+    assert.equal(auditActionLabel(action), label);
+    assert.equal(auditActionLabel(event), label);
+    assert.equal(event.action, action);
+    assert.equal(context.settlementLifecycleAction(action), label);
+  }
+  assert.equal(auditActionLabel({ action: 'finance_draft', action_label: '后端提供的中文名称' }), '后端提供的中文名称');
+  assert.equal(auditActionLabel('configure_settlement_participants_future'), '其他操作（configure_settlement_participants_future）');
+  assert.equal(context.settlementLifecycleAction('future_finance_action'), 'future_finance_action');
+  assert.equal(context.settlementLifecycleAction('lock_settlement'), '锁定清算单');
+});
 test('independent UI components compile and audit filters have responsive grid tracks', () => {
   for (const name of ['AuditFilters.vue', 'ConsoleTabs.vue', 'ConsoleApp.vue']) {
     const { descriptor, errors } = parse(read(name), { filename: name });

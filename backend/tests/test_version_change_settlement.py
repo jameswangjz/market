@@ -117,7 +117,25 @@ class VersionChangeSettlementTests(unittest.TestCase):
         self.assertTrue(all(line.status == "superseded" for line in self.rows(self.m.SettlementLine, batch_id=first["id"])))
         for settlement_id in {line.settlement_id for line in self.rows(self.m.SettlementLine, batch_id=second["id"])}:
             self.request("POST", f"/api/settlements/{settlement_id}/lock", actor="finance")
+            detail = self.request('GET', f'/api/settlements/{settlement_id}/detail', actor='finance')
+            self.assertEqual(detail['finance']['status'], 'waiting')
+            self.assertEqual(detail['finance']['reason'], 'exact_segment_final_baseline_required')
+            self.assertEqual(detail['finance']['positions'], [])
+            self.assertFalse(detail['finance']['funds_settled'])
+            with self.m.SessionLocal() as db:
+                self.assertIsNone(db.get(self.m.settlement_finance['Baseline'], settlement_id))
+                self.assertEqual(self.m.settlement_finance['describe'](db, settlement_id), detail['finance'])
+        self.assertEqual(self.rows(self.m.SettlementBatch, id=second['id'])[0].status, 'pending_confirm')
         self.request("POST", f"/api/settlement-batches/{second['id']}/confirm", actor="finance", json={})
+        self.request('POST', f'/api/settlement-batches/{second["id"]}/pay', actor='finance', expected=409, json={})
+        self.assertEqual(self.rows(self.m.SettlementBatch, id=second['id'])[0].status, 'confirmed')
+        self.assertEqual(self.rows(self.m.settlement_finance['Position']), [])
+        self.assertTrue(all(line.status == 'locked' and not line.payment_no for line in
+                            self.rows(self.m.SettlementLine, batch_id=second['id'])))
+        funds = next(b['funds'] for b in self.request('GET', '/api/settlement-batches', actor='finance')['items']
+                     if b['id'] == second['id'])
+        self.assertFalse(funds['positive_payment_complete'])
+        self.assertFalse(funds['funds_settled'])
         before = len(self.rows(self.m.Settlement))
         self.monthly("version-change-rebuild-c", rebuild=True, expected=409)
         self.assertEqual(len(self.rows(self.m.Settlement)), before)

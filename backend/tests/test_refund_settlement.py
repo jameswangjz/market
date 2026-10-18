@@ -124,7 +124,9 @@ class SettlementTests(unittest.TestCase):
             self.assertEqual(hook['ledger_status'](db, refund.id), 'in_batch')
             batch.status = 'paid'
             db.flush()
-            self.assertEqual(hook['ledger_status'](db, refund.id), 'paid')
+            # A batch flag without final-baseline recovery/offset evidence is
+            # still only batch participation, never proof of money recovered.
+            self.assertEqual(hook['ledger_status'](db, refund.id), 'in_batch')
             line.status = 'superseded'
             db.flush()
             self.assertEqual(hook['ledger_status'](db, refund.id), 'settlement_generated')
