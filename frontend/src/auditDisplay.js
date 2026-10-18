@@ -17,6 +17,9 @@ const actions = Object.freeze({
   finance_draft: '登记资金凭证草稿', finance_confirm: '复核资金凭证', finance_baseline_capture: '冻结清算资金基线', refund_final_baseline_review: '复核退款最终清算基线',
   finance_cost_exception_plan: '冻结成本例外冲回方案', finance_segment_funding_link: '关联版本变更经济段资金依据', bind_version_change_final_baseline: '绑定版本变更最终清算基线', project_version_change_final_baseline: '锁定前应用版本变更最终基线',
   approve_segment_cost_exception_refresh: '批准版本段成本例外并待刷新基线',
+  create_settlement_cost_exception: '申请不可返还成本例外', decide_settlement_cost_exception: '审批不可返还成本例外',
+  finance_funding_propose: '提出补差资金责任', finance_funding_decide: '审批补差资金责任', finance_funding_verify: '核验补差资金依据',
+  finance_multi_source_refund_capture: '冻结多来源退款清算基线', finance_multi_source_offset: '登记多来源退款抵扣',
   create_settlement_participant: '创建清算收益主体', configure_settlement_participants: '配置清算收益主体', export_settlement_reporting: '导出清算分析报表',
   create_settlement_annual_report: '创建年度清算报告草稿', export_settlement_annual_report: '导出年度清算报告', finalize_settlement_annual_report: '正式确认年度清算报告',
   create_service_level: '创建服务级别', update_service_level: '更新服务级别', assign_service_level: '绑定企业级别', expire_service_level_assignment: '企业级别到期恢复标准', update_sla_matrix: '更新 SLA 指标矩阵', create_sla_profile: '创建历史 SLA 规则', update_sla_profile: '更新历史 SLA 规则',
@@ -41,6 +44,6 @@ export function auditActionLabel(event) {
   const code = typeof event === 'string' ? event : event?.action;
   const label = typeof event === 'object' && (event?.action_label || event?.action_display || event?.action_name);
   if (typeof label === 'string' && /[\u3400-\u9fff]/.test(label)) return label;
-  const lookup = typeof code === 'string' && code.startsWith('configure_settlement_participants:') ? 'configure_settlement_participants' : code;
+  const lookup = typeof code === 'string' && /^(configure_settlement_participants|decide_settlement_cost_exception|finance_funding_decide|finance_funding_verify):/.test(code) ? code.split(':')[0] : code;
   return (Object.hasOwn(actions, lookup) ? actions[lookup] : null) || (typeof code === 'string' && /[\u3400-\u9fff]/.test(code) ? code : code ? `其他操作（${code}）` : '未记录动作');
 }

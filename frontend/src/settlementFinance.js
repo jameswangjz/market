@@ -10,7 +10,7 @@ export const amountLabels = {
   expert_fee: '专家分成', channel_fee: '渠道分成', provider_total_receivable: '提供方合计应收',
 };
 export const countLabels = { income_order_count: '收入业务订单数', refund_count: '完成退款笔数', adjustment_count: '业务调整笔数', settlement_count: '清算记录数', order_count: '去重关联订单数' };
-export const participantAmountLabels = { cost_amount: '成本回收', profit_share: '利润分成', loss_amount: '承担损失', total_receivable: '合计净应收（成本+利润-损失）' };
+export const participantAmountLabels = { cost_amount: '成本回收', profit_share: '利润分成', loss_amount: '承担损失', total_receivable: '合计净应收（成本+利润-损失）', funding_absorption_loss: '平台补差吸收损失', baseline_total_receivable: '基线应收合计', net_total_receivable: '补差后净应收' };
 export const sourceKinds = [{ value: 'original', label: '原始收入' }, { value: 'refund', label: '退款冲回' }, { value: 'version_change', label: '版本变更' }];
 export const positionSubjectLabels = { enterprise: '企业主体', platform: '平台主体', unassigned: '未分配主体' };
 export const beneficiaryAmountLabels = { profit_share: '本主体利润分成', loss_amount: '本主体承担损失', total_receivable: '本主体净应收', paid_amount: '已付收益', unpaid_amount: '未付收益', receivable_amount: '应追回', recovered_amount: '已追回', unrecovered_amount: '待追回余额', payable_offset_amount: '应付已抵扣', receivable_offset_amount: '应收已抵扣' };
@@ -167,6 +167,31 @@ export async function payablePositions(api, anchor, scope, current) {
   return current() ? rows.sort((a, b) => (a.kind === 'cost' ? 0 : 1) - (b.kind === 'cost' ? 0 : 1) || a.id.localeCompare(b.id)) : null;
 }
 const errorLabels = {
+  opposite_party_required: '须由对侧独立审批人处理，申请人及同侧人员不能审批。',
+  exception_version_conflict: '成本例外已被处理或版本变化，请刷新后核对。',
+  category_weights_must_equal_100: '每个收益类别的权重须分别合计100%。',
+  invalid_participant_identity_or_kind: '收益主体不存在、类别不符或不在当前授权范围。',
+  participant_identity_outside_scope: '只能关联本企业及本企业有效成员。',
+  verified_provider_admin_required: '仅已认证提供方管理员可管理本企业主体与成本例外。',
+  real_identity_required: '非平台主体须关联真实企业或用户。',
+  identity_not_found: '关联企业或用户不存在，请核对编号。',
+  evidence_refs_required: '请提供至少一条有效证据引用。',
+  invalid_bearer: '承担主体不存在、币种不符或不在提供方授权范围。',
+  provider_bearer_must_match_order_provider: '提供方承担主体必须与退款订单的提供方一致。',
+  unique_positive_final_baseline_required: '尚无唯一且有正成本的最终基线，不能申请成本例外。',
+  exact_completed_segment_final_baseline_required: '跨版本退款须具备可校验的唯一经济段及最终清算基线。',
+  retained_cost_exceeds_refund_cost: '保留成本不能超过本次退款应冲回成本。',
+  retained_cost_exceeds_baseline: '累计保留成本不能超过最终基线成本。',
+  baseline_changed: '最终基线已经变化，请重新核对证据。',
+  existing_reversal_requires_explicit_adjustment: '已存在成本冲回，须走明确调整流程，不能覆盖原结果。',
+  approved_or_completed_refund_required: '仅已批准或已完成的退款可申请成本例外。',
+  independent_annual_reviewer_required: '年度草稿生成人不能自行定稿，请由独立清算人员复核。',
+  explicit_snapshot_reconciliation_required: '请核对快照校验值，并填写对账凭据及复核依据。',
+  annual_data_changed_after_cutoff: '快照生成后数据已有变化，请生成新版本并重新核对。',
+  annual_current_data_unresolved: '当前年度仍有待处理事项，不能定稿。',
+  annual_report_finalize_forbidden: '当前角色不能将年度快照定稿。',
+  annual_finalization_conflict: '该年度快照已完成其他定稿请求，请刷新核对。',
+  approved_cost_exception_requires_final_basis_refresh: '成本例外已批准，等待刷新最终基线后重新确认冲回。',
   different_reviewer_required: '登记人不能复核自己的凭证，请由另一位清算人员复核。',
   positive_payment_evidence_required: '正向付款凭证尚未完成，请在资金台账登记付款并由另一位清算人员复核后再完成批次付款。',
   payment_evidence: '缺少有效付款依据，请补充人工登记或模拟付款凭证并完成复核。',

@@ -32,6 +32,7 @@ import { canManageProviderSaas, canViewProductIntegration, createReadinessContro
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import SettlementFinanceWorkspace from "./SettlementFinanceWorkspace.vue";
+import SettlementRefundEvidence from "./SettlementRefundEvidence.vue";
 import { safeError, beneficiaryContextKey, createBeneficiaryDiscovery } from "./settlementFinance.js";
 import { useNotificationStream } from "./useNotificationStream.js";
 import { notificationScope, notificationScopeKey, notificationRequest } from "./notificationScope.js";
@@ -838,12 +839,15 @@ const settlementLifecycleLabels = {
   finance_draft: "登记资金凭证草稿", finance_confirm: "复核资金凭证", finance_baseline_capture: "冻结清算资金基线", refund_final_baseline_review: "复核退款最终清算基线",
   finance_cost_exception_plan: "冻结成本例外冲回方案", finance_segment_funding_link: "关联版本变更经济段资金依据", bind_version_change_final_baseline: "绑定版本变更最终清算基线", project_version_change_final_baseline: "锁定前应用版本变更最终基线",
   approve_segment_cost_exception_refresh: "批准版本段成本例外并待刷新基线",
+  create_settlement_cost_exception: "申请不可返还成本例外", decide_settlement_cost_exception: "审批不可返还成本例外",
+  finance_funding_propose: "提出补差资金责任", finance_funding_decide: "审批补差资金责任", finance_funding_verify: "核验补差资金依据",
+  finance_multi_source_refund_capture: "冻结多来源退款清算基线", finance_multi_source_offset: "登记多来源退款抵扣",
   create_settlement_participant: "创建清算收益主体", configure_settlement_participants: "配置清算收益主体", export_settlement_reporting: "导出清算分析报表",
   create_settlement_annual_report: "创建年度清算报告草稿", export_settlement_annual_report: "导出年度清算报告", finalize_settlement_annual_report: "正式确认年度清算报告",
 };
 const settlementLifecycleFieldLabels = { status: "状态", net_amount: "净金额", gross_amount: "订单金额", cost_amount: "订单成本", profit_amount: "订单利润", distributable_profit: "可分配利润", refund_amount: "退款金额", platform_fee: "平台运营方", provider_share: "数据/服务提供方", service_share: "数据服务方", expert_fee: "专家", channel_fee: "渠道", batch_status: "批次状态", settlement_statuses: "清算单状态" };
 function settlementLifecycleAction(action) {
-  const code = typeof action === "string" && action.startsWith("configure_settlement_participants:") ? "configure_settlement_participants" : action;
+  const code = typeof action === "string" && /^(configure_settlement_participants|decide_settlement_cost_exception|finance_funding_decide|finance_funding_verify):/.test(action) ? action.split(":")[0] : action;
   return settlementLifecycleLabels[code] || action;
 }
 function settlementLifecycleValue(value, key) {
@@ -5525,6 +5529,7 @@ onUnmounted(() => {
             <div><small>入账时间</small><strong>{{ settlementDetail.version_change.posted_at ? fmtDate(settlementDetail.version_change.posted_at) : '-' }}</strong></div>
           </div>
         </div>
+        <SettlementRefundEvidence :evidence="settlementDetail.refund_adjustment" />
         <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>

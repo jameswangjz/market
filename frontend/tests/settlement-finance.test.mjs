@@ -32,6 +32,7 @@ def install(tree, name, context):
 g = dict(json=json, Decimal=Decimal, CENT=Decimal('.01'), Confirmation='confirmation', Baseline='baseline', Finalization='finalization', date=date, datetime=datetime, timedelta=timedelta, timezone=timezone, re=re, SHANGHAI=ZoneInfo('Asia/Shanghai'), Query=lambda default, **kwargs: default, HTTPException=Exception)
 install(finance, 'money', g)
 install(finance, 'balance', g)
+install(finance, 'cash_block', g)
 install(finance, 'serialize_transaction', g)
 install(finance, 'position_dict', g)
 install(finance, 'list_positions', g)
@@ -129,6 +130,8 @@ test('participant columns display authoritative cost, signed profit, positive lo
   assert.equal(state.cell({ loss_amount: '123456789012.01' }, 'loss_amount'), '123,456,789,012.01');
   assert.equal(state.cell({ cost_amount: '100.00', profit_share: '40.00' }, 'loss_amount'), '—');
   assert.equal(state.cell({ cost_amount: '100.00', profit_share: '40.00' }, 'total_receivable'), '—');
+  const absorption = { loss_amount: '5.00', funding_absorption_loss: '12.00', baseline_total_receivable: '25.00', net_total_receivable: '13.00', total_receivable: '25.00' };
+  for (const key of ['loss_amount', 'funding_absorption_loss', 'baseline_total_receivable', 'net_total_receivable', 'total_receivable']) assert.equal(state.cell(absorption, key), absorption[key]);
 });
 
 test('filter enumerations and read roles agree with actual backend declarations', () => {

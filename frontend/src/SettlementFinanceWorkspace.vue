@@ -4,6 +4,10 @@ import { BarChart3, Wallet, ArrowLeftRight, Archive, Download, Save, Check, X, R
 import ConsoleTabs from './ConsoleTabs.vue';
 import MainListFilters from './MainListFilters.vue';
 import PaginationControls from './PaginationControls.vue';
+import SettlementManagement from './SettlementManagement.vue';
+import SettlementReportEvidence from './SettlementReportEvidence.vue';
+import SettlementBalanceBridge from './SettlementBalanceBridge.vue';
+import { managementSide, canFinalizeAnnual } from './settlementManagement.js';
 import { reportViews, amountLabels, beneficiaryAmountLabels, ownBeneficiaryReport, participantAmountLabels, countLabels, sourceKinds, positionSubjectLabels, canReviewTransaction, transactionAmount, transactionCurrency, transactionPositions, paymentSelection, payablePositions, financeAccess, financeScope, financeContext, monthRange, reportParams, money, cents, allocation, safeError, requestGuard, retryIdentity } from './settlementFinance.js';
 
 const props = defineProps({ api: { type: Object, required: true }, user: { type: Object, required: true }, enterprise: Object, businessView: String, dialogs: Object, beneficiary: Object });
@@ -14,19 +18,22 @@ const state = reactive({ filters: { ...monthRange(), q: '', direction: '' }, bus
 const result = ref({}), detail = ref(null), modal = ref(null), submitting = ref(false), downloading = ref(false), notice = ref('');
 const knownPositions = ref({});
 const modalElement = ref(null);
+const annualYear = ref(new Date().getFullYear()), annualData = ref(null), annualBusy = ref(false), annualError = ref('');
 const paymentRows = ref([]), selectedPaymentIds = ref([]), paymentAmounts = ref({});
 const paymentLoading = ref(false), paymentLoadError = ref('');
 const form = reactive({ kind: 'payout', mode: 'manual', reference: '', note: '', amount: '', counter_position_id: '', year: new Date().getFullYear() });
 let identity = retryIdentity();
 let previousFocus;
 const isBeneficiary = computed(() => props.businessView === 'beneficiary');
-const workspaceTabs = computed(() => isBeneficiary.value ? tabs.filter(item => item.key === 'reports') : tabs);
+const management = computed(() => managementSide(props.user, props.enterprise, props.businessView));
+const workspaceTabs = computed(() => isBeneficiary.value ? tabs.filter(item => item.key === 'reports') : [...tabs, ...(management.value ? [{ key: 'management', label: '主体与成本例外' }] : [])]);
 const visibleReportViews = computed(() => isBeneficiary.value ? reportViews.filter(([key]) => key !== 'rankings') : reportViews);
 const summaryAmountLabels = computed(() => isBeneficiary.value ? beneficiaryAmountLabels : amountLabels);
 const access = computed(() => financeAccess(props.user, props.enterprise, props.businessView, props.beneficiary));
 const context = () => financeContext(props.user, props.enterprise, props.businessView, props.api, props.beneficiary);
 const guard = requestGuard(context), mutationGuard = requestGuard(context), downloadGuard = requestGuard(context);
 const paymentGuard = requestGuard(context);
+const annualGuard = requestGuard(context);
 const scope = () => financeScope(props.user, props.enterprise, props.businessView, props.beneficiary);
 const fields = computed(() => tab.value === 'reports' ? [
   { key: 'start', label: '开始日期（北京时间）', type: 'date' }, { key: 'end', label: '结束日期（含当天）', type: 'date' }, { key: 'q', label: isBeneficiary.value ? '清算单/关键词' : '订单号 / 关键词' },
@@ -75,6 +82,7 @@ const paymentPreview = computed(() => {
 async function load() {
   const current = guard.begin(); result.value = {}; detail.value = null; state.error = ''; state.busy = false;
   if (!access.value.read) return;
+  if (tab.value === 'management') return;
   if (isBeneficiary.value && tab.value !== 'reports') return;
   state.busy = true;
   try {
@@ -96,6 +104,17 @@ function search() { page.value = 1; load(); }
 function reset() { state.filters = { ...monthRange(), q: '', direction: '' }; search(); }
 function paginate(value) { page.value = value; load(); }
 function resize(value) { pageSize.value = value; search(); }
+async function loadAnnualView() {
+  if (!access.value.read || isBeneficiary.value || annualBusy.value) return;
+  const year = Number(annualYear.value);
+  if (!Number.isInteger(year) || year < 1900 || year > 9998) { annualError.value = '请输入有效年度'; return; }
+  const current = annualGuard.begin(); annualBusy.value = true; annualData.value = null; annualError.value = '';
+  try {
+    const { data } = await props.api.get('/settlement-reporting/report', { params: { ...scope(), year, start: `${year}-01-01`, end: `${year}-12-31`, page: 1, page_size: 20 } });
+    if (current()) annualData.value = data;
+  } catch (error) { if (current()) annualError.value = safeError(error); }
+  finally { if (current()) annualBusy.value = false; }
+}
 function open(kind, row = null) {
   if (!access.value.write || submitting.value) return;
   modal.value = { kind, row, context: context() }; state.error = '';
@@ -139,6 +158,11 @@ async function submit() {
     if (action.kind === 'annual') {
       if (!Number.isInteger(Number(form.year)) || Number(form.year) < 1900 || Number(form.year) > 9998) throw new Error('请输入有效年度');
       path = '/settlement-reporting/annual-reports'; payload = { year: Number(form.year), note: form.note.trim() };
+    } else if (action.kind === 'finalize') {
+      if (!canFinalizeAnnual(action.row, props.user, access.value.write)) throw new Error('年度报告须由独立复核人定稿');
+      if (!form.reference.trim()) throw new Error('请填写对账凭据');
+      path = `/settlement-reporting/annual-reports/${encodeURIComponent(action.row.id)}/finalize`;
+      payload = { snapshot_digest: action.row.digest, reconciliation_reference: form.reference.trim(), note: form.note.trim() };
     } else if (action.kind === 'confirm') {
       if (!canConfirm(action.row)) throw new Error('当前凭证不可复核');
       path = `/settlement-finance/transactions/${encodeURIComponent(action.row.id)}/confirm`;
@@ -160,7 +184,7 @@ async function submit() {
     submitting.value = true; state.error = '';
     await props.api.post(path, payload, { params: scope() });
     if (!current()) return;
-    identity = retryIdentity(); modal.value = null; notice.value = action.kind === 'annual' ? '年度草稿快照已创建' : '资金凭证已保存'; emit('changed', { kind: action.kind }); await load();
+    identity = retryIdentity(); modal.value = null; notice.value = action.kind === 'annual' ? '年度草稿快照已创建' : action.kind === 'finalize' ? '年度快照已复核定稿' : '资金凭证已保存'; emit('changed', { kind: action.kind }); await load();
   } catch (error) { if (current()) state.error = safeError(error); }
   finally { if (current()) submitting.value = false; }
 }
@@ -181,11 +205,14 @@ async function download(kind, row) {
   finally { if (current()) downloading.value = false; }
 }
 watch(() => [context(), props.api], () => {
+  annualGuard.invalidate(); annualData.value = null; annualBusy.value = false; annualError.value = '';
   guard.invalidate(); mutationGuard.invalidate(); downloadGuard.invalidate(); paymentGuard.invalidate(); modal.value = null; paymentRows.value = []; selectedPaymentIds.value = []; paymentAmounts.value = {}; paymentLoading.value = false; paymentLoadError.value = ''; result.value = {}; knownPositions.value = {}; detail.value = null; submitting.value = false; downloading.value = false; notice.value = ''; state.filters = { ...monthRange(), q: '', direction: '' }; page.value = 1;
   if (isBeneficiary.value) { tab.value = 'reports'; if (reportView.value === 'rankings') reportView.value = 'details'; }
+  if (tab.value === 'management' && !management.value) tab.value = 'reports';
   load();
 }, { immediate: true, flush: 'sync' });
 watch(tab, () => { modal.value = null; page.value = 1; load(); });
+watch(annualYear, () => { annualGuard.invalidate(); annualData.value = null; annualBusy.value = false; annualError.value = ''; });
 watch(modal, async value => {
   if (!value) { paymentGuard.invalidate(); paymentLoading.value = false; previousFocus?.focus?.(); return; }
   previousFocus = document.activeElement;
@@ -195,7 +222,7 @@ watch(modal, async value => {
     dialog.querySelector('button:not(:disabled), select:not(:disabled), input:not(:disabled), textarea:not(:disabled)')?.focus();
   }
 });
-onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.dispose(); paymentGuard.dispose(); });
+onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.dispose(); paymentGuard.dispose(); annualGuard.dispose(); });
 </script>
 
 <template>
@@ -204,6 +231,8 @@ onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.
     <p v-if="!access.read" role="status">当前身份无清算报表权限</p>
     <template v-else>
       <ConsoleTabs v-model="tab" :tabs="workspaceTabs" label="清算工作区" />
+      <SettlementManagement v-if="tab === 'management' && management" :key="context()" :api="api" :user="user" :enterprise="enterprise" :business-view="businessView" @changed="emit('changed', $event)" />
+      <template v-else>
       <p class="scope-note">{{ isBeneficiary ? '仅本人收益及追款记录' : access.platform ? '授权清算数据' : '本企业清算数据' }} · 人工登记 / 模拟确认</p>
       <MainListFilters v-if="tab === 'reports' || tab === 'funds'" :state="state" :fields="fields" @search="search" @reset="reset" />
       <p v-else-if="state.error" role="alert" class="error">{{ state.error }}</p>
@@ -211,23 +240,28 @@ onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.
       <template v-if="tab === 'reports'">
         <dl class="metrics"><div v-for="(label, key) in countLabels" :key="key"><dt>{{ label }}</dt><dd>{{ result.summary?.[key] ?? '—' }}</dd></div></dl>
         <dl class="metrics amounts"><div v-for="(label, key) in summaryAmountLabels" :key="key"><dt>{{ label }}</dt><dd>{{ money(result.summary?.[key]) }}</dd></div></dl>
+        <SettlementBalanceBridge v-if="!isBeneficiary" :bridge="result.balance_bridge" />
         <p class="scope-note">{{ result.scope?.filters?.start || state.filters.start }} 至 {{ result.scope?.filters?.end || state.filters.end }}（含当天，北京时间） · {{ result.scope?.currency || '币种以明细为准' }} · 截止 {{ result.scope?.cutoff || '—' }} · {{ result.scope?.includes_unconfirmed === false ? '不含未确认记录' : '含未确认记录' }}</p>
         <ConsoleTabs v-model="reportView" :tabs="visibleReportViews.map(([key, label]) => ({ key, label }))" label="报表维度" />
         <div class="toolbar"><button v-for="kind in (isBeneficiary ? ['summary', 'details', 'products', 'providers', 'participants', 'refunds'] : ['summary', 'details', 'products', 'providers', 'participants', 'refunds', 'rankings'])" :key="kind" class="secondary-btn" :disabled="downloading || state.busy" @click="download(kind)"><Download :size="14" />{{ ({ summary: '汇总', details: '明细', products: '产品', providers: '提供方', participants: '主体', refunds: '退款', rankings: '净额排名' })[kind] }} CSV</button></div>
       </template>
       <template v-if="tab === 'funds'"><div v-for="(balances, currency) in result.summary || {}" :key="currency"><h3>{{ currency }}</h3><dl class="metrics"><div v-for="key in ['payable', 'receivable', 'internal']" :key="key"><dt>{{ labels[key] }}</dt><dd>{{ money(balances[key]) }}</dd></div></dl></div></template>
       <div v-if="tab === 'annual' && access.write" class="toolbar"><button class="primary-btn" @click="open('annual')"><Save :size="15" />创建年度草稿</button></div>
+      <section v-if="tab === 'annual'" class="annual-view" aria-label="年度动态汇总"><form class="toolbar" @submit.prevent="loadAnnualView"><label>年度<input v-model="annualYear" type="number" min="1900" max="9998" required /></label><button class="secondary-btn" :disabled="annualBusy"><RefreshCw :size="15" />查看动态汇总</button></form><p v-if="annualError" class="error" role="alert">{{ annualError }}</p><p v-if="annualBusy" role="status">正在读取年度汇总…</p><template v-if="annualData"><h3>年度动态汇总 · {{ annualYear }}</h3><SettlementBalanceBridge :bridge="annualData.balance_bridge" /><div class="table-scroll"><table><thead><tr><th>月份</th><th v-for="(label, key) in amountLabels" :key="key">{{ label }}</th><th v-for="(label, key) in countLabels" :key="key">{{ label }}</th></tr></thead><tbody><tr v-for="m in annualData.monthly || []" :key="m.month"><td>{{ m.month }}</td><td v-for="(label, key) in amountLabels" :key="key">{{ money(m[key]) }}</td><td v-for="(label, key) in countLabels" :key="key">{{ m[key] ?? '—' }}</td></tr></tbody></table></div></template></section>
       <p v-if="state.busy" role="status">正在加载…</p>
       <div v-else class="table-scroll"><table><thead><tr><th v-for="[key, label] in columns" :key="key">{{ label }}</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="(row, index) in rows" :key="row.id || index"><td v-for="[key] in columns" :key="key">{{ cell(row, key) }}</td><td><div class="row-actions"><button class="icon-btn" title="查看详情" aria-label="查看详情" @click="detail = row"><Eye :size="15" /></button><button v-if="tab === 'funds' && canRegister(row)" class="secondary-btn" @click="open('create', row)"><Save :size="14" />登记</button><button v-if="tab === 'transactions' && canConfirm(row)" class="secondary-btn" @click="open('confirm', row)"><Check :size="14" />复核</button><button v-if="tab === 'annual'" class="icon-btn" title="下载年度快照" aria-label="下载年度快照" :disabled="downloading" @click="download('', row)"><Download :size="15" /></button></div></td></tr>
+        <tr v-for="(row, index) in rows" :key="row.id || index"><td v-for="[key] in columns" :key="key">{{ cell(row, key) }}</td><td><div class="row-actions"><button class="icon-btn" title="查看详情" aria-label="查看详情" @click="detail = row"><Eye :size="15" /></button><button v-if="tab === 'funds' && canRegister(row)" class="secondary-btn" @click="open('create', row)"><Save :size="14" />登记</button><button v-if="tab === 'transactions' && canConfirm(row)" class="secondary-btn" @click="open('confirm', row)"><Check :size="14" />复核</button><button v-if="tab === 'annual' && canFinalizeAnnual(row, user, access.write)" class="secondary-btn" :disabled="submitting" @click="open('finalize', row)"><Check :size="14" />复核定稿</button><button v-if="tab === 'annual'" class="icon-btn" title="下载年度快照" aria-label="下载年度快照" :disabled="downloading" @click="download('', row)"><Download :size="15" /></button></div></td></tr>
         <tr v-if="!rows.length"><td :colspan="columns.length + 1" class="empty">暂无符合条件的记录</td></tr>
       </tbody></table></div>
       <PaginationControls v-if="tab !== 'reports' || reportView === 'details'" :page="result.page || page" :page-size="result.page_size || pageSize" :total="result.total ?? rows.length" :busy="state.busy" @page="paginate" @size="resize" />
       <aside v-if="detail" class="detail" aria-label="记录详情"><header><h3>记录详情</h3><button class="icon-btn" aria-label="关闭详情" title="关闭详情" @click="detail = null"><X :size="16" /></button></header><dl><div v-for="([key, label]) in columns" :key="key"><dt>{{ label }}</dt><dd>{{ cell(detail, key) }}</dd></div><div v-for="[key, label] in detailFields" :key="key"><dt>{{ label }}</dt><dd>{{ detail[key] ?? '—' }}</dd></div></dl><div v-if="detail.allocations" class="table-scroll"><table><thead><tr><th>分配资金行编号</th><th>分配金额</th></tr></thead><tbody><tr v-for="item in detail.allocations" :key="item.position_id"><td>{{ item.position_id }}</td><td>{{ money(item.amount) }}</td></tr></tbody></table></div></aside>
+      </template>
     </template>
-    <div v-if="modal" class="modal-backdrop" @click.self="close" @keydown="modalKeys"><section ref="modalElement" class="finance-modal" role="dialog" aria-modal="true" aria-labelledby="finance-modal-title"><header><h3 id="finance-modal-title">{{ modal.kind === 'annual' ? '年度草稿快照' : modal.kind === 'confirm' ? '复核资金凭证' : '登记资金凭证' }}</h3><button class="icon-btn" title="关闭" aria-label="关闭" :disabled="submitting" @click="close"><X :size="18" /></button></header>
+    <SettlementReportEvidence v-if="detail && tab === 'reports' && reportView === 'details' && !isBeneficiary" :row="detail" />
+    <div v-if="modal" class="modal-backdrop" @click.self="close" @keydown="modalKeys"><section ref="modalElement" class="finance-modal" role="dialog" aria-modal="true" aria-labelledby="finance-modal-title"><header><h3 id="finance-modal-title">{{ modal.kind === 'annual' ? '年度草稿快照' : modal.kind === 'finalize' ? '复核年度正式快照' : modal.kind === 'confirm' ? '复核资金凭证' : '登记资金凭证' }}</h3><button class="icon-btn" title="关闭" aria-label="关闭" :disabled="submitting" @click="close"><X :size="18" /></button></header>
       <form @submit.prevent="submit"><p v-if="modal.row">{{ modal.row.settlement_no || modal.row.id }} · {{ modal.row.participant_name }} · {{ modal.row.currency }}</p>
         <label v-if="modal.kind === 'annual'">年度<input v-model="form.year" type="number" min="1900" max="9998" required /></label>
+        <template v-if="modal.kind === 'finalize'"><p>快照校验值：{{ modal.row.digest }}</p><label>对账凭据<input v-model="form.reference" maxlength="240" required /></label></template>
         <template v-if="modal.kind === 'create'">
           <label>业务类型<select v-model="form.kind" :disabled="submitting"><option :value="modal.row.direction === 'receivable' ? 'recovery' : 'payout'">{{ modal.row.direction === 'receivable' ? '回款' : '付款' }}</option><option v-if="modal.row.direction === 'receivable'" value="offset">抵扣</option></select></label>
           <label>登记方式<select v-model="form.mode" :disabled="submitting"><option value="manual">人工登记</option><option value="simulated">模拟确认</option></select></label>
@@ -250,7 +284,7 @@ onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.
           <label v-if="form.kind === 'offset'">对向应付行 ID（同主体、同币种）<input v-model="form.counter_position_id" required /></label>
           <label>业务凭证 / 参考号<input v-model="form.reference" maxlength="200" required /></label>
         </template>
-        <label>原因<textarea v-model="form.note" maxlength="2000" required /></label><p v-if="state.error" class="error" role="alert">{{ state.error }}</p><footer><button type="button" class="secondary-btn" :disabled="submitting" @click="close">取消</button><button class="primary-btn" :disabled="submitting || paymentLoading || (modal.kind === 'create' && form.kind === 'payout' && (!!paymentLoadError || !!paymentPreview.error))"><component :is="modal.kind === 'confirm' ? Check : Save" :size="15" />{{ submitting ? '提交中…' : modal.kind === 'confirm' ? '确认复核' : '保存草稿' }}</button></footer>
+        <label>原因<textarea v-model="form.note" maxlength="2000" required /></label><p v-if="state.error" class="error" role="alert">{{ state.error }}</p><footer><button type="button" class="secondary-btn" :disabled="submitting" @click="close">取消</button><button class="primary-btn" :disabled="submitting || paymentLoading || (modal.kind === 'create' && form.kind === 'payout' && (!!paymentLoadError || !!paymentPreview.error))"><component :is="['confirm', 'finalize'].includes(modal.kind) ? Check : Save" :size="15" />{{ submitting ? '提交中…' : modal.kind === 'confirm' ? '确认复核' : modal.kind === 'finalize' ? '确认定稿' : '保存草稿' }}</button></footer>
       </form></section></div>
   </section>
 </template>
@@ -259,5 +293,6 @@ onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.
 .settlement-finance{width:100%;min-width:0;color:#27313f;font-size:12px;letter-spacing:0}.workspace-heading,.detail header,.finance-modal header{display:flex;align-items:center;gap:12px}.workspace-heading h2{font-size:18px;margin:0 auto 16px 0}.workspace-heading span,.scope-note{color:#697586}.scope-note{margin:10px 0;line-height:1.7}.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(150px,100%),1fr));margin:18px 0;border-block:1px solid #e5e6eb;gap:0}.metrics>div{padding:14px 12px;min-width:0}.metrics dt{color:#697586;font-size:12px}.metrics dd{margin:8px 0 0;font-size:20px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.amounts dd{font-size:16px}.toolbar,.row-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.toolbar{margin:14px 0}.table-scroll{max-width:100%;overflow:auto}table{border-collapse:collapse;width:100%;font-size:12px}th,td{padding:11px 12px;border-bottom:1px solid #e5e6eb;text-align:left;white-space:nowrap}th{background:#f7f8fa;color:#596575;font-weight:500}td{font-variant-numeric:tabular-nums}.empty{text-align:center;padding:36px;color:#697586}.detail{border-top:2px solid #d9dde3;margin-top:20px;padding-top:14px}.detail h3,.finance-modal h3{font-size:15px;margin-right:auto}.detail dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(190px,100%),1fr));gap:16px}.detail dt{color:#697586}.detail dd{margin:5px 0;overflow-wrap:anywhere}.detail pre{white-space:pre-wrap;overflow-wrap:anywhere}.modal-backdrop{position:fixed;inset:0;z-index:1000;background:#0006;display:flex;align-items:center;justify-content:center;padding:20px}.finance-modal{box-sizing:border-box;width:520px;max-width:100%;max-height:90vh;overflow:auto;background:white;border-radius:6px;padding:20px}.finance-modal form{display:grid;gap:14px}.finance-modal label{display:grid;gap:6px;font-size:12px}.finance-modal input,.finance-modal select,.finance-modal textarea{box-sizing:border-box;width:100%;min-width:0;border:1px solid #d9dde3;border-radius:4px;padding:8px;font:inherit}.finance-modal textarea{min-height:80px}.finance-modal footer{display:flex;justify-content:flex-end;gap:10px}.error{color:#bd2929}button{display:inline-flex;align-items:center;justify-content:center;gap:6px;max-width:100%}.icon-btn{width:32px;height:32px;flex-shrink:0}.settlement-finance :focus-visible{outline:2px solid #165dff;outline-offset:2px}@media(max-width:600px){.workspace-heading{flex-wrap:wrap}.workspace-heading h2{width:100%;margin-bottom:4px}.modal-backdrop{padding:10px}.finance-modal{padding:16px}.metrics>div{padding:12px 6px}}
 </style>
 <style scoped>
+.annual-view{min-width:0;padding:12px 0;border-bottom:1px solid #e5e6eb}.annual-view h3{font-size:14px}.annual-view label{display:grid;gap:5px;font-size:12px}.annual-view input{box-sizing:border-box;width:120px;height:34px;padding:7px 8px;border:1px solid #d9dde3;border-radius:4px;font:inherit}
 .payment-selection{min-width:0;margin:0;padding:10px 12px;border:1px solid #d9dde3;border-radius:4px}.payment-selection legend{padding:0 5px;font-size:12px}.payment-heading,.payment-total{display:flex;align-items:center;justify-content:space-between;gap:8px;overflow-wrap:anywhere}.payment-heading span{min-width:0}.payment-options{max-height:280px;overflow:auto}.payment-row{display:grid;grid-template-columns:minmax(0,1fr) 110px;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #e5e6eb}.finance-modal .payment-choice{display:flex;flex-direction:row;align-items:start;gap:8px;min-width:0}.finance-modal .payment-choice input{width:16px;height:16px;flex:0 0 16px;padding:0;margin:2px 0}.payment-choice span{display:grid;gap:5px;min-width:0;overflow-wrap:anywhere}.payment-choice strong{font-weight:500}.payment-choice small{font-size:12px;color:#697586}.finance-modal .payment-amount{min-width:0;font-size:12px}.payment-total{padding-top:12px;flex-wrap:wrap}.payment-total strong{font-size:14px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 </style>
