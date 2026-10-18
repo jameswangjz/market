@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "before": false,
+  "protected": {
+    "orders": "de27e78b6c996c09cc02986187b51e7ca32b0d9e60c2ec9a3fd746739c5aabbb",
+    "products": "defe68a49f456f5a5e39c14dab1a253974ed879af50fe82d13ed58361262ebf8",
+    "payments": "4475a185d517903c08538020e696125aef93be6193b19e23dd5098ed91f093bd",
+    "refunds": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "settlements": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "order_state_logs": "ce5614485064378173c2980db8c1ded223ca94d33afb73bd76a342806c6257cb"
+  },
+  "checks": [
+    {
+      "report": "passed",
+      "total": 2,
+      "full_totals_separate_from_page": true
+    },
+    {
+      "path": "/settlement-finance/positions",
+      "passed": true
+    },
+    {
+      "path": "/settlement-finance/transactions",
+      "passed": true
+    },
+    {
+      "path": "/settlement-reporting/annual-reports",
+      "passed": true
+    },
+    {
+      "clearing_tasks": 17,
+      "defined_substeps": 57
+    },
+    {
+      "anonymous_denied": true,
+      "protected_unchanged": true
+    },
+    {
+      "baseline_count": 0,
+      "no_historical_cash_inference": true
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "captured_at": "2026-10-18T11:17:36.657521+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "CLR2-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-003",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-005",
+      "status": "in_progress",
+      "progress": 75
+    },
+    {
+      "code": "CLR2-BE-006",
+      "status": "in_progress",
+      "progress": 90
+    },
+    {
+      "code": "CLR2-BE-007",
+      "status": "in_progress",
+      "progress": 85
+    },
+    {
+      "code": "CLR2-BE-008",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-009",
+      "status": "in_progress",
+      "progress": 70
+    },
+    {
+      "code": "CLR2-FE-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-003",
+      "status": "in_progress",
+      "progress": 60
+    },
+    {
+      "code": "CLR2-OPS-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-QA-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-QA-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-003",
+      "status": "in_progress",
+      "progress": 90
+    }
+  ],
+  "note": "已部署最终标签20261018191138-f783e7e：跨版本及成本例外最终增量49通过；前序相关组149通过/1浏览器条件项未执行（另有实际Chrome覆盖）；真实PG并发及实际确认函数9、完整HTTP9、跨版本成本例外HTTP1通过；前端64、收益Chrome40、资金Chrome18通过；部署后API7通过，93个实际文件精确匹配源码。收益角色报表与范围/导出任务转待验收，未代用户验收。单次退款跨多经济段自动财务基线、主体配置与成本例外管理UI、补差管理、年度余额桥接和全链浏览器仍未全部完成；计费新分代已恢复，2条历史缺口仍未知，不推定0用量。"
+}

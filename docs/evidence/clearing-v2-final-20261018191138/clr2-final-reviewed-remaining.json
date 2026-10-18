@@ -1,0 +1,92 @@
+{
+  "captured_at": "2026-10-18T11:20:20.400615+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "CLR2-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-003",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-005",
+      "status": "in_progress",
+      "progress": 75
+    },
+    {
+      "code": "CLR2-BE-006",
+      "status": "in_progress",
+      "progress": 90
+    },
+    {
+      "code": "CLR2-BE-007",
+      "status": "in_progress",
+      "progress": 85
+    },
+    {
+      "code": "CLR2-BE-008",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-009",
+      "status": "in_progress",
+      "progress": 70
+    },
+    {
+      "code": "CLR2-FE-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-003",
+      "status": "in_progress",
+      "progress": 60
+    },
+    {
+      "code": "CLR2-OPS-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-QA-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-QA-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-003",
+      "status": "in_progress",
+      "progress": 90
+    }
+  ],
+  "note": "针对巡检75分钟未更新提示完成主代理复核：不是运行线程卡死。本轮BE007仅随成本例外补齐独立损失与净应收字段，完整买卖方/经济段/比例/补差来源明细仍缺；BE009本轮未开发跨年期初期末余额桥接，继续依赖BE007。两项百分比不增加，不宣称有后台编码线程；后续优先收尾报表证据字段，再做年度桥接与正式化。"
+}
