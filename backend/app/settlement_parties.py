@@ -289,7 +289,10 @@ def install(ns):
                     approved_at=(d.created_at.replace(tzinfo=timezone.utc).isoformat()
                                  if d and d.decision == 'approve' else None))
 
-    def baseline(db, order):
+    def baseline(db, order, refund=None):
+        if refund is not None:
+            refund = db.scalar(select(ns['Refund']).where(ns['Refund'].id == refund.id)
+                .with_for_update().execution_options(populate_existing=True))
         model = ns.get('settlement_finance', {}).get('Baseline')
         if model is None:
             raise HTTPException(409, 'final_baseline_required')
@@ -298,15 +301,70 @@ def install(ns):
             query = query.join(ns['Settlement'], ns['Settlement'].id == model.settlement_id).where(
                 ns['Settlement'].status != 'superseded')
         rows = db.scalars(query.with_for_update(of=model).execution_options(populate_existing=True)).all()
+        adjustment = ns.get('VersionChangeAdjustment')
+        revised = refund is not None and adjustment is not None and db.scalar(select(adjustment.id).where(
+            adjustment.source_order_id == order.id, adjustment.status == 'posted')) is not None
+        if revised:
+            try:
+                if refund.status != 'completed' or refund.order_id != order.id:
+                    raise ValueError('completed refund required')
+                hooks = ns['refund_settlement']
+                link = db.get(hooks['Model'], refund.id)
+                if not link or hashlib.sha256(link.evidence_json.encode()).hexdigest() != link.evidence_hash:
+                    raise ValueError('exact refund link required')
+                negatives = db.scalars(select(ns['Settlement']).where(ns['Settlement'].refund_id == refund.id)).all()
+                if (len(negatives) != 1 or negatives[0].id != link.settlement_id
+                        or negatives[0].order_id != order.id or not negatives[0].is_refund):
+                    raise ValueError('unique refund settlement required')
+                negative = negatives[0]
+                # Revalidate immutable completion/resource/funding evidence without
+                # re-evaluating the exception or creating any financial posting.
+                if hooks['negative_settlement'](db, refund).id != negative.id:
+                    raise ValueError('completion mismatch')
+                assessed = hooks['assessment'](db, negative.id)
+                plan = json.loads(link.evidence_json)['economic_plan']
+                segments = plan.get('segments', [plan])
+                if len(segments) != 1 or segments[0].get('calculation_version') != 'economic-segment-refund-v1':
+                    raise ValueError('single exact segment required')
+                vc = ns['version_change_settlement']
+                ordinary = vc['refund_basis'](db, refund, segments[0], apply_exception=False)
+                if ordinary.get('status') != 'ready':
+                    raise ValueError('ready ordinary assessment required')
+                keys = ('reference_settlement_id', 'baseline_hash', 'segment_id', 'window_hash', 'segment_context_hash')
+                if ((assessed.get('status') == 'ready' and any(assessed.get(k) != ordinary.get(k) for k in keys))
+                        or negative.reference_settlement_id not in ('', ordinary['reference_settlement_id'])):
+                    raise ValueError('assessment target mismatch')
+                bindings = db.scalars(select(vc['SegmentBaselineLink']).where(
+                    vc['SegmentBaselineLink'].settlement_id == ordinary['reference_settlement_id'])).all()
+                if (len(bindings) != 1 or bindings[0].window_id != ordinary['segment_id']
+                        or bindings[0].baseline_hash != ordinary['baseline_hash']):
+                    raise ValueError('unique target binding required')
+                rows = [b for b in rows if b.settlement_id == ordinary['reference_settlement_id']
+                        and b.snapshot_hash == ordinary['baseline_hash']]
+            except (HTTPException, ValueError, KeyError, TypeError, AttributeError):
+                raise HTTPException(409, 'exact_completed_segment_final_baseline_required') from None
         if len(rows) != 1 or rows[0].currency != 'CNY' or rows[0].cost <= 0:
             raise HTTPException(409, 'unique_positive_final_baseline_required')
         return rows[0]
 
     def validate_exception(db, e, order):
-        b = baseline(db, order)
+        b = baseline(db, order, db.get(ns['Refund'], e.refund_id))
         if b.settlement_id != e.baseline_id:
             raise HTTPException(409, 'baseline_changed')
         payload = json.loads(e.payload_json)
+        if payload.get('baseline_hash') != getattr(b, 'snapshot_hash', None):
+            raise HTTPException(409, 'baseline_changed')
+        hooks = ns.get('refund_settlement', {})
+        link_model = hooks.get('Model')
+        link = db.get(link_model, e.refund_id) if link_model is not None else None
+        if link:
+            plan = json.loads(link.evidence_json)['economic_plan']
+            segments = plan.get('segments', [plan])
+            if len(segments) == 1 and segments[0].get('calculation_version') == 'economic-segment-refund-v1':
+                ordinary = ns['version_change_settlement']['refund_basis'](
+                    db, db.get(ns['Refund'], e.refund_id), segments[0], apply_exception=False)
+                if ordinary.get('status') != 'ready' or number(payload['retained_cost']) > -number(ordinary['cost_amount']):
+                    raise HTTPException(409, 'retained_cost_exceeds_refund_cost')
         approved = db.scalars(select(CostException).join(Decision, Decision.exception_id == CostException.id).where(
             CostException.baseline_id == e.baseline_id, Decision.decision == 'approve', CostException.id != e.id)).all()
         if number(payload['retained_cost']) + sum(number(json.loads(x.payload_json)['retained_cost']) for x in approved) > b.cost:
@@ -323,7 +381,7 @@ def install(ns):
         def operation():
             if refund.status not in ('approved', 'completed'):
                 raise HTTPException(409, 'approved_or_completed_refund_required')
-            b = baseline(db, order)
+            b = baseline(db, order, refund)
             retained = number(body.get('retained_cost'), cents=True, positive=True)
             evidence = body.get('evidence_refs')
             if not isinstance(evidence, list) or not evidence or any(not isinstance(x, str) or not x.strip() for x in evidence):
@@ -374,6 +432,25 @@ def install(ns):
                 validate_exception(db, e, order)
             db.add(Decision(exception_id=e.id, decision=decision, reason=reason, reviewer_id=user.id))
             db.flush()
+            if decision == 'approve':
+                hooks = ns.get('refund_settlement', {})
+                link_model = hooks.get('Model')
+                link = db.get(link_model, e.refund_id) if link_model is not None else None
+                if link:
+                    negative = db.get(ns['Settlement'], link.settlement_id)
+                    previous = hooks['assessment'](db, negative.id)
+                    if previous.get('status') == 'ready' and previous.get('segment_id'):
+                        assessment_model = hooks['FinancialAssessment']
+                        latest = db.scalar(select(assessment_model).where(
+                            assessment_model.settlement_id == negative.id).order_by(assessment_model.version.desc()))
+                        db.add(assessment_model(settlement_id=negative.id, version=latest.version + 1,
+                            values_json=canonical(dict(status='waiting',
+                                reason='approved_cost_exception_requires_final_basis_refresh', exception_id=e.id)),
+                            actor=str(user.id)))
+                        ns['audit'](db, user.id, 'approve_segment_cost_exception_refresh', 'settlement',
+                            negative.id, category='settlement', business_domain='settlement',
+                            before=previous, after=dict(exception_id=e.id, reason=reason))
+                        db.flush()
             return exception_dict(db, e)
         return write(db, user, body, 'decide_settlement_cost_exception:' + identity, operation)
 

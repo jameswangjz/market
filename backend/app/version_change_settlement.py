@@ -436,11 +436,8 @@ def install(ns):
         db.flush()
         return context
 
-    def refund_basis(db, refund, plan):
+    def refund_basis(db, refund, plan, *, apply_exception=True):
         try:
-            exception = ns.get('settlement_parties', {}).get('cost_exception')
-            if callable(exception) and exception(db, refund.id):
-                fail('approved_cost_exception_requires_explicit_plan')
             window = db.get(ns['refund_segment_store']['Window'], plan['segment_id'])
             if not window or window.order_id != refund.order_id or window.payload_hash != plan.get('window_hash'):
                 fail('exact_refund_segment_window_required')
@@ -471,11 +468,17 @@ def install(ns):
             shares = {k: previous['shares'][k] - current['shares'][k] for k in current['shares']}
             if any(v > 0 for v in shares.values()):
                 fail('subject_rounding_requires_explicit_reversal_plan')
-            return dict(status='ready', reference_settlement_id=b.settlement_id, baseline_hash=b.snapshot_hash,
+            result = dict(status='ready', reference_settlement_id=b.settlement_id, baseline_hash=b.snapshot_hash,
                 currency=window.currency, gross_amount=str(-amount), cost_amount=str(previous['cost'] - current['cost']),
                 profit_amount=str(previous['profit'] - current['profit']), shares={k: str(v) for k, v in shares.items()},
                 segment_id=window.id, window_hash=window.payload_hash, segment_context_hash=binding.context_hash,
                 cumulative_refund_amount=str(cumulative), original_amount=str(window.revenue))
+            if not apply_exception:
+                return result
+            hook = ns.get('settlement_finance', {}).get('apply_cost_exception')
+            if not callable(hook):
+                fail('segment_cost_exception_application_contract_required')
+            return hook(db, refund, b, result)
         except HTTPException as exc:
             return dict(status='waiting', reason=exc.detail)
         except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):

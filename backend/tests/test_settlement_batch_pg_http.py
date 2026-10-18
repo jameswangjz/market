@@ -13,11 +13,10 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 import test_settlement_finance_integration as integration
+import test_cross_version_final_baseline as cross_version
 
 
-@unittest.skipUnless(os.environ.get('CLEARING_TEST_DATABASE_URL'),
-                     'requires explicit isolated PostgreSQL test database')
-class SettlementBatchPostgresHTTPTests(integration.SettlementFinanceIntegrationTests):
+class PrivatePostgresFixtureMixin:
     def setUp(self):
         super().setUp()
         self.addCleanup(super().tearDown)
@@ -57,6 +56,10 @@ class SettlementBatchPostgresHTTPTests(integration.SettlementFinanceIntegrationT
         # Registered cleanup also runs when PG setup fails.
         pass
 
+
+@unittest.skipUnless(os.environ.get('CLEARING_TEST_DATABASE_URL'),
+                     'requires explicit isolated PostgreSQL test database')
+class SettlementBatchPostgresHTTPTests(PrivatePostgresFixtureMixin, integration.SettlementFinanceIntegrationTests):
     def test_http_confirm_and_pay_acquire_guard_before_batch_lock(self):
         batch, sid = self.original(adjusted=True)
         hook = self.m.settlement_finance['lock_finance']
@@ -82,6 +85,12 @@ class SettlementBatchPostgresHTTPTests(integration.SettlementFinanceIntegrationT
             self.assertEqual(result['status'], 'paid')
             self.assertTrue(result['funds']['positive_payment_complete'])
             self.assertEqual(calls, [False])
+
+
+@unittest.skipUnless(os.environ.get('CLEARING_TEST_DATABASE_URL'),
+                     'requires explicit isolated PostgreSQL test database')
+class CrossVersionCostPostgresHTTPTests(PrivatePostgresFixtureMixin, cross_version.CrossVersionFinalBaselineTests):
+    """Select the exact combined-cost method to avoid running inherited cases."""
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.refund_economic_segments import EconomicSegment, plan_economic_segment
 from app.refund_execution import canonical, digest
@@ -356,16 +356,170 @@ class CrossVersionFinalBaselineTests(unittest.TestCase):
             self.assertIsNotNone(db.get(self.m.settlement_finance['Baseline'], target_id))
             self.assertIsNotNone(db.get(self.m.version_change_settlement['SegmentBaselineLink'], 'window'))
 
-    def test_cross_version_cost_exception_combination_remains_explicitly_waiting(self):
+    def test_cross_version_incomplete_cost_exception_evidence_stays_waiting(self):
         self.scenario()
         with self.m.SessionLocal() as db:
             self.target_baseline_fixture(db)
             plan = self.plan(db, '25')
-            with patch.dict(self.m.settlement_parties, cost_exception=lambda *_: dict(status='approved')):
+            with patch.dict(self.m.settlement_parties, cost_exception_basis=lambda *_: dict(
+                    status='waiting', reason='approved_cost_exception_evidence_incomplete')):
                 result = self.m.refund_settlement['financial_basis'](db,
                     SimpleNamespace(id='ordinary', order_id=self.order_id, amount=Decimal(25)), plan)
             self.assertEqual(result['status'], 'waiting')
-            self.assertEqual(result['reason'], 'approved_cost_exception_requires_explicit_plan')
+
+    def completed_segment_refund(self, *, waiting=False, kind='upgrade'):
+        self.scenario(kind)
+        m = self.m
+        with m.SessionLocal() as db:
+            target_id, old_id = (self.settlement(db, side).id for side in ('target', 'old'))
+        self.request('POST', f'/api/settlements/{old_id}/lock', actor='finance')
+        self.request('POST', f'/api/settlements/{target_id}/lock', actor='finance')
+        with m.SessionLocal() as db:
+            plan = self.plan(db, '25')
+            payment = db.scalar(select(m.Payment).where(m.Payment.order_id == self.order_id))
+            at = m.now()
+            refund = m.Refund(id='ordinary-cost', refund_no='REF-ORDINARY-COST', order_id=self.order_id,
+                payment_id=payment.id, amount=25, status='completed', completed_at=at)
+            db.add(refund)
+            db.flush()
+            envelope = dict(refund_id=refund.id, order_id=self.order_id, payment_id=payment.id,
+                amount='25.00', economic_plan=plan)
+            funding = [dict(payment_id=payment.id, source_order_id=self.order_id, amount='25.00', currency='CNY')]
+            resource = dict(kind='api', refund_id=refund.id, order_id=self.order_id, frozen_envelope_hash=digest(envelope))
+            resource['plan_hash'] = digest(resource)
+            proof = dict(refund_id=refund.id, resource_plan_hash=digest(resource))
+            execution = m.refund_execution['Execution'](id='ordinary-execution', refund_id=refund.id,
+                status='completed', resume_status='completed', plan_hash=digest(envelope),
+                resource_plan_json=canonical(resource), resource_plan_hash=digest(resource),
+                proof_json=canonical(proof), funding_json=canonical(funding), requested_by='buyer', completed_at=at)
+            db.add(execution)
+            db.flush()
+            window = db.get(m.refund_segment_store['Window'], 'window')
+            term = db.get(m.subscription_terms['Term'], window.term_id)
+            db.add(m.refund_execution_resources['Recovery'](refund_id=refund.id, execution_id=execution.id,
+                order_id=self.order_id, term_id=term.id, combination_id=term.combination_id,
+                generation=1, recovery_number=1, plan_json=canonical(resource), proof_json=canonical(proof),
+                payload_hash=digest(dict(plan=resource, proof=proof)), stage='resources_applied'))
+            db.add(m.refund_execution['Completion'](refund_id=refund.id, execution_id=execution.id,
+                plan_hash=digest(envelope), proof_hash=digest(proof), funding_hash=digest(funding),
+                economic_plan_json=canonical(plan), amount=25, completed_at=at))
+            db.add(m.refund_execution['PaymentLeg'](refund_id=refund.id, payment_id=payment.id,
+                source_order_id=self.order_id, amount=25, currency='CNY', status='completed',
+                receipt=f'simulated:{refund.id}:{payment.id}', completed_at=at))
+            db.add(m.refund_workflow['Case'](refund_id=refund.id, source='ordinary', requested_by_id='buyer',
+                plan_json=canonical(envelope), plan_hash=digest(envelope)))
+            db.flush()
+            if waiting:
+                with patch.dict(m.version_change_settlement, refund_basis=lambda *_: dict(status='waiting', reason='pending')):
+                    negative = m.refund_settlement['negative_settlement'](db, refund)
+            else:
+                negative = m.refund_settlement['negative_settlement'](db, refund)
+            self.negative_id, self.target_id = negative.id, target_id
+            self.frozen_completion = canonical(plan), digest(proof), digest(funding)
+            db.commit()
+        bearer = self.request('POST', '/api/settlement-parties', actor='platform', json=dict(
+            request_id='segment-bearer', name='Provider loss bearer', kind='provider',
+            enterprise_id='provider_tenant', currency='CNY'))
+        self.exception_body = dict(request_id='segment-exception', refund_id='ordinary-cost', retained_cost='5.00',
+            reason='Documented retained segment work', evidence_refs=['segment-invoice:1'], bearer_participant_id=bearer['id'])
+
+    def approve_segment_exception(self):
+        e = self.request('POST', '/api/settlement-cost-exceptions', actor='platform', json=self.exception_body)
+        self.assertEqual(e['baseline_id'], self.target_id)
+        body = dict(request_id='segment-decision', expected_version=1, decision='approve', reason='Agreed actual retained cost')
+        self.request('POST', f'/api/settlement-cost-exceptions/{e["id"]}/decision', actor='platform', expected=403, json=body)
+        approved = self.request('POST', f'/api/settlement-cost-exceptions/{e["id"]}/decision', actor='provider', json=body)
+        self.assertEqual(approved, self.request('POST', f'/api/settlement-cost-exceptions/{e["id"]}/decision',
+                                              actor='provider', json=body))
+        return e
+
+    def assert_segment_exception_lock(self):
+        self.request('POST', f'/api/settlements/{self.negative_id}/lock', actor='finance')
+        m = self.m
+        with m.SessionLocal() as db:
+            h = m.settlement_finance
+            b = db.get(h['Baseline'], self.negative_id)
+            app = db.get(h['CostExceptionApplication'], 'ordinary-cost')
+            plan = json.loads(app.plan_json)
+            ordinary = plan['default_basis']
+            self.assertEqual(b.reference_settlement_id, self.target_id)
+            self.assertEqual(b.cost, Decimal(ordinary['cost_amount']) + 5)
+            self.assertEqual(b.profit, Decimal(ordinary['profit_amount']) - 5)
+            loss = db.scalars(select(h['Position']).where(h['Position'].settlement_id == b.settlement_id,
+                                                       h['Position'].kind == 'loss')).one()
+            self.assertEqual((loss.amount, loss.participant_id, loss.direction), (5, 'provider_tenant', 'receivable'))
+            self.assertEqual(db.get(h['CostExceptionPosting'], 'ordinary-cost').settlement_id, b.settlement_id)
+            completion = db.get(m.refund_execution['Completion'], 'ordinary-cost')
+            self.assertEqual((completion.economic_plan_json, completion.proof_hash, completion.funding_hash), self.frozen_completion)
+            self.assertEqual(db.get(m.Refund, 'ordinary-cost').amount, 25)
+            self.assertEqual(plan['default_basis']['segment_id'], 'window')
+            app.plan_hash = 'changed'
+            with self.assertRaises(ValueError):
+                db.flush()
+
+    def test_cross_version_cost_exception_http_approval_refresh_and_lock(self):
+        self.completed_segment_refund()
+        self.approve_segment_exception()
+        self.assert_segment_exception_lock()
+
+    def test_cross_version_cost_exception_can_resolve_stale_waiting_assessment(self):
+        self.completed_segment_refund(waiting=True)
+        self.approve_segment_exception()
+        self.assert_segment_exception_lock()
+
+    def test_downgrade_target_cost_exception_keeps_change_funding_separate(self):
+        self.completed_segment_refund(kind='downgrade')
+        self.approve_segment_exception()
+        self.assert_segment_exception_lock()
+
+    def test_cross_version_cost_exception_rejects_wrong_root_and_duplicate_negative(self):
+        self.completed_segment_refund()
+        m = self.m
+        with m.SessionLocal() as db:
+            db.get(m.Settlement, self.negative_id).reference_settlement_id = 'original'
+            db.commit()
+        self.request('POST', '/api/settlement-cost-exceptions', actor='platform', expected=409, json=self.exception_body)
+        with m.SessionLocal() as db:
+            db.get(m.Settlement, self.negative_id).reference_settlement_id = self.target_id
+            model = m.refund_settlement['FinancialAssessment']
+            previous = db.get(model, (self.negative_id, 1))
+            wrong = dict(json.loads(previous.values_json), segment_id='another-window')
+            db.add(model(settlement_id=self.negative_id, version=2, values_json=canonical(wrong), actor='fixture'))
+            db.commit()
+        self.request('POST', '/api/settlement-cost-exceptions', actor='platform', expected=409, json=self.exception_body)
+        with m.SessionLocal() as db:
+            original = db.get(model, (self.negative_id, 1))
+            db.add(model(settlement_id=self.negative_id, version=3, values_json=original.values_json, actor='fixture'))
+            db.add(m.Settlement(settlement_no='DUPLICATE-NEGATIVE', order_id=self.order_id,
+                                refund_id='ordinary-cost', is_refund=True, gross_amount=-25))
+            db.commit()
+        self.request('POST', '/api/settlement-cost-exceptions', actor='platform', expected=409, json=self.exception_body)
+
+    def test_cross_version_cost_exception_rejects_retention_above_exact_slice(self):
+        self.completed_segment_refund()
+        self.request('POST', '/api/settlement-cost-exceptions', actor='platform', expected=409,
+                     json=dict(self.exception_body, retained_cost='20.00'))
+
+    def test_cross_version_cost_exception_requires_completed_verified_refund(self):
+        self.completed_segment_refund()
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Refund, 'ordinary-cost').status = 'approved'
+            db.commit()
+        self.request('POST', '/api/settlement-cost-exceptions', actor='platform', expected=409, json=self.exception_body)
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Refund, 'ordinary-cost').status = 'completed'
+            # Inject storage corruption past ORM immutability in this private DB.
+            model = self.m.refund_execution['Execution']
+            db.execute(update(model).where(model.id == 'ordinary-execution').values(proof_json='{}'))
+            db.commit()
+        self.request('POST', '/api/settlement-cost-exceptions', actor='platform', expected=409, json=self.exception_body)
+
+    def test_cross_version_cost_exception_approval_rejects_existing_financial_reversal(self):
+        self.completed_segment_refund()
+        e = self.request('POST', '/api/settlement-cost-exceptions', actor='platform', json=self.exception_body)
+        self.request('POST', f'/api/settlements/{self.negative_id}/lock', actor='finance')
+        self.request('POST', f'/api/settlement-cost-exceptions/{e["id"]}/decision', actor='provider', expected=409,
+            json=dict(request_id='too-late', expected_version=1, decision='approve', reason='Must not overwrite posted finance'))
 
     def posted_repeated_refunds(self, kind):
         self.scenario(kind)
