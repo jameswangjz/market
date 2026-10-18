@@ -5,13 +5,20 @@ CLEARING_TEST_DATABASE_URL=postgresql+psycopg://.../isolated_test_db \
 
 Never reads DATABASE_URL. Each test creates a random private schema, uses that
 schema alone as search_path, and drops only its own schema in cleanup/finally.
+CLEARING_MAIN_SOURCE may point to a copied main.py for the extracted route test;
+the repository backend/app/main.py is used otherwise. Neither file is imported.
 """
+import ast
+import copy
 import os
 import secrets
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from sqlalchemy import Column, String, create_engine, func, select
@@ -19,6 +26,41 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 import test_settlement_finance as fixture
+
+
+def main_confirmation_body(namespace, *, remove_guard=False):
+    """Compile only the actual route body; never import main or its DB setup."""
+    override = os.environ.get('CLEARING_MAIN_SOURCE')
+    path = Path(override) if override else Path(__file__).resolve().parents[1] / 'app' / 'main.py'
+    module = ast.parse(path.read_text(encoding='utf-8'))
+    matches = [node for node in module.body if isinstance(node, ast.FunctionDef)
+               and node.name == 'confirm_settlement_batch']
+    if len(matches) != 1:
+        raise AssertionError('actual main batch-confirm function required')
+    function = copy.deepcopy(matches[0])
+    function.decorator_list = []
+    function.returns = None
+    function.args.defaults = []
+    function.args.kw_defaults = [None for _ in function.args.kwonlyargs]
+    for argument in function.args.posonlyargs + function.args.args + function.args.kwonlyargs:
+        argument.annotation = None
+    for argument in (function.args.vararg, function.args.kwarg):
+        if argument is not None:
+            argument.annotation = None
+    guards = [statement for statement in function.body if isinstance(statement, ast.Expr)
+              and isinstance(statement.value, ast.Call) and isinstance(statement.value.func, ast.Subscript)
+              and isinstance(statement.value.func.value, ast.Name)
+              and statement.value.func.value.id == 'settlement_finance'
+              and isinstance(statement.value.func.slice, ast.Constant)
+              and statement.value.func.slice.value == 'lock_finance']
+    if len(guards) != 1:
+        raise AssertionError('actual route must contain one early common finance guard')
+    if remove_guard:
+        function.body.remove(guards[0])
+    isolated = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    scope = dict(namespace)
+    exec(compile(isolated, str(path), 'exec'), scope)
+    return scope['confirm_settlement_batch']
 
 
 @unittest.skipUnless(os.environ.get('CLEARING_TEST_DATABASE_URL'),
@@ -193,6 +235,145 @@ class FinancePostgresTests(unittest.TestCase):
             self.confirmation(tx, 'audit-confirm')(db)
             db.commit()
         self.assertEqual(self.h['balance'](self.db, self.cost), 0)
+
+    def test_capture_holding_negative_settlement_does_not_invert_batch_lock_order(self):
+        tx = self.draft('before-refund')
+        negative = self.ns['Settlement'](id='negative', order_id='o', settlement_no='SET-NEG-PG', status='locked',
+            reference_settlement_id='s', gross_amount=-75, cost_amount=-50, profit_amount=-25,
+            platform_fee=-5, provider_share=-20, service_share=0, expert_fee=0, channel_fee=0)
+        self.db.add(negative)
+        self.db.add(self.ns['SettlementLine'](id='negative-line', batch_id='fixture',
+            settlement_id='negative', status='pending'))
+        self.db.commit()
+        locked = threading.Barrier(2)
+
+        def capture(db):
+            row = db.scalar(select(self.ns['Settlement']).where(self.ns['Settlement'].id == 'negative').with_for_update())
+            locked.wait(timeout=10)
+            result = self.h['capture'](db, row)
+            self.assertFalse(isinstance(result, dict), result)
+            self.assertEqual(db.scalar(select(func.count()).select_from(self.h['Allocation'])), 0)
+            return dict(settlement_id=result.settlement_id)
+
+        def payment(db):
+            self.h['lock_finance'](db)
+            db.scalar(select(self.ns['SettlementBatch']).where(self.ns['SettlementBatch'].id == 'fixture').with_for_update())
+            locked.wait(timeout=10)
+            # Exercise the Batch -> Settlement order used by lifecycle/payment
+            # work while capture already owns the opposite Settlement row.
+            db.scalar(select(self.ns['Settlement']).where(self.ns['Settlement'].id == 'negative').with_for_update())
+            return self.confirmation(tx, 'after-refund')(db)
+
+        outcomes = self.race([capture, payment])
+        self.assertEqual(outcomes[0][0], 'ok', outcomes)
+        self.assertEqual(outcomes[1][0:2], ('http', 409), outcomes)
+        self.assertEqual(outcomes[1][2], 'matching_recovery_requires_offset')
+        self.assertEqual(self.count(self.h['Allocation']), 0)
+        self.assertEqual(self.count(self.h['Confirmation']), 0)
+        self.db.expire_all()
+        result = self.h['reconcile_offsets'](self.db, 'fixture', 'independent-reconciliation')
+        self.db.commit()
+        self.assertEqual(result['amounts']['CNY'], '70.00')
+        self.assertEqual(self.h['balance'](self.db, self.cost), 50)
+
+    def test_crosslinked_batch_confirmations_take_advisory_guard_before_own_batch(self):
+        self.db.add_all([
+            self.ns['SettlementBatch'](id='other', status='pending_confirm'),
+            self.ns['Order'](id='other-order', order_no='ORD-OTHER', provider_enterprise_id='provider',
+                             economic_snapshot_json='{"currency":"CNY"}'),
+            self.ns['Payment'](id='other-payment', order_id='other-order', payment_no='PAY-OTHER', status='paid', amount=150),
+            self.ns['Settlement'](id='other-source', order_id='other-order', settlement_no='SET-OTHER', status='locked',
+                gross_amount=150, cost_amount=100, profit_amount=50, platform_fee=10,
+                provider_share=40, service_share=0, expert_fee=0, channel_fee=0),
+            self.ns['SettlementLine'](id='other-line', batch_id='other', settlement_id='other-source', status='pending'),
+        ])
+        self.db.commit()
+        self.h['capture'](self.db, self.db.get(self.ns['Settlement'], 'other-source'))
+        for name, reference, order_id, batch_id in (
+                ('negative-a', 'other-source', 'other-order', 'fixture'),
+                ('negative-b', 's', 'o', 'other')):
+            negative = self.ns['Settlement'](id=name, order_id=order_id, settlement_no='SET-' + name, status='locked',
+                reference_settlement_id=reference, gross_amount=-75, cost_amount=-50, profit_amount=-25,
+                platform_fee=-5, provider_share=-20, service_share=0, expert_fee=0, channel_fee=0)
+            self.db.add(negative)
+            self.db.add(self.ns['SettlementLine'](id='line-' + name, batch_id=batch_id, settlement_id=name, status='pending'))
+            self.db.flush()
+            self.h['capture'](self.db, negative)
+        self.db.get(self.ns['SettlementBatch'], 'fixture').status = 'pending_confirm'
+        self.db.commit()
+
+        def confirmation(batch_id):
+            def operation(db):
+                self.h['lock_finance'](db)
+                batch = db.scalar(select(self.ns['SettlementBatch']).where(self.ns['SettlementBatch'].id == batch_id)
+                                  .with_for_update().execution_options(populate_existing=True))
+                batch.status = 'confirmed'
+                db.flush()
+                return self.h['reconcile_offsets'](db, batch_id, 'batch-reviewer')
+            return operation
+
+        outcomes = self.race([confirmation('fixture'), confirmation('other')])
+        self.assertTrue(all(result[0] == 'ok' for result in outcomes), outcomes)
+        self.db.expire_all()
+        debts = self.db.scalars(select(self.h['Position']).where(self.h['Position'].direction == 'receivable')).all()
+        self.assertEqual(sum(self.h['balance'](self.db, p) for p in debts), 0)
+        self.assertEqual(self.count(self.h['Confirmation']), 4)
+
+    def test_late_guard_after_batch_lock_fails_closed(self):
+        with Session(self.engine) as db:
+            db.scalar(select(self.ns['SettlementBatch']).where(self.ns['SettlementBatch'].id == 'fixture').with_for_update())
+            with self.assertRaises(HTTPException) as error:
+                self.h['lock_finance'](db)
+            self.assertEqual(error.exception.detail, 'finance_lock_must_precede_batch_lock')
+            db.rollback()
+
+    def test_actual_main_confirmation_body_and_guard_removed_control(self):
+        Base = self.ns['Base']
+
+        class Proposal(Base):
+            __tablename__ = 'finance_pg_empty_proposals'
+            id = Column(String(36), primary_key=True)
+            settlement_id = Column(String(36))
+            status = Column(String(30))
+
+        Proposal.__table__.create(self.engine)
+        batch = self.db.get(self.ns['SettlementBatch'], 'fixture')
+        batch.status = 'pending_confirm'
+        # The minimal ledger fixture intentionally does not map these legacy
+        # presentation attributes. Keep the instance alive across route loads.
+        batch.batch_no = 'BATCH-PG-ACTUAL-MAIN'
+        self.db.commit()
+        user = SimpleNamespace(id='route-reviewer', email='route-reviewer@example.invalid',
+                               platform_role='finance_settlement', is_active=True)
+
+        def require_operator(actor):
+            self.assertTrue(actor.is_active)
+            self.assertIn(actor.platform_role, ('super_admin', 'platform_operator', 'finance_settlement'))
+
+        namespace = dict(self.ns, settlement_finance=self.h, SettlementAdjustmentProposal=Proposal,
+                         select=select, HTTPException=HTTPException, require_settlement_operator=require_operator,
+                         now=lambda: datetime.now(timezone.utc))
+        body = SimpleNamespace(comment='Actual main body on disposable PostgreSQL schema')
+        unguarded = main_confirmation_body(namespace, remove_guard=True)
+        with self.assertRaises(HTTPException) as error:
+            unguarded(batch_id='fixture', body=body, user=user, db=self.db)
+        self.assertEqual(error.exception.status_code, 409)
+        self.assertEqual(error.exception.detail, 'finance_lock_must_precede_batch_lock')
+        self.db.rollback()
+        self.assertEqual(self.db.get(self.ns['SettlementBatch'], 'fixture').status, 'pending_confirm')
+        self.assertEqual(self.db.get(self.ns['SettlementLine'], 'line').status, 'pending')
+        self.assertEqual(self.count(self.Audit, self.Audit.action == 'confirm_settlement_batch'), 0)
+        self.db.rollback()
+
+        actual = main_confirmation_body(namespace)
+        result = actual(batch_id='fixture', body=body, user=user, db=self.db)
+        self.assertEqual(result['status'], 'confirmed')
+        self.assertEqual(result['batch_no'], batch.batch_no)
+        self.assertIsInstance(result['confirmed_at'], datetime)
+        self.assertEqual(self.db.get(self.ns['SettlementBatch'], 'fixture').status, 'confirmed')
+        self.assertEqual(self.db.get(self.ns['SettlementLine'], 'line').status, 'locked')
+        self.assertEqual(self.count(self.Audit, self.Audit.action == 'confirm_settlement_batch'), 1)
+        self.assertEqual(self.count(self.h['Allocation']), 0)
 
 
 if __name__ == '__main__':

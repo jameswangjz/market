@@ -6452,12 +6452,17 @@ def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: 
     if batch and batch.status in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"}:
         raise HTTPException(409, "当前清算批次已确认或进入付款流程")
     is_version_change = version_change_settlement['describe'](db, settlement.id) is not None
+    if is_version_change:
+        version_change_settlement['prepare_lock'](db, settlement, user.id)
     if settlement.refund_id and not is_version_change:
         refund_settlement['prepare_lock'](db, settlement, user.id)
     before = {"status": settlement.status}
     settlement.status = "locked"
     db.flush()
-    if not is_version_change:
+    financial_capture = None
+    if is_version_change:
+        financial_capture = settlement_finance_adapter.capture_version_change(globals(), db, settlement, user.id)
+    else:
         settlement_finance_adapter.capture(globals(), db, settlement, user.id)
     if line:
         for related_line in db.scalars(select(SettlementLine).where(SettlementLine.settlement_id == settlement.id, SettlementLine.status != "superseded")).all():
@@ -6473,7 +6478,8 @@ def lock_settlement(settlement_id: str, user: User = Depends(current_user), db: 
     if batch and batch_after == "pending_confirm":
         audit(db, user.email, "settlement_batch_ready_for_confirmation", "settlement_batch", batch.batch_no, "所有关联清算单已锁定", category="settlement", business_domain="settlement", batch_no=batch.batch_no, before={"status": "generated"}, after={"status": batch.status})
     db.commit()
-    return {"settlement_no": settlement.settlement_no, "status": settlement.status, "batch_no": batch.batch_no if batch else "", "batch_status": batch.status if batch else ""}
+    return {"settlement_no": settlement.settlement_no, "status": settlement.status, "batch_no": batch.batch_no if batch else "", "batch_status": batch.status if batch else "",
+            "financial_capture": financial_capture if isinstance(financial_capture, dict) else None}
 
 
 def settlement_rule_out(item: SettlementRule) -> dict[str, Any]:
@@ -6733,6 +6739,7 @@ def settlement_batch_lines(batch_id: str, user: User = Depends(current_user), db
 @app.post("/api/settlement-batches/{batch_id}/confirm")
 def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
+    settlement_finance['lock_finance'](db)
     batch = db.scalar(select(SettlementBatch).where(SettlementBatch.id == batch_id).with_for_update().execution_options(populate_existing=True))
     if not batch:
         raise HTTPException(404, "清算批次不存在")
@@ -6752,6 +6759,8 @@ def confirm_settlement_batch(batch_id: str, body: SettlementActionBody, user: Us
         line.status = "locked"
     batch.status = "confirmed"
     batch.confirmed_at = now()
+    db.flush()
+    settlement_finance['reconcile_offsets'](db, batch.id, user.id)
     audit(db, user.email, "confirm_settlement_batch", "settlement_batch", batch.batch_no, body.comment, category="settlement", business_domain="settlement", batch_no=batch.batch_no, before=before, after={"status": batch.status, "settlement_statuses": {item.settlement_no: item.status for item in settlements}})
     db.commit()
     return {"batch_no": batch.batch_no, "status": batch.status, "confirmed_at": batch.confirmed_at}
@@ -6780,6 +6789,7 @@ def rollback_settlement_batch(batch_id: str, body: SettlementActionBody, user: U
 @app.post("/api/settlement-batches/{batch_id}/pay")
 def pay_settlement_batch(batch_id: str, body: SettlementActionBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     require_settlement_operator(user)
+    settlement_finance['lock_finance'](db)
     batch = db.scalar(select(SettlementBatch).where(SettlementBatch.id == batch_id).with_for_update().execution_options(populate_existing=True))
     if not batch:
         raise HTTPException(404, "清算批次不存在")

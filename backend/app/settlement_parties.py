@@ -285,7 +285,9 @@ def install(ns):
                     baseline_id=e.baseline_id, creator_id=e.creator_id, creator_side=e.creator_side,
                     version=2 if d else 1, status=d.decision + 'd' if d and d.decision == 'approve'
                     else 'rejected' if d else 'pending', reviewer_id=d.reviewer_id if d else None,
-                    decision_reason=d.reason if d else None)
+                    decision_reason=d.reason if d else None,
+                    approved_at=(d.created_at.replace(tzinfo=timezone.utc).isoformat()
+                                 if d and d.decision == 'approve' else None))
 
     def baseline(db, order):
         model = ns.get('settlement_finance', {}).get('Baseline')
@@ -329,12 +331,23 @@ def install(ns):
             bearer = db.get(Participant, required(body, 'bearer_participant_id'))
             if not bearer or bearer.currency != b.currency or bearer.owner_enterprise_id not in ('', order.provider_enterprise_id):
                 raise HTTPException(422, 'invalid_bearer')
+            bearer_subject = dict(participant_type=bearer.kind, participant_id=bearer.id,
+                participant_name=bearer.name, registry_id=bearer.id, currency=bearer.currency,
+                enterprise_id=bearer.enterprise_id, user_id=bearer.user_id)
+            if bearer.kind == 'platform':
+                bearer_subject.update(participant_id='platform', internal=True)
+            elif bearer.kind == 'provider':
+                if bearer.enterprise_id != order.provider_enterprise_id:
+                    raise HTTPException(422, 'provider_bearer_must_match_order_provider')
+                bearer_subject.update(participant_type='enterprise', participant_id=bearer.enterprise_id)
             e = CostException(refund_id=refund.id, order_id=order.id,
                 provider_enterprise_id=order.provider_enterprise_id, baseline_id=b.settlement_id,
                 creator_id=user.id, creator_side='provider' if tenant else 'platform',
                 payload_json=canonical(dict(retained_cost=str(retained), currency=b.currency,
                     reason=required(body, 'reason', 4000), evidence_refs=evidence,
-                    bearer_participant_id=bearer.id, bearer_participant_name=bearer.name)))
+                    bearer_participant_id=bearer.id, bearer_participant_name=bearer.name,
+                    baseline_hash=getattr(b, 'snapshot_hash', None), refund_amount=str(number(refund.amount, cents=True)),
+                    bearer=bearer_subject)))
             validate_exception(db, e, order)
             db.add(e)
             db.flush()
@@ -368,6 +381,29 @@ def install(ns):
         e = db.scalar(select(CostException).join(Decision, Decision.exception_id == CostException.id).where(
             CostException.refund_id == refund_id, Decision.decision == 'approve'))
         return exception_dict(db, e) if e else None
+
+    def cost_exception_basis(db, refund, final_baseline):
+        """Approved frozen evidence, or a waiting result; never supplies cash."""
+        result = cost_exception(db, refund.id)
+        if result is None:
+            return None
+        required_fields = ('baseline_hash', 'refund_amount', 'bearer', 'evidence_refs',
+                           'reviewer_id', 'approved_at', 'reason', 'decision_reason')
+        if (any(not result.get(key) for key in required_fields)
+                or result['baseline_id'] != final_baseline.settlement_id
+                or result['baseline_hash'] != final_baseline.snapshot_hash
+                or result['order_id'] != refund.order_id
+                or result['currency'] != final_baseline.currency
+                or number(result['refund_amount'], cents=True) != number(refund.amount, cents=True)
+                or result['creator_id'] == result['reviewer_id']):
+            return dict(status='waiting', reason='approved_cost_exception_evidence_incomplete')
+        bearer = result['bearer']
+        if (not isinstance(bearer, dict) or bearer.get('currency') != result['currency']
+                or not all(bearer.get(k) for k in ('participant_type', 'participant_id', 'participant_name', 'registry_id'))):
+            return dict(status='waiting', reason='approved_cost_exception_bearer_incomplete')
+        result['status'] = 'ready'
+        result['approval_evidence_hash'] = hashlib.sha256(canonical(result).encode()).hexdigest()
+        return result
 
     app = ns.get('app')
     if app is not None:
@@ -421,7 +457,8 @@ def install(ns):
 
     hooks = dict(Participant=Participant, Configuration=Configuration, CostException=CostException,
                  Decision=Decision, Idempotency=Idempotency, configuration=configuration,
-                 allocations=allocations, cost_exception=cost_exception, create_participant=create_participant,
+                 allocations=allocations, cost_exception=cost_exception, cost_exception_basis=cost_exception_basis,
+                 create_participant=create_participant,
                  configure=configure, create_exception=create_exception, decide=decide)
     ns['settlement_parties'] = hooks
     return hooks

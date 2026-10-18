@@ -1,0 +1,21 @@
+{
+  "scope": "actual development Kubernetes; explicit user-approved new billing source generation",
+  "new_source_id": "ea8dd609a7c8f67a1a96a7ba3147825b9c115ad9",
+  "backup_directory": "/root/market/backups/clr2-continuity-20261018183800",
+  "old_streams_unchanged": true,
+  "old_cursors_unchanged": true,
+  "old_stream_sha256": "d39070e457c3e7ad33684653cdd57679957f928fff116e6d885c449847e7332f",
+  "gap_count": 2,
+  "all_gaps_unresolved": true,
+  "missing_count": null,
+  "historical_usage_inferred_zero": false,
+  "old_quota_reset": false,
+  "financial_counter_keys_before": 0,
+  "financial_counter_keys_before_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "worker_ready_replicas": 1,
+  "worker_rollout": "passed",
+  "api_worker_billing_module_hashes_equal": true,
+  "actual_new_billable_gateway_request_executed": false,
+  "historical_continuity_proven": false,
+  "source_status": "active_source_healthy"
+}

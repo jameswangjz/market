@@ -3,6 +3,7 @@ import csv
 import importlib
 import io
 import json
+import os
 import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -174,7 +175,7 @@ class SettlementReportingTests(unittest.TestCase):
         assigned = [p for p in data["participants"] if p["participant_id"] in {"expert1", "expert2"}]
         self.assertEqual(len(assigned), 3)
         self.assertEqual(sum(Decimal(p["amount"]) for p in assigned), Decimal("5.00"))
-        self.assertFalse(data["scope"]["beneficiary_grants_supported"])
+        self.assertTrue(data["scope"]["beneficiary_grants_supported"])
         self.seed(expert_fee=Decimal("4.00"))
         missing = [p for p in self.report()["participants"] if p["participant_type"] == "expert" and p["subject_unassigned"]]
         self.assertEqual(len(missing), 1)
@@ -286,7 +287,7 @@ class SettlementReportingTests(unittest.TestCase):
             self.assertIs(model.metadata, m.Base.metadata)
             self.assertEqual(sum(mapper.class_ is model for mapper in models), 1)
         reporting_routes = [route for route in routes if route[0].startswith(self.prefix)]
-        self.assertEqual(len(reporting_routes), 6)
+        self.assertEqual(len(reporting_routes), 7)
         self.assertEqual(len(reporting_routes), len(set(reporting_routes)))
 
     def test_finance_capture_and_reporting_reconcile_without_read_side_effects(self):
@@ -310,9 +311,9 @@ class SettlementReportingTests(unittest.TestCase):
         with m.SessionLocal() as db:
             self.assertEqual(counts, {key: db.scalar(self.select(self.func.count()).select_from(finance[key])) for key in counts})
 
-    def capture_order(self, amount="150.00", *, expert="0.00", channel="0.00", configuration=None):
+    def capture_order(self, amount="150.00", *, expert="0.00", channel="0.00", service="0.00", configuration=None):
         m = self.m
-        oid, ids = self.seed(amount=amount, status="locked", expert_fee=Decimal(expert), channel_fee=Decimal(channel))
+        oid, ids = self.seed(amount=amount, status="locked", expert_fee=Decimal(expert), channel_fee=Decimal(channel), service_share=Decimal(service))
         with m.SessionLocal() as db:
             order = db.get(m.Order, oid)
             economic = dict(currency="CNY")
@@ -323,7 +324,7 @@ class SettlementReportingTests(unittest.TestCase):
                              status="paid", paid_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
                              proof="Manual receipt fixture", confirmed_by="finance"))
             settlement = db.get(m.Settlement, ids[0])
-            settlement.provider_share -= Decimal(expert) + Decimal(channel)
+            settlement.provider_share -= Decimal(expert) + Decimal(channel) + Decimal(service)
             batch = m.SettlementBatch(batch_no="BATCH-" + oid, cycle="monthly", status="confirmed",
                 period_start=datetime(2026, 8, 31, 16, tzinfo=timezone.utc), idempotency_key=oid)
             db.add(batch)
@@ -454,6 +455,439 @@ class SettlementReportingTests(unittest.TestCase):
     def finalization_body(self, snapshot):
         return dict(request_id="finalize-" + snapshot["id"], snapshot_digest=snapshot["digest"],
                     reconciliation_reference="MANUAL-RECONCILIATION-2026", note="Reconciled all recorded vouchers")
+
+    def beneficiary_fixture(self):
+        m = self.m
+        parties = m.settlement_parties
+        definitions = (
+            ("own-expert", "expert", "buyer_tenant", "buyer", '=Expert,"self"\nName', "25"),
+            ("other-expert", "expert", "buyer_tenant", "buyer_admin", "Other Expert Private", "75"),
+            ("own-channel", "channel", "buyer_tenant", "", "Corporate Channel", "100"),
+            ("other-service", "service", "other_tenant", "", "Other Tenant Service", "100"),
+        )
+        with m.SessionLocal() as db:
+            for pid, role, enterprise, user, name, weight in definitions:
+                db.add(parties["Participant"](id=pid, name=name, kind=role, enterprise_id=enterprise,
+                    user_id=user, owner_enterprise_id="provider_tenant", currency="CNY", creator_id="finance"))
+            configuration = parties["Configuration"](product_id="product", version=1, creator_id="finance",
+                allocations_json=json.dumps([dict(participant_id=pid, participant_type=role, participant_name=name,
+                    currency="CNY", weight=weight) for pid, role, enterprise, user, name, weight in definitions]))
+            db.add(configuration)
+            member = db.scalar(self.select(m.Membership).where(m.Membership.user_id == "buyer"))
+            member.role = "member"
+            db.commit()
+            config = configuration.id, configuration.version
+        return self.capture_order(expert="6.00", channel="4.00", service="8.00", configuration=config)
+
+    def beneficiary_report(self, actor="buyer", identity="own-expert", **params):
+        return self.report(actor=actor, business_view="beneficiary", participant_id=identity, **params)
+
+    def beneficiary_payment(self, sid, identity, amount, key, kind="payout"):
+        m = self.m
+        finance = m.settlement_finance
+        with m.SessionLocal() as db:
+            position = db.scalar(self.select(finance["Position"]).where(
+                finance["Position"].settlement_id == sid, finance["Position"].participant_id == identity))
+            tx = finance["draft"](db, db.get(m.User, "finance"), dict(kind=kind, mode="manual",
+                reference="PRIVATE-ACCOUNTING-VOUCHER-" + key, request_id=key,
+                allocations=[dict(position_id=position.id, amount=amount)]))
+            finance["confirm"](db, db.get(m.User, "ops"), tx["id"],
+                dict(request_id=key + "-confirm", expected_version=1, note="Checked"))
+            db.commit()
+
+    def test_beneficiary_actual_registry_identity_and_redacted_own_financials(self):
+        self.beneficiary_fixture()
+        result = self.beneficiary_report()
+        self.assertEqual(result["scope"]["kind"], "beneficiary")
+        self.assertEqual((result["summary"]["cost_amount"], result["summary"]["profit_share"], result["summary"]["total_receivable"]), ("0.00", "1.50", "1.50"))
+        self.assertEqual(result["summary"]["unpaid_amount"], "1.50")
+        self.assertEqual(result["rankings"], [])
+        denied_keys = {"gross_amount", "profit_amount", "provider_share", "provider_total_receivable", "platform_fee",
+            "expert_fee", "channel_fee", "service_share", "order_no", "order_id", "buyer_name", "baseline_hash",
+            "evidence", "snapshot_json", "reference", "reviewer_id", "_counts"}
+        def check(value):
+            if isinstance(value, dict):
+                self.assertFalse(denied_keys.intersection(value), value)
+                for child in value.values():
+                    check(child)
+            elif isinstance(value, list):
+                for child in value:
+                    check(child)
+        check(result)
+        self.assertNotIn("Other Expert Private", json.dumps(result))
+        self.assertNotIn("other-expert", json.dumps(result))
+        own_other = self.beneficiary_report(actor="buyer_admin", identity="other-expert")
+        self.assertEqual(own_other["summary"]["profit_share"], "4.50")
+        channel = self.beneficiary_report(actor="buyer_admin", identity="own-channel", enterprise_id="buyer_tenant")
+        self.assertEqual(channel["summary"]["profit_share"], "4.00")
+        service = self.beneficiary_report(actor="outsider", identity="other-service", enterprise_id="other_tenant")
+        self.assertEqual(service["summary"]["profit_share"], "8.00")
+        self.assertEqual(self.report()["summary"]["provider_total_receivable"], "122.00")
+        self.assertEqual(self.report(actor="provider", business_view="provider")["summary"]["provider_total_receivable"], "122.00")
+
+    def test_beneficiary_cross_identity_owner_enterprise_and_filter_manipulation_denied(self):
+        self.beneficiary_fixture()
+        for actor, identity, params in (
+                ("buyer", "other-expert", {}), ("buyer_admin", "own-expert", {"enterprise_id": "buyer_tenant"}),
+                ("provider", "own-expert", {"enterprise_id": "provider_tenant"}),
+                ("buyer", "other-service", {"enterprise_id": "other_tenant"}),
+                ("buyer", "own-channel", {"enterprise_id": "buyer_tenant"}),
+                ("buyer_admin", "own-channel", {}), ("buyer", "own-expert", {"enterprise_id": "other_tenant"}),
+                ("buyer", "unknown-id", {})):
+            for path in ("/report", "/export"):
+                self.request("GET", self.prefix + path, actor=actor, expected=403,
+                    params=dict(year=2026, business_view="beneficiary", participant_id=identity, **params))
+        self.request("GET", self.prefix + "/report", expected=403,
+            params=dict(year=2026, business_view="beneficiary", participant_id="own-expert", participant_type="provider"))
+        self.assertEqual(self.beneficiary_report(provider_id="other_tenant")["total"], 0)
+        self.assertEqual(self.beneficiary_report(product_id="unknown")["total"], 0)
+        self.assertEqual(self.beneficiary_report(user_id="buyer_admin", subject_id="other-expert")["summary"]["profit_share"], "1.50")
+        self.request("GET", self.prefix + "/report", actor="buyer", expected=403)
+
+    def test_beneficiary_selector_and_membership_verification_rechecked(self):
+        self.beneficiary_fixture()
+        listed = self.request("GET", self.prefix + "/beneficiaries", actor="buyer")
+        self.assertEqual([p["participant_id"] for p in listed["items"]], ["own-expert"])
+        listed = self.request("GET", self.prefix + "/beneficiaries", actor="buyer_admin", params={"enterprise_id": "buyer_tenant"})
+        self.assertEqual({p["participant_id"] for p in listed["items"]}, {"other-expert", "own-channel"})
+        with self.m.SessionLocal() as db:
+            member = db.scalar(self.select(self.m.Membership).where(self.m.Membership.user_id == "buyer"))
+            member.status = "disabled"
+            db.commit()
+        for path in ("/report", "/export"):
+            self.request("GET", self.prefix + path, expected=403, params=dict(year=2026, business_view="beneficiary", participant_id="own-expert"))
+        self.assertEqual(self.request("GET", self.prefix + "/beneficiaries")["items"], [])
+        with self.m.SessionLocal() as db:
+            member = db.scalar(self.select(self.m.Membership).where(self.m.Membership.user_id == "buyer"))
+            member.status = "active"
+            db.get(self.m.User, "buyer").verified_status = "pending_review"
+            db.commit()
+        self.request("GET", self.prefix + "/report", expected=403, params=dict(year=2026, business_view="beneficiary", participant_id="own-expert"))
+
+    def test_beneficiary_payments_refunds_offsets_recovery_and_complete_csv(self):
+        oid, sid = self.beneficiary_fixture()
+        self.beneficiary_payment(sid, "own-expert", "1.00", "self-paid")
+        self.beneficiary_payment(sid, "other-expert", "3.00", "other-paid")
+        m = self.m
+        with m.SessionLocal() as db:
+            negative = m.Settlement(settlement_no="SET-OWN-REFUND", order_id=oid, reference_settlement_id=sid,
+                refund_id="own-half-refund", is_refund=True, status="locked", gross_amount=-75, net_amount=-75,
+                cost_amount=-50, profit_amount=-25, platform_fee=-5, provider_share=-11, expert_fee=-3,
+                channel_fee=-2, service_share=-4, created_at=datetime(2026, 9, 20, tzinfo=timezone.utc))
+            db.add(negative)
+            db.flush()
+            m.settlement_finance["capture"](db, negative, actor="finance")
+            negative_id = negative.id
+            batch = m.SettlementBatch(batch_no="BATCH-OWN-REFUND", cycle="manual", status="generated",
+                idempotency_key="own-refund-batch")
+            db.add(batch)
+            db.flush()
+            db.add(m.SettlementLine(batch_id=batch.id, settlement_id=negative.id, participant_type="expert",
+                participant_name="Placeholder", amount=Decimal("-3.00")))
+            db.flush()
+            waiting = m.settlement_finance["reconcile_offsets"](db, batch.id, actor="finance")
+            self.assertEqual(waiting["status"], "waiting")
+            batch.status = "confirmed"
+            db.flush()
+            reconciled = m.settlement_finance["reconcile_offsets"](db, batch.id, actor="finance")
+            self.assertGreater(reconciled["offset_count"], 0)
+            self.assertEqual(m.settlement_finance["reconcile_offsets"](db, batch.id, actor="finance")["offset_count"], 0)
+            db.commit()
+        self.beneficiary_payment(negative_id, "own-expert", "0.10", "self-recovery", kind="recovery")
+        result = self.beneficiary_report(page_size=1)
+        self.assertEqual((result["total"], len(result["items"])), (2, 1))
+        summary = result["summary"]
+        self.assertEqual((summary["profit_share"], summary["paid_amount"], summary["recovered_amount"]), ("0.75", "1.00", "0.10"))
+        self.assertEqual((summary["payable_offset_amount"], summary["receivable_offset_amount"], summary["unpaid_amount"], summary["unrecovered_amount"]), ("0.50", "0.50", "0.00", "0.15"))
+        self.assertEqual(summary["refund_count"], 1)
+        self.assertEqual(self.beneficiary_report(source_kind="refund")["summary"]["profit_share"], "-0.75")
+        self.assertEqual(self.beneficiary_report(q="SET-OWN-REFUND")["total"], 1)
+        self.assertEqual(self.beneficiary_report(start="2026-09-20", end="2026-09-20")["total"], 1)
+        for kind in ("details", "summary", "participants", "products", "providers", "refunds", "rankings"):
+            response = self.download(actor="buyer", business_view="beneficiary", participant_id="own-expert", kind=kind, page_size=1)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertNotIn("Other Expert Private", response.text)
+            self.assertNotIn("PRIVATE-ACCOUNTING-VOUCHER", response.text)
+            self.assertNotIn("供货成本回收", response.text)
+            rows = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+            if kind == "details":
+                self.assertEqual(len(rows), 2)
+                self.assertTrue(all(row["收益主体名称"].startswith("'=Expert") for row in rows))
+                self.assertEqual({row["供货成本"] for row in rows}, {"0.00"})
+        self.assertEqual(self.download(actor="buyer", business_view="beneficiary", participant_id="own-expert", kind="details").content,
+                         self.download(actor="buyer", business_view="beneficiary", participant_id="own-expert", kind="details").content)
+
+    def test_beneficiary_cannot_download_full_annual_snapshots_or_write_finance(self):
+        self.beneficiary_fixture()
+        snapshot = self.request("POST", self.prefix + "/annual-reports", actor="finance", json=dict(year=2026, request_id="beneficiary-denied"))
+        params = dict(business_view="beneficiary", participant_id="own-expert")
+        self.request("GET", self.prefix + "/annual-reports", expected=403, params=params)
+        self.request("GET", self.prefix + "/annual-reports/" + snapshot["id"] + "/export", expected=404, params=params)
+        self.request("POST", self.prefix + "/annual-reports", expected=403, params=params, json=dict(year=2026, request_id="deny"))
+        self.request("POST", "/api/settlement-finance/transactions", expected=403, json={})
+
+    def test_beneficiary_active_verified_users_enterprises_and_internal_registry_roles(self):
+        self.beneficiary_fixture()
+        params = dict(year=2026, business_view="beneficiary", participant_id="own-expert")
+        for field, value, expected in (("is_active", False, 401), ("activation_status", "pending_activation", 403),
+                                       ("verified_status", "pending_review", 403)):
+            with self.m.SessionLocal() as db:
+                user = db.get(self.m.User, "buyer")
+                original = getattr(user, field)
+                setattr(user, field, value)
+                db.commit()
+            for path in ("/report", "/export"):
+                self.request("GET", self.prefix + path, expected=expected, params=params)
+            with self.m.SessionLocal() as db:
+                setattr(db.get(self.m.User, "buyer"), field, original)
+                db.commit()
+        with self.m.SessionLocal() as db:
+            enterprise = db.get(self.m.Enterprise, "buyer_tenant")
+            enterprise.verification_status = "pending_review"
+            db.commit()
+        self.request("GET", self.prefix + "/report", expected=403, params=params)
+        with self.m.SessionLocal() as db:
+            db.get(self.m.Enterprise, "buyer_tenant").verification_status = "verified"
+            Participant = self.m.settlement_parties["Participant"]
+            for role in ("platform", "provider"):
+                db.add(Participant(id="internal-" + role, name=role, kind=role, enterprise_id="buyer_tenant",
+                    user_id="buyer", owner_enterprise_id="provider_tenant", currency="CNY", creator_id="finance"))
+            db.commit()
+        for role in ("platform", "provider"):
+            self.request("GET", self.prefix + "/report", expected=403, params=params | {"participant_id": "internal-" + role})
+        self.assertEqual([p["participant_id"] for p in self.request("GET", self.prefix + "/beneficiaries")["items"]], ["own-expert"])
+        with self.m.SessionLocal() as db:
+            settlement = db.scalar(self.select(self.m.Settlement))
+            db.add(self.m.settlement_finance["Position"](id="invalid-internal-benefit", settlement_id=settlement.id,
+                order_id=settlement.order_id, kind="profit", share_kind="expert_fee", participant_type="expert",
+                participant_id="own-expert", participant_name="Self", direction="internal", currency="CNY", amount=Decimal("0.01")))
+            db.commit()
+        for path in ("/report", "/export"):
+            failure = self.request("GET", self.prefix + path, expected=409, params=params)
+            self.assertEqual(failure["detail"], "beneficiary_position_direction_invalid")
+
+    def test_beneficiary_enterprise_admin_role_and_explicit_multi_enterprise_scope(self):
+        self.beneficiary_fixture()
+        m = self.m
+        with m.SessionLocal() as db:
+            db.add(m.Membership(user_id="buyer_admin", enterprise_id="other_tenant", role="enterprise_admin", status="active"))
+            db.commit()
+        self.assertEqual(self.beneficiary_report(actor="buyer_admin", identity="own-channel", enterprise_id="buyer_tenant")["summary"]["profit_share"], "4.00")
+        self.assertEqual(self.beneficiary_report(actor="buyer_admin", identity="other-service", enterprise_id="other_tenant")["summary"]["profit_share"], "8.00")
+        params = dict(year=2026, business_view="beneficiary", participant_id="other-service", enterprise_id="buyer_tenant")
+        self.request("GET", self.prefix + "/report", actor="buyer_admin", expected=403, params=params)
+        response = self.client.get(self.prefix + "/report", headers={"Authorization": "Bearer " + self.tokens["buyer_admin"],
+            "X-Enterprise-Id": "other_tenant"}, params=params)
+        self.assertEqual(response.status_code, 400, response.text)
+        with m.SessionLocal() as db:
+            member = db.scalar(self.select(m.Membership).where(m.Membership.user_id == "buyer_admin", m.Membership.enterprise_id == "other_tenant"))
+            member.role = "member"
+            db.commit()
+        self.request("GET", self.prefix + "/export", actor="buyer_admin", expected=403,
+            params=params | {"enterprise_id": "other_tenant"})
+
+    def test_beneficiary_loss_liability_exposed_and_unknown_kind_fails_closed(self):
+        oid, sid = self.beneficiary_fixture()
+        m = self.m
+        with m.SessionLocal() as db:
+            db.add(m.settlement_finance["Position"](id="own-loss", settlement_id=sid, order_id=oid, kind="loss",
+                share_kind="expert_fee", participant_type="expert", participant_id="own-expert", participant_name="Self",
+                currency="CNY", direction="receivable", amount=Decimal("0.40"), blocked_reason=""))
+            db.commit()
+        result = self.beneficiary_report()
+        self.assertEqual((result["summary"]["profit_share"], result["summary"]["loss_amount"], result["summary"]["total_receivable"]), ("1.50", "0.40", "1.10"))
+        self.assertEqual(result["summary"]["unrecovered_amount"], "0.40")
+        self.assertEqual(result["summary"]["settlement_count"], 1)
+        self.assertEqual(result["total"], 2)
+        export = self.download(actor="buyer", business_view="beneficiary", participant_id="own-expert")
+        self.assertIn("承担损失金额", export.text)
+        self.assertIn("loss", export.text)
+        self.assertEqual(self.beneficiary_report(actor="buyer_admin", identity="other-expert")["summary"]["loss_amount"], "0.00")
+        with m.SessionLocal() as db:
+            db.add(m.settlement_finance["Position"](id="own-unknown", settlement_id=sid, order_id=oid, kind="future_kind",
+                share_kind="expert_fee", participant_type="expert", participant_id="own-expert", participant_name="Self",
+                currency="CNY", direction="receivable", amount=Decimal("0.01"), blocked_reason=""))
+            db.commit()
+        for path in ("/report", "/export"):
+            error = self.request("GET", self.prefix + path, expected=409,
+                params=dict(year=2026, business_view="beneficiary", participant_id="own-expert"))
+            self.assertEqual(error["detail"], "beneficiary_position_kind_unsupported")
+
+    def test_approved_cost_exception_separates_ordinary_profit_and_loss_in_all_scopes(self):
+        oid, sid = self.beneficiary_fixture()
+        m = self.m
+        finance = m.settlement_finance
+        with m.SessionLocal() as db:
+            payment = db.scalar(self.select(m.Payment).where(m.Payment.order_id == oid))
+            refund = m.Refund(refund_no="REF-APPROVED-LOSS", order_id=oid, payment_id=payment.id,
+                              amount=Decimal("75.00"), status="approved", reason="Partial refund")
+            db.add(refund)
+            db.commit()
+            refund_id = refund.id
+        exception = self.request("POST", "/api/settlement-cost-exceptions", actor="finance", json=dict(
+            request_id="retained-cost", refund_id=refund_id, retained_cost="10.00", bearer_participant_id="own-expert",
+            reason="Approved nonreturnable cost", evidence_refs=["PRIVATE-COST-EVIDENCE"]))
+        self.request("POST", "/api/settlement-cost-exceptions/" + exception["id"] + "/decision", actor="provider",
+            params=dict(enterprise_id="provider_tenant", business_view="provider"),
+            json=dict(request_id="retained-approved", expected_version=1, decision="approve", reason="Checked actual cost"))
+        with m.SessionLocal() as db:
+            baseline = db.get(finance["Baseline"], sid)
+            default = dict(status="ready", reference_settlement_id=sid, baseline_hash=baseline.snapshot_hash,
+                currency="CNY", gross_amount="-75.00", cost_amount="-50.00", profit_amount="-25.00",
+                shares=dict(platform_fee="-5.00", provider_share="-11.00", expert_fee="-3.00", channel_fee="-2.00", service_share="-4.00"))
+            plan = finance["apply_cost_exception"](db, db.get(m.Refund, refund_id), baseline, default, actor="finance")
+            self.assertEqual(plan["status"], "ready", plan)
+            negative = m.Settlement(settlement_no="SET-APPROVED-LOSS", order_id=oid, reference_settlement_id=sid,
+                refund_id=refund_id, is_refund=True, status="locked", gross_amount=plan["gross_amount"],
+                net_amount=plan["gross_amount"], cost_amount=plan["cost_amount"], profit_amount=plan["profit_amount"],
+                created_at=datetime(2026, 9, 20, tzinfo=timezone.utc), **plan["shares"])
+            db.add(negative)
+            db.flush()
+            captured = finance["capture"](db, negative, actor="finance")
+            self.assertNotIsInstance(captured, dict)
+            db.commit()
+        for actor, params in (("finance", {}), ("provider", dict(business_view="provider"))):
+            report = self.report(actor=actor, source_kind="refund", **params)
+            own = next(p for p in report["participants"] if p["participant_id"] == "own-expert")
+            self.assertEqual((own["profit_share"], own["loss_amount"], own["amount"], own["total_receivable"]),
+                             ("-0.75", "10.00", "-10.75", "-10.75"))
+            self.assertEqual(sum(Decimal(p["total_receivable"]) for p in report["participants"]), Decimal("-75.00"))
+            response = self.download(actor=actor, kind="participants", source_kind="refund", **params)
+            self.assertEqual(response.status_code, 200, response.text)
+            exported = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+            entry = next(p for p in exported if p["收益主体关联ID"] == "own-expert")
+            self.assertEqual((entry["利润分成"], entry["承担损失金额"]), ("-0.75", "10.00"))
+        own = self.beneficiary_report(source_kind="refund")
+        self.assertEqual((own["summary"]["profit_share"], own["summary"]["loss_amount"], own["summary"]["total_receivable"]),
+                         ("-0.75", "10.00", "-10.75"))
+        loss = next(row for row in own["items"] if row["position_kind"] == "loss")
+        self.assertEqual((loss["liability_source"], loss["cost_exception_id"]), ("approved_cost_exception", exception["id"]))
+        self.assertEqual(loss["loss_label"], "已批准成本例外承担")
+        self.assertNotIn("PRIVATE-COST-EVIDENCE", json.dumps(own))
+        other = self.beneficiary_report(actor="buyer_admin", identity="other-expert", source_kind="refund")
+        self.assertEqual((other["summary"]["profit_share"], other["summary"]["loss_amount"]), ("-2.25", "0.00"))
+        self.assertNotIn(exception["id"], json.dumps(other))
+
+    def test_beneficiary_full_aggregation_and_export_over_2000_positions(self):
+        from sqlalchemy import insert
+        _, sid = self.beneficiary_fixture()
+        m = self.m
+        with m.SessionLocal() as db:
+            finance = m.settlement_finance
+            settlement = db.get(m.Settlement, sid)
+            baseline = db.get(finance["Baseline"], sid)
+            position = db.scalar(self.select(finance["Position"]).where(
+                finance["Position"].settlement_id == sid, finance["Position"].participant_id == "own-expert"))
+            def values(model, row):
+                return {c.name: getattr(row, c.name) for c in model.__table__.columns}
+            st, bl, po = values(m.Settlement, settlement), values(finance["Baseline"], baseline), values(finance["Position"], position)
+            ids = [f"beneficiary-record-{i}" for i in range(2006)]
+            db.execute(insert(m.Settlement), [dict(st, id=key, settlement_no="SET-" + key) for key in ids])
+            db.execute(insert(finance["Baseline"]), [dict(bl, settlement_id=key) for key in ids])
+            db.execute(insert(finance["Position"]), [dict(po, id="own-position-" + key, settlement_id=key) for key in ids])
+            db.commit()
+        result = self.beneficiary_report(page_size=2)
+        self.assertEqual((result["total"], len(result["items"])), (2007, 2))
+        self.assertEqual(result["summary"]["profit_share"], "3010.50")
+        self.assertEqual(result["summary"]["unpaid_amount"], "3010.50")
+        self.assertEqual(result["summary"]["settlement_count"], 2007)
+        self.assertEqual(result["summary"]["income_order_count"], 1)
+        self.assertEqual(result["monthly"][8]["profit_share"], "3010.50")
+        second = self.beneficiary_report(page_size=2, page=2)
+        self.assertTrue({r["position_id"] for r in result["items"]}.isdisjoint(r["position_id"] for r in second["items"]))
+        response = self.download(actor="buyer", business_view="beneficiary", participant_id="own-expert", page_size=1, page=2)
+        self.assertEqual(response.status_code, 200, response.text)
+        rows = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+        self.assertEqual(len(rows), 2007)
+        self.assertEqual(sum(Decimal(r["利润分成"]) for r in rows), Decimal("3010.50"))
+        self.assertTrue(all(r["收益主体关联ID"] == "own-expert" for r in rows))
+
+    def personal_beneficiary_fixture(self):
+        m = self.m
+        parties = m.settlement_parties
+        with m.SessionLocal() as db:
+            for pid, enterprise in (("personal-expert", ""), ("bound-expert", "buyer_tenant")):
+                db.add(parties["Participant"](id=pid, name=pid, kind="expert", enterprise_id=enterprise,
+                    user_id="buyer", owner_enterprise_id="provider_tenant", currency="CNY", creator_id="finance"))
+            config = parties["Configuration"](product_id="product", version=1, creator_id="finance",
+                allocations_json=json.dumps([dict(participant_id="personal-expert", participant_type="expert",
+                    participant_name="Personal Expert", currency="CNY", weight="100")]))
+            db.add(config)
+            member = db.scalar(self.select(m.Membership).where(m.Membership.user_id == "buyer"))
+            member.role = "member"
+            db.commit()
+            frozen = config.id, config.version
+        return self.capture_order(expert="6.00", configuration=frozen)
+
+    def test_personal_beneficiary_ignores_current_enterprise_but_bound_identity_does_not(self):
+        self.personal_beneficiary_fixture()
+        params = dict(year=2026, business_view="beneficiary", participant_id="personal-expert")
+        for enterprise in ("buyer_tenant", "other_tenant"):
+            headers = {"Authorization": "Bearer " + self.tokens["buyer"], "X-Enterprise-Id": enterprise}
+            selector = self.client.get(self.prefix + "/beneficiaries", headers=headers)
+            self.assertEqual(selector.status_code, 200, selector.text)
+            self.assertIn("personal-expert", [p["participant_id"] for p in selector.json()["items"]])
+            report = self.client.get(self.prefix + "/report", headers=headers, params=params)
+            self.assertEqual(report.status_code, 200, report.text)
+            self.assertEqual(report.json()["summary"]["profit_share"], "6.00")
+            export = self.client.get(self.prefix + "/export", headers=headers, params=params)
+            self.assertEqual(export.status_code, 200, export.text)
+            self.assertIn("personal-expert", export.text)
+        wrong = self.client.get(self.prefix + "/report", headers=headers,
+                                params=params | {"participant_id": "bound-expert"})
+        self.assertEqual(wrong.status_code, 403, wrong.text)
+        self.request("GET", self.prefix + "/report", actor="buyer_admin", expected=403, params=params)
+
+    @unittest.skipUnless(os.getenv("CLR2_REPORTING_BROWSER") == "1", "Enable isolated Chromium contract test with CLR2_REPORTING_BROWSER=1")
+    def test_personal_beneficiary_browser_with_console_enterprise_header(self):
+        import socket
+        import threading
+        import time
+        import uvicorn
+        from playwright.sync_api import sync_playwright
+
+        self.personal_beneficiary_fixture()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            base = "http://127.0.0.1:" + str(listener.getsockname()[1])
+            server = uvicorn.Server(uvicorn.Config(self.m.app, log_level="error", lifespan="off"))
+            thread = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while not server.started and thread.is_alive() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(server.started)
+                with sync_playwright() as playwright:
+                    browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+                    try:
+                        page = browser.new_page()
+                        page.goto(base + "/api/health")
+                        result = page.evaluate("""async ({token, prefix}) => {
+                            const headers = {'Authorization': 'Bearer ' + token, 'X-Enterprise-Id': 'buyer_tenant'};
+                            const identities = await fetch(prefix + '/beneficiaries', {headers});
+                            const selected = await identities.json();
+                            const params = new URLSearchParams({year: '2026', business_view: 'beneficiary', participant_id: 'personal-expert'});
+                            const report = await fetch(prefix + '/report?' + params, {headers});
+                            const data = await report.json();
+                            const exported = await fetch(prefix + '/export?' + params, {headers});
+                            const other = await fetch(prefix + '/report?' + new URLSearchParams({year: '2026', business_view: 'beneficiary', participant_id: 'bound-expert'}),
+                                {headers: {...headers, 'X-Enterprise-Id': 'other_tenant'}});
+                            return {selector: identities.status, identities: selected.items, status: report.status,
+                                data, exportStatus: exported.status, csv: await exported.text(), boundWrongEnterprise: other.status};
+                        }""", dict(token=self.tokens["buyer"], prefix=self.prefix))
+                        self.assertEqual((result["selector"], result["status"], result["exportStatus"]), (200, 200, 200))
+                        self.assertIn("personal-expert", [p["participant_id"] for p in result["identities"]])
+                        self.assertEqual(result["data"]["summary"]["profit_share"], "6.00")
+                        self.assertNotIn("gross_amount", result["data"]["summary"])
+                        self.assertIn("personal-expert", result["csv"])
+                        self.assertEqual(result["boundWrongEnterprise"], 403)
+                    finally:
+                        browser.close()
+            finally:
+                server.should_exit = True
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive(), "Isolated browser server did not stop")
 
     def test_annual_formal_separate_immutable_record_and_cutoff_change_rejection(self):
         _, sid = self.capture_order()

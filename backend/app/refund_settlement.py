@@ -112,18 +112,19 @@ def install(ns):
         """Financial evaluation only; resource/funding evidence is never changed."""
         segments = plan.get('segments', [plan])
         if (len(segments) != 1 or segments[0].get('calculation_version') not in
-                ('ordinary-refund-plan-v1', 'ordinary-file-refund-plan-v1')):
+                ('ordinary-refund-plan-v1', 'ordinary-file-refund-plan-v1', 'economic-segment-refund-v1')):
             return dict(status='unsupported', reason='exact_segment_final_baseline_required')
+        revised = segments[0].get('calculation_version') == 'economic-segment-refund-v1'
         adjustment = ns.get('VersionChangeAdjustment')
-        if adjustment is not None and db.scalar(select(adjustment.id).where(
+        if not revised and adjustment is not None and db.scalar(select(adjustment.id).where(
                 adjustment.source_order_id == refund.order_id, adjustment.status == 'posted')):
             return dict(status='unsupported', reason='version_change_requires_segment_baselines')
-        hook = ns.get('settlement_finance', {}).get('refund_basis')
+        hook = ns.get('version_change_settlement' if revised else 'settlement_finance', {}).get('refund_basis')
         if not callable(hook):
             return dict(status='waiting', reason='settlement_finance_unavailable')
         try:
             segment = segments[0]
-            result = hook(db, refund, dict(original_amount=segment['original_amount'],
+            result = hook(db, refund, segment if revised else dict(original_amount=segment['original_amount'],
                           cumulative_refund_amount=segment['cumulative_refund_amount']))
             if not isinstance(result, dict) or result.get('status') not in ('ready', 'waiting', 'unsupported'):
                 raise ValueError('invalid financial basis response')
@@ -137,10 +138,14 @@ def install(ns):
                     sum(shares.values()) != profit or not result.get('reference_settlement_id') or
                     not result.get('baseline_hash') or result['currency'] != segment['economic_snapshot']['currency']):
                 raise ValueError('financial basis mismatch')
-            return dict(status='ready', reference_settlement_id=result['reference_settlement_id'],
+            values = dict(status='ready', reference_settlement_id=result['reference_settlement_id'],
                         baseline_hash=result['baseline_hash'], currency=result['currency'],
                         gross_amount=str(revenue), cost_amount=str(cost), profit_amount=str(profit),
                         shares={k: str(v) for k, v in shares.items()})
+            if revised:
+                values.update({k: result[k] for k in ('segment_id', 'window_hash', 'segment_context_hash',
+                                                      'cumulative_refund_amount', 'original_amount')})
+            return values
         except (HTTPException, ValueError, TypeError, KeyError, ArithmeticError):
             return dict(status='waiting', reason='final_baseline_evidence_unavailable')
 

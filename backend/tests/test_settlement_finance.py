@@ -48,6 +48,7 @@ class FinanceTests(unittest.TestCase):
             settlement_no = Column(String)
             status = Column(String)
             reference_settlement_id = Column(String, default='')
+            refund_id = Column(String, default='')
             gross_amount = Column(Numeric(14, 2))
             cost_amount = Column(Numeric(14, 2))
             profit_amount = Column(Numeric(14, 2))
@@ -117,6 +118,8 @@ class FinanceTests(unittest.TestCase):
     def capture(self, **kwargs):
         s = self.settlement(**kwargs)
         result = self.h['capture'](self.db, s)
+        self.db.commit()
+        self.h['reconcile_offsets'](self.db, 'fixture')
         self.db.commit()
         return result
 
@@ -292,7 +295,8 @@ class FinanceTests(unittest.TestCase):
         for k, expected in zip(SHARES, (-10, -40, 0, 0, 0)):
             self.assertEqual(sum(p['shares'][k] for p in parts), expected)
         self.ns['settlement_parties'] = dict(cost_exception=lambda db, rid: {'approved': True})
-        self.assertEqual(self.h['refund_basis'](self.db, refund, {})['status'], 'unsupported')
+        self.assertEqual(self.h['refund_basis'](self.db, refund,
+            dict(original_amount='150', cumulative_refund_amount='50'))['status'], 'unsupported')
 
     def test_batch_status_requires_coverage_and_separates_recovery(self):
         self.capture()

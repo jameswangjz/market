@@ -1,4 +1,8 @@
-"""Run only the opt-in clearing race suite in a newly created disposable DB."""
+"""Run an allowlisted clearing suite in a newly created disposable DB.
+
+Use PYTHONPATH to select the isolated backend/app and tests snapshot.
+"""
+import argparse
 import os
 from pathlib import Path
 import re
@@ -10,7 +14,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--module', choices=(
+        'test_settlement_finance_pg', 'test_settlement_batch_pg_http'),
+        default='test_settlement_finance_pg')
+    args = parser.parse_args(argv)
     # The deployed connection is used only for CREATE/DROP DATABASE on postgres.
     # The tests receive a different database, then create private schemas in it.
     source = make_url(os.environ['DATABASE_URL'])
@@ -25,10 +34,10 @@ def main():
             created = True
         environment = dict(os.environ, CLEARING_TEST_DATABASE_URL=source.set(database=name).render_as_string(hide_password=False))
         completed = subprocess.run([sys.executable, '-W', 'ignore', '-m', 'unittest',
-                                    'test_settlement_finance_pg', '-v'], env=environment,
+                                    args.module, '-v'], env=environment,
                                    cwd=Path(__file__).resolve().parent)
         if completed.returncode:
-            raise RuntimeError('Isolated PostgreSQL race suite failed')
+            raise RuntimeError('Isolated PostgreSQL suite failed: ' + args.module)
     finally:
         if created:
             with admin.connect() as connection:

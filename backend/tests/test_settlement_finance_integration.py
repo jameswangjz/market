@@ -179,9 +179,18 @@ class SettlementFinanceIntegrationTests(unittest.TestCase):
             db.commit()
         self.request('POST', f'/api/settlements/generate/{self.order_id}', actor='finance', expected=409, json={})
 
-    def test_approved_cost_exception_stays_unsupported_until_explicit_loss_plan(self):
+    def test_approved_cost_exception_posts_separate_loss_without_changing_refund_proof(self):
         _, sid = self.original(adjusted=True)
         refund = self.complete()
+        h = self.m.settlement_finance
+        execution_hooks = self.m.refund_execution
+        with self.m.SessionLocal() as db:
+            completion = db.get(execution_hooks['Completion'], refund['id'])
+            frozen_completion = (completion.economic_plan_json, completion.proof_hash, completion.funding_hash,
+                                 completion.plan_hash, completion.amount, completion.completed_at)
+            execution = db.get(execution_hooks['Execution'], completion.execution_id)
+            frozen_execution = (execution.proof_json, execution.funding_json, execution.resource_plan_json,
+                                execution.resource_plan_hash, execution.plan_hash)
         bearer = self.request('POST', '/api/settlement-parties', actor='ops', json=dict(
             request_id='loss-bearer', name='Provider bearer', kind='provider', enterprise_id='provider_tenant', currency='CNY'))
         e = self.request('POST', '/api/settlement-cost-exceptions', actor='ops', json=dict(
@@ -192,12 +201,38 @@ class SettlementFinanceIntegrationTests(unittest.TestCase):
         nid = self.negative(refund)
         detail = self.request('GET', f'/api/settlements/{nid}/detail', actor='finance')
         basis = detail['refund_adjustment']['financial_basis']
-        self.assertEqual(basis['status'], 'unsupported')
-        self.assertEqual(basis['reason'], 'approved_cost_exception_requires_explicit_plan')
-        self.request('POST', f'/api/settlements/{nid}/lock', actor='finance', expected=409)
+        self.assertEqual(basis['status'], 'ready')
+        self.assertEqual(Decimal(basis['cost_amount']), Decimal('-3.00'))
+        self.assertEqual(Decimal(basis['profit_amount']), Decimal('-17.00'))
+        self.request('POST', f'/api/settlements/{nid}/lock', actor='finance')
         with self.m.SessionLocal() as db:
             self.assertEqual(db.get(self.m.Refund, refund['id']).amount, 20)
-            self.assertIsNone(db.get(self.m.settlement_finance['Baseline'], nid))
+            baseline = db.get(h['Baseline'], nid)
+            self.assertEqual((baseline.cost, baseline.profit), (Decimal('-3.00'), Decimal('-17.00')))
+            positions = db.scalars(select(h['Position']).where(h['Position'].settlement_id == nid)).all()
+            profit = {p.share_kind: p.amount for p in positions if p.kind == 'profit'}
+            self.assertEqual(profit, dict(platform_fee=Decimal('2.40'), provider_share=Decimal('9.60')))
+            loss = [p for p in positions if p.kind == 'loss']
+            self.assertEqual(len(loss), 1)
+            self.assertEqual((loss[0].amount, loss[0].participant_id, loss[0].direction),
+                             (Decimal('5.00'), 'provider_tenant', 'receivable'))
+            self.assertEqual(next(p.amount for p in positions if p.kind == 'cost'), Decimal('3.00'))
+            application = db.get(h['CostExceptionApplication'], refund['id'])
+            plan = json.loads(application.plan_json)
+            self.assertEqual(plan['baseline_id'], sid)
+            self.assertEqual(plan['evidence']['evidence_refs'], ['invoice:1'])
+            self.assertEqual(Decimal(plan['loss']['amount']), Decimal('5.00'))
+            self.assertEqual(db.get(h['CostExceptionPosting'], refund['id']).settlement_id, nid)
+            completion = db.get(execution_hooks['Completion'], refund['id'])
+            self.assertEqual(frozen_completion, (completion.economic_plan_json, completion.proof_hash,
+                completion.funding_hash, completion.plan_hash, completion.amount, completion.completed_at))
+            execution = db.get(execution_hooks['Execution'], completion.execution_id)
+            self.assertEqual(frozen_execution, (execution.proof_json, execution.funding_json,
+                execution.resource_plan_json, execution.resource_plan_hash, execution.plan_hash))
+            application.plan_hash = 'tampered'
+            with self.assertRaises(ValueError):
+                db.flush()
+        self.assertEqual(self.negative(refund), nid)
 
     def test_legacy_report_and_export_cover_more_than_2000_records(self):
         with self.m.SessionLocal() as db:

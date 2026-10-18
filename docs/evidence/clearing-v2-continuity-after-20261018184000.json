@@ -1,0 +1,52 @@
+{
+  "status": "active_source_healthy",
+  "continuity_proven": false,
+  "missing_count": null,
+  "reasons": [],
+  "ledger": {
+    "total_charges": 0,
+    "gaps": 2,
+    "source_charges": 0
+  },
+  "diagnostic_only": true,
+  "resume_authorized": false,
+  "redis_run_id": "c928479dbbf744b3456f8d4d6fd57c3f39388428",
+  "source": {
+    "source_id": "ea8dd609a7c8f67a1a96a7ba3147825b9c115ad9",
+    "stream": "market:apisix:charges:v1:ea8dd609a7c8f67a1a96a7ba3147825b9c115ad9",
+    "status": "active",
+    "process_run_id": "c928479dbbf744b3456f8d4d6fd57c3f39388428",
+    "sealed": false
+  },
+  "marker_matches_source": true,
+  "physical_run_matches_source": true,
+  "stream": {
+    "exists": false,
+    "is_stream": false,
+    "length": 0,
+    "first_id": null,
+    "last_id": null
+  },
+  "cursor": {
+    "last_id": "0-0",
+    "source_id": "ea8dd609a7c8f67a1a96a7ba3147825b9c115ad9",
+    "registered": true,
+    "entry_present": false
+  },
+  "persistence": {
+    "loading": 0,
+    "aof_enabled": 1,
+    "aof_last_write_status": "ok",
+    "aof_last_bgrewrite_status": "ok",
+    "rdb_last_bgsave_status": "ok",
+    "aof_rewrite_in_progress": 0,
+    "rdb_bgsave_in_progress": 0
+  },
+  "persistence_config": {
+    "appendonly": "yes",
+    "appendfsync": "everysec",
+    "save": "3600 1",
+    "no-appendfsync-on-rewrite": "no"
+  },
+  "captured_at": "2026-10-18T10:39:11.543362+00:00"
+}
