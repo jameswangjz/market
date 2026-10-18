@@ -19,7 +19,15 @@ def main(argv=None):
     parser.add_argument('--module', choices=(
         'test_settlement_finance_pg', 'test_settlement_batch_pg_http',
         'test_settlement_batch_pg_http.CrossVersionCostPostgresHTTPTests.'
-        'test_cross_version_cost_exception_http_approval_refresh_and_lock'),
+        'test_cross_version_cost_exception_http_approval_refresh_and_lock',
+        'test_settlement_batch_pg_http.CrossVersionMultiPostgresHTTPTests.'
+        'test_actual_multi_capture_preserves_source_positions_and_replays',
+        'test_settlement_batch_pg_http.CrossVersionMultiPostgresHTTPTests.'
+        'test_multi_capture_shared_budget_includes_vc_old_and_single_negative',
+        'test_settlement_batch_pg_http.CrossVersionMultiPostgresHTTPTests.'
+        'test_actual_multi_offsets_use_only_each_exact_original_source',
+        'test_settlement_batch_pg_http.CrossVersionMultiPostgresHTTPTests.'
+        'test_concurrent_http_refunds_cannot_overdraw_the_same_source'),
         default='test_settlement_finance_pg')
     args = parser.parse_args(argv)
     # The deployed connection is used only for CREATE/DROP DATABASE on postgres.

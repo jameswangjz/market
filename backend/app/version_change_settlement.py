@@ -484,6 +484,26 @@ def install(ns):
         except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
             return dict(status='unsupported', reason='segment_refund_final_evidence_invalid')
 
+    def refund_segment_basis(db, refund, plan):
+        """Ordinary exact slice for a multi-source manifest; no exception writes."""
+        try:
+            amount = cents(plan['refund_amount'])
+            if (plan['source_order_id'] != refund.order_id or amount <= 0
+                    or amount > cents(refund.amount)):
+                fail('refund_segment_scope_or_amount_mismatch')
+            subject = SimpleNamespace(id=refund.id, order_id=refund.order_id, amount=amount)
+            result = refund_basis(db, subject, plan, apply_exception=False)
+            if result['status'] != 'ready':
+                return result
+            window = db.get(ns['refund_segment_store']['Window'], plan['segment_id'])
+            receipt = db.get(ns['refund_segment_store']['Receipt'], window.receipt_id)
+            return dict(result, receipt_id=receipt.id, receipt_hash=receipt.receipt_hash,
+                        revision_id=window.revision_id, term_id=window.term_id, change_id=window.change_id)
+        except HTTPException as exc:
+            return dict(status='waiting', reason=exc.detail)
+        except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+            return dict(status='waiting', reason='segment_refund_final_evidence_invalid')
+
     def is_funding_order(order):
         return bool(order and getattr(order, "business_type", "") == "version_change_payment")
 
@@ -629,7 +649,7 @@ def install(ns):
              "describe": describe,
              'SegmentBaselineLink': SegmentBaselineLink, 'financial_context': financial_context,
              'bind_baseline': bind_baseline, 'refund_basis': refund_basis, 'prepare_lock': prepare_lock,
-             'paired_target': paired_target,
+             'paired_target': paired_target, 'refund_segment_basis': refund_segment_basis,
              "is_funding_order": is_funding_order, "is_change_refund": is_change_refund}
     ns["VersionChangeSettlementLink"] = VersionChangeSettlementLink
     ns["version_change_settlement"] = hooks

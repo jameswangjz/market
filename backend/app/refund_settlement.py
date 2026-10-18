@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .refund_execution import canonical, digest
 from .refund_execution_resources import strict_json
+from .refund_multi_source import install as install_multi_source
 
 
 CENT = Decimal('0.01')
@@ -111,6 +112,8 @@ def install(ns):
     def financial_basis(db, refund, plan):
         """Financial evaluation only; resource/funding evidence is never changed."""
         segments = plan.get('segments', [plan])
+        if len(segments) > 1:
+            return multi['financial_basis'](db, refund, plan)
         if (len(segments) != 1 or segments[0].get('calculation_version') not in
                 ('ordinary-refund-plan-v1', 'ordinary-file-refund-plan-v1', 'economic-segment-refund-v1')):
             return dict(status='unsupported', reason='exact_segment_final_baseline_required')
@@ -185,6 +188,9 @@ def install(ns):
         result = financial_basis(db, refund, strict_json(link.evidence_json)['economic_plan'])
         if result['status'] != 'ready':
             raise HTTPException(409, dict(code='refund_final_baseline_not_ready', **result))
+        if result.get('kind') == 'multi_source_refund':
+            if not callable(ns.get('settlement_finance', {}).get('capture_multi_refund')):
+                raise HTTPException(409, 'multi_source_refund_capture_contract_required')
         before = dict(cost_amount=str(settlement.cost_amount), profit_amount=str(settlement.profit_amount),
                       reference_settlement_id=settlement.reference_settlement_id)
         previous = assessment(db, settlement.id)
@@ -204,12 +210,14 @@ def install(ns):
             batch = db.get(ns['SettlementBatch'], batch_id)
             batch.total_profit = Decimal(str(batch.total_profit)) + settlement.profit_amount - Decimal(before['profit_amount'])
         record_assessment(db, settlement, result, actor)
+        if result.get('kind') == 'multi_source_refund':
+            multi['freeze'](db, settlement, refund, result, actor)
         ns['audit'](db, actor, 'refund_final_baseline_review', 'settlement', settlement.settlement_no,
                     category='settlement', business_domain='settlement', order_id=settlement.order_id,
                     before=before, after=result)
         db.flush()
 
-    def create(db, refund, actor='system'):
+    def completed_evidence(db, refund):
         Refund, Settlement = ns['Refund'], ns['Settlement']
         # Serialize on the durable refund, including the first mapping insertion.
         refund_id = getattr(refund, 'id', None)
@@ -297,6 +305,15 @@ def install(ns):
                 segments=[dict(segment_id=p['segment_id'], revenue=str(-v[0]), cost=str(-v[1]),
                                profit=str(v[2]), shares={k: str(n) for k, n in v[3].items()})
                           for p, v in zip(segments, values)]))
+        except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
+            raise HTTPException(409, 'ordinary_refund_settlement_evidence_invalid') from exc
+        return refund, plan, evidence, (amount, cost, profit, shares)
+
+    def create(db, refund, actor='system'):
+        Settlement = ns['Settlement']
+        refund, plan, evidence, (amount, cost, profit, shares) = completed_evidence(db, refund)
+        proven = strict_json(evidence)
+        try:
             link = db.get(RefundSettlementLink, refund.id, populate_existing=True)
             existing = db.scalars(select(Settlement).where(Settlement.refund_id == refund.id)).all()
             if link:
@@ -325,7 +342,7 @@ def install(ns):
                 settlement.settlement_no, 'Completed ordinary refund settlement',
                 category='settlement_adjustment', business_domain='settlement',
                 order_id=refund.order_id, after=dict(status=settlement.status,
-                    refund_id=refund.id, execution_id=execution.id, plan_hash=completion.plan_hash,
+                    refund_id=refund.id, execution_id=proven['completion_execution_id'], plan_hash=proven['plan_hash'],
                     evidence_hash=hashlib.sha256(evidence.encode()).hexdigest(),
                     net_amount=str(settlement.net_amount), cost_amount=str(settlement.cost_amount),
                     profit_amount=str(settlement.profit_amount), financial_basis_status=basis['status'],
@@ -383,8 +400,10 @@ def install(ns):
             return 'in_batch'
         return 'settlement_generated'
 
+    multi = install_multi_source(ns, completed_evidence, money, segment_values, SHARES)
     hooks = dict(Model=RefundSettlementLink, FinancialAssessment=FinancialAssessment,
                  negative_settlement=negative_settlement, describe=describe, ledger_status=ledger_status,
-                 financial_basis=financial_basis, assessment=assessment, prepare_lock=prepare_lock)
+                 financial_basis=financial_basis, assessment=assessment, prepare_lock=prepare_lock,
+                 MultiSourceManifest=multi['Model'], capture_manifest=multi['capture_manifest'])
     ns['refund_settlement'] = hooks
     return hooks

@@ -27,6 +27,7 @@ class SettlementReportingTests(unittest.TestCase):
 
     def seed(self, count=1, provider="provider_tenant", amount="150.01", **values):
         m = self.m
+        created_at = values.pop("created_at", datetime(2026, 9, 15, tzinfo=timezone.utc))
         with m.SessionLocal() as db:
             order = m.Order(order_no="ORD-" + str(db.query(m.Order).count()), buyer_user_id="buyer",
                 buyer_enterprise_id="buyer_tenant", provider_enterprise_id=provider, product_id="product",
@@ -40,7 +41,7 @@ class SettlementReportingTests(unittest.TestCase):
                 row = m.Settlement(settlement_no="SET-" + order.id + str(i), order_id=order.id,
                     gross_amount=Decimal(amount), net_amount=Decimal(amount), cost_amount=Decimal("100.00"),
                     profit_amount=Decimal(amount) - 100, platform_fee=Decimal("10.00"),
-                    provider_share=Decimal(amount) - 110, created_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
+                    provider_share=Decimal(amount) - 110, created_at=created_at,
                     **values)
                 db.add(row)
                 settlements.append(row)
@@ -311,16 +312,18 @@ class SettlementReportingTests(unittest.TestCase):
         with m.SessionLocal() as db:
             self.assertEqual(counts, {key: db.scalar(self.select(self.func.count()).select_from(finance[key])) for key in counts})
 
-    def capture_order(self, amount="150.00", *, expert="0.00", channel="0.00", service="0.00", configuration=None):
+    def capture_order(self, amount="150.00", *, expert="0.00", channel="0.00", service="0.00", configuration=None, economic_extra=None, receipts=None):
         m = self.m
         oid, ids = self.seed(amount=amount, status="locked", expert_fee=Decimal(expert), channel_fee=Decimal(channel), service_share=Decimal(service))
         with m.SessionLocal() as db:
             order = db.get(m.Order, oid)
             economic = dict(currency="CNY")
+            economic.update(economic_extra or {})
             if configuration:
                 economic["settlement_parties"] = dict(id=configuration[0], version=configuration[1])
             order.economic_snapshot_json = json.dumps(economic)
-            db.add(m.Payment(order_id=oid, payment_no="PAY-" + oid, amount=Decimal(amount),
+            order.paid_amount = Decimal(receipts if receipts is not None else amount)
+            db.add(m.Payment(order_id=oid, payment_no="PAY-" + oid, amount=order.paid_amount,
                              status="paid", paid_at=datetime(2026, 9, 15, tzinfo=timezone.utc),
                              proof="Manual receipt fixture", confirmed_by="finance"))
             settlement = db.get(m.Settlement, ids[0])
@@ -456,7 +459,7 @@ class SettlementReportingTests(unittest.TestCase):
         return dict(request_id="finalize-" + snapshot["id"], snapshot_digest=snapshot["digest"],
                     reconciliation_reference="MANUAL-RECONCILIATION-2026", note="Reconciled all recorded vouchers")
 
-    def beneficiary_fixture(self):
+    def beneficiary_fixture(self, *, receipts=None):
         m = self.m
         parties = m.settlement_parties
         definitions = (
@@ -477,7 +480,7 @@ class SettlementReportingTests(unittest.TestCase):
             member.role = "member"
             db.commit()
             config = configuration.id, configuration.version
-        return self.capture_order(expert="6.00", channel="4.00", service="8.00", configuration=config)
+        return self.capture_order(expert="6.00", channel="4.00", service="8.00", configuration=config, receipts=receipts)
 
     def beneficiary_report(self, actor="buyer", identity="own-expert", **params):
         return self.report(actor=actor, business_view="beneficiary", participant_id=identity, **params)
@@ -890,6 +893,9 @@ class SettlementReportingTests(unittest.TestCase):
                 self.assertFalse(thread.is_alive(), "Isolated browser server did not stop")
 
     def test_annual_formal_separate_immutable_record_and_cutoff_change_rejection(self):
+        patcher = self.clock_patch(self.reporting, datetime(2027, 1, 2, tzinfo=timezone.utc))
+        patcher.start()
+        self.addCleanup(patcher.stop)
         _, sid = self.capture_order()
         open_snapshot = self.request("POST", self.prefix + "/annual-reports", actor="finance", json=dict(year=2026, request_id="open-balance"))
         failure = self.request("POST", self.prefix + "/annual-reports/" + open_snapshot["id"] + "/finalize", actor="ops", expected=409)
@@ -925,6 +931,346 @@ class SettlementReportingTests(unittest.TestCase):
         added = self.request("POST", self.prefix + "/annual-reports/" + changed["id"] + "/finalize", actor="ops", expected=409,
                              json=self.finalization_body(changed))
         self.assertEqual(added["detail"], "annual_data_changed_after_cutoff")
+
+    def clock_patch(self, module, instant):
+        class ClockType(type):
+            def __instancecheck__(cls, value):
+                return isinstance(value, datetime)
+        class Clock(datetime, metaclass=ClockType):
+            @classmethod
+            def now(cls, tz=None):
+                return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+        return patch.object(module, "datetime", Clock)
+
+    def finance_clock(self, instant):
+        module = importlib.import_module(self.m.__package__ + ".settlement_finance")
+        return self.clock_patch(module, instant)
+
+    def test_verified_funding_absorption_is_separate_loss_and_historical_internal_movement(self):
+        m, finance = self.m, self.m.settlement_finance
+        with self.finance_clock(datetime(2024, 12, 1, tzinfo=timezone.utc)):
+            _, sid = self.capture_order(receipts="145.00")
+        with m.SessionLocal() as db:
+            baseline = db.get(finance["Baseline"], sid)
+            original = baseline.snapshot_json
+            count = db.query(finance["Position"]).count()
+        before = self.report()
+        self.assertFalse(before["summary"]["funds"]["known"])
+        with self.finance_clock(datetime(2025, 6, 1, tzinfo=timezone.utc)), m.SessionLocal() as db:
+            proposal = finance["propose_funding"](db, db.get(m.User, "finance"), dict(
+                request_id="absorb", settlement_id=sid, kind="platform_absorption", amount="5.00",
+                reason="Approved internal shortfall", evidence_refs=["approval:absorb"]))
+            finance["decide_funding"](db, db.get(m.User, "ops"), proposal["id"], dict(
+                request_id="approve-absorb", expected_version=1, decision="approved", note="Checked"))
+            finance["verify_funding"](db, db.get(m.User, "ops"), proposal["id"], dict(
+                request_id="verify-absorb", expected_version=2))
+            db.commit()
+            self.assertEqual(db.get(finance["Baseline"], sid).snapshot_json, original)
+            self.assertEqual(db.query(finance["Position"]).count(), count)
+        report = self.report()
+        self.assertTrue(report["summary"]["funds"]["known"], report["items"][0]["funds"])
+        self.assertEqual(report["summary"]["funds"]["internal_profit"], "5.00")
+        self.assertEqual(report["summary"]["funds"]["paid_amount"], "0.00")
+        self.assertEqual(report["summary"]["funds"]["recovered_amount"], "0.00")
+        platform = next(p for p in report["participants"] if p["participant_type"] == "platform")
+        self.assertEqual(platform["profit_share"], "10.00")
+        self.assertEqual(platform["baseline_total_receivable"], "10.00")
+        self.assertEqual(platform["funding_absorption_loss"], "5.00")
+        self.assertEqual(platform["net_total_receivable"], "5.00")
+        self.assertEqual(platform["total_receivable"], "5.00")
+        self.assertEqual(report["items"][0]["supplementary_funding"]["kind"], "platform_absorption")
+        bridge = self.report(year=2025)["balance_bridge"]
+        self.assertTrue(bridge["known"], bridge)
+        self.assertEqual(bridge["opening_internal_profit"], "10.00")
+        self.assertEqual(bridge["internal_absorption"], "5.00")
+        self.assertEqual(bridge["closing_internal_profit"], "5.00")
+        self.assertEqual(bridge["paid"], "0.00")
+        old = self.report(year=2024)["balance_bridge"]
+        self.assertFalse(old["known"])
+        self.assertIn("funding_effective_time_unproven", old["unknown_reasons"])
+        csv_text = self.download(kind="participants").content.decode("utf-8-sig")
+        self.assertIn(self.reporting.HEADERS["funding_absorption_loss"], csv_text)
+        self.assertEqual(report["summary"]["funding_absorption_loss"], "5.00")
+        from sqlalchemy import update
+        with m.SessionLocal() as db:
+            # Simulate corrupted persisted evidence without bypassing production immutability.
+            db.execute(update(finance["FundingAbsorption"].__table__).values(evidence_hash="0" * 64))
+            db.commit()
+        invalid = self.report()
+        self.assertFalse(invalid["summary"]["funds"]["known"])
+        self.assertIn("funding_evidence_inconsistent", invalid["items"][0]["funds"]["issues"])
+        self.assertIsNone(invalid["balance_bridge"]["closing_payable"])
+        self.assertFalse(invalid["items"][0]["supplementary_funding"]["valid"])
+
+    def test_funding_proof_unblocks_only_own_beneficiary_without_disclosing_absorption(self):
+        m, finance = self.m, self.m.settlement_finance
+        _, sid = self.beneficiary_fixture(receipts="145.00")
+        self.assertFalse(self.beneficiary_report()["summary"]["funds"]["known"])
+        with m.SessionLocal() as db:
+            proposal = finance["propose_funding"](db, db.get(m.User, "finance"), dict(
+                request_id="own-absorb", settlement_id=sid, kind="platform_absorption", amount="5.00",
+                reason="Approved internal shortfall", evidence_refs=["PRIVATE-APPROVAL"]))
+            finance["decide_funding"](db, db.get(m.User, "ops"), proposal["id"], dict(
+                request_id="own-approve", expected_version=1, decision="approved", note="Checked"))
+            finance["verify_funding"](db, db.get(m.User, "ops"), proposal["id"], dict(
+                request_id="own-verify", expected_version=2))
+            db.commit()
+        report = self.beneficiary_report()
+        self.assertTrue(report["summary"]["funds"]["known"], report["items"])
+        self.assertEqual(report["summary"]["total_receivable"], "1.50")
+        self.assertTrue(report["balance_bridge"]["known"], report["balance_bridge"])
+        self.assertEqual(report["balance_bridge"]["closing_internal_profit"], "0.00")
+        self.assertEqual(report["items"][0]["blocked_reason"], "")
+        exported = self.download(actor="buyer", business_view="beneficiary", participant_id="own-expert", kind="details")
+        for private in ("PRIVATE-APPROVAL", "supplementary_funding", "Other Expert Private", "platform_absorption"):
+            self.assertNotIn(private, json.dumps(report) + exported.text)
+        denied = self.client.get(self.prefix + "/report", headers={"Authorization": "Bearer " + self.tokens["buyer"]},
+            params=dict(business_view="beneficiary", participant_id="other-expert", year=2026))
+        self.assertEqual(denied.status_code, 403)
+
+    def pay_remaining(self, sid, instant, key, kind="payout"):
+        m, finance = self.m, self.m.settlement_finance
+        with self.finance_clock(instant), m.SessionLocal() as db:
+            rows = db.scalars(self.select(finance["Position"]).where(finance["Position"].settlement_id == sid,
+                finance["Position"].direction == ("payable" if kind == "payout" else "receivable"))).all()
+            tx = finance["draft"](db, db.get(m.User, "finance"), dict(kind=kind, mode="manual", reference="VOUCHER-" + key,
+                request_id=key, allocations=[dict(position_id=p.id, amount=str(finance["balance"](db, p))) for p in rows if finance["balance"](db, p)]))
+            finance["confirm"](db, db.get(m.User, "ops"), tx["id"], dict(request_id=key + "-confirm", expected_version=1, note="Checked"))
+            db.commit()
+
+    def test_bridge_carries_prior_year_obligations_and_ignores_next_year_payments(self):
+        with self.finance_clock(datetime(2024, 12, 31, 15, tzinfo=timezone.utc)):
+            oid, sid = self.capture_order()
+        with self.m.SessionLocal() as db:
+            settlement = db.get(self.m.Settlement, sid)
+            settlement.created_at = datetime(2024, 12, 20, tzinfo=timezone.utc)
+            batch = db.scalar(self.select(self.m.SettlementBatch))
+            batch.period_start = datetime(2024, 11, 30, 16, tzinfo=timezone.utc)
+            db.commit()
+        with self.finance_clock(datetime(2025, 6, 1, tzinfo=timezone.utc)):
+            self.record_payment(sid, value=Decimal("40.00"), key="partial-2025")
+        self.pay_remaining(sid, datetime(2025, 12, 31, 16, tzinfo=timezone.utc), "remaining-2026")
+        bridge = self.report(year=2025)["balance_bridge"]
+        self.assertTrue(bridge["known"], bridge)
+        self.assertEqual((bridge["opening_payable"], bridge["payable_added"], bridge["paid"], bridge["closing_payable"]),
+                         ("140.00", "0.00", "40.00", "100.00"))
+        self.assertEqual(bridge["funds_period"]["end_exclusive"], "2025-12-31T16:00:00+00:00")
+        next_year = self.report(year=2026)["balance_bridge"]
+        self.assertEqual((next_year["opening_payable"], next_year["paid"], next_year["closing_payable"]), ("100.00", "100.00", "0.00"))
+        self.assertEqual(self.report(year=2025)["summary"]["settlement_count"], 0)
+        self.assertEqual(self.report(actor="provider", business_view="provider", year=2025)["balance_bridge"]["closing_payable"], "100.00")
+        response = self.download(year=2025, kind="summary")
+        row = next(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+        self.assertEqual((row["期初未付"], row["期末未付"]), ("140.00", "100.00"))
+
+    def test_bridge_new_liability_and_draft_before_midnight_confirmed_after_midnight(self):
+        before = datetime(2025, 12, 31, 15, 59, 59, tzinfo=timezone.utc)
+        with self.finance_clock(before):
+            _, sid = self.capture_order()
+            m, finance = self.m, self.m.settlement_finance
+            with m.SessionLocal() as db:
+                rows = db.scalars(self.select(finance["Position"]).where(finance["Position"].settlement_id == sid,
+                    finance["Position"].direction == "payable")).all()
+                draft = finance["draft"](db, db.get(m.User, "finance"), dict(kind="payout", mode="manual", reference="YEAR-END-VOUCHER",
+                    request_id="year-end-draft", allocations=[dict(position_id=p.id, amount=str(p.amount)) for p in rows]))
+                db.commit()
+        with self.finance_clock(datetime(2025, 12, 31, 16, tzinfo=timezone.utc)), self.m.SessionLocal() as db:
+            finance["confirm"](db, db.get(m.User, "ops"), draft["id"], dict(request_id="year-end-confirm", expected_version=1, note="Actually confirmed after midnight"))
+            db.commit()
+        before_year_end = self.report(year=2025)["balance_bridge"]
+        self.assertEqual((before_year_end["opening_payable"], before_year_end["payable_added"], before_year_end["paid"], before_year_end["closing_payable"]),
+                         ("0.00", "140.00", "0.00", "140.00"))
+        self.assertEqual(self.report(year=2026)["balance_bridge"]["paid"], "140.00")
+
+    def test_bridge_carries_prior_year_recovery_and_excludes_following_year_receipts(self):
+        m, finance = self.m, self.m.settlement_finance
+        with self.finance_clock(datetime(2024, 12, 1, tzinfo=timezone.utc)):
+            oid, sid = self.capture_order()
+        self.pay_remaining(sid, datetime(2024, 12, 2, tzinfo=timezone.utc), "original-paid-2024")
+        with self.finance_clock(datetime(2024, 12, 3, tzinfo=timezone.utc)), m.SessionLocal() as db:
+            negative = m.Settlement(settlement_no="SET-HISTORICAL-RECOVERY", order_id=oid, reference_settlement_id=sid,
+                is_refund=True, refund_id="historical-recovery", status="locked", gross_amount=-75, net_amount=-75,
+                cost_amount=-50, profit_amount=-25, platform_fee=-5, provider_share=-20,
+                created_at=datetime(2024, 12, 3, tzinfo=timezone.utc))
+            batch = m.SettlementBatch(batch_no="BATCH-HISTORICAL-RECOVERY", status="confirmed", cycle="manual", idempotency_key="historical-recovery")
+            db.add_all([negative, batch])
+            db.flush()
+            db.add(m.SettlementLine(settlement_id=negative.id, batch_id=batch.id, participant_type="provider", amount=-20))
+            db.flush()
+            finance["capture"](db, negative, actor="finance")
+            negative_id = negative.id
+            db.commit()
+        with self.finance_clock(datetime(2025, 12, 31, 15, 59, 59, tzinfo=timezone.utc)):
+            self.record_payment(negative_id, kind="recovery", value=Decimal("20.00"), key="recovery-2025")
+        self.pay_remaining(negative_id, datetime(2025, 12, 31, 16, tzinfo=timezone.utc), "recovery-2026", kind="recovery")
+        bridge = self.report(year=2025)["balance_bridge"]
+        self.assertTrue(bridge["known"], bridge)
+        self.assertEqual((bridge["opening_receivable"], bridge["receivable_added"], bridge["recovered"], bridge["closing_receivable"]),
+                         ("70.00", "0.00", "20.00", "50.00"))
+        self.assertEqual((bridge["opening_payable"], bridge["closing_payable"]), ("0.00", "0.00"))
+        following = self.report(year=2026)["balance_bridge"]
+        self.assertEqual((following["opening_receivable"], following["recovered"], following["closing_receivable"]), ("50.00", "50.00", "0.00"))
+
+    def test_future_and_unfinished_annual_period_cannot_be_formalized(self):
+        self.capture_order()
+        future = self.report(year=2098)["balance_bridge"]
+        self.assertEqual(future["period_status"], "not_started")
+        self.assertFalse(future["known"])
+        self.assertIsNone(future["opening_payable"])
+        current_year = datetime.now(self.reporting.SHANGHAI).year
+        for year in (current_year, 2098):
+            snapshot = self.request("POST", self.prefix + "/annual-reports", actor="finance", json=dict(year=year, request_id="unfinished-" + str(year)))
+            failure = self.request("POST", self.prefix + "/annual-reports/" + snapshot["id"] + "/finalize", actor="ops", expected=409,
+                json=self.finalization_body(snapshot))
+            self.assertIn("annual_period_not_complete", failure["detail"]["unresolved"])
+
+    def test_authorized_detail_parties_final_ratios_and_original_baseline_reference(self):
+        frozen_rule = dict(id="frozen-rule", version="frozen-v7", rates=dict(platform_rate="30", provider_rate="70", service_rate="0", expert_rate="0", channel_rate="0"))
+        oid, sid = self.capture_order(economic_extra=dict(settlement_rule=frozen_rule))
+        with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, oid)
+            order.delivery_method_snapshot = "file"
+            order.economic_snapshot_json = '{"currency":"CNY","settlement_rule":{"version":"changed-current-rule"}}'
+            negative = self.m.Settlement(settlement_no="SET-DETAIL-NEGATIVE", order_id=oid, reference_settlement_id=sid,
+                is_refund=True, refund_id="detail-refund", gross_amount=-75, net_amount=-75, cost_amount=-50,
+                profit_amount=-25, platform_fee=-5, provider_share=-20, status="locked", created_at=datetime(2026, 9, 20, tzinfo=timezone.utc))
+            db.add(negative)
+            db.flush()
+            self.m.settlement_finance["capture"](db, negative, actor="finance")
+            db.commit()
+        original = next(r for r in self.report()["items"] if r["id"] == sid)
+        self.assertEqual((original["buyer_name"], original["seller_name"]), ("buyer_tenant", "provider_tenant"))
+        self.assertEqual((original["platform_rate"], original["provider_rate"]), ("20.0000", "80.0000"))
+        self.assertEqual(original["configured_share_rates"]["platform"], "30")
+        self.assertEqual(original["rule_version"], "frozen-v7")
+        self.assertEqual(original["baseline_version"], original["baseline_hash"])
+        negative = self.report(source_kind="refund")["items"][0]
+        self.assertEqual(negative["reference_settlement_id"], sid)
+        self.assertEqual(negative["reference_baseline_hash"], original["baseline_hash"])
+        self.assertNotEqual(negative["segment_basis"], "subscription_term")
+        response = self.download(kind="details")
+        self.assertIn("买方名称", response.text)
+        self.assertIn("最终基线版本摘要", response.text)
+        self.assertIn("平台比例", response.text)
+
+    def test_bridge_offsets_both_sides_and_scope_filters_do_not_drop_provider_cost(self):
+        m, finance = self.m, self.m.settlement_finance
+        with self.finance_clock(datetime(2024, 12, 1, tzinfo=timezone.utc)):
+            oid, sid = self.beneficiary_fixture()
+        with self.finance_clock(datetime(2025, 6, 1, tzinfo=timezone.utc)), m.SessionLocal() as db:
+            negative = m.Settlement(settlement_no="SET-HISTORY-OFFSET", order_id=oid, reference_settlement_id=sid,
+                is_refund=True, refund_id="history-offset", status="locked", gross_amount=-75, net_amount=-75,
+                cost_amount=-50, profit_amount=-25, platform_fee=-5, provider_share=-11, expert_fee=-3, channel_fee=-2,
+                service_share=-4, created_at=datetime(2025, 6, 1, tzinfo=timezone.utc))
+            batch = m.SettlementBatch(batch_no="BATCH-HISTORY-OFFSET", status="confirmed", cycle="manual", idempotency_key="history-offset")
+            db.add_all([negative, batch])
+            db.flush()
+            db.add(m.SettlementLine(settlement_id=negative.id, batch_id=batch.id, participant_type="expert", amount=-3))
+            db.flush()
+            finance["capture"](db, negative, actor="finance")
+            finance["reconcile_offsets"](db, batch.id, actor="finance")
+            db.commit()
+        bridge = self.report(year=2025)["balance_bridge"]
+        self.assertTrue(bridge["known"], bridge)
+        self.assertEqual((bridge["opening_payable"], bridge["receivable_added"], bridge["payable_offset"], bridge["receivable_offset"]),
+                         ("140.00", "70.00", "70.00", "70.00"))
+        self.assertEqual((bridge["closing_payable"], bridge["closing_receivable"], bridge["paid"], bridge["recovered"]), ("70.00", "0.00", "0.00", "0.00"))
+        selected = self.report(year=2025, participant_type="expert")
+        self.assertEqual(selected["balance_bridge"]["opening_payable"], "140.00")
+        self.assertEqual(selected["scope"]["participant_type_basis"], "settlement_selection_full_five_parties_and_provider_cost")
+        own = self.beneficiary_report(year=2025)["balance_bridge"]
+        self.assertTrue(own["known"], own)
+        self.assertEqual((own["opening_payable"], own["receivable_added"], own["payable_offset"], own["closing_payable"]), ("1.50", "0.75", "0.75", "0.75"))
+        self.seed(provider="other_tenant", created_at=datetime(2023, 1, 1, tzinfo=timezone.utc))
+        scoped = self.report(actor="provider", business_view="provider", year=2025)["balance_bridge"]
+        self.assertTrue(scoped["known"], scoped)
+        self.assertEqual(scoped["closing_payable"], "70.00")
+        self.assertFalse(self.report(year=2025)["balance_bridge"]["known"])
+
+    def test_bridge_missing_confirmation_time_is_unknown_and_blocks_formalization(self):
+        from sqlalchemy import insert
+        m, finance = self.m, self.m.settlement_finance
+        with self.finance_clock(datetime(2024, 12, 1, tzinfo=timezone.utc)):
+            _, sid = self.capture_order()
+        with m.SessionLocal() as db:
+            position = db.scalar(self.select(finance["Position"]).where(finance["Position"].settlement_id == sid, finance["Position"].kind == "cost"))
+            tx = finance["Transaction"](kind="payout", mode="manual", reference="LEGACY-UNDATED", note="Missing legacy confirmation timestamp",
+                creator_id="finance", payload_json=json.dumps(dict(allocations=[dict(position_id=position.id, amount="10.00")])),
+                created_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
+            db.add(tx)
+            db.flush()
+            db.execute(insert(finance["Confirmation"].__table__).values(transaction_id=tx.id, reviewer_id="ops", note="Legacy", created_at=None))
+            db.add(finance["Allocation"](transaction_id=tx.id, position_id=position.id, amount=Decimal("10.00")))
+            db.commit()
+        report = self.report(year=2025)
+        bridge = report["balance_bridge"]
+        self.assertFalse(bridge["known"])
+        self.assertIsNone(bridge["opening_payable"])
+        self.assertIsNone(bridge["closing_payable"])
+        self.assertIn("allocation_confirmation_time_missing", bridge["unknown_reasons"])
+        # The business-period view with this row must also tolerate missing evidence timestamps.
+        self.assertIsNone(self.report(year=2026)["items"][0]["funds"]["evidence"][0]["confirmed_at"])
+        snapshot = self.request("POST", self.prefix + "/annual-reports", actor="finance", json=dict(year=2025, request_id="history-unknown"))
+        failure = self.request("POST", self.prefix + "/annual-reports/" + snapshot["id"] + "/finalize", actor="ops", expected=409)
+        self.assertIn("historical_balance_unknown", failure["detail"]["unresolved"])
+
+    def test_bridge_unknown_internal_funding_type_is_explicit_not_external_cash(self):
+        m, finance = self.m, self.m.settlement_finance
+        with self.finance_clock(datetime(2024, 12, 1, tzinfo=timezone.utc)):
+            _, sid = self.capture_order()
+        with m.SessionLocal() as db:
+            internal = db.scalar(self.select(finance["Position"]).where(finance["Position"].settlement_id == sid, finance["Position"].direction == "internal"))
+            tx = finance["Transaction"](kind="internal_absorption", mode="manual", reference="FUNDING-INDEPENDENT",
+                note="No external cash", creator_id="finance", payload_json=json.dumps(dict(allocations=[dict(position_id=internal.id, amount="1.00")])),
+                created_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
+            db.add(tx)
+            db.flush()
+            db.add(finance["Confirmation"](transaction_id=tx.id, reviewer_id="ops", note="Independent proof pending",
+                created_at=datetime(2025, 1, 1, tzinfo=timezone.utc)))
+            db.flush()
+            db.add(finance["Allocation"](transaction_id=tx.id, position_id=internal.id, amount=Decimal("1.00")))
+            db.commit()
+        bridge = self.report(year=2025)["balance_bridge"]
+        self.assertFalse(bridge["known"])
+        self.assertIn("unsupported_internal_funding_transaction:internal_absorption", bridge["unknown_reasons"])
+        self.assertEqual((bridge["observed_totals"]["paid"], bridge["observed_totals"]["recovered"]), ("0.00", "0.00"))
+        self.assertIsNone(bridge["closing_payable"])
+
+    def test_multisource_refund_uses_immutable_manifest_not_current_term(self):
+        import hashlib
+        m = self.m
+        oid, sid = self.capture_order()
+        with m.SessionLocal() as db:
+            combo = m.subscription_terms["Combination"](enterprise_id="buyer_tenant", product_id="product", delivery_method="api",
+                version_id="version", version_code="v1", anchor_at=datetime(2026, 9, 1, tzinfo=timezone.utc), total_months=1)
+            db.add(combo)
+            db.flush()
+            db.add(m.subscription_terms["Term"](order_id=oid, combination_id=combo.id, generation=1, version_id="version", version_code="v1",
+                start_month=0, months=1, starts_at=datetime(2026, 9, 1, tzinfo=timezone.utc), ends_at=datetime(2026, 10, 1, tzinfo=timezone.utc)))
+            payment = db.scalar(self.select(m.Payment).where(m.Payment.order_id == oid))
+            refund = m.Refund(refund_no="REF-MANIFEST-DETAIL", order_id=oid, payment_id=payment.id, amount=75, status="completed")
+            db.add(refund)
+            db.flush()
+            negative = m.Settlement(settlement_no="SET-MANIFEST-DETAIL", order_id=oid, refund_id=refund.id, is_refund=True,
+                gross_amount=-75, net_amount=-75, cost_amount=-50, profit_amount=-25, platform_fee=-5, provider_share=-20,
+                created_at=datetime(2026, 9, 20, tzinfo=timezone.utc))
+            db.add(negative)
+            db.flush()
+            baseline = db.get(m.settlement_finance["Baseline"], sid)
+            # Serialization fixture: two immutable economic windows can share an order.
+            payload = dict(settlement_id=negative.id, refund_id=refund.id, order_id=oid, references=[dict(
+                segment_id=segment, source_order_id=oid, reference_settlement_id=sid, baseline_hash=baseline.snapshot_hash,
+                gross_amount="-37.50", cost_amount="-25.00", profit_amount="-12.50") for segment in ("window-a", "window-b")])
+            raw = self.reporting.canonical(payload)
+            db.add(m.refund_settlement["MultiSourceManifest"](settlement_id=negative.id, refund_id=refund.id,
+                payload_json=raw, payload_hash=hashlib.sha256(raw.encode()).hexdigest(), actor="finance"))
+            db.commit()
+        row = self.report(source_kind="refund")["items"][0]
+        self.assertEqual(row["segment_basis"], "immutable_multi_source_manifest")
+        self.assertIsNone(row["segment_id"])
+        self.assertEqual({s["segment_id"] for s in row["economic_segments"]}, {"window-a", "window-b"})
+        self.assertNotEqual(row["segment_basis"], "subscription_term")
+        self.assertIn("window-a", self.download(kind="details", source_kind="refund").text)
 
 
 if __name__ == "__main__":

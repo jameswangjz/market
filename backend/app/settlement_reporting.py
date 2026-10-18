@@ -9,7 +9,7 @@ import io
 import json
 import re
 import secrets
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -31,6 +31,9 @@ READ_ROLES = {"super_admin", "platform_operator", "finance_settlement", "securit
 WRITE_ROLES = READ_ROLES - {"security_compliance"}
 FUNDS = ("payable_amount", "paid_amount", "payable_offset_amount", "unpaid_amount",
          "receivable_amount", "recovered_amount", "receivable_offset_amount", "unrecovered_amount", "internal_profit")
+BRIDGE = ("opening_payable", "payable_added", "paid", "payable_offset", "closing_payable",
+          "opening_receivable", "receivable_added", "recovered", "receivable_offset", "closing_receivable",
+          "opening_internal_profit", "internal_profit_added", "internal_absorption", "closing_internal_profit")
 HEADERS = dict(zip(MONEY, ("清算收入", "供货成本", "可分配利润", "平台分成", "提供方分成",
     "服务方分成", "专家分成", "渠道分成", "提供方合计应收", "净清算额", "退款冲回")))
 HEADERS.update(id="内部关联ID", settlement_no="清算单号", order_no="订单号", order_id="订单关联ID",
@@ -48,6 +51,18 @@ HEADERS.update(position_id="资金权益关联ID", position_count="资金权益�
                currency="币种", funds_known="资金余额已核实", blocked_reason="暂挂原因")
 HEADERS.update(loss_amount="承担损失金额", position_kind="权益类型")
 HEADERS.update(cost_exception_id="成本例外关联ID", liability_source="损失依据类型", loss_label="损失说明")
+HEADERS.update(buyer_enterprise_id="买方企业关联ID", buyer_name="买方名称", seller_enterprise_id="卖方企业关联ID",
+    seller_name="卖方名称", segment_id="经济段关联ID", segment_basis="经济段依据", segment_start="经济段起点",
+    segment_end="经济段终点", segment_side="经济段方向", baseline_settlement_id="最终基线关联ID",
+    baseline_created_at="最终基线冻结时间", baseline_version="最终基线版本摘要", reference_settlement_id="原清算关联ID",
+    reference_settlement_no="原清算单号", reference_baseline_hash="原最终基线摘要", rate_basis="五方比例依据",
+    rule_version="冻结规则版本", rule_id="冻结规则关联ID")
+HEADERS.update({role + "_rate": label for role, label in zip(ROLES, ("平台比例", "提供方比例", "服务方比例", "专家比例", "渠道比例"))})
+HEADERS.update(dict(zip(BRIDGE, ("期初未付", "本期新增应付", "本期付款登记", "本期应付抵扣", "期末未付",
+    "期初待追回", "本期新增应追回", "本期回款登记", "本期应追回抵扣", "期末待追回",
+    "期初平台内部收益", "本期平台内部收益", "本期平台补差吸收", "期末平台内部收益"))))
+HEADERS.update(funding_absorption_loss="平台补差吸收损失", baseline_total_receivable="基线应收合计",
+               net_total_receivable="补差后净应收", supplementary_funding_json="独立补差来源承担及证据")
 HEADERS.update(dict(zip(FUNDS, ("已知应付", "已确认付款登记", "应付已抵扣", "未付余额", "已知应追回",
     "已确认回款登记", "应追回已抵扣", "待追回余额", "平台内部收益"))))
 
@@ -79,6 +94,7 @@ def utc(value):
 
 def aggregate(rows):
     result = {key: format(sum((decimal(row[key]) for row in rows), Decimal(0)), ".2f") for key in MONEY}
+    result["funding_absorption_loss"] = format(sum((decimal(r.get("funding_absorption_loss")) for r in rows), Decimal(0)), ".2f")
     for suffix, predicate in (("positive", lambda n: n > 0), ("reversal", lambda n: n < 0)):
         result[suffix] = {key: format(sum((decimal(r[key]) for r in rows if predicate(decimal(r[key]))), Decimal(0)), ".2f") for key in MONEY}
     result.update(income_order_count=len({r["order_id"] for r in rows if r["source_kind"] == "original" and decimal(r["gross_amount"]) > 0}),
@@ -98,7 +114,10 @@ def fund_totals(rows):
 def data_digest(report):
     # Cutoff is metadata; every economic row and its evidence remain in this digest.
     scope = {key: value for key, value in report["scope"].items() if key != "cutoff"}
-    return hashlib.sha256(canonical(dict(report, scope=scope)).encode()).hexdigest()
+    stable = dict(report, scope=scope)
+    if "balance_bridge" in stable:
+        stable["balance_bridge"] = {k: v for k, v in stable["balance_bridge"].items() if k != "calculated_through"}
+    return hashlib.sha256(canonical(stable).encode()).hexdigest()
 
 
 def unresolved(report):
@@ -117,6 +136,13 @@ def unresolved(report):
         reasons.append("open_fund_balances")
     if any(r.get("funds", {}).get("issues", ["finance_evidence_missing"]) for r in report["items"]):
         reasons.append("fund_evidence_incomplete")
+    bridge = report.get("balance_bridge", {})
+    if not bridge.get("known", False):
+        reasons.append("historical_balance_unknown")
+    elif any(decimal(bridge[key]) for key in ("closing_payable", "closing_receivable")):
+        reasons.append("historical_balances_open")
+    if not bridge.get("period_complete", False):
+        reasons.append("annual_period_not_complete")
     return reasons
 
 
@@ -124,6 +150,7 @@ def csv_response(report, kind):
     if kind not in {"summary", "details", "products", "providers", "participants", "refunds", "rankings"}:
         raise HTTPException(422, "invalid_export_kind")
     summary = dict(report["summary"], **report["summary"].get("funds", {}))
+    summary.update({key: report["balance_bridge"][key] for key in BRIDGE} if "balance_bridge" in report else {})
     rows = ([summary] if kind == "summary" else
             [r for r in report["items"] if r["source_kind"] == "refund"] if kind == "refunds" else
             report["items" if kind == "details" else kind])
@@ -144,7 +171,7 @@ def csv_response(report, kind):
             return "未知"
         text = str(value)
         # Decimal amounts are server-generated numeric literals, never user text.
-        numeric = key in MONEY or key in FUNDS or key in {"amount", "profit_share", "total_receivable", "loss_amount"}
+        numeric = key in MONEY or key in FUNDS or key in BRIDGE or key in {"amount", "profit_share", "total_receivable", "loss_amount", "funding_absorption_loss", "baseline_total_receivable", "net_total_receivable"}
         if not numeric and (text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n"))):
             return "'" + text
         return text
@@ -193,6 +220,110 @@ def install(ns):
     event.listen(Finalization, "before_update", immutable)
     event.listen(Finalization, "before_delete", immutable)
     S, O, E, L, B = (ns[key] for key in ("Settlement", "Order", "Enterprise", "SettlementLine", "SettlementBatch"))
+
+    def funding_projection(db, baseline, proof):
+        """Validate independent funding facts without editing frozen entitlements."""
+        if proof is None:
+            return dict(valid=False, status="uncovered", kind=None, amount="0.00")
+        finance = ns["settlement_finance"]
+        try:
+            def decoded(record, raw_field, hash_field):
+                raw = getattr(record, raw_field)
+                if hashlib.sha256(raw.encode()).hexdigest() != getattr(record, hash_field):
+                    raise ValueError()
+                return json.loads(raw)
+            snapshot = decoded(baseline, "snapshot_json", "snapshot_hash")
+            evidence = decoded(proof, "evidence_json", "evidence_hash")
+            request = db.get(finance["FundingRequest"], proof.request_id)
+            decision = db.get(finance["FundingDecision"], proof.request_id)
+            payload = decoded(request, "payload_json", "payload_hash")
+            amount = decimal(payload["amount"])
+            if (request.settlement_id != baseline.settlement_id or proof.settlement_id != baseline.settlement_id
+                    or payload["baseline_hash"] != baseline.snapshot_hash or payload["currency"] != baseline.currency
+                    or payload["settlement_id"] != baseline.settlement_id or decimal(payload["actual_receipts"]) != decimal(snapshot["actual_receipts"])
+                    or amount <= 0 or amount != baseline.revenue - decimal(snapshot["actual_receipts"])
+                    or decision.decision != "approved" or decision.reviewer_id == request.creator_id
+                    or proof.verifier_id == request.creator_id or evidence["request_id"] != request.id
+                    or evidence["reviewer_id"] != decision.reviewer_id or evidence["verifier_id"] != proof.verifier_id
+                    or any(evidence.get(key) != value for key, value in payload.items())):
+                raise ValueError()
+            result = dict(valid=True, status="covered", kind=payload["kind"], amount=format(amount, ".2f"), currency=baseline.currency,
+                request_id=request.id, bearer=payload["bearer"], evidence_hash=proof.evidence_hash,
+                source=payload["kind"], source_key=proof.source_key,
+                evidence=dict(request_hash=request.payload_hash, proof_hash=proof.evidence_hash, baseline_hash=baseline.snapshot_hash),
+                bank_receipt_verified=False, effective_at=None, absorption_allocations={})
+            if payload["kind"] == "platform_absorption":
+                if (payload["bearer"]["participant_type"], payload["bearer"]["participant_id"]) != ("platform", "platform"):
+                    raise ValueError()
+                absorption = db.get(finance["FundingAbsorption"], request.id)
+                fact = decoded(absorption, "evidence_json", "evidence_hash")
+                tx = db.get(finance["Transaction"], fact["transaction_id"])
+                confirmation = db.get(finance["Confirmation"], tx.id)
+                if (absorption.settlement_id != baseline.settlement_id or absorption.amount != amount
+                        or absorption.currency != baseline.currency or fact["baseline_hash"] != baseline.snapshot_hash
+                        or fact["request_id"] != request.id or fact["settlement_id"] != baseline.settlement_id
+                        or decimal(fact["amount"]) != amount or fact["currency"] != baseline.currency or decimal(fact["cash_amount"]) != 0
+                        or (fact["participant_type"], fact["participant_id"]) != ("platform", "platform")
+                        or fact["creator_id"] != request.creator_id or fact["reviewer_id"] != decision.reviewer_id
+                        or fact["evidence_refs"] != payload["evidence_refs"]
+                        or fact["verifier_id"] != proof.verifier_id or evidence["absorption_request_id"] != request.id
+                        or proof.source_key != "platform:" + baseline.settlement_id
+                        or evidence["transaction_id"] != tx.id or tx.kind != "internal_absorption" or tx.mode != "manual"
+                        or tx.reference != "funding:" + request.id or tx.creator_id != request.creator_id
+                        or confirmation.reviewer_id != proof.verifier_id or not isinstance(confirmation.created_at, datetime)
+                        or not isinstance(tx.created_at, datetime) or not isinstance(baseline.created_at, datetime)
+                        or utc(confirmation.created_at) < max(utc(tx.created_at), utc(baseline.created_at))):
+                    raise ValueError()
+                declared = {a["position_id"]: decimal(a["amount"]) for a in fact["allocations"]}
+                tx_allocations = json.loads(tx.payload_json)["allocations"]
+                actual = db.scalars(select(finance["Allocation"]).where(finance["Allocation"].transaction_id == tx.id)).all()
+                if (not declared or len(declared) != len(fact["allocations"]) or len(tx_allocations) != len(declared) or sum(declared.values()) != amount
+                        or {a["position_id"]: decimal(a["amount"]) for a in tx_allocations} != declared
+                        or {a.position_id: decimal(a.amount) for a in actual} != declared or len(actual) != len(declared)):
+                    raise ValueError()
+                for position_id, value in declared.items():
+                    p = db.get(finance["Position"], position_id)
+                    if (p is None or p.settlement_id != baseline.settlement_id or value <= 0 or value > p.amount
+                            or (p.kind, p.share_kind, p.direction, p.participant_type, p.participant_id, p.currency) !=
+                            ("profit", "platform_fee", "internal", "platform", "platform", baseline.currency)
+                            or not any(e["kind"] == p.kind and e["share_kind"] == p.share_kind and
+                                e["participant_type"] == p.participant_type and e["participant_id"] == p.participant_id and
+                                decimal(e["amount"]) == p.amount for e in snapshot["entries"])):
+                        raise ValueError()
+                result.update(effective_at=utc(confirmation.created_at).isoformat(), transaction_id=tx.id,
+                    absorption_allocations=declared, absorption_evidence_hash=absorption.evidence_hash)
+            elif payload["kind"] == "external_receipt":
+                receipt = evidence["receipt"]
+                if (receipt["status"] != "verified" or decimal(receipt["amount"]) != amount or receipt["currency"] != baseline.currency
+                        or receipt["payer_type"] != payload["bearer"]["participant_type"] or receipt["payer_id"] != payload["bearer"]["participant_id"]
+                        or proof.source_key != "cash:" + receipt["source_key"] or len(receipt["evidence_hash"]) != 64):
+                    raise ValueError()
+            else:
+                raise ValueError()
+            return result
+        except (AttributeError, KeyError, ValueError, TypeError, ArithmeticError):
+            return dict(valid=False, status="unproven", kind=None, amount=None, reason="funding_evidence_inconsistent")
+
+    def cash_block(position, funding, *, as_of=None):
+        if position.blocked_reason != "unfunded_settlement_adjustment":
+            return position.blocked_reason
+        if not funding.get("valid"):
+            return position.blocked_reason
+        if funding.get("effective_at") and datetime.fromisoformat(funding["effective_at"]) >= datetime.now(timezone.utc):
+            return "funding_effective_time_unproven"
+        if as_of is not None:
+            effective = funding.get("effective_at")
+            if not effective or datetime.fromisoformat(effective) >= as_of:
+                return "funding_effective_time_unproven"
+        return ""
+
+    def scoped_funding(db, ids):
+        finance = ns.get("settlement_finance", {})
+        Proof, Baseline = finance.get("FundingProof"), finance.get("Baseline")
+        if Proof is None or Baseline is None:
+            return {}
+        return {b.settlement_id: funding_projection(db, b, proof) for b, proof in db.execute(
+            select(Baseline, Proof).join(Proof, Proof.settlement_id == Baseline.settlement_id).where(Baseline.settlement_id.in_(ids)))}
 
     def subject_rows(db, row, order, linked, batch, baseline, positions):
         provisional = baseline is None
@@ -285,6 +416,264 @@ def install(ns):
                              participant_type="enterprise"), decimal(row["cost_amount"]), cost=True)
         return list(result.values())
 
+    def detail_fields(db, order, settlement, baseline, snapshot, adjustment=None):
+        frozen = snapshot.get("economic_snapshot", {}) if baseline else json.loads(order.economic_snapshot_json or "{}")
+        rule = frozen.get("settlement_rule", {})
+        profit = decimal(snapshot.get("profit", settlement.profit_amount))
+        shares = snapshot.get("shares", {field: str(getattr(settlement, field)) for field in ROLES.values()})
+        def rates(values, base):
+            return {role: format(decimal(values[field]) / base * 100, ".4f") if base else None for role, field in ROLES.items()}
+        final_rates = rates(shares, profit)
+        ordinary = (snapshot.get("cost_exception_application") or {}).get("default_basis")
+        ordinary_rates = rates(ordinary["shares"], decimal(ordinary["profit_amount"])) if ordinary else final_rates
+        context = snapshot.get("segment_context") or {}
+        reference = snapshot.get("reference_settlement_id") or settlement.reference_settlement_id or context.get("source_settlement_id", "")
+        source, source_baseline = None, None
+        if reference:
+            source = db.get(S, reference)
+            model = ns.get("settlement_finance", {}).get("Baseline")
+            source_baseline = db.get(model, reference) if model is not None else None
+            if source is not None:
+                source_order = db.get(O, source.order_id)
+                if source_order is None or source_order.provider_enterprise_id != order.provider_enterprise_id:
+                    raise HTTPException(409, "baseline_reference_scope_mismatch")
+        buyer = db.get(E, order.buyer_enterprise_id) if order.buyer_enterprise_id else None
+        seller = db.get(E, order.provider_enterprise_id)
+        result = dict(buyer_enterprise_id=order.buyer_enterprise_id, buyer_name=buyer.name if buyer else order.buyer_name,
+            seller_enterprise_id=order.provider_enterprise_id, seller_name=seller.name if seller else "",
+            baseline_settlement_id=baseline.settlement_id if baseline else None,
+            baseline_created_at=utc(baseline.created_at).isoformat() if baseline and baseline.created_at else None,
+            baseline_version=baseline.snapshot_hash if baseline else None, reference_settlement_id=reference,
+            reference_settlement_no=source.settlement_no if source else None,
+            reference_baseline_hash=source_baseline.snapshot_hash if source_baseline else None,
+            share_rates=final_rates, ordinary_share_rates=ordinary_rates,
+            configured_share_rates={role: str(rule.get("rates", {})[role + "_rate"]) if role + "_rate" in rule.get("rates", {}) else None for role in ROLES},
+            rate_basis="final_baseline_amount_ratio" if baseline else "provisional_amount_ratio",
+            rule_id=rule.get("id"), rule_version=rule.get("version"),
+            segment_id=None, segment_start=None, segment_end=None, segment_side=None, segment_basis="unknown")
+        result.update({role + "_rate": value for role, value in final_rates.items()})
+        if context:
+            result.update(segment_id=context.get("window_id"), segment_side=context.get("side"), segment_basis="final_baseline_segment_context")
+            Window = ns.get("refund_segment_store", {}).get("Window")
+            window = db.get(Window, context["window_id"]) if Window is not None and context.get("window_id") else None
+            if window is not None:
+                result.update(segment_start=utc(window.starts_at).isoformat(), segment_end=utc(window.ends_at).isoformat())
+        elif settlement.is_refund or decimal(settlement.gross_amount) < 0:
+            Manifest = ns.get("refund_settlement", {}).get("MultiSourceManifest")
+            manifest = db.get(Manifest, settlement.id) if Manifest is not None else None
+            result["economic_segments"] = []
+            if manifest is not None:
+                if hashlib.sha256(manifest.payload_json.encode()).hexdigest() != manifest.payload_hash:
+                    raise HTTPException(409, "refund_manifest_digest_mismatch")
+                payload = json.loads(manifest.payload_json)
+                if payload.get("settlement_id") != settlement.id or payload.get("order_id") != order.id:
+                    raise HTTPException(409, "refund_manifest_scope_mismatch")
+                for entry in payload.get("references", []):
+                    original = db.get(ns["settlement_finance"]["Baseline"], entry["reference_settlement_id"])
+                    if (original is None or original.provider_enterprise_id != order.provider_enterprise_id
+                            or original.order_id != order.id or original.snapshot_hash != entry.get("baseline_hash")):
+                        raise HTTPException(409, "refund_manifest_baseline_mismatch")
+                    result["economic_segments"].append({key: entry.get(key) for key in (
+                        "segment_id", "source_order_id", "reference_settlement_id", "baseline_hash", "term_id", "revision_id",
+                        "change_id", "receipt_id", "receipt_hash", "gross_amount", "cost_amount", "profit_amount", "shares")})
+                result.update(segment_basis="immutable_multi_source_manifest", segment_manifest_hash=manifest.payload_hash)
+                result["economic_segments_json"] = canonical(result["economic_segments"])
+            elif reference:
+                result.update(segment_basis="original_baseline_reference_only")
+        elif adjustment is not None:
+            result.update(segment_id=adjustment.id, segment_side=adjustment.side, segment_basis="posted_version_adjustment",
+                          segment_start=utc(adjustment.effective_at).isoformat() if adjustment.effective_at else None)
+        else:
+            Term = ns.get("subscription_terms", {}).get("Term")
+            term = db.scalar(select(Term).where(Term.order_id == order.id)) if Term is not None else None
+            if term is not None:
+                result.update(segment_id=term.id, segment_start=utc(term.starts_at).isoformat(),
+                              segment_end=utc(term.ends_at).isoformat(), segment_basis="subscription_term")
+            elif order.delivery_method_snapshot in {"file", "training", "consulting", "custom"}:
+                result.update(segment_id=order.id, segment_basis="one_time_order")
+        return result
+
+    def balance_bridge(db, scope, f):
+        """Reconstruct ledger balances, never treating current balance as history."""
+        finance = ns.get("settlement_finance", {})
+        start = datetime.combine(date.fromisoformat(f["start"]), time.min, SHANGHAI).astimezone(timezone.utc)
+        end = datetime.combine(date.fromisoformat(f["end"]) + timedelta(days=1), time.min, SHANGHAI).astimezone(timezone.utc)
+        cutoff = datetime.now(timezone.utc)
+        through = min(end, cutoff)
+        totals = {key: Decimal(0) for key in BRIDGE}
+        issues, facts = set(), []
+        result = dict(business_period=dict(start=f["start"], end=f["end"]), funds_period=dict(
+            start_inclusive=start.isoformat(), end_exclusive=end.isoformat(), timezone="Asia/Shanghai"),
+            calculated_through=through.isoformat(), period_complete=end <= cutoff,
+            recognition_basis="immutable_baseline_created_at", movement_basis="immutable_confirmation_created_at",
+            bank_occurrence_time_known=False, currency="CNY", scope_basis="authorized_current_business_filters_all_history")
+        result["participant_type_basis"] = "settlement_selection_full_five_parties_and_provider_cost" if scope["kind"] != "beneficiary" else "selected_registry_identity_positions_only"
+        if start >= cutoff:
+            return dict(result, known=False, period_status="not_started", unknown_reasons=["funds_period_not_started"],
+                        **{key: None for key in BRIDGE})
+        result["period_status"] = "complete" if end <= cutoff else "in_progress"
+        if not all(finance.get(key) is not None for key in ("Baseline", "Position", "Allocation", "Confirmation", "Transaction")):
+            return dict(result, known=False, unknown_reasons=["finance_history_unavailable"], **{key: None for key in BRIDGE})
+        Baseline, P, A, C, T = (finance[key] for key in ("Baseline", "Position", "Allocation", "Confirmation", "Transaction"))
+        query = select(S, O, Baseline, E.name).join(O, O.id == S.order_id).outerjoin(
+            Baseline, Baseline.settlement_id == S.id).outerjoin(E, E.id == O.provider_enterprise_id)
+        provider = scope.get("provider_id") or f["provider_id"]
+        if provider:
+            query = query.where(O.provider_enterprise_id == provider)
+        if f["product_id"]:
+            query = query.where(O.product_id == f["product_id"])
+        if f["status"]:
+            query = query.where(S.status == f["status"])
+        else:
+            query = query.where((S.status != "superseded") | (Baseline.settlement_id.is_not(None)))
+        owned_positions = select(P)
+        if scope["kind"] == "beneficiary":
+            owned_positions = owned_positions.where(P.participant_id == scope["participant_id"], P.participant_type == scope["participant_type"])
+            query = query.where(S.id.in_(owned_positions.with_only_columns(P.settlement_id)))
+        ids = query.with_only_columns(S.id)
+        owned_positions = owned_positions.where(P.settlement_id.in_(ids))
+        positions, batches, events = defaultdict(list), defaultdict(list), defaultdict(list)
+        for p in db.scalars(owned_positions.order_by(P.id)):
+            positions[p.settlement_id].append(p)
+        for sid, batch in db.execute(select(L.settlement_id, B).join(B, B.id == L.batch_id).where(
+                L.settlement_id.in_(ids), L.status != "superseded", B.status != "superseded").order_by(B.created_at, B.id)):
+            if batch.id not in {b.id for b in batches[sid]}:
+                batches[sid].append(batch)
+        for a, confirmation, tx in db.execute(select(A, C, T).outerjoin(C, C.transaction_id == A.transaction_id).outerjoin(
+                T, T.id == A.transaction_id).where(A.position_id.in_(owned_positions.with_only_columns(P.id))).order_by(A.id)):
+            events[a.position_id].append((a, confirmation, tx))
+        Link, Adjustment = ns.get("version_change_settlement", {}).get("Model"), ns.get("VersionChangeAdjustment")
+        changes = dict(db.execute(select(Link.settlement_id, Adjustment.change_id).join(Adjustment,
+            Adjustment.id == Link.adjustment_id).where(Link.settlement_id.in_(ids))).all()) if Link is not None and Adjustment is not None else {}
+        funding_by_id = scoped_funding(db, ids)
+        for settlement, order, baseline, provider_name in db.execute(query):
+            linked = batches[settlement.id]
+            if f["batch_id"] and not any(f["batch_id"] in (b.id, b.batch_no) for b in linked):
+                continue
+            source = "version_change" if settlement.id in changes else "refund" if settlement.is_refund or settlement.refund_id else "original"
+            if f["source_kind"] and source != f["source_kind"] or source == "original" and order.business_type == "version_change_payment":
+                continue
+            if f["q"] and f["q"].casefold() not in " ".join((settlement.settlement_no, order.order_no if scope["kind"] != "beneficiary" else "",
+                    order.product_name, order.product_version_name if scope["kind"] != "beneficiary" else "", provider_name or "",
+                    " ".join(b.batch_no for b in linked), scope.get("participant_name", ""))).casefold():
+                continue
+            rows = positions[settlement.id]
+            if f["participant_type"] and not any(p.share_kind == ROLES[f["participant_type"]] or
+                    f["participant_type"] == "provider" and p.kind == "cost" for p in rows):
+                continue
+            if baseline is None:
+                if not settlement.created_at or utc(settlement.created_at) < through:
+                    issues.add("unfrozen_settlement_history")
+                continue
+            recognized = utc(baseline.created_at) if isinstance(baseline.created_at, datetime) else None
+            if recognized is None:
+                issues.add("baseline_confirmation_time_missing")
+                continue
+            if recognized >= through:
+                continue
+            if settlement.status == "superseded":
+                issues.add("superseded_baseline_history_unproven")
+            if baseline.currency != "CNY":
+                issues.add("unsupported_currency")
+                continue
+            try:
+                if hashlib.sha256(baseline.snapshot_json.encode()).hexdigest() != baseline.snapshot_hash:
+                    raise ValueError()
+                snapshot = json.loads(baseline.snapshot_json)
+                entries = snapshot["entries"]
+                if scope["kind"] == "beneficiary":
+                    entries = [e for e in entries if e.get("participant_id") == scope["participant_id"] and e.get("participant_type") == scope["participant_type"]]
+                def identity(e):
+                    return (e["kind"], e["share_kind"], e["participant_type"], e["participant_id"], format(decimal(e["amount"]), ".2f"))
+                if Counter(identity(e) for e in entries) != Counter(identity({k: getattr(p, k) for k in
+                        ("kind", "share_kind", "participant_type", "participant_id", "amount")}) for p in rows):
+                    issues.add("positions_do_not_match_frozen_baseline")
+            except (KeyError, ValueError, TypeError, ArithmeticError):
+                issues.add("baseline_history_evidence_invalid")
+            facts.append(dict(baseline_id=baseline.settlement_id, digest=baseline.snapshot_hash, recognized_at=recognized.isoformat()))
+            funding = funding_by_id.get(settlement.id, {})
+            if funding and not funding.get("valid"):
+                issues.add("funding_evidence_inconsistent")
+            if funding:
+                facts.append(dict(funding_request_id=funding.get("request_id"), evidence_hash=funding.get("evidence_hash"),
+                    absorption_evidence_hash=funding.get("absorption_evidence_hash"), effective_at=funding.get("effective_at")))
+            for p in rows:
+                if p.direction == "internal":
+                    signed = decimal(p.amount) * (-1 if baseline.revenue < 0 or p.kind == "loss" else 1)
+                    totals["opening_internal_profit" if recognized < start else "internal_profit_added"] += signed
+                    for a, confirmation, tx in events[p.id]:
+                        if confirmation is None or not isinstance(confirmation.created_at, datetime):
+                            issues.add("internal_allocation_time_missing")
+                        elif utc(confirmation.created_at) < through:
+                            valid = (funding.get("valid") and funding.get("kind") == "platform_absorption"
+                                and tx is not None and tx.id == funding.get("transaction_id")
+                                and funding.get("absorption_allocations", {}).get(p.id) == decimal(a.amount))
+                            if valid:
+                                if utc(confirmation.created_at) < start:
+                                    totals["opening_internal_profit"] -= decimal(a.amount)
+                                else:
+                                    totals["internal_absorption"] += decimal(a.amount)
+                            else:
+                                issues.add("unsupported_internal_funding_transaction:" + (tx.kind if tx else "unknown"))
+                            facts.append(dict(allocation_id=a.id, kind=tx.kind if tx else "unknown",
+                                confirmed_at=utc(confirmation.created_at).isoformat(), amount=str(a.amount)))
+                    continue
+                blocked = cash_block(p, funding, as_of=through)
+                if blocked or not p.participant_id:
+                    issues.add(blocked or "unknown_beneficiary")
+                if p.direction not in {"payable", "receivable"} or p.currency != "CNY":
+                    issues.add("position_history_invalid")
+                    continue
+                direction = p.direction
+                amount = decimal(p.amount)
+                if recognized < start:
+                    totals["opening_" + direction] += amount
+                else:
+                    totals[direction + "_added"] += amount
+                facts.append(dict(position_id=p.id, direction=direction, amount=str(amount)))
+                applied = Decimal(0)
+                for a, confirmation, tx in events[p.id]:
+                    if confirmation is None or not isinstance(confirmation.created_at, datetime):
+                        issues.add("allocation_confirmation_time_missing")
+                        continue
+                    posted = utc(confirmation.created_at)
+                    if posted >= through:
+                        continue
+                    if tx is None or not isinstance(tx.created_at, datetime):
+                        issues.add("transaction_time_missing")
+                        continue
+                    if (posted < recognized or posted < utc(tx.created_at) or not tx.reference.strip() or not confirmation.reviewer_id
+                            or tx.mode not in {"manual", "simulated"}):
+                        issues.add("allocation_history_evidence_invalid")
+                    value = decimal(a.amount)
+                    applied += value
+                    if tx.kind == "offset":
+                        field = direction + "_offset"
+                    elif tx.kind == "payout" and direction == "payable":
+                        field = "paid"
+                    elif tx.kind == "recovery" and direction == "receivable":
+                        field = "recovered"
+                    else:
+                        issues.add("historical_allocation_direction_invalid:" + tx.kind)
+                        continue
+                    if posted < start:
+                        totals["opening_" + direction] -= value
+                    else:
+                        totals[field] += value
+                    facts.append(dict(allocation_id=a.id, position_id=p.id, transaction_id=tx.id,
+                        confirmed_at=posted.isoformat(), amount=str(value), kind=tx.kind))
+                if applied > amount:
+                    issues.add("historical_position_overallocated")
+        totals["closing_payable"] = totals["opening_payable"] + totals["payable_added"] - totals["paid"] - totals["payable_offset"]
+        totals["closing_receivable"] = totals["opening_receivable"] + totals["receivable_added"] - totals["recovered"] - totals["receivable_offset"]
+        totals["closing_internal_profit"] = totals["opening_internal_profit"] + totals["internal_profit_added"] - totals["internal_absorption"]
+        if any(value < 0 for key, value in totals.items() if "internal" not in key):
+            issues.add("negative_historical_balance")
+        values = {key: format(value, ".2f") for key, value in totals.items()}
+        return dict(result, known=not issues, unknown_reasons=sorted(issues), observed_totals=values,
+            evidence_digest=hashlib.sha256(canonical(sorted(facts, key=canonical)).encode()).hexdigest(),
+            **{key: None if issues else value for key, value in values.items()})
+
     def scope_for(request, db, user):
         if request.query_params.get("business_view") == "beneficiary":
             participant_id = request.query_params.get("participant_id", "")
@@ -355,6 +744,7 @@ def install(ns):
         if f["status"]:
             stmt = stmt.where(S.status == f["status"])
         settlement_ids = stmt.with_only_columns(S.id)
+        funding_by_id = scoped_funding(db, settlement_ids)
         position_ids = stmt.with_only_columns(P.id)
         batches = defaultdict(dict)
         for sid, batch in db.execute(select(L.settlement_id, B).join(B, B.id == L.batch_id).where(
@@ -401,6 +791,10 @@ def install(ns):
             paid, recovered, offset = Decimal(0), Decimal(0), Decimal(0)
             for allocation, confirmation, transaction in applied[position.id]:
                 value = decimal(allocation.amount)
+                if transaction.kind not in {"payout", "recovery", "offset"}:
+                    issues.append("unsupported_transaction_kind:" + transaction.kind)
+                if not isinstance(confirmation.created_at, datetime):
+                    issues.append("allocation_confirmation_time_missing")
                 if not transaction.reference.strip() or not confirmation.reviewer_id or transaction.mode not in {"manual", "simulated"}:
                     issues.append("unverified_transaction_evidence")
                 if transaction.kind == "payout" and position.direction == "payable":
@@ -414,8 +808,9 @@ def install(ns):
             balance = decimal(position.amount) - paid - recovered - offset
             if balance < 0:
                 issues.append("overallocated_position")
-            if position.blocked_reason:
-                issues.append(position.blocked_reason)
+            blocked = cash_block(position, funding_by_id.get(settlement.id, {}))
+            if blocked:
+                issues.append(blocked)
             if position.direction == "payable":
                 totals.update(payable_amount=decimal(position.amount), paid_amount=paid, payable_offset_amount=offset, unpaid_amount=balance)
             elif position.direction == "receivable":
@@ -449,7 +844,7 @@ def install(ns):
                 loss_amount=format(decimal(position.amount) if position.kind == "loss" else Decimal(0), ".2f"),
                 total_receivable=format(signed, ".2f"),
                 cost_exception_id=exception_id, liability_source=loss_source, loss_label=loss_label,
-                funds_known=not issues, blocked_reason=position.blocked_reason,
+                funds_known=not issues, blocked_reason=blocked,
                 funds=dict(known=not issues, known_totals=values, issues=sorted(set(issues))))
             row.update({key: None if issues else value for key, value in values.items()})
             # Used only for distinct counts, removed before either JSON or CSV serialization.
@@ -483,6 +878,9 @@ def install(ns):
         public = [{key: value for key, value in row.items() if key != "_counts"} for row in rows]
         offset = (f["page"] - 1) * f["page_size"]
         result["items"] = public if complete else public[offset:offset + f["page_size"]]
+        result["balance_bridge"] = balance_bridge(db, scope, f)
+        result["scope"]["funds_basis"] = "current_confirmed_positions; historical_balances_in_balance_bridge"
+        result["scope"]["participant_type_basis"] = "selected_registry_identity_positions_only"
         return result
 
     def filters(start: str | None = None, end: str | None = None,
@@ -525,6 +923,7 @@ def install(ns):
             stmt = stmt.where(S.status == f["status"])
         # Restrict related records with a subquery, avoiding a 2000-row or SQL IN cap.
         ids = stmt.with_only_columns(S.id)
+        funding_by_id = scoped_funding(db, ids)
         receipts = defaultdict(list)
         Payment = ns.get("Payment")
         if Payment is not None:
@@ -550,12 +949,13 @@ def install(ns):
         lines = defaultdict(list)
         for line, batch in related:
             lines[line.settlement_id].append((line, batch))
-        changes = {}
+        changes, adjustments = {}, {}
         hooks = ns.get("version_change_settlement", {})
         Link, Adjustment = hooks.get("Model"), ns.get("VersionChangeAdjustment")
         if Link is not None and Adjustment is not None:
-            changes = dict(db.execute(select(Link.settlement_id, Adjustment.change_id).join(
+            adjustments = dict(db.execute(select(Link.settlement_id, Adjustment).join(
                 Adjustment, Adjustment.id == Link.adjustment_id).where(Link.settlement_id.in_(ids))).all())
+            changes = {sid: adjustment.change_id for sid, adjustment in adjustments.items()}
         lo = datetime.combine(date.fromisoformat(f["start"]), time.min, SHANGHAI).astimezone(timezone.utc)
         hi = datetime.combine(date.fromisoformat(f["end"]) + timedelta(days=1), time.min, SHANGHAI).astimezone(timezone.utc)
         rows = []
@@ -598,6 +998,7 @@ def install(ns):
                 amount = decimal(settlement.cost_amount) + decimal(settlement.provider_share) if key == "provider_total_receivable" else decimal(getattr(settlement, key))
                 row[key] = format(amount, ".2f")
             baseline = baselines.get(settlement.id)
+            snapshot = {}
             row["provisional"] = baseline is None
             row["baseline_hash"] = baseline.snapshot_hash if baseline else ""
             if baseline is not None:
@@ -613,13 +1014,34 @@ def install(ns):
                 row["net_amount"] = row["gross_amount"]
                 row["provider_total_receivable"] = format(decimal(row["cost_amount"]) + decimal(row["provider_share"]), ".2f")
             subjects = subject_rows(db, row, order, linked, batch, baseline, positions[settlement.id])
+            funding = funding_by_id.get(settlement.id, {})
+            absorption = decimal(funding["amount"]) if funding.get("valid") and funding.get("kind") == "platform_absorption" else Decimal(0)
+            row["supplementary_funding"] = {key: value for key, value in funding.items() if key != "absorption_allocations"}
+            row["supplementary_funding_json"] = canonical(row["supplementary_funding"])
+            row["funding_absorption_loss"] = format(absorption, ".2f")
+            for subject in subjects:
+                burden = absorption if (subject["participant_type"], subject["participant_id"]) == ("platform", "platform") else Decimal(0)
+                subject["baseline_total_receivable"] = subject["total_receivable"]
+                subject["funding_absorption_loss"] = format(burden, ".2f")
+                subject["net_total_receivable"] = format(decimal(subject["total_receivable"]) - burden, ".2f")
+                subject["total_receivable"] = subject["net_total_receivable"]
+            row.update(detail_fields(db, order, settlement, baseline, snapshot, adjustments.get(settlement.id)))
             row["participants"] = subjects
             totals = {key: Decimal(0) for key in FUNDS}
             evidence, issues, position_details = [], [], []
+            if funding and not funding.get("valid"):
+                issues.append("funding_evidence_inconsistent")
             for position in positions[settlement.id]:
                 paid, recovered, offset = Decimal(0), Decimal(0), Decimal(0)
                 for allocation, confirmation, transaction in applied[position.id]:
                     value = decimal(allocation.amount)
+                    if (funding.get("valid") and transaction.id == funding.get("transaction_id")
+                            and funding.get("absorption_allocations", {}).get(position.id) == value):
+                        continue
+                    if transaction.kind not in {"payout", "recovery", "offset"}:
+                        issues.append("unsupported_transaction_kind:" + transaction.kind)
+                    if not isinstance(confirmation.created_at, datetime):
+                        issues.append("allocation_confirmation_time_missing")
                     if (not transaction.reference.strip() or not confirmation.reviewer_id or
                             transaction.mode not in {"manual", "simulated"}):
                         issues.append("unverified_transaction_evidence")
@@ -633,12 +1055,14 @@ def install(ns):
                         issues.append("allocation_direction_mismatch")
                     evidence.append(dict(allocation_id=allocation.id, transaction_id=transaction.id,
                         kind=transaction.kind, mode=transaction.mode, reference=transaction.reference,
-                        reviewer_id=confirmation.reviewer_id, confirmed_at=utc(confirmation.created_at).isoformat(), amount=str(value)))
+                        reviewer_id=confirmation.reviewer_id,
+                        confirmed_at=utc(confirmation.created_at).isoformat() if isinstance(confirmation.created_at, datetime) else None, amount=str(value)))
                 balance = decimal(position.amount) - paid - recovered - offset
                 if balance < 0:
                     issues.append("overallocated_position")
-                if position.blocked_reason or not position.participant_id:
-                    issues.append(position.blocked_reason or "missing_subject_mapping")
+                blocked = cash_block(position, funding)
+                if blocked or not position.participant_id:
+                    issues.append(blocked or "missing_subject_mapping")
                 if position.currency != "CNY":
                     issues.append("unsupported_currency")
                 if position.direction == "payable":
@@ -653,12 +1077,13 @@ def install(ns):
                     totals["unrecovered_amount"] += balance
                 elif position.direction == "internal":
                     totals["internal_profit"] += (-1 if decimal(row["gross_amount"]) < 0 else 1) * decimal(position.amount)
+                    totals["internal_profit"] -= funding.get("absorption_allocations", {}).get(position.id, Decimal(0)) if funding.get("valid") else Decimal(0)
                 else:
                     issues.append("unknown_position_direction")
                 position_details.append(dict(id=position.id, kind=position.kind, share_kind=position.share_kind,
                     participant_id=position.participant_id, participant_type=position.participant_type,
                     direction=position.direction, currency=position.currency, amount=str(position.amount),
-                    remaining_amount=format(balance, ".2f"), blocked_reason=position.blocked_reason))
+                    remaining_amount=format(balance - (funding.get("absorption_allocations", {}).get(position.id, Decimal(0)) if funding.get("valid") else Decimal(0)), ".2f"), blocked_reason=blocked))
             # Missing coverage is unknown, including an all-zero baseline with no evidence.
             covered = baseline is not None and bool(position_details)
             if not covered:
@@ -685,8 +1110,8 @@ def install(ns):
                 # Unassigned subjects remain record-local; no fabricated shared identity.
                 key = (p["participant_type"], p["subject_type"], p["participant_id"], "" if p["participant_id"] else row["id"])
                 target = participants.setdefault(key, dict(p, amount="0.00", cost_amount="0.00", loss_amount="0.00",
-                    profit_share="0.00", total_receivable="0.00", settlement_ids=[]))
-                for field in ("amount", "cost_amount", "profit_share", "loss_amount", "total_receivable"):
+                    profit_share="0.00", total_receivable="0.00", funding_absorption_loss="0.00", baseline_total_receivable="0.00", net_total_receivable="0.00", settlement_ids=[]))
+                for field in ("amount", "cost_amount", "profit_share", "loss_amount", "total_receivable", "funding_absorption_loss", "baseline_total_receivable", "net_total_receivable"):
                     target[field] = format(decimal(target[field]) + decimal(p[field]), ".2f")
                 target["provisional"] = target["provisional"] or p["provisional"]
                 if target["subject_source"] != p["subject_source"]:
@@ -706,7 +1131,7 @@ def install(ns):
         offset = (f["page"] - 1) * f["page_size"]
         summary = aggregate(rows)
         summary["funds"] = fund_totals(rows)
-        return dict(summary=summary, monthly=monthly,
+        return dict(summary=summary, monthly=monthly, balance_bridge=balance_bridge(db, scope, f),
             products=group(("product_id", "product_name", "product_version_id", "product_version_name", "provider_id", "month")),
             providers=providers, participants=list(participants.values()), rankings=rankings,
             items=rows if complete else rows[offset:offset + f["page_size"]], total=len(rows), page=f["page"], page_size=f["page_size"],
@@ -714,6 +1139,9 @@ def install(ns):
                 currency="CNY", includes_unconfirmed=any(r["status"] not in {"locked", "paid"} or
                     r["batch_status"] and r["batch_status"] not in {"confirmed", "payment_processing", "partial_paid", "paid", "archived"} for r in rows),
                 includes_provisional=any(r["provisional"] for r in rows),
+                funds_basis="current_confirmed_positions; historical_balances_in_balance_bridge",
+                participant_type_basis="settlement_selection_full_five_parties_and_provider_cost",
+                participant_receivable_basis="baseline_cost_plus_profit_minus_loss_minus_separate_funding_absorption; legacy_amount_excludes_funding",
                 beneficiary_grants_supported=True, balance_status="known" if summary["funds"]["known"] else "unknown", bank_receipts_verified=False))
 
     app = ns["app"]

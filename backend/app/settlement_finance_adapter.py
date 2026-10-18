@@ -1,4 +1,5 @@
 """Lifecycle guards around the optional finance ledger; no commits or cash writes."""
+import hashlib
 import json
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 
@@ -33,13 +34,49 @@ def proportional_values(baseline, amount, *, basis_revenue=None, basis_values=No
     return dict(cost=cost, profit=profit, shares=parts)
 
 
+def _explicit_financial_reference(ns, db, ids):
+    finance = ns.get('settlement_finance', {})
+    for name in ('RefundSource', 'RefundPositionSource'):
+        model = finance.get(name)
+        if model is not None and db.scalar(select(model.settlement_id).where(
+                model.settlement_id.in_(ids) | model.source_settlement_id.in_(ids)).limit(1)):
+            return True
+    for name in ('FundingProof', 'FundingAbsorption', 'CostExceptionPosting'):
+        model = finance.get(name)
+        if model is not None and db.scalar(select(model.settlement_id).where(
+                model.settlement_id.in_(ids)).limit(1)):
+            return True
+    manifest = ns.get('refund_settlement', {}).get('MultiSourceManifest')
+    if manifest is not None:
+        # A frozen manifest reserves its sources even before ledger capture.
+        for row in db.scalars(select(manifest)):
+            if row.settlement_id in ids:
+                return True
+            try:
+                payload = json.loads(row.payload_json)
+                encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False)
+                if row.payload_hash != hashlib.sha256(encoded.encode()).hexdigest():
+                    raise ValueError('manifest hash mismatch')
+                references = payload['references']
+                if not isinstance(references, list) or not references:
+                    raise ValueError('manifest references missing')
+                sources = [ref['reference_settlement_id'] for ref in references]
+                if any(not isinstance(source, str) or not source for source in sources):
+                    raise ValueError('manifest source missing')
+            except (ValueError, TypeError, KeyError):
+                raise HTTPException(409, 'frozen_refund_manifest_invalid_requires_review') from None
+            if ids.intersection(sources):
+                return True
+    return False
+
+
 def protect(ns, db, settlement_ids):
     ids = set(settlement_ids)
     if not ids:
         return
     baseline = ns.get('settlement_finance', {}).get('Baseline')
     settlement = ns['Settlement']
-    if (baseline is not None and db.scalar(select(baseline.settlement_id).where(
+    if _explicit_financial_reference(ns, db, ids) or (baseline is not None and db.scalar(select(baseline.settlement_id).where(
             baseline.settlement_id.in_(ids)))) or db.scalar(select(settlement.id).where(
                 settlement.reference_settlement_id.in_(ids))):
         raise HTTPException(409, 'frozen_baseline_or_refund_reference_requires_explicit_adjustment')
@@ -52,7 +89,8 @@ def protect_rebuild(ns, db, settlement_ids):
     finance = ns.get('settlement_finance', {})
     settlement = ns['Settlement']
     baseline, position, allocation = (finance.get(k) for k in ('Baseline', 'Position', 'Allocation'))
-    referenced = db.scalar(select(settlement.id).where(settlement.reference_settlement_id.in_(ids)))
+    referenced = _explicit_financial_reference(ns, db, ids) or db.scalar(
+        select(settlement.id).where(settlement.reference_settlement_id.in_(ids)))
     if baseline is not None:
         referenced = referenced or db.scalar(select(baseline.settlement_id).where(
             baseline.reference_settlement_id.in_(ids)))
