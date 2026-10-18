@@ -106,21 +106,28 @@ test('network retries preserve identity until payload or scope changes', () => {
   assert.notEqual(identity({ scope: 'b', amount: '0.10' }), key);
 });
 
-test('participant columns display authoritative cost, profit share, and total receivable independently', () => {
+test('participant columns display authoritative cost, signed profit, positive loss and net receivable independently', () => {
   const state = vm.createContext({
     computed: getter => ({ get value() { return getter(); } }),
     tab: { value: 'reports' }, reportView: { value: 'participants' },
     amountLabels: helpers.amountLabels, participantAmountLabels: helpers.participantAmountLabels,
     countLabels: helpers.countLabels, money: helpers.money, labels: {},
+    isBeneficiary: { value: false }, beneficiaryAmountLabels: helpers.beneficiaryAmountLabels,
     sourceKinds: helpers.sourceKinds, positionSubjectLabels: helpers.positionSubjectLabels,
   });
   vm.runInContext(source.slice(source.indexOf('const columns = computed('), source.indexOf('async function load()')) + '\nglobalThis.participantColumns = columns.value;', state);
   const keys = state.participantColumns.map(([key]) => key);
-  for (const key of ['cost_amount', 'profit_share', 'total_receivable']) assert.ok(keys.includes(key));
-  const row = { cost_amount: '100.00', profit_share: '40.00', total_receivable: '140.00' };
+  for (const key of ['cost_amount', 'profit_share', 'loss_amount', 'total_receivable']) assert.ok(keys.includes(key));
+  assert.equal(helpers.participantAmountLabels.loss_amount, '承担损失');
+  assert.equal(helpers.participantAmountLabels.total_receivable, '合计净应收（成本+利润-损失）');
+  const row = { cost_amount: '100.00', profit_share: '40.00', loss_amount: '15.25', total_receivable: '124.75', amount: '24.75' };
   assert.equal(state.cell(row, 'cost_amount'), '100.00');
   assert.equal(state.cell(row, 'profit_share'), '40.00');
-  assert.equal(state.cell(row, 'total_receivable'), '140.00');
+  assert.equal(state.cell(row, 'loss_amount'), '15.25');
+  assert.equal(state.cell(row, 'total_receivable'), '124.75');
+  assert.equal(state.cell({ profit_share: '-40.00', loss_amount: '15.25', total_receivable: '-55.25' }, 'profit_share'), '-40.00');
+  assert.equal(state.cell({ loss_amount: '123456789012.01' }, 'loss_amount'), '123,456,789,012.01');
+  assert.equal(state.cell({ cost_amount: '100.00', profit_share: '40.00' }, 'loss_amount'), '—');
   assert.equal(state.cell({ cost_amount: '100.00', profit_share: '40.00' }, 'total_receivable'), '—');
 });
 
@@ -181,7 +188,7 @@ test('backend serialized creator_id enforces maker-reviewer and version checks',
 test('table cells render actual backend transaction, annual metadata, and position fields', () => {
   const state = vm.createContext({
     computed: getter => ({ get value() { return getter(); } }), tab: { value: 'transactions' }, reportView: { value: 'details' },
-    ...helpers, labels: {}, access: { value: { write: true } }, knownPositions: { value: { [backendFixtures.position.id]: backendFixtures.position } },
+    ...helpers, isBeneficiary: { value: false }, labels: {}, access: { value: { write: true } }, knownPositions: { value: { [backendFixtures.position.id]: backendFixtures.position } },
   });
   vm.runInContext(source.slice(source.indexOf('const columns = computed('), source.indexOf('async function load()')) + '\nglobalThis.currentColumns = () => columns.value;', state);
   for (const [tab, row] of [['transactions', backendFixtures.draft], ['annual', backendFixtures.annual], ['funds', backendFixtures.position]]) {
@@ -209,6 +216,7 @@ function runtime() {
     tab: { value: 'funds' }, page: { value: 1 }, pageSize: { value: 20 },
     scope: () => ({ enterprise_id: 'a', business_view: 'provider' }), safeError: helpers.safeError,
     knownPositions: { value: {} }, transactionPositions: helpers.transactionPositions,
+    isBeneficiary: { value: false },
   });
   state.switchContext = () => { liveContext = 'b'; };
   vm.runInContext(source.slice(source.indexOf('async function load()'), source.indexOf('function search()')), state);
@@ -386,6 +394,7 @@ test('VM exports remove pagination and stale downloads never create a file', asy
   let resolve, context = 'a'; let config;
   const state = vm.createContext({
     downloading: { value: false }, access: { value: { read: true } }, state: { filters: { q: 'ORD1' }, error: '' },
+    isBeneficiary: { value: false },
     downloadGuard: helpers.requestGuard(() => context), reportParams: helpers.reportParams, safeError: helpers.safeError,
     scope: () => ({ enterprise_id: 'a', business_view: 'provider' }),
     props: { api: { get: (path, options) => { assert.equal(path, '/settlement-reporting/export'); config = options; return new Promise(yes => { resolve = yes; }); } } },
@@ -406,8 +415,8 @@ test('ConsoleApp integrates both settlement scopes with live auth keys and retai
   const template = compileTemplate({ source: descriptor.template.content, filename: 'ConsoleApp.vue', id: 'console-finance', compilerOptions: { bindingMetadata: script.bindings } });
   assert.deepEqual(template.errors, []);
   const workspaces = [...consoleSource.matchAll(/<SettlementFinanceWorkspace\b[^>]+\/>/g)];
-  assert.equal(workspaces.length, 2);
-  for (const [markup] of workspaces) {
+  assert.equal(workspaces.length, 3);
+  for (const [markup] of workspaces.filter(([markup]) => !markup.includes('business-view="beneficiary"'))) {
     for (const name of ['api', 'user', 'enterprise', 'dialogs']) assert.ok(markup.includes(`:${name}="${name}"`));
     assert.ok(markup.includes(':business-view="businessView"'));
     assert.ok(markup.includes(':key="settlementContextKey(user, enterprise, businessView, token)"'));

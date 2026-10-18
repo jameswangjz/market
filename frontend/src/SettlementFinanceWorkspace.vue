@@ -4,9 +4,9 @@ import { BarChart3, Wallet, ArrowLeftRight, Archive, Download, Save, Check, X, R
 import ConsoleTabs from './ConsoleTabs.vue';
 import MainListFilters from './MainListFilters.vue';
 import PaginationControls from './PaginationControls.vue';
-import { reportViews, amountLabels, participantAmountLabels, countLabels, sourceKinds, positionSubjectLabels, canReviewTransaction, transactionAmount, transactionCurrency, transactionPositions, paymentSelection, payablePositions, financeAccess, financeScope, financeContext, monthRange, reportParams, money, cents, allocation, safeError, requestGuard, retryIdentity } from './settlementFinance.js';
+import { reportViews, amountLabels, beneficiaryAmountLabels, ownBeneficiaryReport, participantAmountLabels, countLabels, sourceKinds, positionSubjectLabels, canReviewTransaction, transactionAmount, transactionCurrency, transactionPositions, paymentSelection, payablePositions, financeAccess, financeScope, financeContext, monthRange, reportParams, money, cents, allocation, safeError, requestGuard, retryIdentity } from './settlementFinance.js';
 
-const props = defineProps({ api: { type: Object, required: true }, user: { type: Object, required: true }, enterprise: Object, businessView: String, dialogs: Object });
+const props = defineProps({ api: { type: Object, required: true }, user: { type: Object, required: true }, enterprise: Object, businessView: String, dialogs: Object, beneficiary: Object });
 const emit = defineEmits(['changed']);
 const tabs = [{ key: 'reports', label: '清算报表', icon: BarChart3 }, { key: 'funds', label: '应收应付', icon: Wallet }, { key: 'transactions', label: '资金凭证', icon: ArrowLeftRight }, { key: 'annual', label: '年度快照', icon: Archive }];
 const tab = ref('reports'), reportView = ref('details'), page = ref(1), pageSize = ref(20);
@@ -19,21 +19,29 @@ const paymentLoading = ref(false), paymentLoadError = ref('');
 const form = reactive({ kind: 'payout', mode: 'manual', reference: '', note: '', amount: '', counter_position_id: '', year: new Date().getFullYear() });
 let identity = retryIdentity();
 let previousFocus;
-const access = computed(() => financeAccess(props.user, props.enterprise, props.businessView));
-const context = () => financeContext(props.user, props.enterprise, props.businessView, props.api);
+const isBeneficiary = computed(() => props.businessView === 'beneficiary');
+const workspaceTabs = computed(() => isBeneficiary.value ? tabs.filter(item => item.key === 'reports') : tabs);
+const visibleReportViews = computed(() => isBeneficiary.value ? reportViews.filter(([key]) => key !== 'rankings') : reportViews);
+const summaryAmountLabels = computed(() => isBeneficiary.value ? beneficiaryAmountLabels : amountLabels);
+const access = computed(() => financeAccess(props.user, props.enterprise, props.businessView, props.beneficiary));
+const context = () => financeContext(props.user, props.enterprise, props.businessView, props.api, props.beneficiary);
 const guard = requestGuard(context), mutationGuard = requestGuard(context), downloadGuard = requestGuard(context);
 const paymentGuard = requestGuard(context);
-const scope = () => financeScope(props.user, props.enterprise, props.businessView);
+const scope = () => financeScope(props.user, props.enterprise, props.businessView, props.beneficiary);
 const fields = computed(() => tab.value === 'reports' ? [
-  { key: 'start', label: '开始日期（北京时间）', type: 'date' }, { key: 'end', label: '结束日期（含当天）', type: 'date' }, { key: 'q', label: '订单号 / 关键词' },
+  { key: 'start', label: '开始日期（北京时间）', type: 'date' }, { key: 'end', label: '结束日期（含当天）', type: 'date' }, { key: 'q', label: isBeneficiary.value ? '清算单/关键词' : '订单号 / 关键词' },
   ...(access.value.platform ? [{ key: 'provider_id', label: '提供方 ID' }] : []), { key: 'product_id', label: '产品 ID' }, { key: 'batch_id', label: '批次 ID' },
   { key: 'status', label: '清算状态', options: ['pending', 'locked', 'confirmed', 'paid', 'superseded'].map(value => ({ value, label: labels[value] || value })) },
   { key: 'source_kind', label: '经济记录类型', options: sourceKinds },
-  { key: 'participant_type', label: '收益类别', options: ['platform', 'provider', 'service', 'expert', 'channel'].map(value => ({ value, label: labels[value] })) },
+  ...(isBeneficiary.value ? [] : [{ key: 'participant_type', label: '收益类别', options: ['platform', 'provider', 'service', 'expert', 'channel'].map(value => ({ value, label: labels[value] })) }]),
 ] : tab.value === 'funds' ? [{ key: 'q', label: '业务编号 / 主体名称' }, { key: 'direction', label: '方向', options: ['payable', 'receivable', 'internal'].map(value => ({ value, label: labels[value] })) }] : []);
 const labels = { payable: '应付', receivable: '应追回', internal: '内部收益', cost: '供货成本', profit: '利润分成', platform: '平台', provider: '提供方', service: '数据服务方', expert: '专家', channel: '渠道', manual: '人工登记', simulated: '模拟确认', payout: '付款', recovery: '回款', offset: '抵扣', original: '原始收入', refund: '退款冲回', version_change: '版本变更', open: '未结', partial: '部分核销', settled: '已核销', blocked: '已阻塞', formal: '正式快照', draft: '草稿', confirmed: '已确认', pending: '待确认', locked: '已锁定', paid: '正向已付', superseded: '已作废' };
 const rows = computed(() => tab.value === 'reports' && reportView.value !== 'details' ? result.value[reportView.value] || [] : Array.isArray(result.value) ? result.value : result.value.items || []);
 const columns = computed(() => {
+  if (isBeneficiary.value) {
+    const dimensions = reportView.value === 'details' ? [['settlement_no', '清算单号'], ['product_name', '产品'], ['provider_name', '提供方'], ['source_kind', '经济类型'], ['direction', '方向']] : [[{ monthly: 'month', products: 'product_name', providers: 'provider_name', participants: 'participant_name' }[reportView.value], '名称 / 月份']];
+    return [...dimensions, ...Object.entries(beneficiaryAmountLabels), ...(reportView.value === 'details' ? [['currency', '币种'], ['status', '清算状态']] : Object.entries(countLabels))];
+  }
   if (tab.value === 'funds') return [['id', '资金行编号'], ['settlement_no', '清算单号'], ['order_no', '订单号'], ['participant_name', '收益主体'], ['participant_type', '主体类型'], ['kind', '款项'], ['share_kind', '分成项目'], ['direction', '方向'], ['amount', '确认金额'], ['applied_amount', '已核销'], ['balance', '未结余额'], ['currency', '币种'], ['status', '状态'], ['blocked_reason', '阻塞原因']];
   if (tab.value === 'transactions') return [['id', '凭证编号'], ['kind', '业务类型'], ['mode', '登记方式'], ['reference', '业务凭证'], ['amount', '分配金额'], ['currency', '币种'], ['creator_id', '登记人'], ['reviewer_id', '复核人'], ['version', '版本'], ['status', '状态']];
   if (tab.value === 'annual') return [['year', '年度'], ['id', '快照编号'], ['version', '版本'], ['scope_key', '报告范围'], ['status', '状态'], ['cutoff', '数据截止时间']];
@@ -53,13 +61,13 @@ function cell(row, key) {
   if (key === 'share_kind' || key === 'metric') return amountLabels[value] || value || '—';
   if (key === 'basis' && value === 'net') return '冲回后净额';
   if (key === 'blocked_reason' && value) return safeError({ response: { data: { detail: value } } });
-  return key in amountLabels || key in participantAmountLabels || ['amount', 'applied_amount', 'balance'].includes(key) ? money(value) : labels[value] || (value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : value);
+  return key in amountLabels || key in beneficiaryAmountLabels || key in participantAmountLabels || ['amount', 'applied_amount', 'balance'].includes(key) ? money(value) : labels[value] || (value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : value);
 }
 function canRegister(row) {
   try { return access.value.write && ['payable', 'receivable'].includes(row.direction) && !row.blocked_reason && !!row.participant_id && cents(row.balance) > 0n; }
   catch { return false; }
 }
-const detailFields = computed(() => tab.value === 'annual' ? [['actor_id', '生成人'], ['digest', '快照校验值'], ['note', '原因']] : tab.value === 'transactions' ? [['note', '原因'], ['counter_position_id', '对向应付行编号']] : tab.value === 'funds' ? [['participant_id', '收益主体关联']] : reportView.value === 'details' ? [['baseline_hash', '最终基线校验值'], ['financial_at', '财务归属时间'], ['refund_id', '退款关联'], ['change_id', '版本变更关联']] : []);
+const detailFields = computed(() => isBeneficiary.value ? [['participant_name', '本人收益主体'], ['financial_at', '财务归属时间']] : tab.value === 'annual' ? [['actor_id', '生成人'], ['digest', '快照校验值'], ['note', '原因']] : tab.value === 'transactions' ? [['note', '原因'], ['counter_position_id', '对向应付行编号']] : tab.value === 'funds' ? [['participant_id', '收益主体关联']] : reportView.value === 'details' ? [['baseline_hash', '最终基线校验值'], ['financial_at', '财务归属时间'], ['refund_id', '退款关联'], ['change_id', '版本变更关联']] : []);
 const paymentPreview = computed(() => {
   try { return { ...paymentSelection(modal.value?.row, paymentRows.value, selectedPaymentIds.value, paymentAmounts.value), error: '' }; }
   catch (error) { return { total: null, error: safeError(error) }; }
@@ -67,13 +75,15 @@ const paymentPreview = computed(() => {
 async function load() {
   const current = guard.begin(); result.value = {}; detail.value = null; state.error = ''; state.busy = false;
   if (!access.value.read) return;
+  if (isBeneficiary.value && tab.value !== 'reports') return;
   state.busy = true;
   try {
     const params = tab.value === 'reports' ? reportParams(state.filters, scope(), page.value, pageSize.value) : { ...scope(), ...(tab.value === 'funds' ? { q: state.filters.q || undefined, direction: state.filters.direction || undefined } : {}), page: page.value, page_size: pageSize.value };
     const path = { reports: '/settlement-reporting/report', funds: '/settlement-finance/positions', transactions: '/settlement-finance/transactions', annual: '/settlement-reporting/annual-reports' }[tab.value];
     const { data } = await props.api.get(path, { params });
     if (!current()) return;
-    result.value = data;
+    if (!isBeneficiary.value && data.scope?.kind === 'beneficiary') throw new Error('收益报表作用域不匹配，请进入我的收益');
+    result.value = isBeneficiary.value ? ownBeneficiaryReport(data, props.beneficiary) : data;
     if (tab.value === 'funds') for (const position of data.items || []) knownPositions.value[position.id] = position;
     if (tab.value === 'transactions') {
       const positions = await transactionPositions(props.api, data.items || [], scope(), knownPositions.value, current);
@@ -156,6 +166,7 @@ async function submit() {
 }
 async function download(kind, row) {
   if (downloading.value || !access.value.read) return;
+  if (isBeneficiary.value && (row || !['summary', 'details', 'products', 'providers', 'participants', 'refunds'].includes(kind))) return;
   const current = downloadGuard.begin(); downloading.value = true; state.error = '';
   try {
     const params = row ? scope() : reportParams(state.filters, scope());
@@ -170,7 +181,9 @@ async function download(kind, row) {
   finally { if (current()) downloading.value = false; }
 }
 watch(() => [context(), props.api], () => {
-  guard.invalidate(); mutationGuard.invalidate(); downloadGuard.invalidate(); paymentGuard.invalidate(); modal.value = null; paymentRows.value = []; selectedPaymentIds.value = []; paymentAmounts.value = {}; paymentLoading.value = false; paymentLoadError.value = ''; result.value = {}; knownPositions.value = {}; detail.value = null; submitting.value = false; downloading.value = false; notice.value = ''; state.filters = { ...monthRange(), q: '', direction: '' }; page.value = 1; load();
+  guard.invalidate(); mutationGuard.invalidate(); downloadGuard.invalidate(); paymentGuard.invalidate(); modal.value = null; paymentRows.value = []; selectedPaymentIds.value = []; paymentAmounts.value = {}; paymentLoading.value = false; paymentLoadError.value = ''; result.value = {}; knownPositions.value = {}; detail.value = null; submitting.value = false; downloading.value = false; notice.value = ''; state.filters = { ...monthRange(), q: '', direction: '' }; page.value = 1;
+  if (isBeneficiary.value) { tab.value = 'reports'; if (reportView.value === 'rankings') reportView.value = 'details'; }
+  load();
 }, { immediate: true, flush: 'sync' });
 watch(tab, () => { modal.value = null; page.value = 1; load(); });
 watch(modal, async value => {
@@ -187,20 +200,20 @@ onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.
 
 <template>
   <section class="settlement-finance" aria-label="清算报表与资金" :aria-busy="state.busy">
-    <header class="workspace-heading"><h2>清算报表与资金</h2><span>{{ access.platform ? '平台授权范围' : enterprise?.name || '本企业' }}</span><button class="icon-btn" title="刷新" aria-label="刷新" :disabled="state.busy" @click="load"><RefreshCw :size="16" /></button></header>
+    <header class="workspace-heading"><h2>{{ isBeneficiary ? '我的收益' : '清算报表与资金' }}</h2><span>{{ isBeneficiary ? beneficiary?.participant_name : access.platform ? '平台授权范围' : enterprise?.name || '本企业' }}</span><button class="icon-btn" title="刷新" aria-label="刷新" :disabled="state.busy" @click="load"><RefreshCw :size="16" /></button></header>
     <p v-if="!access.read" role="status">当前身份无清算报表权限</p>
     <template v-else>
-      <ConsoleTabs v-model="tab" :tabs="tabs" label="清算工作区" />
-      <p class="scope-note">{{ access.platform ? '授权清算数据' : '本企业清算数据' }} · 人工登记 / 模拟确认</p>
+      <ConsoleTabs v-model="tab" :tabs="workspaceTabs" label="清算工作区" />
+      <p class="scope-note">{{ isBeneficiary ? '仅本人收益及追款记录' : access.platform ? '授权清算数据' : '本企业清算数据' }} · 人工登记 / 模拟确认</p>
       <MainListFilters v-if="tab === 'reports' || tab === 'funds'" :state="state" :fields="fields" @search="search" @reset="reset" />
       <p v-else-if="state.error" role="alert" class="error">{{ state.error }}</p>
       <p v-if="notice" role="status">{{ notice }}</p>
       <template v-if="tab === 'reports'">
         <dl class="metrics"><div v-for="(label, key) in countLabels" :key="key"><dt>{{ label }}</dt><dd>{{ result.summary?.[key] ?? '—' }}</dd></div></dl>
-        <dl class="metrics amounts"><div v-for="(label, key) in amountLabels" :key="key"><dt>{{ label }}</dt><dd>{{ money(result.summary?.[key]) }}</dd></div></dl>
+        <dl class="metrics amounts"><div v-for="(label, key) in summaryAmountLabels" :key="key"><dt>{{ label }}</dt><dd>{{ money(result.summary?.[key]) }}</dd></div></dl>
         <p class="scope-note">{{ result.scope?.filters?.start || state.filters.start }} 至 {{ result.scope?.filters?.end || state.filters.end }}（含当天，北京时间） · {{ result.scope?.currency || '币种以明细为准' }} · 截止 {{ result.scope?.cutoff || '—' }} · {{ result.scope?.includes_unconfirmed === false ? '不含未确认记录' : '含未确认记录' }}</p>
-        <ConsoleTabs v-model="reportView" :tabs="reportViews.map(([key, label]) => ({ key, label }))" label="报表维度" />
-        <div class="toolbar"><button v-for="kind in ['summary', 'details', 'products', 'providers', 'participants', 'refunds', 'rankings']" :key="kind" class="secondary-btn" :disabled="downloading || state.busy" @click="download(kind)"><Download :size="14" />{{ ({ summary: '汇总', details: '明细', products: '产品', providers: '提供方', participants: '主体', refunds: '退款', rankings: '净额排名' })[kind] }} CSV</button></div>
+        <ConsoleTabs v-model="reportView" :tabs="visibleReportViews.map(([key, label]) => ({ key, label }))" label="报表维度" />
+        <div class="toolbar"><button v-for="kind in (isBeneficiary ? ['summary', 'details', 'products', 'providers', 'participants', 'refunds'] : ['summary', 'details', 'products', 'providers', 'participants', 'refunds', 'rankings'])" :key="kind" class="secondary-btn" :disabled="downloading || state.busy" @click="download(kind)"><Download :size="14" />{{ ({ summary: '汇总', details: '明细', products: '产品', providers: '提供方', participants: '主体', refunds: '退款', rankings: '净额排名' })[kind] }} CSV</button></div>
       </template>
       <template v-if="tab === 'funds'"><div v-for="(balances, currency) in result.summary || {}" :key="currency"><h3>{{ currency }}</h3><dl class="metrics"><div v-for="key in ['payable', 'receivable', 'internal']" :key="key"><dt>{{ labels[key] }}</dt><dd>{{ money(balances[key]) }}</dd></div></dl></div></template>
       <div v-if="tab === 'annual' && access.write" class="toolbar"><button class="primary-btn" @click="open('annual')"><Save :size="15" />创建年度草稿</button></div>

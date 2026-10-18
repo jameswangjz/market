@@ -4,11 +4,21 @@ import { readFileSync } from "node:fs";
 import { parse, compileScript, compileTemplate } from "@vue/compiler-sfc";
 import { compile, createSSRApp } from "vue";
 import { renderToString } from "@vue/server-renderer";
-import { createRefundSession, refundExecutionActions, refundExecutionProgress, refundStatus, refundMoney, refundSource, refundPlanning, canAssessRefund } from "../src/refunds.js";
+import { createRefundSession, refundExecutionActions, refundExecutionProgress, refundExecutionStatus, refundStatus, refundMoney, refundSource, refundPlanning, canAssessRefund } from "../src/refunds.js";
 
 const admin = { id: "admin", verified_status: "verified", platform_role: "super_admin" };
 const approved = { id: "refund", source: "ordinary", status: "approved", version: 4,
   allowed_actions: ["execute"], execution_available: true };
+test("completed buyer refund remains independent from participant recovery and settlement progress", () => {
+  for (const [ledger_status, label] of [["recovery_pending", "参与方资金待追回或抵扣"], ["funds_settled", "参与方资金已结清"]]) {
+    const item = { ...approved, status: "completed", allowed_actions: [], execution: { status: "completed", ledger_status } };
+    assert.equal(refundStatus(item.status), "已退款");
+    assert.equal(refundExecutionStatus(ledger_status), label);
+    assert.equal(refundExecutionProgress(item).ledger, label);
+    assert.deepEqual(refundExecutionActions(item, admin), []);
+    assert.equal(refundExecutionProgress(item).status, "已完成");
+  }
+});
 function harness(timers) {
   const state = { item: { ...approved }, items: [], busy: false, detailBusy: false };
   const context = { user: admin, enterpriseId: "enterprise", params: { enterprise_id: "enterprise" } };

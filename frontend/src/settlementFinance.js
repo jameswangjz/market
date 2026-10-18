@@ -10,9 +10,55 @@ export const amountLabels = {
   expert_fee: '专家分成', channel_fee: '渠道分成', provider_total_receivable: '提供方合计应收',
 };
 export const countLabels = { income_order_count: '收入业务订单数', refund_count: '完成退款笔数', adjustment_count: '业务调整笔数', settlement_count: '清算记录数', order_count: '去重关联订单数' };
-export const participantAmountLabels = { cost_amount: '成本回收', profit_share: '利润分成', total_receivable: '合计应收（成本 + 利润）' };
+export const participantAmountLabels = { cost_amount: '成本回收', profit_share: '利润分成', loss_amount: '承担损失', total_receivable: '合计净应收（成本+利润-损失）' };
 export const sourceKinds = [{ value: 'original', label: '原始收入' }, { value: 'refund', label: '退款冲回' }, { value: 'version_change', label: '版本变更' }];
 export const positionSubjectLabels = { enterprise: '企业主体', platform: '平台主体', unassigned: '未分配主体' };
+export const beneficiaryAmountLabels = { profit_share: '本主体利润分成', loss_amount: '本主体承担损失', total_receivable: '本主体净应收', paid_amount: '已付收益', unpaid_amount: '未付收益', receivable_amount: '应追回', recovered_amount: '已追回', unrecovered_amount: '待追回余额', payable_offset_amount: '应付已抵扣', receivable_offset_amount: '应收已抵扣' };
+export function beneficiaryContextKey({ user, enterpriseId, token }) {
+  return JSON.stringify([token, user?.id, user?.platform_role, user?.verified_status, user?.is_active, user?.activation_status, enterpriseId, user?.enterprise_memberships]);
+}
+export function createBeneficiaryDiscovery(api, state, getContext) {
+  let generation = 0, disposed = false, pending, pendingKey;
+  function reset() { generation++; pending = null; pendingKey = null; Object.assign(state, { items: [], selectedId: '', busy: false, error: '' }); }
+  function load() {
+    const context = getContext(), key = beneficiaryContextKey(context);
+    if (pending && pendingKey === key) return pending;
+    reset();
+    const user = context.user;
+    if (disposed || !context.token || !user?.id || user.verified_status !== 'verified' || user.is_active === false || user.activation_status && user.activation_status !== 'active') return Promise.resolve();
+    const version = generation, current = () => !disposed && version === generation && key === beneficiaryContextKey(getContext());
+    state.busy = true; pendingKey = key;
+    const task = (async () => {
+      try {
+        const { data } = await api.get('/settlement-reporting/beneficiaries', { params: context.enterpriseId ? { enterprise_id: context.enterpriseId } : {} });
+        if (!current()) return;
+        state.items = (data.items || []).filter(item => item.participant_id && ['service', 'expert', 'channel'].includes(item.participant_type) && item.currency).map(item => ({ participant_id: item.participant_id, participant_type: item.participant_type, participant_name: item.participant_name, currency: item.currency, enterprise_id: item.enterprise_id }));
+        state.selectedId = state.items[0]?.participant_id || '';
+      } catch (error) { if (current()) state.error = safeError(error, '本人收益身份暂时无法读取，请刷新重试'); }
+      finally { if (current()) state.busy = false; }
+    })();
+    pending = task;
+    task.finally(() => { if (pending === task) { pending = null; pendingKey = null; } });
+    return task;
+  }
+  return { load, reset, dispose() { disposed = true; reset(); } };
+}
+export function ownBeneficiaryReport(data, identity) {
+  const scope = data?.scope;
+  if (scope?.kind !== 'beneficiary' || scope.participant_id !== identity?.participant_id || scope.participant_type !== identity?.participant_type || scope.currency !== identity?.currency) throw new Error('收益报表作用域不匹配，请重新选择本人收益主体');
+  const amounts = [...Object.keys(beneficiaryAmountLabels), 'payable_amount'];
+  const counts = [...Object.keys(countLabels), 'position_count'];
+  const fields = ['position_id', 'position_kind', 'settlement_no', 'product_id', 'product_name', 'provider_id', 'provider_name', 'participant_id', 'participant_type', 'participant_name', 'status', 'direction', 'month', 'financial_at', 'source_kind', 'currency', 'provisional', 'funds_known', 'blocked_reason', ...amounts, ...counts];
+  function project(row) {
+    if (row.participant_id && row.participant_id !== identity.participant_id || row.participant_type && row.participant_type !== identity.participant_type || row.currency && row.currency !== identity.currency) throw new Error('收益报表含有其他主体或币种，已停止展示');
+    const clean = {};
+    for (const key of fields) if (Object.hasOwn(row, key) && (row[key] == null || ['string', 'number', 'boolean'].includes(typeof row[key]))) clean[key] = row[key];
+    return clean;
+  }
+  const clean = { scope: { kind: scope.kind, participant_id: scope.participant_id, participant_type: scope.participant_type, participant_name: scope.participant_name, currency: scope.currency, cutoff: scope.cutoff, filters: scope.filters }, summary: project(data.summary || {}), total: data.total, page: data.page, page_size: data.page_size, rankings: [] };
+  for (const key of ['items', 'monthly', 'products', 'providers', 'participants']) clean[key] = (data[key] || []).map(project);
+  return clean;
+}
 export function canReviewTransaction(row, user, writable) {
   return !!writable && row.status === 'draft' && row.version === 1 && !!row.creator_id &&
     String(row.creator_id) !== String(user?.id) && row.can_confirm !== false && row.actions?.can_confirm !== false;
@@ -44,16 +90,18 @@ export async function transactionPositions(api, rows, scope, known, current) {
   }
   return current() ? positions : null;
 }
-export function financeAccess(user, enterprise, view) {
+export function financeAccess(user, enterprise, view, beneficiary) {
+  if (view === 'beneficiary') return { read: !!user?.id && user.verified_status === 'verified' && user.is_active !== false && (!user.activation_status || user.activation_status === 'active') && !!beneficiary?.participant_id && ['service', 'expert', 'channel'].includes(beneficiary.participant_type), write: false, platform: false };
   const side = settlementSide(user, enterprise, view);
   return { read: !!side || user?.platform_role === 'security_compliance', write: side === 'platform', platform: !!user?.platform_role };
 }
-export function financeScope(user, enterprise, view) {
-  if (!financeAccess(user, enterprise, view).read) throw new Error('当前身份无清算报表权限');
+export function financeScope(user, enterprise, view, beneficiary) {
+  if (!financeAccess(user, enterprise, view, beneficiary).read) throw new Error('当前身份无清算报表权限');
+  if (view === 'beneficiary') return { business_view: 'beneficiary', participant_id: beneficiary.participant_id, ...(enterprise?.id ? { enterprise_id: enterprise.id } : {}) };
   return user?.platform_role ? {} : { enterprise_id: enterprise.id, business_view: view };
 }
-export function financeContext(user, enterprise, view, api) {
-  return settlementContextKey(user, enterprise, view, api?.defaults?.headers?.common?.Authorization || api?.defaults?.headers?.Authorization || '');
+export function financeContext(user, enterprise, view, api, beneficiary) {
+  return JSON.stringify([settlementContextKey(user, enterprise, view, api?.defaults?.headers?.common?.Authorization || api?.defaults?.headers?.Authorization || ''), beneficiary?.participant_id, beneficiary?.participant_type, beneficiary?.currency, user?.is_active, user?.activation_status]);
 }
 export function monthRange(now = new Date()) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit' }).formatToParts(now);

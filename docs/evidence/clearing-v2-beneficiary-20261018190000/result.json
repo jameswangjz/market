@@ -1,0 +1,69 @@
+﻿{
+    "checks":  [
+                   "Report has no API contract error",
+                   "expert has the My Earnings entry",
+                   "expert does not receive the full settlement entry",
+                   "Pure expert identity selector has both authorized choices and compact unframed platform styling",
+                   "Report has no API contract error",
+                   "Expert report uses real positions and confirmed partial payment",
+                   "Only the report workspace tab is available",
+                   "No cost, third-party share, ranking, buyer order or private voucher is displayed",
+                   "No financial write controls are available",
+                   "Own-only CSV scope clr2-expert-own",
+                   "Report has no API contract error",
+                   "Switching identity replaces the report without stale expert values",
+                   "Only the report workspace tab is available",
+                   "No cost, third-party share, ranking, buyer order or private voucher is displayed",
+                   "No financial write controls are available",
+                   "Own-only CSV scope clr2-expert-channel",
+                   "Foreign beneficiary report is rejected by the real backend",
+                   "Foreign beneficiary CSV is rejected by the real backend",
+                   "Report has no API contract error",
+                   "channel has the My Earnings entry",
+                   "channel does not receive the full settlement entry",
+                   "Pure channel sees only its own identity and amount",
+                   "Only the report workspace tab is available",
+                   "No cost, third-party share, ranking, buyer order or private voucher is displayed",
+                   "No financial write controls are available",
+                   "Own-only CSV scope clr2-channel-own",
+                   "Report has no API contract error",
+                   "expert_member has the My Earnings entry",
+                   "expert_member does not receive the full settlement entry",
+                   "Current-enterprise ordinary member sees own expert income without provider privileges",
+                   "Only the report workspace tab is available",
+                   "No cost, third-party share, ranking, buyer order or private voucher is displayed",
+                   "No financial write controls are available",
+                   "Own-only CSV scope clr2-member-expert",
+                   "Current-enterprise header and explicit report query agree",
+                   "Own-report layout fits 1440",
+                   "Own-report layout fits 390",
+                   "Report has no API contract error",
+                   "Platform participant net receivable label explicitly subtracts loss",
+                   "Platform cost, ordinary signed profit, positive loss and net total display actual API decimal strings independently"
+               ],
+    "screenshots":  [
+                        "beneficiary-1440.png",
+                        "beneficiary-390.png",
+                        "participant-labels-1440.png"
+                    ],
+    "geometry390":  {
+                        "left":  16,
+                        "right":  359,
+                        "width":  390,
+                        "documentWidth":  375,
+                        "overflow":  [
+
+                                     ]
+                    },
+    "scope":  "disposable synthetic SQLite fixture; browser GET/HEAD only",
+    "status":  "passed",
+    "geometry1440":  {
+                         "left":  286,
+                         "right":  1387,
+                         "width":  1440,
+                         "documentWidth":  1425,
+                         "overflow":  [
+
+                                      ]
+                     }
+}

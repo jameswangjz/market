@@ -40,6 +40,9 @@ test('tab keyboard navigation wraps, skips disabled tabs and focuses its new sel
 test('finance, participant configuration and annual report actions stay Chinese in audit and lifecycle views', () => {
   const expected = {
     finance_draft: '登记资金凭证草稿', finance_confirm: '复核资金凭证', finance_baseline_capture: '冻结清算资金基线',
+    finance_cost_exception_plan: '冻结成本例外冲回方案', finance_segment_funding_link: '关联版本变更经济段资金依据',
+    bind_version_change_final_baseline: '绑定版本变更最终清算基线', project_version_change_final_baseline: '锁定前应用版本变更最终基线',
+    approve_segment_cost_exception_refresh: '批准版本段成本例外并待刷新基线',
     refund_final_baseline_review: '复核退款最终清算基线', create_settlement_participant: '创建清算收益主体',
     configure_settlement_participants: '配置清算收益主体', 'configure_settlement_participants:product-42': '配置清算收益主体',
     export_settlement_reporting: '导出清算分析报表', create_settlement_annual_report: '创建年度清算报告草稿',

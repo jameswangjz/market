@@ -32,7 +32,7 @@ import { canManageProviderSaas, canViewProductIntegration, createReadinessContro
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import SettlementFinanceWorkspace from "./SettlementFinanceWorkspace.vue";
-import { safeError } from "./settlementFinance.js";
+import { safeError, beneficiaryContextKey, createBeneficiaryDiscovery } from "./settlementFinance.js";
 import { useNotificationStream } from "./useNotificationStream.js";
 import { notificationScope, notificationScopeKey, notificationRequest } from "./notificationScope.js";
 import { settlementSide, settlementContextKey, settlementDetailRequest, canProposeSettlement, canDecideSettlement, canLockSettlement, settlementAdjustmentItem } from "./settlementParticipation.js";
@@ -88,6 +88,7 @@ import {
   ShieldCheck,
   ShoppingCart,
   Users,
+  Wallet,
   X,
 } from "lucide-vue-next";
 
@@ -517,6 +518,11 @@ watch(() => settlementContextKey(user.value, enterprise.value, businessView.valu
 const settlementRules = ref([]);
 const settlementBatches = ref([]);
 const settlementTab = ref("settlements");
+const beneficiaryState = reactive({ items: [], selectedId: '', busy: false, error: '' });
+const beneficiaryContext = () => ({ user: user.value, enterpriseId: enterprise.value?.id || '', token: token.value });
+const beneficiaryDiscovery = createBeneficiaryDiscovery(api, beneficiaryState, beneficiaryContext);
+const selectedBeneficiary = computed(() => beneficiaryState.items.find(item => item.participant_id === beneficiaryState.selectedId) || null);
+watch(() => beneficiaryContextKey(beneficiaryContext()), () => { beneficiaryDiscovery.load(); }, { flush: 'sync' });
 const settlementBatchMonth = ref(new Date().toISOString().slice(0, 7));
 const settlementRuleForm = ref({ name: "", version: "v1", platform_rate: 8, provider_rate: 67, service_rate: 20, expert_rate: 5, channel_rate: 0, change_reason: "" });
 const settlementReconciliations = ref([]);
@@ -737,6 +743,7 @@ const nav = [
   { key: "applications", label: "我的应用", icon: ExternalLink },
   { key: "delivery", label: "交付与售后", icon: PackageCheck },
   { key: "settlements", label: "清算分账", icon: BarChart3 },
+  { key: "earnings", label: "我的收益", icon: Wallet },
   { key: "audit", label: "审计日志", icon: ShieldCheck },
   { key: "gateway", label: "API 网关", icon: Network },
   { key: "sla", label: "SLA 保障", icon: Activity },
@@ -746,9 +753,9 @@ const nav = [
 ];
 
 const visibleNav = computed(() => {
-  const base = nav.filter((item) => canAccessConsoleView(user.value, enterprise.value, item.key));
+  const base = nav.filter((item) => canAccessConsoleView(user.value, enterprise.value, item.key, beneficiaryState.items));
   const allowed = allowedBusinessViews(user.value, enterprise.value, businessView.value);
-  return allowed ? (user.value?.platform_role ? base : nav.filter(item => allowed.includes(item.key))) : base;
+  return allowed ? (user.value?.platform_role ? base : nav.filter(item => item.key === 'earnings' ? base.some(entry => entry.key === 'earnings') : allowed.includes(item.key))) : base;
 });
 const filteredProducts = computed(() => products.value);
 const filteredOrders = computed(() => orders.value);
@@ -829,6 +836,8 @@ function fmtMoney(value) {
 const settlementLifecycleLabels = {
   generate_settlement_batch: "生成清算单", generate_refund_settlement_line: "生成退款负向清算单", create_refund_negative_settlement: "创建退款负向清算单", create_settlement_batch: "生成清算批次", lock_settlement: "锁定清算单", settlement_batch_ready_for_confirmation: "清算批次待确认", confirm_settlement_batch: "确认清算批次", pay_settlement_batch: "支付清算批次", create_settlement_adjustment_proposal: "提交调整提案", decide_settlement_adjustment_proposal: "处理调整提案",
   finance_draft: "登记资金凭证草稿", finance_confirm: "复核资金凭证", finance_baseline_capture: "冻结清算资金基线", refund_final_baseline_review: "复核退款最终清算基线",
+  finance_cost_exception_plan: "冻结成本例外冲回方案", finance_segment_funding_link: "关联版本变更经济段资金依据", bind_version_change_final_baseline: "绑定版本变更最终清算基线", project_version_change_final_baseline: "锁定前应用版本变更最终基线",
+  approve_segment_cost_exception_refresh: "批准版本段成本例外并待刷新基线",
   create_settlement_participant: "创建清算收益主体", configure_settlement_participants: "配置清算收益主体", export_settlement_reporting: "导出清算分析报表",
   create_settlement_annual_report: "创建年度清算报告草稿", export_settlement_annual_report: "导出年度清算报告", finalize_settlement_annual_report: "正式确认年度清算报告",
 };
@@ -945,6 +954,8 @@ async function loadSession() {
     }
     businessView.value = selection && query.get("view") === "orders" ? "buyer" :
       businessModes(user.value, enterprise.value).includes("provider") ? "provider" : "buyer";
+    await beneficiaryDiscovery.load();
+    if (token.value !== sessionToken) return;
     await loadApplicationAddressPolicy(sessionToken);
     if (token.value !== sessionToken) return;
     await loadBuyerEnterprises();
@@ -1109,6 +1120,7 @@ function applyConfirmedPaymentOrder(updatedOrder, selectedOrderId) {
 }
 async function loadViewData(view) {
   if (view !== "settings" && !visibleNav.value.some(item => item.key === view)) return;
+  if (view === 'earnings') return;
   const contextEpoch = businessContextEpoch;
   const contextKey = [user.value?.id, enterprise.value?.id, token.value, businessView.value].join(":");
   const contextCurrent = () => contextEpoch === businessContextEpoch &&
@@ -2825,6 +2837,7 @@ onMounted(() => {
   }, 10000);
 });
 onUnmounted(() => {
+  beneficiaryDiscovery.dispose();
   window.removeEventListener("storage", synchronizeAccount);
   versionChangeSession.dispose();
   window.clearInterval(versionChangeTimer);
@@ -3720,6 +3733,11 @@ onUnmounted(() => {
             </div>
           </div></template
         >
+        <template v-else-if="activeView === 'earnings' && canAccessConsoleView(user, enterprise, 'earnings', beneficiaryState.items)">
+          <div class="page-heading"><h1>我的收益</h1></div>
+          <div class="report-filter-bar beneficiary-selector"><label>收益主体<select v-model="beneficiaryState.selectedId" aria-label="本人收益主体"><option v-for="item in beneficiaryState.items" :key="item.participant_id" :value="item.participant_id">{{ item.participant_name }} · {{ item.currency }}</option></select></label></div>
+          <SettlementFinanceWorkspace v-if="selectedBeneficiary" :key="`${settlementContextKey(user, enterprise, 'beneficiary', token)}:${selectedBeneficiary.participant_id}`" :api="api" :user="user" :enterprise="enterprise" business-view="beneficiary" :beneficiary="selectedBeneficiary" :dialogs="dialogs" />
+        </template>
         <template v-else-if="activeView === 'settlements' && !user?.platform_role">
           <div class="page-heading"><h1>企业清算</h1><button class="secondary-btn" @click="loadViewData('settlements')"><RefreshCw :size="16" />刷新</button></div>
           <ConsoleTabs v-model="settlementTab" :tabs="[{ key: 'settlements', label: '清算单' }, { key: 'reports', label: '报表与资金' }]" label="企业清算" />
@@ -5518,6 +5536,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.report-filter-bar.beneficiary-selector { min-width: 0; margin: 12px 0 18px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.beneficiary-selector > label { display: flex; flex-direction: column; gap: 5px; width: 320px; max-width: 100%; min-width: 0; margin: 0; font-size: 12px; line-height: 18px; font-weight: 400; color: #4e5969; }
+.beneficiary-selector > label > select { box-sizing: border-box; width: 100%; min-width: 0; height: 34px; padding: 6px 8px; border: 1px solid #d9dde3; border-radius: 4px; background: #fff; color: #27313f; font-size: 12px; line-height: 20px; }
+.beneficiary-selector > label > select:focus-visible { outline: 2px solid #165dff; outline-offset: 2px; }
+@media (max-width: 600px) { .beneficiary-selector > label { width: 100%; } }
 .version-editor-head > .text-btn { white-space: nowrap; flex-shrink: 0; }
 fieldset.version-row { margin: 0; min-width: 0; border: 0; border-top: 1px solid #f0f1f3; padding: 12px 0 0; }
 .version-lock-notice { grid-column: 1 / -1; margin: 0; color: #727782; font-size: 12px; }

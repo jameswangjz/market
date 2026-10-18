@@ -94,6 +94,7 @@ test("checkout redirect initializes buyer orders before loading for either activ
     const session = vm.createContext(state);
     vm.runInContext(consoleSource.slice(consoleSource.indexOf("async function loadSession()"),
       consoleSource.indexOf("async function selectEnterprise(")), session);
+    session.beneficiaryDiscovery = { load: async () => {} };
     await session.loadSession();
     assert.equal(loads, 1);
   }

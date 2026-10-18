@@ -3,8 +3,15 @@ import { safeApplicationUrl } from "./routes.js";
 const operators = ["super_admin", "platform_operator"];
 const auditors = [...operators, "finance_settlement", "security_compliance"];
 
-export function canAccessConsoleView(user, enterprise, view) {
+export function canViewOwnEarnings(user, beneficiaries) {
+  return Boolean(user?.id && user.verified_status === 'verified' && user.is_active !== false &&
+    (!user.activation_status || user.activation_status === 'active') &&
+    beneficiaries?.some(item => item.participant_id && ['service', 'expert', 'channel'].includes(item.participant_type) && item.currency));
+}
+
+export function canAccessConsoleView(user, enterprise, view, beneficiaries = []) {
   if (!user) return false;
+  if (view === 'earnings') return canViewOwnEarnings(user, beneficiaries);
   if (view === "applications") return canViewApplications(user);
   // Keep account, verification and enterprise onboarding available to all users.
   if (["users", "messages"].includes(view)) return true;
