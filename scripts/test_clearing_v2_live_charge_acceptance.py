@@ -183,6 +183,8 @@ class AcceptanceTests(unittest.TestCase):
         with patch.object(live.base, 'environment_fingerprint', return_value='environment'), \
                 patch.object(live, 'verify_preserved'), \
                 patch.object(live, 'owned_accounts'), \
+                patch.object(live, 'owned_products'), \
+                patch.object(live, 'unpublish_products') as unpublish, \
                 patch.object(live, 'disable_accounts') as disable, \
                 patch.object(live.base, 'apisix_admin', side_effect=[document, {}, expected]) as admin:
             m = SimpleNamespace(SessionLocal=MagicMock())
@@ -190,6 +192,7 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in admin.call_args_list], ['GET', 'PUT', 'GET'])
         self.assertEqual(admin.call_args_list[1].args, (m, 'PUT', '/routes/' + route, expected))
         disable.assert_called_once_with(m, self.path, self.manifest)
+        unpublish.assert_called_once_with(m, self.path, self.manifest)
         self.assertTrue(result['route_disabled'])
         self.assertEqual(result['acceptance_status'], 'passed')
         self.assertEqual(result['status'], 'completed')
@@ -203,6 +206,7 @@ class AcceptanceTests(unittest.TestCase):
         with patch.object(live.base, 'environment_fingerprint', return_value='environment'), \
                 patch.object(live, 'verify_preserved'), \
                 patch.object(live, 'owned_accounts'), \
+                patch.object(live, 'owned_products'), \
                 patch.object(live.base, 'apisix_admin', return_value=dict(
                     id=route, labels={'market_product_id': 'foreign'})) as admin:
             with self.assertRaises(live.base.AcceptanceFailure):
@@ -254,6 +258,65 @@ class AcceptanceTests(unittest.TestCase):
         with self.assertRaises(live.base.AcceptanceFailure):
             live.owned_accounts(m, db, self.manifest)
         db.get.assert_not_called()
+
+    def product_fixture(self):
+        m, db, roots = self.account_fixture()
+        m.Product, m.ProductReleaseVersion, m.audit = object(), object(), MagicMock()
+        for kind, pid in self.manifest['products'].items():
+            roots[pid] = SimpleNamespace(id=pid, name=pid,
+                enterprise_id=self.manifest['enterprises']['provider'], status='published')
+            for side, vid in self.manifest['versions'][kind].items():
+                roots[vid] = SimpleNamespace(id=vid, product_id=pid, version_code=side, status='active')
+        return m, db, roots
+
+    def test_unpublish_only_two_owned_products_with_before_after_audit(self):
+        m, db, roots = self.product_fixture()
+        self.manifest['database_ids'][live.KEY]['acceptance_status'] = 'passed'
+        live.base.write_manifest(self.path, self.manifest, create=True)
+        live.unpublish_products(m, self.path, self.manifest)
+        self.assertTrue(all(roots[pid].status == 'draft' for pid in self.manifest['products'].values()))
+        self.assertTrue(all(roots[vid].status == 'active' for group in self.manifest['versions'].values()
+                            for vid in group.values()))
+        self.assertTrue(all(roots[uid].is_active for uid in self.manifest['users'].values()))
+        self.assertEqual(m.audit.call_count, 2)
+        self.assertEqual({call.args[4] for call in m.audit.call_args_list}, set(self.manifest['products'].values()))
+        for call in m.audit.call_args_list:
+            self.assertEqual(call.args[2], 'ops001_fixture_unpublish')
+            self.assertEqual(call.kwargs['before'], {'status': 'published'})
+            self.assertEqual(call.kwargs['after'], {'status': 'draft'})
+        self.assertTrue(live.summary(self.manifest)['products_unpublished'])
+        self.assertEqual(live.summary(self.manifest)['acceptance_status'], 'passed')
+        db.delete.assert_not_called()
+        db.execute.assert_not_called()
+        live.unpublish_products(m, self.path, self.manifest)
+        self.assertEqual(m.audit.call_count, 2)
+
+    def test_foreign_product_version_or_sixroot_prevents_any_unpublish(self):
+        for kind in ('user', 'enterprise', 'product_name', 'product_enterprise', 'version_product', 'version_id'):
+            with self.subTest(kind=kind):
+                m, db, roots = self.product_fixture()
+                if kind == 'user':
+                    roots[self.manifest['users']['delivery']].email = 'real@example.com'
+                elif kind == 'enterprise':
+                    roots[self.manifest['enterprises']['provider']].credit_code = 'foreign'
+                elif kind.startswith('product'):
+                    product = roots[self.manifest['products']['model']]
+                    if kind == 'product_name':
+                        product.name = 'foreign'
+                    else:
+                        product.enterprise_id = 'foreign'
+                else:
+                    version = roots[self.manifest['versions']['model']['target']]
+                    if kind == 'version_product':
+                        version.product_id = 'foreign'
+                    else:
+                        version.id = 'foreign'
+                live.base.write_manifest(self.path, self.manifest, create=not self.path.exists())
+                with self.assertRaises(live.base.AcceptanceFailure):
+                    live.unpublish_products(m, self.path, self.manifest)
+                self.assertTrue(all(roots[pid].status == 'published' for pid in self.manifest['products'].values()))
+                db.commit.assert_not_called()
+                m.audit.assert_not_called()
 
     def test_cli_failure_never_prints_exception_or_credentials(self):
         with patch('sys.argv', ['acceptance', 'run', '--manifest', str(self.path), '--reviewed']), \

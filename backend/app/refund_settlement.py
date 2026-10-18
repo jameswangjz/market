@@ -377,11 +377,47 @@ def install(ns):
         completion = db.get(ns['refund_execution']['Completion'], link.refund_id)
         detail = strict_json(link.evidence_json)
         segments = detail['economic_plan'].get('segments', [detail['economic_plan']])
+        basis = assessment(db, settlement_id)
+        order = db.get(ns['Order'], refund.order_id)
+        baseline_model = ns.get('settlement_finance', {}).get('Baseline')
+        display_refs = []
+        for stored_ref in basis.get('references', []):
+            ref = dict(stored_ref)
+            try:
+                source = db.get(baseline_model, ref['reference_settlement_id']) if baseline_model is not None else None
+                original = db.get(ns['Settlement'], ref['reference_settlement_id'])
+                if (not order or not source or not original or ref.get('source_order_id') != order.id
+                        or source.order_id != order.id or original.order_id != order.id
+                        or source.provider_enterprise_id != order.provider_enterprise_id
+                        or source.snapshot_hash != ref.get('baseline_hash')
+                        or hashlib.sha256(source.snapshot_json.encode()).hexdigest() != source.snapshot_hash
+                        or source.currency != ref.get('currency') or source.revenue <= 0
+                        or original.status not in ('locked', 'paid')):
+                    raise ValueError('source identity mismatch')
+                snapshot = strict_json(source.snapshot_json)
+                source_shares = {k: money(snapshot['shares'][k]) for k in SHARES}
+                if sum(source_shares.values()) != source.profit or source.profit < 0:
+                    raise ValueError('source share mismatch')
+                rates = {role: str((source_shares[field] * 100 / source.profit).quantize(
+                    Decimal('.0001'), rounding=ROUND_HALF_UP)) if source.profit else None
+                    for role, field in zip(('platform', 'provider', 'service', 'expert', 'channel'), SHARES)}
+                Batch, Line = ns['SettlementBatch'], ns['SettlementLine']
+                batches = db.scalars(select(Batch).join(Line, Line.batch_id == Batch.id).where(
+                    Line.settlement_id == source.settlement_id, Line.status != 'superseded',
+                    Batch.status != 'rolled_back').distinct()).all()
+                ref.update(source_order_no=order.order_no, reference_settlement_no=original.settlement_no,
+                    reference_batch_no=batches[0].batch_no if len(batches) == 1 else None,
+                    share_rates=rates, baseline_created_at=source.created_at, display_status='verified')
+            except (HTTPException, ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+                ref.update(display_status='unavailable', display_reason='source_identity_or_baseline_unverified')
+            display_refs.append(ref)
+        if 'references' in basis:
+            basis = dict(basis, references=display_refs)
         return dict(refund_id=link.refund_id, refund_no=refund.refund_no,
                     execution_id=completion.execution_id, plan_hash=completion.plan_hash,
                     source_order_ids=sorted({p['source_order_id'] for p in segments}),
                     rule_version=','.join(sorted({p['economic_snapshot']['settlement_rule']['version'] for p in segments})),
-                    completed_at=completion.completed_at, financial_basis=assessment(db, settlement_id))
+                    completed_at=completion.completed_at, financial_basis=basis)
 
     def ledger_status(db, refund_id):
         link = db.get(RefundSettlementLink, refund_id)

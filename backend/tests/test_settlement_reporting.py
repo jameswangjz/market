@@ -1258,6 +1258,16 @@ class SettlementReportingTests(unittest.TestCase):
             db.flush()
             baseline = db.get(m.settlement_finance["Baseline"], sid)
             # Serialization fixture: two immutable economic windows can share an order.
+            expected_source = dict(source_order_no=db.get(m.Order, oid).order_no,
+                reference_settlement_no=db.get(m.Settlement, sid).settlement_no,
+                baseline_created_at=self.reporting.utc(baseline.created_at).isoformat())
+            original_batch_no = db.scalar(self.select(m.SettlementBatch.batch_no).join(m.SettlementLine,
+                m.SettlementLine.batch_id == m.SettlementBatch.id).where(m.SettlementLine.settlement_id == sid))
+            for batch_no, status in (("BATCH-ADDITIONAL-SOURCE", "confirmed"), ("BATCH-OLD-SOURCE", "superseded")):
+                batch = m.SettlementBatch(batch_no=batch_no, cycle="manual", status=status, idempotency_key=batch_no)
+                db.add(batch)
+                db.flush()
+                db.add(m.SettlementLine(batch_id=batch.id, settlement_id=sid, participant_type="platform", amount=10))
             payload = dict(settlement_id=negative.id, refund_id=refund.id, order_id=oid, references=[dict(
                 segment_id=segment, source_order_id=oid, reference_settlement_id=sid, baseline_hash=baseline.snapshot_hash,
                 gross_amount="-37.50", cost_amount="-25.00", profit_amount="-12.50") for segment in ("window-a", "window-b")])
@@ -1271,6 +1281,13 @@ class SettlementReportingTests(unittest.TestCase):
         self.assertEqual({s["segment_id"] for s in row["economic_segments"]}, {"window-a", "window-b"})
         self.assertNotEqual(row["segment_basis"], "subscription_term")
         self.assertIn("window-a", self.download(kind="details", source_kind="refund").text)
+        segment = row["economic_segments"][0]
+        self.assertEqual({key: segment[key] for key in expected_source}, expected_source)
+        self.assertIsNone(segment["reference_batch_no"])
+        self.assertEqual(segment["reference_batch_nos"], sorted([original_batch_no, "BATCH-ADDITIONAL-SOURCE"]))
+        self.assertEqual(segment["share_rates"], dict(platform="20.0000", provider="80.0000", service="0.0000", expert="0.0000", channel="0.0000"))
+        exported = list(csv.DictReader(io.StringIO(self.download(kind="details", source_kind="refund").content.decode("utf-8-sig"))))
+        self.assertEqual(json.loads(exported[0][self.reporting.HEADERS.get("economic_segments_json", "业务字段：economic_segments_json")]), row["economic_segments"])
 
 
 if __name__ == "__main__":

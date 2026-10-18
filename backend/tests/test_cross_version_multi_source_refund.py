@@ -29,7 +29,7 @@ class MultiSourceRefundTests(unittest.TestCase):
     scenario = fixture.CrossVersionFinalBaselineTests.scenario
     settlement = fixture.CrossVersionFinalBaselineTests.settlement
 
-    def two_changes(self):
+    def two_changes(self, first_final_rates=None):
         with self.m.SessionLocal() as db:
             for rule in db.scalars(select(self.m.SettlementRule)):
                 rule.platform_rate, rule.provider_rate = 20, 80
@@ -39,6 +39,14 @@ class MultiSourceRefundTests(unittest.TestCase):
         m = self.m
         with m.SessionLocal() as db:
             first_ids = [self.settlement(db, side).id for side in ('old', 'target')]
+            target = self.settlement(db, 'target')
+            amounts = dict(gross_amount=str(target.gross_amount), cost_amount=str(target.cost_amount), profit_amount=str(target.profit_amount))
+        if first_final_rates:
+            proposal = self.request('POST', f'/api/settlements/{first_ids[1]}/proposals', actor='finance', json=dict(
+                **amounts, platform_rate=first_final_rates[0], provider_rate=first_final_rates[1],
+                service_rate=0, expert_rate=0, channel_rate=0, reason='Final source share agreement'))
+            self.request('POST', f'/api/settlement-proposals/{proposal["id"]}/decision', actor='provider',
+                         json=dict(decision='approve', comment='Agreed final source shares'))
         for sid in first_ids:
             self.request('POST', f'/api/settlements/{sid}/lock', actor='finance')
 
@@ -361,6 +369,70 @@ class MultiSourceRefundTests(unittest.TestCase):
             self.assertEqual(len(hooks['describe'](db, nid)), 2)
             m.refund_settlement['ledger_status'](db, 'multi')
             self.assertEqual(before, {model.__tablename__: db.scalar(select(func.count()).select_from(model)) for model in models})
+
+    def test_refund_display_references_enrich_final_rates_without_mutating_evidence(self):
+        self.two_changes(first_final_rates=(25, 75))
+        m = self.m
+        hooks, core = self.multi_finance()
+        with m.SessionLocal() as db:
+            negative, _ = self.capture_multi(db, self.seed_completed(db, self.plans(db)), hooks)
+            nid = negative.id
+            assessment_model = m.refund_settlement['FinancialAssessment']
+            stored = [(r.version, r.values_json) for r in db.scalars(select(assessment_model).where(assessment_model.settlement_id == nid))]
+            manifest = db.get(m.refund_settlement['MultiSourceManifest'], nid)
+            frozen = manifest.payload_json, manifest.payload_hash
+            expected = {}
+            for sid in self.target_ids:
+                source = db.get(core['Baseline'], sid)
+                source_set = db.get(m.Settlement, sid)
+                batch = db.scalar(select(m.SettlementBatch).join(m.SettlementLine, m.SettlementLine.batch_id == m.SettlementBatch.id)
+                    .where(m.SettlementLine.settlement_id == sid))
+                expected[sid] = source_set.settlement_no, batch.batch_no, source.created_at
+            db.commit()
+        detail = self.request('GET', f'/api/settlements/{nid}/detail', actor='finance')
+        refs = detail['refund_adjustment']['financial_basis']['references']
+        for ref in refs:
+            self.assertEqual(ref['display_status'], 'verified')
+            self.assertTrue(ref['source_order_no'].startswith('ORD-'))
+            self.assertEqual((ref['reference_settlement_no'], ref['reference_batch_no']), expected[ref['reference_settlement_id']][:2])
+            self.assertTrue(ref['baseline_created_at'])
+        first = next(r for r in refs if r['reference_settlement_id'] == self.target_ids[0])
+        self.assertEqual(first['share_rates']['platform'], '25.0000')
+        self.assertEqual(first['share_rates']['provider'], '75.0000')
+        with m.SessionLocal() as db:
+            self.assertEqual(stored, [(r.version, r.values_json) for r in db.scalars(select(assessment_model).where(assessment_model.settlement_id == nid))])
+            manifest = db.get(m.refund_settlement['MultiSourceManifest'], nid)
+            self.assertEqual(frozen, (manifest.payload_json, manifest.payload_hash))
+            source = db.get(core['Baseline'], self.target_ids[0])
+            self.assertEqual(json.loads(source.snapshot_json)['economic_snapshot']['settlement_rule']['rates']['platform_rate'], '20.0000')
+
+    def test_refund_display_reference_rejects_scope_and_hash_mismatches(self):
+        self.two_changes()
+        m = self.m
+        with m.SessionLocal() as db:
+            negative = m.refund_settlement['negative_settlement'](db, self.seed_completed(db, self.plans(db)))
+            model = m.refund_settlement['FinancialAssessment']
+            basis = m.refund_settlement['assessment'](db, negative.id)
+            Baseline = m.settlement_finance['Baseline']
+            source = db.get(Baseline, self.target_ids[0])
+            foreign_set = m.Settlement(settlement_no='WRONG-PROVIDER-SOURCE', order_id=self.order_id, status='locked')
+            db.add(foreign_set)
+            db.flush()
+            db.add(Baseline(settlement_id=foreign_set.id, order_id=self.order_id, provider_enterprise_id='other_tenant',
+                currency=source.currency, revenue=source.revenue, cost=source.cost, profit=source.profit,
+                snapshot_json=source.snapshot_json, snapshot_hash=source.snapshot_hash, actor='invalid-provider-fixture'))
+            db.flush()
+            failures = (dict(source_order_id='foreign-order'), dict(baseline_hash='wrong'),
+                        dict(reference_settlement_id=foreign_set.id, baseline_hash=source.snapshot_hash))
+            for version, wrong in enumerate(failures, start=2):
+                changed = copy.deepcopy(basis)
+                changed['references'][0].update(wrong)
+                db.add(model(settlement_id=negative.id, version=version, values_json=canonical(changed), actor='corrupt-fixture'))
+                db.flush()
+                ref = m.refund_settlement['describe'](db, negative.id)['financial_basis']['references'][0]
+                self.assertEqual(ref['display_status'], 'unavailable')
+                self.assertNotIn('source_order_no', ref)
+                self.assertNotIn('share_rates', ref)
 
     def test_two_real_vc_sources_keep_exact_refs_and_buyer_completion(self):
         self.two_changes()

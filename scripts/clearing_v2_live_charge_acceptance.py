@@ -26,7 +26,7 @@ def journal(path, manifest, phase, status):
     state.setdefault('acceptance_status', state['status'])
     state['phase'] = phase
     state['status'] = status
-    if phase not in ('disable_owned_route', 'disable_fixture_accounts'):
+    if phase not in ('disable_owned_route', 'disable_fixture_accounts', 'unpublish_fixture_products'):
         state['acceptance_status'] = status
     state['journal'].append(dict(phase=phase, status=status,
                                 at=datetime.now(timezone.utc).isoformat()))
@@ -127,6 +127,7 @@ def summary(manifest):
                 fixtures_and_credentials_retained=True, financial_facts_retained=True,
                 retrospective_continuity_claim=False,
                 fixture_accounts_disabled=state.get('fixture_accounts_disabled', False),
+                products_unpublished=state.get('products_unpublished', False),
                 route_disabled=state.get('route_disabled', False))
 
 
@@ -163,6 +164,46 @@ def disable_accounts(m, path, manifest):
     journal(path, manifest, 'disable_fixture_accounts', 'completed')
 
 
+def owned_products(m, db, manifest):
+    ids = base.fixture_ids(manifest['run_id'])
+    base.check(all(manifest[key] == ids[key] for key in ('products', 'versions')),
+               'fixture_product_roots_mismatch')
+    products = []
+    for kind, pid in ids['products'].items():
+        product = db.get(m.Product, pid, with_for_update=True)
+        base.check(product is not None and product.id == pid and product.name == pid and
+                   product.enterprise_id == ids['enterprises']['provider'],
+                   'fixture_product_ownership_mismatch')
+        for side, vid in ids['versions'][kind].items():
+            version = db.get(m.ProductReleaseVersion, vid, with_for_update=True)
+            base.check(version is not None and version.id == vid and version.product_id == pid
+                       and version.version_code == side, 'fixture_version_ownership_mismatch')
+        products.append(product)
+    return products
+
+
+def unpublish_products(m, path, manifest):
+    journal(path, manifest, 'unpublish_fixture_products', 'started')
+    with m.SessionLocal() as db:
+        owned_accounts(m, db, manifest)
+        products = owned_products(m, db, manifest)
+        for product in products:
+            if product.status != 'draft':
+                before = dict(status=product.status)
+                product.status = 'draft'
+                m.audit(db, 'ops001-owned-fixture', 'ops001_fixture_unpublish', 'product', product.id,
+                        'OPS001 owned acceptance fixture stopped listing; all data retained',
+                        before=before, after=dict(status='draft'),
+                        request_id=manifest['run_id'] + '-unpublish')
+        db.commit()
+    with m.SessionLocal() as db:
+        owned_accounts(m, db, manifest)
+        base.check(all(product.status == 'draft' for product in owned_products(m, db, manifest)),
+                   'fixture_unpublish_verification_failed')
+    manifest['database_ids'][KEY]['products_unpublished'] = True
+    journal(path, manifest, 'unpublish_fixture_products', 'completed')
+
+
 def quiesce(m, path, manifest):
     """Disable only the exact owned route; retain consumer and every audit fact."""
     ids = base.fixture_ids(manifest['run_id'])
@@ -176,6 +217,7 @@ def quiesce(m, path, manifest):
     verify_preserved(m, manifest)
     with m.SessionLocal() as db:
         owned_accounts(m, db, manifest)
+        owned_products(m, db, manifest)
     endpoint = '/routes/' + route
     live = base.apisix_admin(m, 'GET', endpoint)
     base.check(live.get('id') == route and live.get('labels', {}).get('market_product_id') ==
@@ -194,6 +236,8 @@ def quiesce(m, path, manifest):
     verify_preserved(m, manifest)
     journal(path, manifest, 'disable_owned_route', 'completed')
     disable_accounts(m, path, manifest)
+    unpublish_products(m, path, manifest)
+    verify_preserved(m, manifest)
     return summary(manifest)
 
 

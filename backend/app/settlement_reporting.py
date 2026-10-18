@@ -473,9 +473,25 @@ def install(ns):
                     if (original is None or original.provider_enterprise_id != order.provider_enterprise_id
                             or original.order_id != order.id or original.snapshot_hash != entry.get("baseline_hash")):
                         raise HTTPException(409, "refund_manifest_baseline_mismatch")
-                    result["economic_segments"].append({key: entry.get(key) for key in (
+                    original_order = db.get(O, original.order_id)
+                    original_settlement = db.get(S, original.settlement_id)
+                    if (original_order is None or original_order.provider_enterprise_id != order.provider_enterprise_id
+                            or original_settlement is None or original_settlement.order_id != original.order_id
+                            or entry.get("source_order_id") not in (None, original.order_id)
+                            or hashlib.sha256(original.snapshot_json.encode()).hexdigest() != original.snapshot_hash):
+                        raise HTTPException(409, "refund_manifest_baseline_mismatch")
+                    original_snapshot = json.loads(original.snapshot_json)
+                    batch_nos = sorted(set(db.scalars(select(B.batch_no).join(L, L.batch_id == B.id).where(
+                        L.settlement_id == original.settlement_id, L.status != "superseded", B.status != "superseded"))))
+                    segment = {key: entry.get(key) for key in (
                         "segment_id", "source_order_id", "reference_settlement_id", "baseline_hash", "term_id", "revision_id",
-                        "change_id", "receipt_id", "receipt_hash", "gross_amount", "cost_amount", "profit_amount", "shares")})
+                        "change_id", "receipt_id", "receipt_hash", "gross_amount", "cost_amount", "profit_amount", "shares")}
+                    segment.update(source_order_id=original.order_id, source_order_no=original_order.order_no,
+                        reference_settlement_no=original_settlement.settlement_no,
+                        reference_batch_no=batch_nos[0] if len(batch_nos) == 1 else None, reference_batch_nos=batch_nos,
+                        share_rates=rates(original_snapshot["shares"], decimal(original_snapshot["profit"])),
+                        baseline_created_at=utc(original.created_at).isoformat() if original.created_at else None)
+                    result["economic_segments"].append(segment)
                 result.update(segment_basis="immutable_multi_source_manifest", segment_manifest_hash=manifest.payload_hash)
                 result["economic_segments_json"] = canonical(result["economic_segments"])
             elif reference:
