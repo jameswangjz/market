@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_DOWN
 
 from fastapi import Depends, HTTPException, Query, Request
 from sqlalchemy import (Column, String, Text, Numeric, DateTime, ForeignKey,
-                        UniqueConstraint, CheckConstraint, event, select, func, or_, text)
+                        UniqueConstraint, CheckConstraint, event, select, func, or_, text, inspect)
 from sqlalchemy.exc import IntegrityError
 
 SHARES = ('platform_fee', 'provider_share', 'service_share', 'expert_fee', 'channel_fee')
@@ -37,6 +37,20 @@ def money(value, positive=False):
         return n.quantize(CENT)
     except (ValueError, InvalidOperation, TypeError):
         raise HTTPException(422, 'invalid_money_cents') from None
+
+
+def ensure_schema(engine):
+    """Widen existing PostgreSQL ledgers without rewriting immutable evidence."""
+    if engine.dialect.name != 'postgresql':
+        return
+    with engine.begin() as connection:
+        schema = inspect(connection)
+        for table in ('settlement_finance_positions', 'settlement_finance_transactions'):
+            if not schema.has_table(table):
+                continue
+            kind = next((c for c in schema.get_columns(table) if c['name'] == 'kind'), None)
+            if kind and isinstance(kind['type'], String) and kind['type'].length is not None and kind['type'].length < 30:
+                connection.execute(text(f'ALTER TABLE {table} ALTER COLUMN kind TYPE VARCHAR(30)'))
 
 
 def install(ns):
@@ -65,7 +79,7 @@ def install(ns):
         id = Column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
         settlement_id = Column(ForeignKey(Baseline.settlement_id), nullable=False, index=True)
         order_id = Column(String(36), nullable=False, index=True)
-        kind = Column(String(12), nullable=False)
+        kind = Column(String(30), nullable=False)
         share_kind = Column(String(30), nullable=False, default='')
         participant_type = Column(String(60), nullable=False)
         participant_id = Column(String(120), nullable=False)
@@ -79,7 +93,7 @@ def install(ns):
     class Transaction(Base):
         __tablename__ = 'settlement_finance_transactions'
         id = Column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
-        kind = Column(String(12), nullable=False)
+        kind = Column(String(30), nullable=False)
         mode = Column(String(12), nullable=False)
         reference = Column(String(240), nullable=False)
         note = Column(Text, nullable=False)
@@ -538,8 +552,15 @@ def install(ns):
         records = []
         for b in db.scalars(select(Baseline).where(Baseline.reference_settlement_id == source_id, Baseline.revenue < 0)):
             snapshot = json.loads(b.snapshot_json)
+            if hashlib.sha256(b.snapshot_json.encode()).hexdigest() != b.snapshot_hash:
+                raise HTTPException(409, 'financial_source_evidence_hash_mismatch')
             exception = snapshot.get('cost_exception_application')
             ordinary = exception['default_basis'] if exception else dict(profit_amount=b.profit, shares=snapshot['shares'])
+            if snapshot.get('funded_cost_exception_application_hash'):
+                refs = snapshot.get('references', [])
+                if len(refs) != 1 or refs[0]['reference_settlement_id'] != source_id:
+                    raise HTTPException(409, 'funded_cost_source_mapping_mismatch')
+                ordinary = refs[0].get('default_basis', refs[0])
             records.append(dict(gross_amount=str(b.revenue), cost_amount=str(b.cost),
                 profit_amount=str(ordinary['profit_amount']), shares=ordinary['shares'],
                 entries=[e for e in snapshot['entries'] if e['kind'] != 'loss']))
@@ -547,9 +568,13 @@ def install(ns):
 
     def source_reversals(db, source_id):
         children = multi_finance.get('source_reversals')
+        records = legacy_source_reversals(db, source_id)
         if callable(children):
-            return children(db, source_id)
-        return legacy_source_reversals(db, source_id)
+            records += [r for r in children(db, source_id) if r.get('reference_settlement_id')]
+        # Funding returns are new payer entitlements, not consumed beneficiary
+        # budgets. Independent retained-cost losses likewise are not old profit.
+        return [dict(r, entries=[e for e in r['entries'] if e['kind'] not in ('loss', 'funding_return', 'funding_absorption_return')])
+                for r in records]
 
     def check_source_budget(source, records, values):
         snapshot = json.loads(source.snapshot_json)
@@ -627,7 +652,12 @@ def install(ns):
             Position.currency == payable.currency, Settlement.status.in_(['locked', 'paid']),
             Position.settlement_id.in_(select(Line.settlement_id).join(Batch, Batch.id == Line.batch_id).where(
                 Line.status != 'superseded', Batch.status.in_(['confirmed', 'payment_processing', 'partial_paid', 'paid']))))
-        return [p for p in db.scalars(query.order_by(Position.id)) if not cash_block(db, p) and balance(db, p) > 0]
+        return [p for p in db.scalars(query.order_by(Position.id)) if not cash_block(db, p) and balance(db, p) > 0
+                and (payable.kind != 'funding_return' or exact_position_source(db, p) == exact_position_source(db, payable))]
+
+    def exact_position_source(db, position):
+        mapping = db.get(RefundPositionSource, position.id)
+        return mapping.source_settlement_id if mapping else position.settlement_id
 
     def segment_allocations(context):
         funding = context['funding']
@@ -669,8 +699,8 @@ def install(ns):
             settlement = db.get(ns['Settlement'], entry.settlement_id)
             if not settlement or settlement.status not in ('locked', 'paid'):
                 return True
-            if any(p.blocked_reason or balance(db, p) > 0 for p in db.scalars(select(Position).where(
-                    Position.settlement_id == entry.settlement_id, Position.direction == 'receivable'))):
+            if any(cash_block(db, p) or balance(db, p) > 0 for p in db.scalars(select(Position).where(
+                    Position.settlement_id == entry.settlement_id, Position.direction != 'internal'))):
                 return True
             source = db.get(Baseline, old_baseline.reference_settlement_id)
             if source is None or segment_funding_pending(db, source, seen.copy()):
@@ -754,6 +784,13 @@ def install(ns):
                 result['transaction_ids'] += extra['transaction_ids']
                 for currency, amount in extra['amounts'].items():
                     result['amounts'][currency] = str(money(result['amounts'].get(currency, '0'))+money(amount))
+            returns = ns.get('settlement_funded_refund_capture', {}).get('reconcile_returns')
+            if callable(returns):
+                extra = returns(db, ids, actor)
+                result['offset_count'] += extra['offset_count']
+                result['transaction_ids'] += extra['transaction_ids']
+                for currency, amount in extra['amounts'].items():
+                    result['amounts'][currency] = str(money(result['amounts'].get(currency, '0')) + money(amount))
             return result
 
     def validate_allocations(db, payload):
@@ -782,6 +819,8 @@ def install(ns):
             required = 'payable' if payload['kind'] == 'payout' else 'receivable'
             if p.direction != required or money(a['amount'], True) > balance(db, p):
                 raise HTTPException(409, 'position_direction_or_balance')
+            if p.kind == 'funding_return' and payload['mode'] != 'manual':
+                raise HTTPException(409, 'funding_return_requires_manual_review')
             if payload['kind'] == 'payout' and eligible_recoveries(db, p):
                 raise HTTPException(409, 'matching_recovery_requires_offset')
             if payload['kind'] == 'payout':
@@ -795,6 +834,9 @@ def install(ns):
                     (p.participant_type, p.participant_id, p.currency) != identity or
                     sum(money(a['amount']) for a in allocations) > balance(db, p)):
                 raise HTTPException(409, 'offset_counter_mismatch_or_balance')
+            if p.kind == 'funding_return' and (payload['mode'] != 'manual' or any(
+                    exact_position_source(db, rows[a['position_id']]) != exact_position_source(db, p) for a in allocations)):
+                raise HTTPException(409, 'funding_return_exact_source_required')
         elif counter:
             raise HTTPException(422, 'unexpected_counter_position')
         return rows
@@ -1011,6 +1053,10 @@ def install(ns):
                 entries.append({k: v for k, v in loss.items() if k not in ('currency', 'direction')})
             if sum(money(e['amount']) for e in entries) != abs(revenue):
                 raise HTTPException(409, 'original_subject_mapping_incomplete')
+            if _segment_context and _segment_context.get('version_funding_projection'):
+                entries = [dict(e, blocked_reason='') if e.get('blocked_reason') == 'unfunded_settlement_adjustment'
+                           else e for e in entries]
+                entries += ns['settlement_version_funding']['credit_entries'](_segment_context)
         else:
             if cost:
                 entries.append(dict(kind='cost', share_kind='', participant_type='enterprise',
@@ -1055,6 +1101,11 @@ def install(ns):
                 if mapped_total != amount:
                     raise HTTPException(409, 'subject_amount_conservation_failed')
         actual_receipts, receipt_records = receipt_basis(db, order.id) if not negative else (None, [])
+        if (_segment_context and _segment_context.get('version_funding_projection')
+                and _segment_context['side'] == 'target'):
+            actual_receipts = (-money(_segment_context['source_reversal']['gross_amount'])
+                + money(_segment_context['segment_net_amount']) - money(_segment_context['returned_unused_supplement']))
+            receipt_records = []
         funding_block = not negative and _segment_context is None and (actual_receipts is None or revenue != actual_receipts)
         if funding_block:
             for entry in entries:
@@ -1093,7 +1144,8 @@ def install(ns):
             for e in entries:
                 internal = e['share_kind'] == 'platform_fee'
                 p = Position(settlement_id=settlement.id, order_id=order.id, currency=currency,
-                    direction='internal' if internal else ('receivable' if negative else 'payable'),
+                    direction=('payable' if e['kind'] == 'funding_return' else 'internal'
+                               if internal or e['kind'] == 'funding_absorption_return' else 'receivable' if negative else 'payable'),
                     **dict(e, amount=money(e['amount']), blocked_reason=(
                         'unfunded_settlement_adjustment' if funding_block and not internal else
                         'legacy_paid_without_allocations' if legacy_block and not internal else e['blocked_reason'])))
@@ -1104,7 +1156,7 @@ def install(ns):
             db.flush()
         return baseline
 
-    def capture_segment(db, settlement, context, actor='system'):
+    def _capture_segment(db, settlement, context, actor='system'):
         """Carver contract: exact verified old side first, then funded target.
 
         This hook does not reconcile offsets or mutate buyer payment facts.
@@ -1120,7 +1172,7 @@ def install(ns):
             content = {k: v for k, v in context.items() if k not in ('status', 'context_hash')}
             if context['context_hash'] != hashlib.sha256(canonical(content).encode()).hexdigest():
                 return dict(status='waiting', reason='segment_context_hash_mismatch')
-            if (context['kind'] != 'version_change' or context['schema_version'] != 1
+            if (context['kind'] != 'version_change' or context['schema_version'] not in (1, 2)
                     or context['settlement_id'] != settlement.id or context['order_id'] != settlement.order_id):
                 return dict(status='waiting', reason='segment_context_identity_mismatch')
             values = context['values']
@@ -1128,15 +1180,22 @@ def install(ns):
                     ('gross_amount', 'cost_amount', 'profit_amount'))
                     or any(money(getattr(settlement, k)) != money(values['shares'][k]) for k in SHARES)):
                 return dict(status='waiting', reason='final_segment_projection_not_applied')
-            source = db.get(Baseline, context['source_settlement_id'])
+            source = db.scalar(select(Baseline).where(Baseline.settlement_id == context['source_settlement_id'])
+                               .with_for_update().execution_options(populate_existing=True))
             if (not source or source.snapshot_hash != context['source_baseline_hash']
                     or source.order_id != settlement.order_id or source.currency != context['currency']
                     or source.provider_enterprise_id != context['provider_enterprise_id']):
                 return dict(status='waiting', reason='exact_segment_source_baseline_required')
+            rechecked = verifier(db, settlement)
+            if rechecked.get('status') != 'ready' or canonical(rechecked) != canonical(context):
+                return dict(status='waiting', reason='segment_context_changed_under_source_lock')
             existing = db.get(Baseline, settlement.id)
             if existing:
                 if json.loads(existing.snapshot_json).get('segment_context_hash') != context['context_hash']:
                     return dict(status='waiting', reason='immutable_segment_context_mismatch')
+                if context.get('version_funding_projection') and context['side'] == 'old':
+                    if ns['settlement_version_funding']['describe'](db, settlement.id) is None:
+                        return dict(status='waiting', reason='immutable_version_funding_projection_required')
                 return existing
             if context['side'] == 'old':
                 if settlement.reference_settlement_id != source.settlement_id or money(values['gross_amount']) >= 0:
@@ -1144,6 +1203,8 @@ def install(ns):
                 with db.begin_nested():
                     result = capture(db, settlement, actor, _segment_context=context)
                     if not isinstance(result, dict):
+                        if context.get('version_funding_projection'):
+                            ns['settlement_version_funding']['post'](db, settlement, context, actor)
                         db.add(SegmentEvidence(settlement_id=settlement.id, change_id=context['change_id'],
                             window_id=context['window_id'], side='old', context_hash=context['context_hash']))
                         db.flush()
@@ -1154,10 +1215,15 @@ def install(ns):
             net = money(funding['net_amount'])
             segment_net = money(context['segment_net_amount'])
             allocations, local = segment_allocations(context)
+            returned = money(context.get('returned_unused_supplement', '0'))
+            if (returned < 0 or context['schema_version'] == 2 and (
+                    not context.get('version_funding_projection')
+                    or returned != money(context['version_funding_projection']['returned_unused_supplement']))):
+                return dict(status='waiting', reason='verified_segment_return_projection_required')
             if (funding.get('basis') != 'verified_net_change_cash_not_target_gross'
                     or funding['change_id'] != context['change_id']
                     or allocations.get(local) != segment_net
-                    or money(values['gross_amount']) != -money(reversal['gross_amount']) + segment_net):
+                    or money(values['gross_amount']) != -money(reversal['gross_amount']) + segment_net - returned):
                 return dict(status='waiting', reason='segment_transfer_cash_conservation_failed')
             candidates = db.scalars(select(Baseline).where(Baseline.reference_settlement_id == source.settlement_id,
                 Baseline.revenue < 0)).all()
@@ -1165,6 +1231,11 @@ def install(ns):
             for candidate in candidates:
                 snapshot = json.loads(candidate.snapshot_json)
                 old_context = snapshot.get('segment_context') or {}
+                if context.get('version_funding_projection') and (
+                        old_context.get('version_funding_projection') != context['version_funding_projection']
+                        or old_context.get('returned_unused_supplement') != context.get('returned_unused_supplement')
+                        or ns['settlement_version_funding']['describe'](db, candidate.settlement_id) is None):
+                    continue
                 if (old_context.get('side') == 'old' and all(old_context.get(k) == context[k] for k in
                         ('change_id', 'window_id', 'receipt_hash', 'source_baseline_hash'))
                         and candidate.revenue == money(reversal['gross_amount'])
@@ -1178,7 +1249,7 @@ def install(ns):
             negative = matching[0]
             if db.get(SegmentFundingLink, negative.settlement_id):
                 return dict(status='waiting', reason='segment_transfer_already_assigned')
-            if any(p.blocked_reason for p in db.scalars(select(Position).where(Position.settlement_id == source.settlement_id))):
+            if any(cash_block(db, p) for p in db.scalars(select(Position).where(Position.settlement_id == source.settlement_id))):
                 return dict(status='waiting', reason='segment_source_funding_blocked')
             with db.begin_nested():
                 result = capture(db, settlement, actor, _segment_context=context, _source_negative=negative.settlement_id)
@@ -1197,6 +1268,15 @@ def install(ns):
         except (HTTPException, KeyError, TypeError, ValueError, ArithmeticError):
             return dict(status='waiting', reason='segment_capture_evidence_unavailable')
 
+    def capture_segment(db, settlement, context, actor='system'):
+        result = _capture_segment(db, settlement, context, actor)
+        if (isinstance(result, dict) and isinstance(context, dict)
+                and context.get('schema_version') == 2 and context.get('version_funding_projection')):
+            # Only the new funded-source workflow must roll business locking
+            # back on missing capture; v1 retains its historical waiting API.
+            raise HTTPException(409, dict(code='source_funding_capture_not_ready', **result))
+        return result
+
     def describe(db, settlement_id):
         b = db.get(Baseline, settlement_id)
         if b is None:
@@ -1213,6 +1293,8 @@ def install(ns):
             funding=funding_status(db, settlement_id),
             funded_refund=(ns['settlement_funded_refund']['describe'](db, settlement_id)
                            if 'settlement_funded_refund' in ns else None),
+            version_funding=(ns['settlement_version_funding']['describe'](db, settlement_id)
+                             if 'settlement_version_funding' in ns else None),
             references=multi_finance['describe'](db, settlement_id) if multi_finance else [],
             shares=json.loads(b.snapshot_json)['shares'], reference_settlement_id=b.reference_settlement_id,
             positions=[position_dict(db, p, b) for p in rows],
@@ -1432,7 +1514,7 @@ def install(ns):
         FundingRequest=FundingRequest, FundingDecision=FundingDecision, FundingProof=FundingProof,
         FundingCommand=FundingCommand, FundingAbsorption=FundingAbsorption,
         propose_funding=propose_funding, decide_funding=decide_funding,
-        verify_funding=verify_funding, funding_status=funding_status)
+        verify_funding=verify_funding, funding_status=funding_status, ensure_schema=ensure_schema)
     from .settlement_multi_refund_finance import install as install_multi_refund
     core = dict(hooks, RefundSource=RefundSource, RefundPositionSource=RefundPositionSource,
                 money=money, canonical=canonical, audit=audit, cash_block=cash_block)
@@ -1442,6 +1524,8 @@ def install(ns):
                  RefundPositionSource=RefundPositionSource, source_reversals=source_reversals,
                  check_source_budget=check_source_budget, reversal_entries=reversal_entries)
     ns['settlement_finance'] = hooks
+    if ns.get('app') is not None and ns.get('engine') is not None:
+        ns['app'].add_event_handler('startup', lambda: ensure_schema(ns['engine']))
     from .settlement_manual_funding import install as install_manual_funding
     install_manual_funding(ns, hooks)
     if ns.get('Refund') is not None:
@@ -1449,4 +1533,6 @@ def install(ns):
         install_funded_refund(ns)
         from .settlement_funded_refund_capture import install as install_funded_capture
         install_funded_capture(ns, dict(core, **hooks))
+        from .settlement_version_funding import install as install_version_funding
+        install_version_funding(ns, hooks)
     return hooks

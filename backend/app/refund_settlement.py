@@ -127,8 +127,11 @@ def install(ns):
             return dict(status='waiting', reason='settlement_finance_unavailable')
         try:
             segment = segments[0]
-            result = hook(db, refund, segment if revised else dict(original_amount=segment['original_amount'],
-                          cumulative_refund_amount=segment['cumulative_refund_amount']))
+            funded_hook = ns.get('settlement_funded_refund_capture', {}).get('segment_basis')
+            result = funded_hook(db, refund) if revised and callable(funded_hook) else None
+            if result is None:
+                result = hook(db, refund, segment if revised else dict(original_amount=segment['original_amount'],
+                              cumulative_refund_amount=segment['cumulative_refund_amount']))
             if not isinstance(result, dict) or result.get('status') not in ('ready', 'waiting', 'unsupported'):
                 raise ValueError('invalid financial basis response')
             if result['status'] != 'ready':
@@ -140,7 +143,7 @@ def install(ns):
             funded = result.get('kind') == 'confirmed_funded_refund'
             buyer_amount = money(refund.amount)
             if funded and (money(result['buyer_cash_amount']) != buyer_amount
-                    or revenue != -buyer_amount - money(result['absorption_reversal'])
+                    or revenue != -buyer_amount - money(result['absorption_reversal']) - money(result.get('external_funding_return', 0))
                     or money(result['external_paid']) != 0 or money(result['external_recovered']) != 0):
                 raise ValueError('funded buyer cash mismatch')
             if ((not funded and revenue != -buyer_amount) or revenue - cost != profit or

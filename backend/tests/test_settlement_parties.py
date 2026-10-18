@@ -110,7 +110,7 @@ class SettlementPartiesTests(unittest.TestCase):
 
     def test_install_idempotency_registry_identity_audit_and_scope(self):
         self.assertIs(install(self.ns), self.h)
-        self.assertEqual(len(self.ns['app'].routes), 11)
+        self.assertEqual(len(self.ns['app'].routes), 12)
         first = self.party()
         self.assertEqual(first, self.party())
         second = self.party('b')

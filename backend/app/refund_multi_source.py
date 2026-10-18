@@ -36,28 +36,47 @@ def install(ns, completed_evidence, money, segment_values, shares):
         Core still repeats the same shared budget checks atomically at capture.
         """
         Baseline = ns['settlement_finance']['Baseline']
+        Settlement = ns['Settlement']
+        own = db.scalars(select(Baseline).join(Settlement, Settlement.id == Baseline.settlement_id).where(
+            Settlement.refund_id == refund.id, Baseline.revenue < 0)).all()
+        if len(own) > 1:
+            fail('multi_source_duplicate_refund_capture')
         reserved = []
         for row in db.scalars(select(Manifest).where(Manifest.refund_id != refund.id)):
             payload = strict_json(row.payload_json)
             if row.payload_hash != digest(payload) or row.refund_id != payload['refund_id']:
                 fail('multi_source_reserved_manifest_invalid')
-            reserved.extend(payload['references'])
+            if db.get(Baseline, row.settlement_id) is None:
+                reserved.extend(payload['references'])
         for ref in refs:
             source = db.get(Baseline, ref['reference_settlement_id'])
             if not source or source.snapshot_hash != ref['baseline_hash']:
                 fail('multi_source_budget_baseline_mismatch')
             used = dict(gross_amount=Decimal(0), cost_amount=Decimal(0), profit_amount=Decimal(0))
             used_shares = {k: Decimal(0) for k in shares}
-            prior = db.scalars(select(Baseline).where(
-                Baseline.reference_settlement_id == source.settlement_id, Baseline.revenue < 0)).all()
-            for b in prior:
-                snapshot = strict_json(b.snapshot_json)
-                ordinary = (snapshot.get('cost_exception_application') or {}).get('default_basis')
-                used['gross_amount'] += abs(b.revenue)
-                used['cost_amount'] += abs(b.cost)
-                used['profit_amount'] += abs(Decimal(ordinary['profit_amount'])) if ordinary else abs(b.profit)
+            hook = ns['settlement_finance'].get('source_reversals')
+            if not callable(hook):
+                fail('multi_source_shared_budget_contract_required')
+            for record in hook(db, source.settlement_id):
+                for field in used:
+                    used[field] += abs(Decimal(record[field]))
                 for k in shares:
-                    used_shares[k] += abs(Decimal((ordinary or snapshot)['shares'][k]))
+                    used_shares[k] += abs(Decimal(record['shares'][k]))
+            if own:
+                captured = strict_json(own[0].snapshot_json)
+                if digest(captured) != own[0].snapshot_hash:
+                    fail('multi_source_current_capture_hash_mismatch')
+                current = [r for r in captured.get('references', [])
+                           if r.get('reference_settlement_id') == source.settlement_id]
+                if len(current) != 1:
+                    fail('multi_source_current_capture_source_mismatch')
+                actual, normal = current[0], current[0].get('default_basis', current[0])
+                for field in used:
+                    used[field] -= abs(Decimal(actual[field] if field != 'profit_amount' else normal[field]))
+                for k in shares:
+                    used_shares[k] -= abs(Decimal(normal['shares'][k]))
+                if any(v < 0 for v in [*used.values(), *used_shares.values()]):
+                    fail('multi_source_current_capture_budget_mismatch')
             for r in reserved + [ref]:
                 if r['reference_settlement_id'] != source.settlement_id:
                     continue
@@ -147,6 +166,11 @@ def install(ns, completed_evidence, money, segment_values, shares):
                 references=refs, completion_evidence_hash=digest(strict_json(evidence)),
                 completion_plan_hash=digest(plan), **{k: str(v) for k, v in totals.items()},
                 shares={k: str(sum((Decimal(r['shares'][k]) for r in refs), Decimal(0))) for k in shares})
+            funded = ns.get('settlement_funded_refund_capture', {}).get('segment_basis')
+            if callable(funded):
+                projected = funded(db, refund, apply_exception=apply_exception)
+                if projected is not None:
+                    return projected
             if not apply_exception:
                 return ordinary
             parties = ns.get('settlement_parties', {})

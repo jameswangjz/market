@@ -34,7 +34,121 @@ def proportional_values(baseline, amount, *, basis_revenue=None, basis_values=No
     return dict(cost=cost, profit=profit, shares=parts)
 
 
+def _evidence_payload(raw, expected=None):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate evidence key')
+            result[key] = value
+        return result
+    payload = json.loads(raw, object_pairs_hook=unique)
+    encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    if not isinstance(payload, dict) or expected is not None and hashlib.sha256(encoded.encode()).hexdigest() != expected:
+        raise ValueError('financial evidence hash mismatch')
+    return payload
+
+
+def _source_ids(refs):
+    if not isinstance(refs, list) or not refs:
+        raise ValueError('financial source references missing')
+    result, segments = set(), set()
+    for ref in refs:
+        identity = ref['reference_settlement_id']
+        if (not isinstance(identity, str) or not identity
+                or not isinstance(ref.get('baseline_hash'), str) or not ref['baseline_hash']
+                or not isinstance(ref.get('segment_id'), str) or not ref['segment_id']):
+            raise ValueError('financial source identity missing')
+        if identity in result or ref['segment_id'] in segments:
+            raise ValueError('duplicate financial source reference')
+        result.add(identity)
+        segments.add(ref['segment_id'])
+    return result
+
+
+def _frozen_source_references(ns, db, ids):
+    funded = ns.get('settlement_funded_refund', {})
+    Plan, Slice = funded.get('Plan'), funded.get('Slice')
+    plans = {}
+    if Plan is not None:
+        for row in db.scalars(select(Plan)):
+            payload = _evidence_payload(row.payload_json, row.payload_hash or '')
+            refs = _source_ids(payload['references'])
+            if payload['refund_id'] != row.refund_id:
+                raise ValueError('funded plan refund mismatch')
+            plans[row.refund_id] = payload
+            if ids.intersection(refs):
+                return True
+            Settlement = ns.get('Settlement')
+            if Settlement is not None and hasattr(Settlement, 'refund_id') and db.scalar(select(Settlement.id).where(
+                    Settlement.refund_id == row.refund_id, Settlement.id.in_(ids))):
+                return True
+    if Slice is not None:
+        for row in db.scalars(select(Slice)):
+            payload = _evidence_payload(row.payload_json, row.payload_hash or '')
+            parent = plans.get(row.refund_id)
+            if (parent is None or payload not in parent['references']
+                    or payload['reference_settlement_id'] != row.source_settlement_id
+                    or payload['baseline_hash'] != row.source_hash or payload['segment_id'] != row.segment_id):
+                raise ValueError('funded slice proof missing or mismatched')
+            if row.source_settlement_id in ids:
+                return True
+    CostException = ns.get('settlement_parties', {}).get('CostException')
+    if CostException is not None:
+        for row in db.scalars(select(CostException)):
+            if row.baseline_id:
+                if row.baseline_id in ids:
+                    return True
+                continue
+            # CostException has no top-level hash: each frozen basis is hashed.
+            payload = _evidence_payload(row.payload_json)
+            allocations = payload['source_allocations']
+            if payload.get('schema_version') != 2 or not isinstance(allocations, list) or not allocations:
+                raise ValueError('cost source proof missing')
+            sources = set()
+            for allocation in allocations:
+                basis = allocation['basis']
+                checked = _evidence_payload(json.dumps(basis), allocation['basis_hash'] or '')
+                identity = allocation['baseline_id']
+                if (not isinstance(identity, str) or not identity or identity in sources
+                        or not isinstance(allocation['baseline_hash'], str) or not allocation['baseline_hash']
+                        or not isinstance(allocation['segment_id'], str) or not allocation['segment_id']
+                        or checked['reference_settlement_id'] != identity
+                        or checked['baseline_hash'] != allocation['baseline_hash']
+                        or checked['segment_id'] != allocation['segment_id']):
+                    raise ValueError('cost source basis mismatch')
+                sources.add(identity)
+            if ids.intersection(sources):
+                return True
+    version = ns.get('settlement_version_funding', {})
+    Projection, Credit = version.get('Projection'), version.get('Credit')
+    projections = {}
+    if Projection is not None:
+        for row in db.scalars(select(Projection)):
+            payload = _evidence_payload(row.payload_json, row.payload_hash or '')
+            if (payload['settlement_id'] != row.settlement_id or payload['source_settlement_id'] != row.source_settlement_id
+                    or payload['change_id'] != row.change_id or payload['window_id'] != row.window_id):
+                raise ValueError('version funding projection scope mismatch')
+            projections[row.settlement_id] = row
+            if ids.intersection((row.settlement_id, row.source_settlement_id)):
+                return True
+    if Credit is not None:
+        for row in db.scalars(select(Credit)):
+            parent = projections.get(row.settlement_id)
+            if (parent is None or row.projection_hash != parent.payload_hash
+                    or row.source_settlement_id != parent.source_settlement_id):
+                raise ValueError('version funding credit proof missing or mismatched')
+            if ids.intersection((row.settlement_id, row.source_settlement_id)):
+                return True
+    return False
+
+
 def _explicit_financial_reference(ns, db, ids):
+    try:
+        if _frozen_source_references(ns, db, ids):
+            return True
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        raise HTTPException(409, 'frozen_financial_reference_invalid_requires_review') from None
     finance = ns.get('settlement_finance', {})
     for name in ('RefundSource', 'RefundPositionSource'):
         model = finance.get(name)

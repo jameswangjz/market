@@ -70,8 +70,9 @@ function cell(row, key) {
   if (key === 'blocked_reason' && value) return safeError({ response: { data: { detail: value } } });
   return key in amountLabels || key in beneficiaryAmountLabels || key in participantAmountLabels || ['amount', 'applied_amount', 'balance'].includes(key) ? money(value) : labels[value] || (value == null ? '—' : typeof value === 'object' ? JSON.stringify(value) : value);
 }
+Object.assign(labels, { funding_return: '原补差付款方返还应付', funding_absorption_return: '平台内部吸收恢复' });
 function canRegister(row) {
-  try { return access.value.write && ['payable', 'receivable'].includes(row.direction) && !row.blocked_reason && !!row.participant_id && cents(row.balance) > 0n; }
+  try { return access.value.write && row.kind !== 'funding_absorption_return' && (row.kind !== 'funding_return' || row.direction === 'payable') && ['payable', 'receivable'].includes(row.direction) && row.status !== 'blocked' && !row.blocked_reason && !!row.participant_id && row.participant_id !== 'unassigned' && row.participant_type !== 'unassigned' && cents(row.balance) > 0n; }
   catch { return false; }
 }
 const detailFields = computed(() => isBeneficiary.value ? [['participant_name', '本人收益主体'], ['financial_at', '财务归属时间']] : tab.value === 'annual' ? [['actor_id', '生成人'], ['digest', '快照校验值'], ['note', '原因']] : tab.value === 'transactions' ? [['note', '原因'], ['counter_position_id', '对向应付行编号']] : tab.value === 'funds' ? [['participant_id', '收益主体关联']] : reportView.value === 'details' ? [['baseline_hash', '最终基线校验值'], ['financial_at', '财务归属时间'], ['refund_id', '退款关联'], ['change_id', '版本变更关联']] : []);
@@ -172,6 +173,7 @@ async function submit() {
       if (!form.reference.trim()) throw new Error('请填写业务凭证');
       const row = action.row;
       if (!canRegister(row)) throw new Error('当前资金行不可登记，请刷新余额与主体状态');
+      if (row.kind === 'funding_return' && (form.mode !== 'manual' || form.kind !== 'payout')) throw new Error('补差返还仅可人工登记付款，并由另一位操作者独立复核');
       if (!['payable', 'receivable'].includes(row.direction)) throw new Error('内部收益不可登记外部付款');
       if (form.kind !== 'offset' && form.kind !== (row.direction === 'payable' ? 'payout' : 'recovery')) throw new Error('业务方向不匹配');
       if (form.kind === 'payout' && (paymentLoading.value || paymentLoadError.value)) throw new Error('请先完成付款资金行加载');
@@ -264,9 +266,10 @@ onBeforeUnmount(() => { guard.dispose(); mutationGuard.dispose(); downloadGuard.
         <template v-if="modal.kind === 'finalize'"><p>快照校验值：{{ modal.row.digest }}</p><label>对账凭据<input v-model="form.reference" maxlength="240" required /></label></template>
         <template v-if="modal.kind === 'create'">
           <label>业务类型<select v-model="form.kind" :disabled="submitting"><option :value="modal.row.direction === 'receivable' ? 'recovery' : 'payout'">{{ modal.row.direction === 'receivable' ? '回款' : '付款' }}</option><option v-if="modal.row.direction === 'receivable'" value="offset">抵扣</option></select></label>
-          <label>登记方式<select v-model="form.mode" :disabled="submitting"><option value="manual">人工登记</option><option value="simulated">模拟确认</option></select></label>
+          <label>登记方式<select v-model="form.mode" :disabled="submitting || modal.row.kind === 'funding_return'"><option value="manual">人工登记</option><option v-if="modal.row.kind !== 'funding_return'" value="simulated">模拟确认</option></select></label>
           <fieldset v-if="form.kind === 'payout'" class="payment-selection" :disabled="submitting">
-            <legend>付款资金行</legend>
+            <legend>{{ modal.row.kind === 'funding_return' ? '原补差付款方返还（独立付款组）' : '付款资金行' }}</legend>
+            <p v-if="modal.row.kind === 'funding_return'">仅人工登记及独立复核；不与成本利润混付。来源及抵扣关系由后端核验，不代表银行自动到账。</p>
             <div class="payment-heading"><span>{{ modal.row.participant_name }} · {{ modal.row.currency }}</span><button type="button" class="icon-btn" title="重新加载可付款资金行" aria-label="重新加载可付款资金行" :disabled="paymentLoading || submitting" @click="loadPaymentRows"><RefreshCw :size="15" /></button></div>
             <p v-if="paymentLoading" role="status">正在核对同主体、同币种资金行…</p>
             <p v-if="paymentLoadError" class="error" role="alert">{{ paymentLoadError }}</p>

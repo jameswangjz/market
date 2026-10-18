@@ -54,13 +54,39 @@ export function costSourceLabel(source, reportRows = []) {
   const basis = source.basis || source;
   const row = reportRows.find(r => r.id === id && (!basis.baseline_hash || r.baseline_hash === basis.baseline_hash));
   return {
-    order_no: basis.source_order_no || row?.order_no || '',
-    settlement_no: basis.reference_settlement_no || row?.settlement_no || '',
-    batch_no: basis.reference_batch_no || basis.reference_batch_nos?.join(' / ') || row?.batch_no || '',
+    order_no: basis.source_order_no || basis.order_no || row?.order_no || '',
+    settlement_no: basis.reference_settlement_no || basis.settlement_no || row?.settlement_no || '',
+    batch_no: basis.reference_batch_no || basis.reference_batch_nos?.join(' / ') || basis.batch_no || basis.batch_nos?.join(' / ') || row?.batch_no || '',
     version_name: basis.product_version_name || basis.source_version_name || '',
   };
 }
-export function costExceptionSources(refund, reportRows) {
+export function costExceptionSources(refund, reportRows = [], discovery = null) {
+  if (arguments.length >= 3) {
+    if (!discovery || typeof discovery !== 'object') throw new Error('服务端未提供可信的原始退款依据');
+    const funded = discovery.basis_kind === 'funded';
+    const ordinary = discovery.basis_kind === 'single' && discovery.basis_origin === 'raw_single_basis' && discovery.kind === 'ordinary_single_refund' ||
+      discovery.basis_kind === 'multi' && discovery.basis_origin === 'raw_multi_basis' && discovery.kind === 'multi_source_refund';
+    if (discovery.refund_id !== refund.id || discovery.order_id !== refund.order_id || discovery.status !== 'ready' ||
+        discovery.proposal_allowed !== true || (funded ? discovery.kind !== 'confirmed_funded_refund' || discovery.basis_origin !== 'raw_funded_basis' :
+          !ordinary)) {
+      throw new Error('原始退款依据未就绪或当前不允许提案，请刷新后重试');
+    }
+    const refs = discovery.references;
+    if (!Array.isArray(refs) || !refs.length) throw new Error('服务端未提供完整原始退款来源');
+    if (!funded && (discovery.kind === 'ordinary_single_refund' ? refs.length !== 1 : refs.length < 2)) throw new Error('普通退款来源数量与依据类型不一致');
+    const seen = new Set(), baselines = new Set();
+    return refs.map(ref => {
+      if (!ref.segment_id || !ref.reference_settlement_id || !/^[a-f0-9]{64}$/.test(ref.baseline_hash || '') ||
+          ref.source_order_id !== refund.order_id || ref.display_status === 'unavailable' || ref.currency !== 'CNY' ||
+          seen.has(ref.segment_id) || baselines.has(ref.reference_settlement_id)) throw new Error('原始退款来源身份不完整或重复');
+      seen.add(ref.segment_id); baselines.add(ref.reference_settlement_id);
+      if (!/^-\d+\.\d{2}$/.test(String(ref.cost_amount)) && ref.cost_amount !== '0.00') throw new Error('原始退款成本方向或精度无效');
+      const cost = ref.cost_amount.startsWith('-') ? cents(ref.cost_amount.slice(1)) : 0n;
+      return { segment_id: ref.segment_id, baseline_id: ref.reference_settlement_id, baseline_hash: ref.baseline_hash,
+        basis_kind: funded ? 'funded' : refs.length > 1 ? 'multi' : 'single',
+        max_retained_cost: decimalCents(cost), ...costSourceLabel(ref, reportRows) };
+    });
+  }
   const matches = reportRows.filter(r => r.refund_id === refund.id && r.order_id === refund.order_id);
   const multi = matches.filter(r => Array.isArray(r.economic_segments) && r.economic_segments.length > 1);
   if (!multi.length) return [];
@@ -99,7 +125,10 @@ export function costExceptionError(error) {
 export function costExceptionPayload(form, sources = []) {
   if (!form.refund_id?.trim() || !form.bearer_participant_id || !form.reason?.trim()) throw new Error('请填写退款编号、承担主体和申请依据');
   if (sources.length) {
-    if (sources.length < 2 || !Array.isArray(form.source_allocations) || form.source_allocations.length !== sources.length) throw new Error('必须填写全部经济段的金额及证据');
+    const funded = sources.every(s => s.basis_kind === 'funded');
+    const single = sources.length === 1 && sources[0].basis_kind === 'single';
+    if ((!funded && !single && sources.length < 2) || sources.some(s => s.basis_kind === 'funded') !== funded ||
+        !Array.isArray(form.source_allocations) || form.source_allocations.length !== sources.length) throw new Error('必须填写全部经济段的金额及证据');
     const seen = new Set();
     const source_allocations = form.source_allocations.map(row => {
       const source = sources.find(s => s.segment_id === row.segment_id && s.baseline_id === row.baseline_id);
@@ -113,7 +142,10 @@ export function costExceptionPayload(form, sources = []) {
     }).sort((a, b) => a.baseline_id.localeCompare(b.baseline_id) || a.segment_id.localeCompare(b.segment_id));
     const retained_cost = costExceptionTotal(source_allocations);
     if (cents(retained_cost) <= 0n) throw new Error('整张提案保留成本合计须大于零');
+    if (single) return { refund_id: form.refund_id.trim(), bearer_participant_id: form.bearer_participant_id,
+      retained_cost, reason: form.reason.trim(), evidence_refs: source_allocations[0].evidence_refs };
     return { schema_version: 2, refund_id: form.refund_id.trim(), bearer_participant_id: form.bearer_participant_id,
+      ...(funded ? { basis_kind: 'funded' } : {}),
       retained_cost, reason: form.reason.trim(), evidence_refs: [...new Set(source_allocations.flatMap(a => a.evidence_refs))].sort(), source_allocations };
   }
   if (form.source_allocations?.length) throw new Error('尚未取得可信的分段来源，不能提交');

@@ -167,14 +167,27 @@ test('actual management page size controls slicing and resets page', () => {
   editor.page.value = 2; assert.equal(editor.visibleRows.value.length, 25);
 });
 test('actual SFC selects server sources, submits one whole proposal and keeps review source evidence readonly', async () => {
-  const writes = [], rows = multiReport();
-  const api = { get: async path => ({ data: path.includes('/enterprise-settlements/') ? { refund_adjustment: { refund_id: 'refund', financial_basis: { status: 'ready', references: dto.multi.references } } } : { items: path.includes('/report') ? rows : [], total: rows.length } }), post: async (path, payload) => { writes.push({ path, payload }); return { data: dto.multi }; } };
+  const writes = [], reads = [], rows = multiReport();
+  const discovery = { refund_id: 'refund', order_id: 'order', status: 'ready', kind: 'multi_source_refund',
+    basis_kind: 'multi', basis_origin: 'raw_multi_basis', proposal_allowed: true, reason: '',
+    references: dto.multi.references.map((ref, i) => ({ ...ref, baseline_hash: String(i + 1).repeat(64), currency: 'CNY',
+      order_no: rows[i].order_no, settlement_no: rows[i].settlement_no, batch_nos: [rows[i].batch_no] })) };
+  const api = { get: async (path, options) => {
+    reads.push({ path, options });
+    assert.ok(!path.includes('/enterprise-settlements/') && !path.includes('/settlements/'), 'Applied assessment must not supply proposal cost caps');
+    return { data: path === '/settlement-cost-exceptions/basis' ? discovery : { items: path.includes('/report') ? rows : [], total: rows.length } };
+  }, post: async (path, payload) => { writes.push({ path, payload }); return { data: dto.multi }; } };
   const editor = runtime(provider, api); editor.refunds.value = [refundChoice]; editor.exception.refund_id = 'refund';
   await editor.chooseRefund(); assert.equal(editor.costSources.value.length, 2); assert.equal(editor.sourcesReady.value, true);
+  assert.equal(reads.length, 1); assert.equal(reads[0].path, '/settlement-cost-exceptions/basis');
+  assert.equal(reads[0].options.params.refund_id, 'refund'); assert.equal(reads[0].options.params.enterprise_id, enterprise.id);
+  assert.equal(editor.costSources.value[0].settlement_no, 'SET-SOURCE-1');
+  assert.equal(editor.costSources.value[1].batch_no, 'BATCH-SOURCE-2');
   Object.assign(editor.exception, { bearer_participant_id: dto.party.id, reason: 'Invoice evidence' });
   editor.exception.source_allocations.forEach((r, i) => { r.retained_cost = i ? '0.02' : '0.01'; r.evidence_refs = `invoice:${i}`; });
   assert.equal(editor.costTotal.value, '0.03'); await editor.submit('exception');
   assert.equal(writes.length, 1); assert.equal(writes[0].path, '/settlement-cost-exceptions'); assert.equal(writes[0].payload.source_allocations.length, 2);
+  assert.equal(writes[0].payload.schema_version, 2); assert.equal(writes[0].payload.basis_kind, undefined);
   const reviewer = runtime(operator, api); reviewer.review(dto.multi, 'approve');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(reviewer.shownSources.value[0].settlement_no, 'SET-SOURCE-1');

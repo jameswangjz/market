@@ -64,25 +64,29 @@ class FundedRefundTests(unittest.TestCase):
             calculation_version='ordinary-file-refund-plan-v1')
         return row
 
-    def source_fixture(self, paid='75.00', *, overlap=False):
+    def source_fixture(self, paid='75.00', *, overlap=False, supplemental='0.00', cost=None):
         """An explicit immutable per-segment fixture, not a core capture claim."""
         paid = Decimal(paid)
+        supplemental = Decimal(supplemental)
         if not overlap:
             self.db.add(self.ns['Payment'](id='payment-2', order_id='o', payment_no='PAY-2', status='paid', amount=paid))
         s = self.f.settlement(identifier='source-2')
-        s.gross_amount, s.cost_amount, s.profit_amount = paid, paid * 2 / 3, paid / 3
-        s.platform_fee, s.provider_share = paid / 15, paid * 4 / 15
+        s.gross_amount = paid + supplemental
+        s.cost_amount = paid * 2 / 3 if cost is None else Decimal(cost)
+        s.profit_amount = s.gross_amount - s.cost_amount
+        s.platform_fee = paid / 15 if cost is None else s.profit_amount / 5
+        s.provider_share = s.profit_amount - s.platform_fee
         entries = [dict(kind=p.kind, share_kind=p.share_kind, participant_type=p.participant_type,
             participant_id=p.participant_id, participant_name=p.participant_name, blocked_reason='',
             amount=str(s.cost_amount if p.kind == 'cost' else s.platform_fee if p.share_kind == 'platform_fee' else s.provider_share))
             for p in self.f.positions()]
         shares = {k: str(getattr(s, k)) for k in ('platform_fee', 'provider_share', 'service_share', 'expert_fee', 'channel_fee')}
-        snap = dict(currency='CNY', revenue=str(paid), cost=str(s.cost_amount), profit=str(s.profit_amount), shares=shares,
+        snap = dict(currency='CNY', revenue=str(s.gross_amount), cost=str(s.cost_amount), profit=str(s.profit_amount), shares=shares,
             entries=entries, actual_receipts=str(paid), receipt_records=[dict(payment_id='payment' if overlap else 'payment-2',
                 status='paid', amount=str(paid))], bank_receipt_verified=False)
         raw = canonical(snap)
         b = self.finance['Baseline'](settlement_id=s.id, order_id='o', provider_enterprise_id='provider', currency='CNY',
-            revenue=paid, cost=s.cost_amount, profit=s.profit_amount, snapshot_json=raw, snapshot_hash=digest(raw), actor='unit-fixture')
+            revenue=s.gross_amount, cost=s.cost_amount, profit=s.profit_amount, snapshot_json=raw, snapshot_hash=digest(raw), actor='unit-fixture')
         self.db.add(b)
         self.db.flush()
         for entry in entries:
@@ -98,16 +102,28 @@ class FundedRefundTests(unittest.TestCase):
             setattr(s, k, Decimal(plan[k]))
         for k, v in plan['shares'].items():
             setattr(s, k, Decimal(v))
-        entries = [e for r in plan['references'] for e in r['entries'] if Decimal(e['amount'])]
+        groups = []
+        for ref in plan['references']:
+            entries = [e for e in ref['entries'] if Decimal(e['amount'])]
+            entries += [dict(kind='funding_return', share_kind='', amount=r['amount'], blocked_reason='',
+                **{k: r['bearer'][k] for k in ('participant_type', 'participant_id', 'participant_name')})
+                for r in ref.get('funding_returns', []) if Decimal(r['amount'])]
+            groups.append((ref, entries))
+        entries = [e for _, group in groups for e in group]
         raw = canonical(dict(shares=plan['shares'], entries=entries, references=plan['references'], funded_refund_plan_hash=plan['plan_hash']))
         b = self.finance['Baseline'](settlement_id=s.id, order_id='o', provider_enterprise_id='provider', currency='CNY',
             reference_settlement_id=s.reference_settlement_id, revenue=s.gross_amount, cost=s.cost_amount, profit=s.profit_amount,
             snapshot_json=raw, snapshot_hash=digest(raw), actor='unit-fixture')
         self.db.add(b)
         self.db.flush()
-        for entry in entries:
-            self.db.add(self.finance['Position'](settlement_id=s.id, order_id='o', currency='CNY',
-                direction='internal' if entry['share_kind'] == 'platform_fee' else 'receivable', **entry))
+        for ref, group in groups:
+            for entry in group:
+                position = self.finance['Position'](settlement_id=s.id, order_id='o', currency='CNY',
+                    direction='payable' if entry['kind'] == 'funding_return' else 'internal' if entry['share_kind'] == 'platform_fee' else 'receivable', **entry)
+                self.db.add(position)
+                self.db.flush()
+                self.db.add(self.finance['RefundPositionSource'](position_id=position.id, settlement_id=s.id,
+                    segment_id=ref['segment_id'], source_settlement_id=ref['reference_settlement_id']))
         self.db.flush()
         return b
 
@@ -294,14 +310,15 @@ class FundedRefundTests(unittest.TestCase):
         binding = [dict(segment_id='segment-2', reference_settlement_id=other_source.settlement_id, baseline_hash=other_source.snapshot_hash)]
         self.assertEqual(self.h['basis'](self.db, second, binding)['reason'], 'funded_refund_overlapping_reserved_cash_basis')
 
-    def test_external_receipt_is_explicitly_not_this_platform_absorption_slice(self):
+    def test_arbitrary_verified_receipt_without_manual_evidence_is_rejected(self):
         proposal = self.fixture.proposal('external_receipt')
         self.fixture.approve(proposal)
         self.ns['settlement_funding_proofs'] = dict(verify=lambda *args: dict(status='verified', source_key='unit:cash',
             amount='10.00', currency='CNY', payer_type='enterprise', payer_id='provider', evidence_hash='f' * 64))
         self.fixture.verify(proposal)
         refund = self.refund()
-        self.assertEqual(self.h['basis'](self.db, refund, self.bindings)['reason'], 'funded_refund_funding_source_unsupported')
+        self.assertEqual(self.h['basis'](self.db, refund, self.bindings)['status'], 'waiting')
+        self.assertEqual(self.db.query(self.h['Plan']).count(), 0)
 
     def test_post_rejects_extra_positions_and_audit_failure_is_atomic(self):
         self.funded()

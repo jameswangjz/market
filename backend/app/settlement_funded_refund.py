@@ -10,17 +10,25 @@ Neither installation nor this module calls or replaces existing refund hooks.
 """
 import hashlib
 import json
+import unicodedata
 from collections import Counter
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
 
 from fastapi import HTTPException
-from sqlalchemy import Column, DateTime, ForeignKey, String, Text, event, select
+from sqlalchemy import CheckConstraint, Column, DateTime, ForeignKey, Numeric, String, Text, event, select
 
 from .settlement_finance import SHARES, canonical, money
 
 CENT = Decimal('.01')
+APPLYING_EXCEPTION = ContextVar('funded_refund_applying_exception', default=False)
+VALIDATING_SEGMENT = ContextVar('funded_refund_validating_segment', default=False)
+
+
+def utc(value):
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def digest(raw):
@@ -95,10 +103,24 @@ def install(ns):
         payload_hash = Column(String(64), nullable=False)
         created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
+    class FundingReturn(ns['Base']):
+        __tablename__ = 'settlement_funded_refund_returns'
+        refund_id = Column(ForeignKey(Posting.refund_id), primary_key=True)
+        source_settlement_id = Column(ForeignKey(Baseline.settlement_id), primary_key=True)
+        position_id = Column(ForeignKey(Position.id), nullable=False, unique=True)
+        participant_type = Column(String(36), nullable=False)
+        participant_id = Column(String(120), nullable=False, index=True)
+        currency = Column(String(12), nullable=False)
+        amount = Column(Numeric(14, 2), nullable=False)
+        payload_json = Column(Text, nullable=False)
+        payload_hash = Column(String(64), nullable=False)
+        created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+        __table_args__ = (CheckConstraint('amount > 0'),)
+
     def immutable(*_):
         raise ValueError('funded refund evidence is immutable')
 
-    for model in (Plan, Slice, Posting):
+    for model in (Plan, Slice, Posting, FundingReturn):
         event.listen(model, 'before_update', immutable)
         event.listen(model, 'before_delete', immutable)
 
@@ -119,24 +141,172 @@ def install(ns):
             fail('funded_refund_completion_mismatch')
         return verified, plan, digest(raw)
 
-    def source_evidence(db, baseline, paid):
+    def external_evidence(db, baseline, paid, snapshot, proof, request, decision, payload):
+        evidence = parsed(proof.evidence_json, proof.evidence_hash)
+        manual = ns.get('settlement_manual_funding', {})
+        if not all(manual.get(k) is not None for k in ('Evidence', 'Review')):
+            fail('funded_refund_manual_receipt_contract_required')
+        receipt = evidence['receipt']
+        row = db.get(manual['Evidence'], receipt['evidence_id'])
+        review = db.get(manual['Review'], receipt['evidence_id'])
+        if row is None or review is None:
+            fail('funded_refund_manual_receipt_review_required')
+        fact = parsed(row.evidence_json, row.evidence_hash)
+        gap = baseline.revenue - paid
+        source_hash = digest(canonical([payload['bearer']['participant_type'], payload['bearer']['participant_id'],
+            baseline.currency, unicodedata.normalize('NFKC', row.reference).casefold()]))
+        expected = dict(funding_request_id=request.id, settlement_id=baseline.settlement_id,
+            funding_payload_hash=request.payload_hash, baseline_hash=baseline.snapshot_hash,
+            amount=str(money(row.amount)), currency=row.currency, bearer=payload['bearer'],
+            reference=row.reference, paid_on=row.paid_on.isoformat(), creator_id=row.creator_id,
+            source_hash=row.source_hash, method='manual_independent_review', bank_receipt_verified=False)
+        expected_receipt = dict(status='verified', amount=str(money(row.amount)), currency=row.currency,
+            payer_type=payload['bearer']['participant_type'], payer_id=payload['bearer']['participant_id'],
+            source_key='manual:' + row.source_hash, evidence_hash=row.evidence_hash, evidence_id=row.id,
+            registrar_id=row.creator_id, reviewer_id=review.reviewer_id,
+            method='manual_independent_review', bank_receipt_verified=False)
+        if (request.settlement_id != baseline.settlement_id or payload['settlement_id'] != baseline.settlement_id
+                or payload['baseline_hash'] != baseline.snapshot_hash or payload['currency'] != baseline.currency
+                or money(payload['amount']) != gap or money(payload['actual_receipts']) != paid
+                or decision is None or decision.decision != 'approved' or not decision.note.strip()
+                or decision.reviewer_id == request.creator_id or proof.verifier_id == request.creator_id
+                or evidence['request_id'] != request.id or evidence['reviewer_id'] != decision.reviewer_id
+                or evidence['verifier_id'] != proof.verifier_id or evidence.get('bank_receipt_verified') is not False
+                or any(evidence.get(k) != v for k, v in payload.items())
+                or any(fact.get(k) != v for k, v in expected.items()) or any(receipt.get(k) != v for k, v in expected_receipt.items())
+                or row.funding_request_id != request.id or row.settlement_id != baseline.settlement_id
+                or row.amount != gap or row.currency != baseline.currency or row.source_hash != source_hash
+                or proof.source_key != 'cash:manual:' + row.source_hash
+                or review.decision != 'verified' or review.reviewer_id == row.creator_id or not review.note.strip()
+                or review.evidence_hash != row.evidence_hash or not fact.get('evidence_refs') or not fact.get('note')
+                or row.paid_on > datetime.now(timezone.utc).date()
+                or utc(review.created_at) < utc(row.created_at) or utc(row.created_at) < utc(baseline.created_at)
+                or utc(review.created_at) > datetime.now(timezone.utc)):
+            fail('funded_refund_manual_receipt_evidence_mismatch')
+        return dict(amount=str(gap), source='external_receipt', request_id=request.id,
+            proof_hash=proof.evidence_hash, manual_evidence_id=row.id, manual_evidence_hash=row.evidence_hash,
+            manual_source_hash=row.source_hash, manual_review_hash=digest(canonical(dict(evidence_id=row.id,
+                reviewer_id=review.reviewer_id, decision=review.decision, note=review.note,
+                evidence_hash=review.evidence_hash, created_at=utc(review.created_at).isoformat()))),
+            confirmed_at=utc(review.created_at).isoformat(), bearer=payload['bearer'],
+            method='manual_independent_review', bank_receipt_verified=False)
+
+    def segment_evidence(db, baseline, snapshot, paid, segment, refund):
+        hooks, store = ns.get('version_change_settlement', {}), ns.get('refund_segment_store', {})
+        hook, Link = hooks.get('refund_segment_basis'), hooks.get('SegmentBaselineLink')
+        if (not callable(hook) or Link is None or store.get('Window') is None or store.get('Receipt') is None
+                or segment is None or refund is None or VALIDATING_SEGMENT.get()):
+            fail('funded_refund_exact_segment_receipt_contract_required')
+        token = VALIDATING_SEGMENT.set(True)
+        try:
+            verified = hook(db, refund, segment)
+        finally:
+            VALIDATING_SEGMENT.reset(token)
+        window = db.get(store['Window'], segment['segment_id'])
+        binding = db.get(Link, segment['segment_id'])
+        receipt = db.get(store['Receipt'], window.receipt_id) if window else None
+        context = snapshot.get('segment_context') or {}
+        Evidence = finance.get('SegmentEvidence')
+        captured = db.get(Evidence, baseline.settlement_id) if Evidence is not None else None
+        if (verified.get('status') != 'ready' or window is None or binding is None or receipt is None or captured is None
+                or verified['reference_settlement_id'] != baseline.settlement_id or verified['baseline_hash'] != baseline.snapshot_hash
+                or binding.settlement_id != baseline.settlement_id or binding.baseline_hash != baseline.snapshot_hash
+                or binding.context_hash != snapshot.get('segment_context_hash') or captured.context_hash != binding.context_hash
+                or captured.window_id != window.id or captured.side != 'target' or context.get('side') != 'target'
+                or context.get('window_id') != window.id or context.get('window_hash') != window.payload_hash
+                or context.get('receipt_id') != receipt.id or context.get('receipt_hash') != receipt.receipt_hash
+                or verified.get('segment_context_hash') != binding.context_hash or verified.get('receipt_hash') != receipt.receipt_hash
+                or segment.get('window_hash') != window.payload_hash or segment.get('receipt_hash') != receipt.receipt_hash
+                or window.order_id != baseline.order_id or window.currency != baseline.currency
+                or money(window.revenue) != paid or money(verified['original_amount']) != paid):
+            fail('funded_refund_exact_segment_receipt_mismatch')
+        parsed(receipt.receipt_json, receipt.receipt_hash)
+        payment_caps, ancestors, seen = {}, [], set()
+
+        def collect(source):
+            if source.settlement_id in seen:
+                fail('funded_refund_segment_funding_cycle')
+            seen.add(source.settlement_id)
+            frozen = parsed(source.snapshot_json, source.snapshot_hash)
+            for record in frozen.get('receipt_records', []):
+                payment = db.get(ns['Payment'], record['payment_id'])
+                if (payment is None or payment.order_id != source.order_id or payment.status not in ('paid', 'refunding', 'refunded')
+                        or money(payment.amount) != money(record['amount'])):
+                    fail('funded_refund_segment_payment_mismatch')
+                payment_caps[payment.id] = max(payment_caps.get(payment.id, Decimal(0)), money(payment.amount))
+            ctx = frozen.get('segment_context')
+            if not ctx:
+                return
+            captured = db.get(Evidence, source.settlement_id)
+            content = {k: v for k, v in ctx.items() if k not in ('status', 'context_hash')}
+            if (captured is None or captured.context_hash != frozen.get('segment_context_hash')
+                    or ctx.get('context_hash') != captured.context_hash or digest(canonical(content)) != captured.context_hash
+                    or ctx.get('side') != 'target'):
+                fail('funded_refund_segment_ancestry_unproven')
+            funds = ctx['funding']
+            legs = [r for r in funds['legs'] if r['kind'] == 'payment']
+            net = money(funds['segment_net_amount'])
+            if net > 0:
+                if sum(money(r['amount']) for r in legs) != money(funds['net_amount']) or net > money(funds['net_amount']):
+                    fail('funded_refund_segment_cash_allocation_unproven')
+                amounts = allocation([r['amount'] for r in legs], net)
+                for leg, amount in zip(legs, amounts):
+                    fund = db.get(ns['VersionChangeFund'], leg['fund_id'])
+                    payment = db.get(ns['Payment'], leg['payment_id'])
+                    if (fund is None or payment is None or fund.change_id != ctx['change_id'] or fund.kind != 'payment'
+                            or fund.payment_id != payment.id or money(fund.amount) != money(leg['amount'])
+                            or money(payment.amount) != money(fund.amount) or payment.status not in ('paid', 'refunding', 'refunded')):
+                        fail('funded_refund_segment_cash_allocation_unproven')
+                    payment_caps[payment.id] = max(payment_caps.get(payment.id, Decimal(0)), amount)
+            elif net < 0:
+                refunds = [r for r in funds['legs'] if r['kind'] == 'refund']
+                if net != money(funds['net_amount']) or sum(money(r['amount']) for r in refunds) != -net:
+                    fail('funded_refund_signed_segment_cash_allocation_required')
+                for leg in refunds:
+                    fund = db.get(ns['VersionChangeFund'], leg['fund_id'])
+                    returned = db.get(ns['Refund'], leg['refund_id'])
+                    if (fund is None or returned is None or fund.change_id != ctx['change_id'] or fund.kind != 'refund'
+                            or fund.refund_id != returned.id or returned.order_id != baseline.order_id
+                            or returned.status != 'completed' or returned.payment_id != leg['payment_id']
+                            or money(returned.amount) != money(leg['amount']) or money(fund.amount) != money(leg['amount'])):
+                        fail('funded_refund_signed_segment_cash_allocation_required')
+            parent = db.get(Baseline, ctx['source_settlement_id'])
+            if (parent is None or parent.snapshot_hash != ctx['source_baseline_hash']
+                    or parent.order_id != baseline.order_id or parent.provider_enterprise_id != baseline.provider_enterprise_id):
+                fail('funded_refund_segment_ancestry_unproven')
+            ancestors.append(parent.settlement_id)
+            collect(parent)
+
+        collect(baseline)
+        if not payment_caps or sum(payment_caps.values()) < paid:
+            fail('funded_refund_segment_cash_basis_unproven')
+        return dict(key=digest(canonical([baseline.order_id, window.id, window.payload_hash, receipt.receipt_hash, binding.context_hash])),
+            segment_id=window.id, window_hash=window.payload_hash, receipt_id=receipt.id, receipt_hash=receipt.receipt_hash,
+            context_hash=binding.context_hash, source_baseline_ids=sorted(set(ancestors)),
+            payment_caps={k: str(v) for k, v in sorted(payment_caps.items())})
+    def source_evidence(db, baseline, paid, *, segment=None, refund=None):
         snapshot = parsed(baseline.snapshot_json, baseline.snapshot_hash)
-        if snapshot.get('actual_receipts') is None:
+        economic_basis = segment_evidence(db, baseline, snapshot, paid, segment, refund) if snapshot.get('segment_context') else None
+        cash_basis = dict(payment_ids=sorted(economic_basis['payment_caps']), economic_basis=economic_basis) if economic_basis is not None else dict(payment_ids=[])
+        if snapshot.get('actual_receipts') is None and economic_basis is None:
             fail('funded_refund_source_cash_basis_unproven')
         shares = {k: money(snapshot['shares'][k]) for k in SHARES}
         if (baseline.currency != snapshot['currency'] or baseline.revenue != money(snapshot['revenue'])
                 or baseline.cost != money(snapshot['cost']) or baseline.profit != money(snapshot['profit'])
                 or baseline.revenue - baseline.cost != baseline.profit or sum(shares.values()) != baseline.profit
-                or baseline.revenue < paid or not 0 <= baseline.cost <= paid or any(v < 0 for v in shares.values())
-                or money(snapshot['actual_receipts'], True) != paid or snapshot.get('cost_exception_application')):
+                or baseline.revenue < paid or not 0 <= baseline.cost <= baseline.revenue or any(v < 0 for v in shares.values())
+                or (economic_basis is None and money(snapshot['actual_receipts'], True) != paid) or snapshot.get('cost_exception_application')):
             fail('funded_refund_source_cash_or_economics_mismatch')
         records = snapshot['receipt_records']
         payment_ids = [r['payment_id'] for r in records]
-        if not records or len(set(payment_ids)) != len(records) or sum(money(r['amount']) for r in records) != paid:
+        if economic_basis is None:
+            cash_basis['payment_ids'] = payment_ids
+        if economic_basis is None and (not records or len(set(payment_ids)) != len(records) or sum(money(r['amount']) for r in records) != paid):
             fail('funded_refund_source_receipts_required')
         for record in records:
             payment = db.get(ns['Payment'], record['payment_id'])
-            if (payment is None or payment.order_id != baseline.order_id or payment.status != 'paid'
+            allowed_statuses = ('paid', 'refunding', 'refunded') if economic_basis else ('paid',)
+            if (payment is None or payment.order_id != baseline.order_id or payment.status not in allowed_statuses
                     or record['status'] != 'paid' or money(payment.amount) != money(record['amount'])):
                 fail('funded_refund_source_receipt_mismatch')
         positions = db.scalars(select(Position).where(Position.settlement_id == baseline.settlement_id)).all()
@@ -153,7 +323,7 @@ def install(ns):
             fail('funded_refund_source_position_scope_mismatch')
         gap = baseline.revenue - paid
         if not gap:
-            return snapshot, dict(amount='0.00', source='none', payment_ids=payment_ids)
+            return snapshot, dict(amount='0.00', source='none', **cash_basis)
         proof = db.get(finance['FundingProof'], baseline.settlement_id)
         if proof is None:
             fail('funded_refund_independent_funding_proof_required')
@@ -161,8 +331,13 @@ def install(ns):
         decision = db.get(finance['FundingDecision'], proof.request_id)
         absorption = db.get(finance['FundingAbsorption'], proof.request_id)
         payload = parsed(request.payload_json, request.payload_hash)
+        if payload['kind'] == 'external_receipt':
+            funding = external_evidence(db, baseline, paid, snapshot, proof, request, decision, payload)
+            return snapshot, dict(funding, **cash_basis)
         if payload['kind'] != 'platform_absorption':
             fail('funded_refund_funding_source_unsupported')
+        if baseline.cost > paid:
+            fail('funded_refund_source_cash_or_economics_mismatch')
         evidence = parsed(proof.evidence_json, proof.evidence_hash)
         fact = parsed(absorption.evidence_json, absorption.evidence_hash)
         if (request.settlement_id != baseline.settlement_id or absorption.settlement_id != baseline.settlement_id
@@ -191,8 +366,6 @@ def install(ns):
                 or not isinstance(tx.created_at, datetime) or not isinstance(baseline.created_at, datetime)
                 or evidence['transaction_id'] != tx.id):
             fail('funded_refund_funding_transaction_mismatch')
-        def utc(dt):
-            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
         if utc(confirmation.created_at) < max(utc(tx.created_at), utc(baseline.created_at)) or utc(confirmation.created_at) > datetime.now(timezone.utc):
             fail('funded_refund_funding_time_unproven')
         declared = {a['position_id']: money(a['amount'], True) for a in fact['allocations']}
@@ -213,14 +386,18 @@ def install(ns):
         return snapshot, dict(amount=str(gap), source='platform_absorption', request_id=request.id,
             proof_hash=proof.evidence_hash, absorption_hash=absorption.evidence_hash,
             transaction_id=tx.id, allocations={k: str(v) for k, v in declared.items()},
-            confirmed_at=utc(confirmation.created_at).isoformat(), payment_ids=payment_ids,
+            confirmed_at=utc(confirmation.created_at).isoformat(), **cash_basis,
             bearer=dict(participant_type='platform', participant_id='platform'), bank_receipt_verified=False)
 
-    def target(baseline, snapshot, paid, cumulative, gap):
+    def target(baseline, snapshot, paid, cumulative, gap, *, external=False):
         gross = (baseline.revenue * cumulative / paid).quantize(CENT, rounding=ROUND_HALF_UP)
-        cost = (baseline.cost * cumulative / paid).quantize(CENT, rounding=ROUND_HALF_UP)
+        if external and baseline.cost > paid:
+            parts = allocation([baseline.cost] + [snapshot['shares'][k] for k in SHARES], gross)
+            cost, shares = parts[0], dict(zip(SHARES, parts[1:]))
+        else:
+            cost = (baseline.cost * cumulative / paid).quantize(CENT, rounding=ROUND_HALF_UP)
+            shares = dict(zip(SHARES, allocation([snapshot['shares'][k] for k in SHARES], gross - cost)))
         profit = gross - cost
-        shares = dict(zip(SHARES, allocation([snapshot['shares'][k] for k in SHARES], profit)))
         # The residual is the rounded funded revenue, not another rounded cash leg.
         absorption = gross - cumulative
         if not 0 <= absorption <= gap:
@@ -237,7 +414,7 @@ def install(ns):
             fail('funded_refund_source_entry_conservation_failed')
         return dict(gross=gross, cost=cost, profit=profit, shares=shares, absorption=absorption, entries=entries)
 
-    def build(db, refund, bindings, *, lock=False):
+    def build(db, refund, bindings, *, lock=False, apply_exception=True, require_funded=True, actor='system'):
         Order, Refund, Settlement = ns['Order'], ns['Refund'], ns['Settlement']
         order_query = select(Order).where(Order.id == refund.order_id)
         order = db.scalar(order_query.with_for_update().execution_options(populate_existing=True) if lock else order_query)
@@ -252,7 +429,9 @@ def install(ns):
         if callable(change) and change(db, refund):
             fail('funded_refund_ordinary_only')
         exception = ns.get('settlement_parties', {}).get('cost_exception')
-        if callable(exception) and exception(db, refund.id):
+        approved_exception = callable(exception) and exception(db, refund.id)
+        cost_hooks = ns.get('settlement_funded_cost_exception', {})
+        if apply_exception and approved_exception and not callable(cost_hooks.get('apply')):
             fail('funded_refund_cost_exception_combination_requires_explicit_plan')
         segments = plan.get('segments', [plan])
         supplied = {b['segment_id']: b for b in bindings}
@@ -271,9 +450,9 @@ def install(ns):
             Payment.order_id == order.id, Payment.status == 'paid'))), Decimal(0))
         completed_total = sum((money(r.amount, True) for r in db.scalars(select(Refund).where(
             Refund.order_id == order.id, Refund.status == 'completed'))), Decimal(0))
-        if completed_total > paid_total:
+        if completed_total > paid_total and not any(s.get('calculation_version') == 'economic-segment-refund-v1' for s in segments):
             fail('funded_refund_buyer_cash_cap_exceeded')
-        refs, used_payments = [], set()
+        refs, cash_claims, extra_caps = [], [], {}
         old_plan = db.get(Plan, refund.id)
         old_payload = parsed(old_plan.payload_json, old_plan.payload_hash) if old_plan else None
         for segment in sorted(segments, key=lambda p: supplied[p['segment_id']]['reference_settlement_id']):
@@ -292,15 +471,27 @@ def install(ns):
             paid, cumulative, amount = (money(segment[k], True) for k in ('original_amount', 'cumulative_refund_amount', 'refund_amount'))
             if not amount <= cumulative <= paid:
                 fail('funded_refund_source_cash_cap_exceeded')
-            snapshot, funding = source_evidence(db, b, paid)
-            if used_payments.intersection(funding['payment_ids']):
+            snapshot, funding = source_evidence(db, b, paid, segment=segment, refund=refund)
+            claim = dict(reference_settlement_id=b.settlement_id, funding=funding)
+            def overlaps(other):
+                if other['reference_settlement_id'] == b.settlement_id:
+                    return False
+                if not set(other['funding']['payment_ids']).intersection(funding['payment_ids']):
+                    return False
+                left, right = other['funding'].get('economic_basis'), funding.get('economic_basis')
+                if left and right:
+                    return left['key'] == right['key']
+                basis, plain_id = (left, b.settlement_id) if left else (right, other['reference_settlement_id'])
+                return not basis or plain_id not in basis['source_baseline_ids']
+            if any(overlaps(other) for other in cash_claims):
                 fail('funded_refund_overlapping_source_cash_basis')
-            used_payments.update(funding['payment_ids'])
+            cash_claims.append(claim)
+            for pid, value in (funding.get('economic_basis') or {}).get('payment_caps', {}).items():
+                extra_caps[pid] = max(extra_caps.get(pid, Decimal(0)), money(value))
             for reserved in db.scalars(select(Plan).where(Plan.order_id == order.id, Plan.refund_id != refund.id)):
                 history = parsed(reserved.payload_json, reserved.payload_hash)
                 for older in history['references']:
-                    if (older['reference_settlement_id'] != b.settlement_id
-                            and set(older['funding']['payment_ids']).intersection(funding['payment_ids'])):
+                    if overlaps(older):
                         fail('funded_refund_overlapping_reserved_cash_basis')
             prior, prior_ids = Decimal(0), []
             for old in db.scalars(select(Slice).where(Slice.source_settlement_id == b.settlement_id, Slice.refund_id != refund.id)):
@@ -314,8 +505,9 @@ def install(ns):
                 prior_ids.append(old.refund_id)
             if prior != cumulative - amount and not old_payload:
                 fail('funded_refund_cumulative_history_conflict')
-            previous = target(b, snapshot, paid, cumulative - amount, money(funding['amount']))
-            current = target(b, snapshot, paid, cumulative, money(funding['amount']))
+            external = funding['source'] == 'external_receipt'
+            previous = target(b, snapshot, paid, cumulative - amount, money(funding['amount']), external=external)
+            current = target(b, snapshot, paid, cumulative, money(funding['amount']), external=external)
             shares = {k: previous['shares'][k] - current['shares'][k] for k in SHARES}
             entries = [dict(e, amount=str(money(e['amount']) - money(p['amount']))) for e, p in zip(current['entries'], previous['entries'])]
             if any(money(e['amount']) < 0 for e in entries):
@@ -327,6 +519,14 @@ def install(ns):
                 shares={k: str(v) for k, v in shares.items()}, entries=entries, funding=funding,
                 absorption_reversal=str(current['absorption'] - previous['absorption']),
                 cumulative_absorption_reversal=str(current['absorption']), prior_refund_ids=sorted(prior_ids), segment_plan_hash=digest(canonical(segment)))
+            if external:
+                returned = current['absorption'] - previous['absorption']
+                ref.update(absorption_reversal='0.00', cumulative_absorption_reversal='0.00',
+                    external_funding_return=str(returned), cumulative_external_funding_return=str(current['absorption']),
+                    funding_returns=[dict(bearer=funding['bearer'], currency=b.currency, amount=str(returned),
+                        source_settlement_id=b.settlement_id, funding_request_id=funding['request_id'], funding_proof_hash=funding['proof_hash'],
+                        manual_evidence_id=funding['manual_evidence_id'], manual_evidence_hash=funding['manual_evidence_hash'],
+                        status='unpaid', execution_policy='offset_or_independent_review_payout')])
             if old_payload:
                 old_refs = [r for r in old_payload['references'] if r['reference_settlement_id'] == b.settlement_id]
                 if len(old_refs) != 1:
@@ -334,10 +534,21 @@ def install(ns):
                 ref['prior_refund_ids'] = old_refs[0]['prior_refund_ids']
             # Legacy/other adapters must not already have consumed this source.
             posted_ids = select(Posting.settlement_id)
+            transfers = []
             for other in db.scalars(select(Baseline).where(Baseline.reference_settlement_id == b.settlement_id,
                     Baseline.revenue < 0, Baseline.settlement_id.not_in(posted_ids))):
                 other_settlement = db.get(Settlement, other.settlement_id)
                 other_snapshot = parsed(other.snapshot_json, other.snapshot_hash)
+                ctx = other_snapshot.get('segment_context') or {}
+                SegmentEvidence = finance.get('SegmentEvidence')
+                captured = db.get(SegmentEvidence, other.settlement_id) if SegmentEvidence is not None else None
+                if (ctx.get('side') == 'old' and ctx.get('source_settlement_id') == b.settlement_id
+                        and ctx.get('source_baseline_hash') == b.snapshot_hash and captured is not None
+                        and captured.side == 'old' and captured.context_hash == other_snapshot.get('segment_context_hash')
+                        and captured.context_hash == digest(canonical({k: v for k, v in ctx.items() if k not in ('status', 'context_hash')}))):
+                    transfers.append(dict(gross_amount=str(other.revenue), cost_amount=str(other.cost),
+                        profit_amount=str(other.profit), shares=other_snapshot['shares']))
+                    continue
                 if (old_plan is None or other_settlement.refund_id != refund.id
                         or other_snapshot.get('funded_refund_plan_hash') != old_plan.payload_hash):
                     fail('funded_refund_existing_other_reversal_requires_review')
@@ -351,10 +562,20 @@ def install(ns):
                     if (old_plan is None or other_settlement is None or other_settlement.refund_id != refund.id
                             or other_snapshot.get('funded_refund_plan_hash') != old_plan.payload_hash):
                         fail('funded_refund_existing_other_reversal_requires_review')
+            if transfers:
+                finance['check_source_budget'](b, transfers, dict(gross_amount=-current['gross'], cost_amount=-current['cost'],
+                    profit_amount=-current['profit'], shares={k: -v for k, v in current['shares'].items()}))
             refs.append(ref)
         if sum(money(r['buyer_cash_amount']) for r in refs) != money(refund.amount):
             fail('funded_refund_completed_cash_total_mismatch')
-        if not any(r['funding']['source'] == 'platform_absorption' for r in refs):
+        # Deduplicate real cash legs, including verified allocated VC net cash.
+        paid_rows = {p.id: money(p.amount, True) for p in db.scalars(select(Payment).where(Payment.order_id == order.id, Payment.status == 'paid'))}
+        for pid, value in extra_caps.items():
+            paid_rows[pid] = max(paid_rows.get(pid, Decimal(0)), value)
+        if completed_total > sum(paid_rows.values(), Decimal(0)):
+            fail('funded_refund_buyer_cash_cap_exceeded')
+        has_funding = any(r['funding']['source'] in ('platform_absorption', 'external_receipt') for r in refs)
+        if require_funded and not has_funding:
             fail('funded_refund_not_a_funded_source')
         if len({r['currency'] for r in refs}) != 1:
             fail('funded_refund_mixed_currency')
@@ -364,17 +585,38 @@ def install(ns):
                     (parsed(s.payload_json, s.payload_hash) for s in slices), key=canonical) !=
                     sorted(old_payload['references'], key=canonical)):
                 fail('funded_refund_frozen_slices_mismatch')
-        return dict(schema_version=1, kind='confirmed_funded_refund', refund_id=refund.id, order_id=order.id,
+        result = dict(schema_version=1, kind='confirmed_funded_refund', refund_id=refund.id, order_id=order.id,
             rounding_version='cumulative_halfup_gross_cost_highest_averages_roles_subjects_v1',
             currency=refs[0]['currency'], completion_evidence_hash=completion_hash, completion_plan_hash=digest(canonical(plan)),
             buyer_cash_amount=str(money(refund.amount)), references=refs,
             **{k: str(sum(money(r[k]) for r in refs)) for k in ('gross_amount', 'cost_amount', 'profit_amount', 'absorption_reversal')},
             shares={k: str(sum(money(r['shares'][k]) for r in refs)) for k in SHARES},
             adjustment_kind='internal_funding_absorption_reversal', external_paid='0.00', external_recovered='0.00', bank_receipt_verified=False)
+        if not has_funding:
+            result.update(kind='exact_segment_refund_normal_plan', adjustment_kind='ordinary_segment_reversal')
+        if any(r['funding']['source'] == 'external_receipt' for r in refs):
+            result.update(external_funding_return=str(sum((money(r.get('external_funding_return', '0.00')) for r in refs), Decimal(0))),
+                adjustment_kind='supplementary_funding_reversal', external_return_policy='original_payer_entitlement_v1')
+        if -money(result['gross_amount']) != money(result['buyer_cash_amount']) + money(result['absorption_reversal']) + money(result.get('external_funding_return', '0.00')):
+            fail('funded_refund_cash_and_funding_conservation_failed')
+        if apply_exception and approved_exception:
+            if APPLYING_EXCEPTION.get():
+                fail('funded_refund_cost_exception_recursive_basis')
+            token = APPLYING_EXCEPTION.set(True)
+            try:
+                result = cost_hooks['apply'](db, refund, dict(result, status='ready'), actor=actor)
+                if result.get('status') != 'ready':
+                    fail('funded_refund_cost_exception_basis_unavailable')
+                result = {k: v for k, v in result.items() if k != 'status'}
+            finally:
+                APPLYING_EXCEPTION.reset(token)
+        return result
 
-    def basis(db, refund, bindings):
+    def basis(db, refund, bindings, *, apply_exception=True, require_funded=True):
         try:
-            return dict(status='ready', **build(db, refund, bindings))
+            if VALIDATING_SEGMENT.get() or apply_exception and APPLYING_EXCEPTION.get():
+                fail('funded_refund_recursive_basis_forbidden')
+            return dict(status='ready', **build(db, refund, bindings, apply_exception=apply_exception, require_funded=require_funded))
         except HTTPException as exc:
             return dict(status='waiting', reason=exc.detail)
         except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
@@ -383,7 +625,7 @@ def install(ns):
     def freeze(db, refund, bindings, actor='system'):
         with db.begin_nested():
             try:
-                payload = build(db, refund, bindings, lock=True)
+                payload = build(db, refund, bindings, lock=True, actor=actor)
             except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
                 fail('funded_refund_evidence_incomplete')
             raw = canonical(payload)
@@ -403,6 +645,24 @@ def install(ns):
                     buyer_cash_amount=payload['buyer_cash_amount'], financial_gross_amount=payload['gross_amount'],
                     absorption_reversal=payload['absorption_reversal'], bank_receipt_verified=False)
             return dict(status='ready', **payload, plan_hash=digest(raw))
+
+    def return_records(db, refund_id):
+        records = []
+        for row in db.scalars(select(FundingReturn).where(FundingReturn.refund_id == refund_id)):
+            fact = parsed(row.payload_json, row.payload_hash)
+            position = db.get(Position, row.position_id)
+            parent = db.get(Posting, refund_id)
+            if (row.source_settlement_id != fact['source_settlement_id'] or row.currency != fact['currency']
+                    or row.amount != money(fact['amount'], True) or row.participant_type != fact['bearer']['participant_type']
+                    or row.participant_id != fact['bearer']['participant_id'] or fact['status'] != 'unpaid'
+                    or fact['execution_policy'] != 'offset_or_independent_review_payout'
+                    or position is None or parent is None or position.settlement_id != parent.settlement_id
+                    or position.kind != 'funding_return' or position.direction != 'payable' or position.amount != row.amount
+                    or position.participant_type != row.participant_type or position.participant_id != row.participant_id
+                    or position.currency != row.currency):
+                fail('funded_refund_return_entitlement_mismatch')
+            records.append(fact)
+        return sorted(records, key=canonical)
 
     def post(db, refund, bindings, settlement_id, actor='system'):
         with db.begin_nested():
@@ -430,18 +690,34 @@ def install(ns):
             def key(entry):
                 return tuple(entry[k] for k in fields) + (str(money(entry['amount'])),)
             expected = Counter(key(e) for r in refs for e in r['entries'] if money(e['amount']))
+            expected_returns = [r for ref in refs for r in ref.get('funding_returns', []) if money(r['amount']) > 0]
+            return_entries = [dict(kind='funding_return', share_kind='', amount=r['amount'],
+                **{k: r['bearer'][k] for k in ('participant_type', 'participant_id', 'participant_name')}) for r in expected_returns]
+            expected.update(key(e) for e in return_entries)
             actual_positions = db.scalars(select(Position).where(Position.settlement_id == settlement_id)).all()
             if (Counter(key(e) for e in snapshot['entries'] if money(e['amount'])) != expected
                     or Counter(key({**{k: getattr(p, k) for k in fields}, 'amount': p.amount}) for p in actual_positions) != expected
-                    or any(p.direction != ('internal' if p.share_kind == 'platform_fee' else 'receivable')
+                    or any(p.direction != ('payable' if p.kind == 'funding_return' else 'internal' if p.share_kind == 'platform_fee' else 'receivable')
                         or p.order_id != refund.order_id or p.currency != b.currency for p in actual_positions)):
                 fail('funded_refund_capture_positions_mismatch')
+            cost_hooks = ns.get('settlement_funded_cost_exception', {})
+            application = None
+            if frozen.get('funded_cost_exception_application_hash'):
+                if not callable(cost_hooks.get('validate_capture')) or not callable(cost_hooks.get('post')):
+                    fail('funded_refund_cost_capture_contract_required')
+                application = cost_hooks['validate_capture'](db, refund.id, frozen)
             value = dict(refund_id=refund.id, settlement_id=b.settlement_id, baseline_hash=b.snapshot_hash,
                 plan_hash=frozen['plan_hash'], absorption_reversal=frozen['absorption_reversal'],
                 references=[dict(reference_settlement_id=r['reference_settlement_id'], baseline_hash=r['baseline_hash'],
                     funding=r['funding'], absorption_reversal=r['absorption_reversal']) for r in refs],
                 direction='internal', participant_type='platform', participant_id='platform',
                 external_paid='0.00', external_recovered='0.00', bank_receipt_verified=False)
+            if 'external_funding_return' in frozen:
+                value.update(external_funding_return=frozen['external_funding_return'],
+                    funding_returns=[r for ref in refs for r in ref.get('funding_returns', [])],
+                    external_return_policy=frozen['external_return_policy'])
+            if application is not None:
+                value['funded_cost_exception_application_hash'] = application.plan_hash
             raw = canonical(value)
             old = db.get(Posting, refund.id)
             if old:
@@ -450,9 +726,30 @@ def install(ns):
             else:
                 db.add(Posting(refund_id=refund.id, settlement_id=b.settlement_id, plan_hash=frozen['plan_hash'], payload_json=raw, payload_hash=digest(raw)))
                 db.flush()
+                for returned in value.get('funding_returns', []):
+                    if money(returned['amount']) > 0:
+                        encoded = canonical(returned)
+                        candidates = [p for p in actual_positions if p.kind == 'funding_return'
+                            and p.participant_type == returned['bearer']['participant_type'] and p.participant_id == returned['bearer']['participant_id']
+                            and p.amount == money(returned['amount'])]
+                        Mapping = finance.get('RefundPositionSource')
+                        candidates = [p for p in candidates if Mapping is not None and (mapping := db.get(Mapping, p.id)) is not None
+                            and mapping.source_settlement_id == returned['source_settlement_id'] and mapping.settlement_id == settlement_id]
+                        if len(candidates) != 1:
+                            fail('funded_refund_return_position_mapping_required')
+                        db.add(FundingReturn(refund_id=refund.id, source_settlement_id=returned['source_settlement_id'],
+                            position_id=candidates[0].id,
+                            participant_type=returned['bearer']['participant_type'], participant_id=returned['bearer']['participant_id'],
+                            currency=returned['currency'], amount=money(returned['amount']), payload_json=encoded, payload_hash=digest(encoded)))
+                db.flush()
                 audit(db, actor, 'funded_refund_post', refund.id, settlement_id=b.settlement_id,
                     plan_hash=frozen['plan_hash'], evidence_hash=digest(raw), absorption_reversal=frozen['absorption_reversal'],
                     external_paid='0.00', external_recovered='0.00', bank_receipt_verified=False)
+            expected_returns = [r for r in value.get('funding_returns', []) if money(r['amount']) > 0]
+            if return_records(db, refund.id) != sorted(expected_returns, key=canonical):
+                fail('funded_refund_return_entitlement_mismatch')
+            if application is not None:
+                cost_hooks['post'](db, application, settlement_id)
             return dict(status='ready', **value, evidence_hash=digest(raw))
 
     def describe(db, settlement_id):
@@ -473,10 +770,22 @@ def install(ns):
                 or digest(plan.payload_json) != plan.payload_hash or value['baseline_hash'] != baseline.snapshot_hash
                 or parsed(baseline.snapshot_json, baseline.snapshot_hash).get('funded_refund_plan_hash') != row.plan_hash):
             fail('funded_refund_projection_evidence_mismatch')
+        frozen = parsed(plan.payload_json, plan.payload_hash)
+        expected_returns = [r for ref in frozen['references'] for r in ref.get('funding_returns', [])]
+        if (value.get('funding_returns', []) != expected_returns
+                or money(value.get('external_funding_return', '0.00')) != sum((money(r['amount']) for r in expected_returns), Decimal(0))
+                or return_records(db, row.refund_id) != sorted((r for r in expected_returns if money(r['amount']) > 0), key=canonical)):
+            fail('funded_refund_return_entitlement_mismatch')
         recorded = row.created_at.replace(tzinfo=timezone.utc) if row.created_at.tzinfo is None else row.created_at.astimezone(timezone.utc)
-        return dict(value, kind='internal_funding_absorption_reversal', currency=baseline.currency,
+        kind = 'supplementary_funding_reversal' if 'external_funding_return' in value else 'internal_funding_absorption_reversal'
+        return dict(value, kind=kind, currency=baseline.currency,
             recorded_at=recorded.isoformat(), evidence_hash=row.payload_hash)
 
-    hooks = dict(Plan=Plan, Slice=Slice, Posting=Posting, basis=basis, freeze=freeze, post=post, describe=describe)
+    def raw_basis(db, refund, bindings):
+        return basis(db, refund, bindings, apply_exception=False, require_funded=False)
+
+    hooks = dict(Plan=Plan, Slice=Slice, Posting=Posting, FundingReturn=FundingReturn,
+        basis=basis, raw_basis=raw_basis, normal_basis=raw_basis, source_evidence=source_evidence,
+        freeze=freeze, post=post, describe=describe)
     ns['settlement_funded_refund'] = hooks
     return hooks

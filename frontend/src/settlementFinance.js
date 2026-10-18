@@ -140,8 +140,11 @@ export function allocation(position, amount) {
 }
 export function samePayee(position, anchor) {
   try {
-    return position.direction === 'payable' && !!position.participant_id && !position.blocked_reason &&
-      ['cost', 'profit'].includes(position.kind) && position.participant_type === anchor.participant_type &&
+    const kinds = anchor.kind === 'funding_return' ? ['funding_return'] : ['cost', 'profit'];
+    if (!kinds.includes(anchor.kind) || anchor.direction !== 'payable' || anchor.blocked_reason || anchor.status === 'blocked' || cents(anchor.balance) <= 0n) return false;
+    return position.direction === 'payable' && !!position.participant_id && position.participant_id !== 'unassigned' &&
+      position.participant_type !== 'unassigned' && !!position.currency && !position.blocked_reason && position.status !== 'blocked' &&
+      kinds.includes(position.kind) && position.participant_type === anchor.participant_type &&
       position.participant_id === anchor.participant_id && position.currency === anchor.currency && cents(position.balance) > 0n;
   } catch { return false; }
 }
@@ -149,7 +152,7 @@ export function paymentSelection(anchor, rows, ids, amounts) {
   if (!ids.length || ids.length > 1000 || new Set(ids).size !== ids.length) throw new Error('请选择 1 至 1000 条不重复的付款资金行');
   const allocations = [...ids].sort().map(id => {
     const row = rows.find(item => item.id === id);
-    if (!row || !samePayee(row, anchor)) throw new Error('付款资金行须为同主体、同币种的有效应付成本或利润');
+    if (!row || !samePayee(row, anchor)) throw new Error('付款资金行须为同主体、同币种的有效应付；补差返还须独立成组，不与成本利润混付');
     return allocation(row, amounts[id]);
   });
   return { allocations, total: transactionAmount({ allocations }) };
@@ -167,6 +170,7 @@ export async function payablePositions(api, anchor, scope, current) {
   return current() ? rows.sort((a, b) => (a.kind === 'cost' ? 0 : 1) - (b.kind === 'cost' ? 0 : 1) || a.id.localeCompare(b.id)) : null;
 }
 const errorLabels = {
+  funding_return_requires_manual_review: '补差返还只能人工登记付款，并由另一位操作者独立复核。',
   opposite_party_required: '须由对侧独立审批人处理，申请人及同侧人员不能审批。',
   exception_version_conflict: '成本例外已被处理或版本变化，请刷新后核对。',
   category_weights_must_equal_100: '每个收益类别的权重须分别合计100%。',

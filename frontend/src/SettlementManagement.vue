@@ -45,25 +45,13 @@ async function loadOptions(kind, targetPage = 1) {
 }
 async function chooseRefund() {
   const row = refunds.value.find(r => r.id === exception.refund_id);
-  selectedRefund.value = row || null; refundBasis.value = []; costSources.value = []; sourcesReady.value = false; exception.source_allocations = [];
+  selectedRefund.value = row || null; refundBasis.value = []; costSources.value = []; sourcesReady.value = false; exception.source_allocations = []; error.value = '';
   if (!row) return;
   const sequence = ++optionSequence, key = context(); optionsBusy.value = true;
   try {
-    const rows = await sourceReport(row, () => sequence === optionSequence && key === context() && selectedRefund.value === row);
-    const negative = rows.find(r => r.refund_id === row.id && r.order_id === row.order_id);
-    if (negative && sequence === optionSequence && key === context() && selectedRefund.value === row) {
-      const path = side.value === 'provider' ? `/enterprise-settlements/${encodeURIComponent(negative.id)}` : `/settlements/${encodeURIComponent(negative.id)}/detail`;
-      const { data } = await props.api.get(path, { params: scope() });
-      const adjustment = data.refund_adjustment;
-      if (adjustment?.refund_id !== row.id) throw new Error('退款清算证据关联不匹配');
-      const basis = adjustment.financial_basis;
-      if (basis?.status !== 'ready') throw new Error('退款清算最终基线尚未就绪，不能申请成本例外');
-      if (basis?.status === 'ready' && basis.references?.length > 1) negative.economic_segments = basis.references;
-      else if (negative.economic_segments?.length > 1 || basis?.references?.length > 1 || basis?.kind === 'multi_source_refund') throw new Error('多段退款最终基线尚未就绪，不能申请成本例外');
-    }
+    const { data } = await props.api.get('/settlement-cost-exceptions/basis', { params: { ...scope(), refund_id: row.id } });
     if (sequence === optionSequence && key === context() && selectedRefund.value === row) {
-      refundBasis.value = rows.filter(r => r.order_id === row.order_id && r.baseline_hash);
-      costSources.value = costExceptionSources(row, rows);
+      costSources.value = costExceptionSources(row, [], data);
       exception.source_allocations = costSources.value.map(s => ({ segment_id: s.segment_id, baseline_id: s.baseline_id, retained_cost: '0.00', evidence_refs: '' }));
       sourcesReady.value = true;
     }
