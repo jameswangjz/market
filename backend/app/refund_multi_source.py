@@ -6,9 +6,11 @@ from sqlalchemy import Column, ForeignKey, String, Text, event, select
 
 from .refund_execution import canonical, digest
 from .refund_execution_resources import strict_json
+from .settlement_multi_cost_exception import install as install_multi_cost
 
 
 def install(ns, completed_evidence, money, segment_values, shares):
+    cost = install_multi_cost(ns, money)
     class Manifest(ns['Base']):
         __tablename__ = 'ordinary_refund_multi_source_manifests'
         settlement_id = Column(ForeignKey('settlements.id'), primary_key=True)
@@ -61,29 +63,28 @@ def install(ns, completed_evidence, money, segment_values, shares):
                     continue
                 if r['baseline_hash'] != source.snapshot_hash:
                     fail('multi_source_reserved_baseline_mismatch')
-                for k in used:
-                    used[k] += money(-Decimal(r[k]))
+                normal = r.get('default_basis', r)
+                used['gross_amount'] += money(-Decimal(r['gross_amount']))
+                used['cost_amount'] += money(-Decimal(r['cost_amount']))
+                used['profit_amount'] += money(-Decimal(normal['profit_amount']))
                 for k in shares:
-                    used_shares[k] += money(-Decimal(r['shares'][k]))
+                    used_shares[k] += money(-Decimal(normal['shares'][k]))
             source_shares = strict_json(source.snapshot_json)['shares']
             if (used['gross_amount'] > source.revenue or used['cost_amount'] > source.cost
                     or used['profit_amount'] > source.profit
                     or any(used_shares[k] > Decimal(source_shares[k]) for k in shares)):
                 fail(dict(segment_id=ref['segment_id'], reason='multi_source_reversal_exceeds_final_baseline'))
 
-    def financial_basis(db, refund, plan):
+    def raw_multi_basis(db, refund, plan=None, *, apply_exception=False):
         try:
             refund, verified, evidence, _ = completed_evidence(db, refund)
+            if plan is None:
+                plan = verified
             if verified != plan:
                 fail('multi_source_completion_plan_mismatch')
             segments = plan['segments']
             if len(segments) < 2 or len({p['segment_id'] for p in segments}) != len(segments):
                 fail('unique_multi_source_segments_required')
-            approved = ns.get('settlement_parties', {}).get('cost_exception')
-            if not callable(approved):
-                fail('multi_source_cost_exception_evidence_unavailable')
-            if approved(db, refund.id):
-                fail('multi_source_cost_exception_plan_required')
             if any(p['source_order_id'] != refund.order_id or
                    p['calculation_version'] != 'economic-segment-refund-v1' for p in segments):
                 fail('multi_source_verified_revised_segments_required')
@@ -141,15 +142,35 @@ def install(ns, completed_evidence, money, segment_values, shares):
                       for k in ('gross_amount', 'cost_amount', 'profit_amount')}
             if totals['gross_amount'] != -money(refund.amount):
                 fail('multi_source_refund_total_mismatch')
-            return dict(status='ready', schema_version=1, kind='multi_source_refund', refund_id=refund.id,
+            ordinary = dict(status='ready', schema_version=1, kind='multi_source_refund', refund_id=refund.id,
                 order_id=refund.order_id, currency=refs[0]['currency'], reference_settlement_id='',
                 references=refs, completion_evidence_hash=digest(strict_json(evidence)),
                 completion_plan_hash=digest(plan), **{k: str(v) for k, v in totals.items()},
                 shares={k: str(sum((Decimal(r['shares'][k]) for r in refs), Decimal(0))) for k in shares})
+            if not apply_exception:
+                return ordinary
+            parties = ns.get('settlement_parties', {})
+            hook = parties.get('cost_exception_multi_basis')
+            connection = db.connection()
+            if connection.dialect.name == 'sqlite' and not connection.connection.driver_connection.in_transaction:
+                # Releasing the first SAVEPOINT must not commit the application
+                # before the caller's later financial capture can roll it back.
+                connection.exec_driver_sql('BEGIN')
+            with db.begin_nested():
+                proof = hook(db, refund, refs) if callable(hook) else None
+                approved = parties.get('cost_exception')
+                if proof is None and (not callable(approved) or approved(db, refund.id)):
+                    fail('multi_source_cost_exception_plan_required')
+                result = cost['apply'](db, refund, ordinary, proof)
+                source_budgets(db, refund, result['references'])
+                return result
         except HTTPException as exc:
             return dict(status='waiting', reason=exc.detail)
         except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
             return dict(status='waiting', reason='multi_source_final_evidence_invalid')
+
+    def financial_basis(db, refund, plan):
+        return raw_multi_basis(db, refund, plan, apply_exception=True)
 
     def freeze(db, settlement, refund, basis, actor):
         payload = dict(basis, settlement_id=settlement.id)
@@ -195,4 +216,7 @@ def install(ns, completed_evidence, money, segment_values, shares):
         except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
             return dict(status='waiting', reason='multi_source_final_evidence_invalid')
 
-    return dict(Model=Manifest, financial_basis=financial_basis, freeze=freeze, capture_manifest=capture_manifest)
+    hooks = dict(Model=Manifest, financial_basis=financial_basis, raw_multi_basis=raw_multi_basis,
+                 freeze=freeze, capture_manifest=capture_manifest)
+    ns['refund_multi_source'] = hooks
+    return hooks

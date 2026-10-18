@@ -137,7 +137,13 @@ def install(ns):
             cost = -money(-Decimal(str(result['cost_amount'])))
             profit = -money(-Decimal(str(result['profit_amount'])))
             shares = {k: -money(-Decimal(str(result['shares'][k]))) for k in SHARES}
-            if (revenue != -money(refund.amount) or revenue - cost != profit or
+            funded = result.get('kind') == 'confirmed_funded_refund'
+            buyer_amount = money(refund.amount)
+            if funded and (money(result['buyer_cash_amount']) != buyer_amount
+                    or revenue != -buyer_amount - money(result['absorption_reversal'])
+                    or money(result['external_paid']) != 0 or money(result['external_recovered']) != 0):
+                raise ValueError('funded buyer cash mismatch')
+            if ((not funded and revenue != -buyer_amount) or revenue - cost != profit or
                     sum(shares.values()) != profit or not result.get('reference_settlement_id') or
                     not result.get('baseline_hash') or result['currency'] != segment['economic_snapshot']['currency']):
                 raise ValueError('financial basis mismatch')
@@ -145,6 +151,8 @@ def install(ns):
                         baseline_hash=result['baseline_hash'], currency=result['currency'],
                         gross_amount=str(revenue), cost_amount=str(cost), profit_amount=str(profit),
                         shares={k: str(v) for k, v in shares.items()})
+            if funded:
+                values = dict(result, **values)
             if revised:
                 values.update({k: result[k] for k in ('segment_id', 'window_hash', 'segment_context_hash',
                                                       'cumulative_refund_amount', 'original_amount')})
@@ -184,6 +192,9 @@ def install(ns):
         if not link:
             raise HTTPException(409, 'legacy_refund_requires_final_baseline_review')
         refund = db.get(ns['Refund'], settlement.refund_id)
+        funded_adapter = ns.get('settlement_funded_refund_capture')
+        if funded_adapter:
+            funded_adapter['guard_order'](db, settlement)
         create(db, refund, actor)  # Revalidate the independent completion proof.
         result = financial_basis(db, refund, strict_json(link.evidence_json)['economic_plan'])
         if result['status'] != 'ready':
@@ -212,6 +223,8 @@ def install(ns):
         record_assessment(db, settlement, result, actor)
         if result.get('kind') == 'multi_source_refund':
             multi['freeze'](db, settlement, refund, result, actor)
+        elif result.get('kind') == 'confirmed_funded_refund':
+            funded_adapter['freeze'](db, refund, result, actor)
         ns['audit'](db, actor, 'refund_final_baseline_review', 'settlement', settlement.settlement_no,
                     category='settlement', business_domain='settlement', order_id=settlement.order_id,
                     before=before, after=result)
@@ -437,9 +450,11 @@ def install(ns):
         return 'settlement_generated'
 
     multi = install_multi_source(ns, completed_evidence, money, segment_values, SHARES)
+    ns['settlement_funded_refund_evidence'] = dict(completed_evidence=completed_evidence)
     hooks = dict(Model=RefundSettlementLink, FinancialAssessment=FinancialAssessment,
                  negative_settlement=negative_settlement, describe=describe, ledger_status=ledger_status,
                  financial_basis=financial_basis, assessment=assessment, prepare_lock=prepare_lock,
-                 MultiSourceManifest=multi['Model'], capture_manifest=multi['capture_manifest'])
+                 MultiSourceManifest=multi['Model'], capture_manifest=multi['capture_manifest'],
+                 raw_multi_basis=multi['raw_multi_basis'])
     ns['refund_settlement'] = hooks
     return hooks

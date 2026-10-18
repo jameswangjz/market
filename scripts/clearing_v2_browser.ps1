@@ -49,7 +49,7 @@ try {
     Cdp 'Page.navigate' @{url="$BaseUrl/console"}|Out-Null
     WaitJs 'document.readyState==="complete"' 20
     Enter 'platform'
-    Check 'document.querySelectorAll(".settlement-finance > .console-tabs")[0].querySelectorAll("[role=tab]").length===4' 'Four standard workspace tabs render'
+    Check '(()=>{const tabs=[...document.querySelectorAll(".settlement-finance > .console-tabs")[0].querySelectorAll("[role=tab]")];return [4,5].includes(tabs.length)&&tabs.slice(0,4).every((t,i)=>t.textContent.includes(["\u6e05\u7b97\u62a5\u8868","\u5e94\u6536\u5e94\u4ed8","\u8d44\u91d1\u51ed\u8bc1","\u5e74\u5ea6\u5feb\u7167"][i]))&&(tabs.length===4||tabs[4].textContent.includes("\u4e3b\u4f53\u4e0e\u6210\u672c\u4f8b\u5916"))})()' 'Four standard workspace tabs retain order, with optional authorized management tab'
     if(-not $ReadOnly){Check 'document.querySelector(".settlement-finance").textContent.includes("150.00") && document.querySelector(".settlement-finance").textContent.includes("140.00")' 'Report displays income150 and provider cost-plus-profit140'}
     foreach($i in @(1,2,3,0)){Tab $i}
     if(-not $ReadOnly){

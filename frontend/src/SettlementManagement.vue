@@ -4,8 +4,9 @@ import { Save, Plus, Trash2, Check, X, RefreshCw, Eye } from 'lucide-vue-next';
 import ConsoleTabs from './ConsoleTabs.vue';
 import PaginationControls from './PaginationControls.vue';
 import SettlementFundingManagement from './SettlementFundingManagement.vue';
+import SettlementManualFunding from './SettlementManualFunding.vue';
 import { financeContext, financeScope, safeError, money } from './settlementFinance.js';
-import { partyKinds, managementSide, canDecideCostException, allocationPayload, allocationCandidates, costExceptionPayload, managementSession, managementDirectory } from './settlementManagement.js';
+import { partyKinds, managementSide, canDecideCostException, allocationPayload, allocationCandidates, costExceptionPayload, costExceptionSources, costExceptionTotal, costSourceLabel, costExceptionError, managementSession, managementDirectory } from './settlementManagement.js';
 const props = defineProps({ api: Object, user: Object, enterprise: Object, businessView: String });
 const emit = defineEmits(['changed']);
 const side = computed(() => managementSide(props.user, props.enterprise, props.businessView));
@@ -15,13 +16,18 @@ const session = managementSession(props.api, context, scope, () => !!side.value)
 const tab = ref('parties'), parties = ref([]), exceptions = ref([]), detail = ref(null), editing = ref('');
 const busy = ref(false), saving = ref(false), error = ref(''), notice = ref(''), productId = ref(''), configuration = ref(null), allocations = ref([]), decision = ref(null), page = ref(1), pageSize = ref(20);
 const products = ref([]), refunds = ref([]), selectedRefund = ref(null), refundBasis = ref([]), optionsBusy = ref(false), optionQuery = ref(''), optionPage = ref(1), optionPageSize = ref(100), optionTotal = ref(0);
-let optionSequence = 0;
+const costSources = ref([]), sourcesReady = ref(false), evidenceRows = ref([]), evidenceLoading = ref(false);
+const fundingRevision = ref(0), manualRevision = ref(0);
+let optionSequence = 0, evidenceSequence = 0;
 const party = reactive({ name: '', kind: 'provider', enterprise_id: '', user_id: '' });
-const exception = reactive({ refund_id: '', retained_cost: '', bearer_participant_id: '', reason: '', evidence_refs: '' });
+const exception = reactive({ refund_id: '', retained_cost: '', bearer_participant_id: '', reason: '', evidence_refs: '', source_allocations: [] });
 const reason = ref('');
 const tabs = [{ key: 'parties', label: '收益主体' }, { key: 'allocations', label: '产品分配' }, { key: 'exceptions', label: '成本例外' }, { key: 'funding', label: '补差责任' }];
 const visibleRows = computed(() => (tab.value === 'exceptions' ? exceptions.value : parties.value).slice((page.value - 1) * pageSize.value, page.value * pageSize.value));
 const productParties = computed(() => allocationCandidates(parties.value, configuration.value));
+const costTotal = computed(() => { try { return costExceptionTotal(exception.source_allocations); } catch { return null; } });
+const shownEvidence = computed(() => decision.value?.row || detail.value);
+const shownSources = computed(() => (shownEvidence.value?.source_allocations || []).map(row => ({ ...row, ...costSourceLabel(row, evidenceRows.value) })));
 function resize(value) { pageSize.value = value; page.value = 1; }
 async function loadOptions(kind, targetPage = 1) {
   if (!side.value) return;
@@ -39,14 +45,49 @@ async function loadOptions(kind, targetPage = 1) {
 }
 async function chooseRefund() {
   const row = refunds.value.find(r => r.id === exception.refund_id);
-  selectedRefund.value = row || null; refundBasis.value = [];
+  selectedRefund.value = row || null; refundBasis.value = []; costSources.value = []; sourcesReady.value = false; exception.source_allocations = [];
   if (!row) return;
   const sequence = ++optionSequence, key = context(); optionsBusy.value = true;
   try {
-    const { data } = await props.api.get('/settlement-reporting/report', { params: { ...scope(), start: '1900-01-01', end: '9998-12-31', q: row.order_no || row.product_name || '', page: 1, page_size: 500 } });
-    if (sequence === optionSequence && key === context() && selectedRefund.value === row) refundBasis.value = (data.items || []).filter(r => r.order_id === row.order_id && r.baseline_hash);
+    const rows = await sourceReport(row, () => sequence === optionSequence && key === context() && selectedRefund.value === row);
+    const negative = rows.find(r => r.refund_id === row.id && r.order_id === row.order_id);
+    if (negative && sequence === optionSequence && key === context() && selectedRefund.value === row) {
+      const path = side.value === 'provider' ? `/enterprise-settlements/${encodeURIComponent(negative.id)}` : `/settlements/${encodeURIComponent(negative.id)}/detail`;
+      const { data } = await props.api.get(path, { params: scope() });
+      const adjustment = data.refund_adjustment;
+      if (adjustment?.refund_id !== row.id) throw new Error('退款清算证据关联不匹配');
+      const basis = adjustment.financial_basis;
+      if (basis?.status !== 'ready') throw new Error('退款清算最终基线尚未就绪，不能申请成本例外');
+      if (basis?.status === 'ready' && basis.references?.length > 1) negative.economic_segments = basis.references;
+      else if (negative.economic_segments?.length > 1 || basis?.references?.length > 1 || basis?.kind === 'multi_source_refund') throw new Error('多段退款最终基线尚未就绪，不能申请成本例外');
+    }
+    if (sequence === optionSequence && key === context() && selectedRefund.value === row) {
+      refundBasis.value = rows.filter(r => r.order_id === row.order_id && r.baseline_hash);
+      costSources.value = costExceptionSources(row, rows);
+      exception.source_allocations = costSources.value.map(s => ({ segment_id: s.segment_id, baseline_id: s.baseline_id, retained_cost: '0.00', evidence_refs: '' }));
+      sourcesReady.value = true;
+    }
   } catch (e) { if (sequence === optionSequence && key === context()) error.value = safeError(e); }
   finally { if (sequence === optionSequence && key === context()) optionsBusy.value = false; }
+}
+async function sourceReport(refund, current, required = []) {
+  const rows = [];
+  for (let page = 1; current(); page++) {
+    const { data } = await props.api.get('/settlement-reporting/report', { params: { ...scope(), start: '1900-01-01', end: '9998-12-31', q: refund.order_no || '', page, page_size: 500 } });
+    if (!current()) return [];
+    rows.push(...(data.items || []).filter(r => r.order_id === refund.order_id));
+    if (required.length && required.every(id => rows.some(r => r.id === id)) || !data.items?.length || page * 500 >= (data.total ?? data.items.length)) break;
+  }
+  return rows;
+}
+async function showEvidence(row) {
+  if (saving.value) return;
+  detail.value = row; evidenceRows.value = []; evidenceLoading.value = false; const sequence = ++evidenceSequence, key = context();
+  if (!row.source_allocations?.length) return;
+  evidenceLoading.value = true;
+  try { const rows = await sourceReport(row, () => sequence === evidenceSequence && key === context(), row.source_allocations.map(s => s.baseline_id)); if (sequence === evidenceSequence && key === context()) evidenceRows.value = rows; }
+  catch (e) { if (sequence === evidenceSequence && key === context()) error.value = safeError(e); }
+  finally { if (sequence === evidenceSequence && key === context()) evidenceLoading.value = false; }
 }
 const statusLabel = value => ({ pending: '待对侧审批', approved: '已批准', rejected: '已拒绝' })[value] || value;
 async function load() {
@@ -66,8 +107,8 @@ async function loadConfiguration() {
   catch (e) { error.value = safeError(e); }
   finally { if (key === context()) busy.value = false; }
 }
-function open(kind) { if (saving.value) return; editing.value = kind; decision.value = null; error.value = ''; notice.value = ''; if (kind === 'party') Object.assign(party, { name: '', kind: 'provider', enterprise_id: side.value === 'provider' ? props.enterprise.id : '', user_id: '' }); else { Object.assign(exception, { refund_id: '', retained_cost: '', bearer_participant_id: '', reason: '', evidence_refs: '' }); selectedRefund.value = null; refundBasis.value = []; optionQuery.value = ''; loadOptions('refunds'); } }
-function review(row, value) { if (!canDecideCostException(row, props.user, side.value) || saving.value) return; decision.value = { row, value }; reason.value = ''; editing.value = ''; }
+function open(kind) { if (saving.value) return; editing.value = kind; decision.value = null; detail.value = null; evidenceSequence++; evidenceRows.value = []; evidenceLoading.value = false; error.value = ''; notice.value = ''; if (kind === 'party') Object.assign(party, { name: '', kind: 'provider', enterprise_id: side.value === 'provider' ? props.enterprise.id : '', user_id: '' }); else { Object.assign(exception, { refund_id: '', retained_cost: '', bearer_participant_id: '', reason: '', evidence_refs: '', source_allocations: [] }); selectedRefund.value = null; refundBasis.value = []; costSources.value = []; sourcesReady.value = false; optionQuery.value = ''; loadOptions('refunds'); } }
+function review(row, value) { if (!canDecideCostException(row, props.user, side.value) || saving.value) return; decision.value = { row, value }; reason.value = ''; editing.value = ''; showEvidence(row); }
 async function submit(kind) {
   if (saving.value || !side.value) return;
   const key = context(); saving.value = true; error.value = ''; notice.value = '';
@@ -80,27 +121,29 @@ async function submit(kind) {
     } else if (kind === 'allocations') {
       if (!configuration.value || configuration.value.product_id !== productId.value.trim()) throw new Error('请先读取当前产品配置');
       path = `/settlement-parties/products/${encodeURIComponent(configuration.value.product_id)}/allocations`; payload = { allocations: allocationPayload(allocations.value, productParties.value) };
-    } else if (kind === 'exception') { if (!selectedRefund.value || selectedRefund.value.id !== exception.refund_id || optionsBusy.value) throw new Error('请先选择并核对退款对象'); path = '/settlement-cost-exceptions'; payload = costExceptionPayload(exception); }
+    } else if (kind === 'exception') { if (!selectedRefund.value || selectedRefund.value.id !== exception.refund_id || optionsBusy.value || !sourcesReady.value) throw new Error('请先选择并核对退款对象及来源'); path = '/settlement-cost-exceptions'; payload = costExceptionPayload(exception, costSources.value); }
     else {
       const action = decision.value;
       if (!action || !canDecideCostException(action.row, props.user, side.value)) throw new Error('仅对侧独立审批人可审批');
+      if (evidenceLoading.value) throw new Error('请等待逐段来源证据读取完成后再审批');
       if (!reason.value.trim()) throw new Error('请填写审批依据');
       path = `/settlement-cost-exceptions/${encodeURIComponent(action.row.id)}/decision`; payload = { decision: action.value, expected_version: action.row.version, reason: reason.value.trim() };
     }
     const done = await session.write(path, payload, data => { if (kind === 'allocations') configuration.value = data; });
     if (!done || key !== context()) return;
-    editing.value = ''; decision.value = null; notice.value = '已保存'; await load();
-  } catch (e) { if (key === context()) error.value = safeError(e); }
+    editing.value = ''; decision.value = null; detail.value = null; evidenceSequence++; evidenceRows.value = []; evidenceLoading.value = false; notice.value = '已保存'; await load();
+  } catch (e) { if (key === context()) error.value = costExceptionError(e); }
   finally { if (key === context()) saving.value = false; }
 }
-watch(() => [context(), tab.value], () => { session.reset(); optionSequence++; products.value = []; refunds.value = []; selectedRefund.value = null; refundBasis.value = []; optionsBusy.value = false; optionQuery.value = ''; parties.value = []; exceptions.value = []; detail.value = null; configuration.value = null; allocations.value = []; productId.value = ''; editing.value = ''; decision.value = null; saving.value = false; busy.value = false; notice.value = ''; page.value = 1; if (side.value && tab.value !== 'funding') { load(); if (tab.value === 'allocations') loadOptions('products'); } }, { immediate: true });
+watch(() => [context(), tab.value], () => { session.reset(); optionSequence++; evidenceSequence++; costSources.value = []; sourcesReady.value = false; exception.source_allocations = []; evidenceRows.value = []; evidenceLoading.value = false; products.value = []; refunds.value = []; selectedRefund.value = null; refundBasis.value = []; optionsBusy.value = false; optionQuery.value = ''; parties.value = []; exceptions.value = []; detail.value = null; configuration.value = null; allocations.value = []; productId.value = ''; editing.value = ''; decision.value = null; saving.value = false; busy.value = false; notice.value = ''; page.value = 1; if (side.value && tab.value !== 'funding') { load(); if (tab.value === 'allocations') loadOptions('products'); } }, { immediate: true });
 watch(productId, () => { configuration.value = null; allocations.value = []; });
-onBeforeUnmount(() => { optionSequence++; session.dispose(); });
+onBeforeUnmount(() => { optionSequence++; evidenceSequence++; session.dispose(); });
 </script>
 <template>
   <section v-if="side" class="settlement-management" aria-label="清算主体与成本例外管理">
     <ConsoleTabs v-model="tab" :tabs="tabs" label="清算管理" />
-    <SettlementFundingManagement v-if="tab === 'funding'" :key="context()" :api="api" :user="user" :enterprise="enterprise" :business-view="businessView" @changed="emit('changed', { kind: 'funding' })" />
+    <SettlementFundingManagement v-if="tab === 'funding'" :key="`${context()}-${fundingRevision}`" :api="api" :user="user" :enterprise="enterprise" :business-view="businessView" @changed="manualRevision++; emit('changed', { kind: 'funding' })" />
+    <SettlementManualFunding v-if="tab === 'funding'" :key="`manual-${context()}-${manualRevision}`" :api="api" :user="user" :enterprise="enterprise" :business-view="businessView" @changed="fundingRevision++; emit('changed', { kind: 'funding' })" />
     <template v-else>
     <div class="toolbar"><button class="icon-btn" aria-label="刷新管理记录" title="刷新管理记录" :disabled="busy || saving" @click="load"><RefreshCw :size="16" /></button><button v-if="tab !== 'allocations'" class="secondary-btn" :disabled="saving || busy" @click="open(tab === 'parties' ? 'party' : 'exception')"><Plus :size="15" />{{ tab === 'parties' ? '登记收益主体' : '申请成本例外' }}</button></div>
     <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="notice" role="status">{{ notice }}</p><p v-if="busy" role="status">正在加载…</p>
@@ -111,21 +154,37 @@ onBeforeUnmount(() => { optionSequence++; session.dispose(); });
         <label>退款对象<select v-model="exception.refund_id" required :disabled="optionsBusy" @change="chooseRefund"><option value="">请选择已批准或已退款记录</option><option v-for="r in refunds" :key="r.id" :value="r.id">{{ r.refund_no || r.settlement_no || r.id }} · {{ r.product_name || r.order_no }} · {{ money(r.amount) }} CNY</option></select></label>
         <PaginationControls :page="optionPage" :page-size="optionPageSize" :total="optionTotal" :busy="optionsBusy" @page="loadOptions('refunds', $event)" @size="optionPageSize = $event; loadOptions('refunds')" />
         <dl v-if="selectedRefund"><dt>原订单</dt><dd>{{ selectedRefund.order_no || selectedRefund.order_id }}</dd><dt>退款金额</dt><dd>{{ money(selectedRefund.amount) }} {{ selectedRefund.currency || 'CNY' }}</dd></dl>
-        <div v-if="selectedRefund" class="table-scroll"><table><thead><tr><th>已冻结清算依据</th><th>批次</th><th>最终校验值</th><th>成本</th></tr></thead><tbody><tr v-for="b in refundBasis" :key="b.id"><td>{{ b.settlement_no }}</td><td>{{ b.batch_no || '—' }}</td><td>{{ b.baseline_hash }}</td><td>{{ money(b.cost_amount) }}</td></tr><tr v-if="!refundBasis.length"><td colspan="4">服务端尚未提供可展示的冻结依据；申请资格仍以服务端校验为准</td></tr></tbody></table></div>
-        <label>保留成本（CNY）<input v-model="exception.retained_cost" required inputmode="decimal" /></label><label>损失承担主体<select v-model="exception.bearer_participant_id" required><option value="">请选择</option><option v-for="p in parties" :key="p.id" :value="p.id">{{ p.name }} · {{ partyKinds[p.kind] }}</option></select></label><label>申请依据<textarea v-model="exception.reason" required maxlength="4000" /></label><label>证据引用（每行一条）<textarea v-model="exception.evidence_refs" required /></label><div class="toolbar"><button class="primary-btn" :disabled="optionsBusy || !selectedRefund"><Save :size="15" />提交申请</button><button type="button" class="secondary-btn" @click="editing = ''"><X :size="15" />取消</button></div>
+        <div v-if="selectedRefund && !costSources.length" class="table-scroll"><table><thead><tr><th>已冻结清算依据</th><th>批次</th><th>最终校验值</th><th>成本</th></tr></thead><tbody><tr v-for="b in refundBasis" :key="b.id"><td>{{ b.settlement_no }}</td><td>{{ b.batch_no || '—' }}</td><td>{{ b.baseline_hash }}</td><td>{{ money(b.cost_amount) }}</td></tr><tr v-if="!refundBasis.length"><td colspan="4">服务端尚未提供可展示的冻结依据；申请资格仍以服务端校验为准</td></tr></tbody></table></div>
+        <template v-if="costSources.length">
+          <section v-for="(source, i) in costSources" :key="source.segment_id" class="cost-source" :data-source-index="i">
+            <h4>来源 {{ i + 1 }} · {{ source.order_no || '来源订单名称未提供' }} · {{ source.settlement_no || '来源清算名称未提供' }}</h4>
+            <dl><dt>原批次</dt><dd>{{ source.batch_no || '未提供' }}</dd><dt>版本</dt><dd>{{ source.version_name || '未提供' }}</dd><dt>本次可保留成本上限</dt><dd>{{ money(source.max_retained_cost) }} CNY</dd><dt>最终基线校验值</dt><dd>{{ source.baseline_hash }}</dd></dl>
+            <label>本段保留成本（CNY）<input v-model="exception.source_allocations[i].retained_cost" inputmode="decimal" maxlength="20" required @input="error = ''" /></label>
+            <label>本段证据引用（每行一条）<textarea v-model="exception.source_allocations[i].evidence_refs" required maxlength="10000" @input="error = ''" /></label>
+          </section>
+          <dl class="cost-total"><dt>整单保留成本合计</dt><dd>{{ money(costTotal) }} CNY · {{ costSources.length }} 个经济段</dd></dl>
+        </template>
+        <label v-else>保留成本（CNY）<input v-model="exception.retained_cost" required inputmode="decimal" /></label><label>损失承担主体<select v-model="exception.bearer_participant_id" required><option value="">请选择</option><option v-for="p in parties" :key="p.id" :value="p.id">{{ p.name }} · {{ partyKinds[p.kind] }}</option></select></label><label>申请依据<textarea v-model="exception.reason" required maxlength="4000" /></label><label v-if="!costSources.length">证据引用（每行一条）<textarea v-model="exception.evidence_refs" required /></label><div class="toolbar"><button class="primary-btn" :disabled="optionsBusy || !selectedRefund || !sourcesReady"><Save :size="15" />提交整单申请</button><button type="button" class="secondary-btn" @click="editing = ''"><X :size="15" />取消</button></div>
       </fieldset></form>
-    <form v-if="decision" class="editor" @submit.prevent="submit('decision')"><h3>{{ decision.value === 'approve' ? '批准' : '拒绝' }}成本例外 · {{ decision.row.id }}</h3><fieldset :disabled="saving"><label>审批依据<textarea v-model="reason" required maxlength="4000" /></label><div class="toolbar"><button class="primary-btn"><Check :size="15" />确认{{ decision.value === 'approve' ? '批准' : '拒绝' }}</button><button type="button" class="secondary-btn" @click="decision = null"><X :size="15" />取消</button></div></fieldset></form>
+    <form v-if="decision" class="editor" @submit.prevent="submit('decision')"><h3>整单{{ decision.value === 'approve' ? '批准' : '拒绝' }}成本例外 · {{ decision.row.id }}</h3><fieldset :disabled="saving"><dl><dt>申请依据</dt><dd>{{ decision.row.reason }}</dd><dt>损失承担主体</dt><dd>{{ decision.row.bearer_participant_name }}</dd><dt>整单保留成本</dt><dd>{{ money(decision.row.retained_cost) }} {{ decision.row.currency }}</dd></dl>
+      <p v-if="evidenceLoading" role="status">正在读取来源名称…</p>
+      <section v-for="(source, i) in shownSources" :key="source.segment_id" class="cost-source"><h4>来源 {{ i + 1 }} · {{ source.order_no || '来源订单名称未提供' }} · {{ source.settlement_no || '来源清算名称未提供' }}</h4><dl><dt>原批次 / 版本</dt><dd>{{ source.batch_no || '未提供' }} / {{ source.version_name || '未提供' }}</dd><dt>本段保留成本</dt><dd>{{ money(source.retained_cost) }} {{ decision.row.currency }}</dd><dt>最终基线校验值</dt><dd>{{ source.baseline_hash }}</dd><dt>本段证据引用</dt><dd v-for="(ref, index) in source.evidence_refs" :key="index">{{ ref }}</dd></dl></section>
+      <label>整单审批依据<textarea v-model="reason" required maxlength="4000" /></label><div class="toolbar"><button class="primary-btn" :disabled="evidenceLoading"><Check :size="15" />确认整单{{ decision.value === 'approve' ? '批准' : '拒绝' }}</button><button type="button" class="secondary-btn" @click="decision = null"><X :size="15" />取消</button></div></fieldset></form>
     <template v-if="tab === 'allocations'">
       <form class="product-filter" @submit.prevent="loadOptions('products')"><label>产品名称检索<input v-model="optionQuery" :disabled="saving" /></label><button class="secondary-btn" :disabled="optionsBusy || saving"><RefreshCw :size="15" />检索</button></form>
       <form class="product-filter" @submit.prevent="loadConfiguration"><label>产品<select v-model="productId" required :disabled="saving || optionsBusy"><option value="">请选择产品</option><option v-for="p in products" :key="p.id" :value="p.id">{{ p.name }} · {{ p.id }}</option></select></label><button class="secondary-btn" :disabled="busy || saving || !productId"><RefreshCw :size="15" />读取配置</button></form>
       <PaginationControls :page="optionPage" :page-size="optionPageSize" :total="optionTotal" :busy="optionsBusy" @page="loadOptions('products', $event)" @size="optionPageSize = $event; loadOptions('products')" />
       <form v-if="configuration" class="editor" @submit.prevent="submit('allocations')"><h3>产品分配 · 版本 {{ configuration.version }}</h3><fieldset :disabled="saving || busy"><div v-for="(row, i) in allocations" :key="i" class="allocation-row"><label>收益主体<select v-model="row.participant_id" required><option value="">请选择</option><option v-for="p in productParties" :key="p.id" :value="p.id">{{ p.name }} · {{ partyKinds[p.kind] }}{{ p.configuredOnly ? ' · 当前产品共享主体' : '' }}</option></select></label><label>类别内权重（%）<input v-model="row.weight" inputmode="decimal" required /></label><button type="button" class="icon-btn" title="移除分配" aria-label="移除分配" @click="allocations.splice(i, 1)"><Trash2 :size="15" /></button></div><div class="toolbar"><button type="button" class="secondary-btn" @click="allocations.push({ participant_id: '', weight: '' })"><Plus :size="15" />增加主体</button><button class="primary-btn"><Save :size="15" />保存新版本</button></div></fieldset></form></template>
-    <div v-else class="table-scroll"><table><thead><tr v-if="tab === 'parties'"><th>名称</th><th>类别</th><th>企业编号</th><th>用户编号</th><th>币种</th></tr><tr v-else><th>申请编号 / 退款关联</th><th>保留成本</th><th>承担主体</th><th>申请侧</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in visibleRows" :key="row.id"><template v-if="tab === 'parties'"><td>{{ row.name }}</td><td>{{ partyKinds[row.kind] }}</td><td>{{ row.enterprise_id || '—' }}</td><td>{{ row.user_id || '—' }}</td><td>{{ row.currency }}</td></template><template v-else><td>{{ row.id }}<br />{{ row.refund_id }}</td><td>{{ money(row.retained_cost) }} {{ row.currency }}</td><td>{{ row.bearer_participant_name }}</td><td>{{ row.creator_side === 'platform' ? '平台' : '提供方' }}</td><td>{{ statusLabel(row.status) }}</td><td><div class="toolbar"><button class="icon-btn" title="查看例外证据" aria-label="查看例外证据" @click="detail = row"><Eye :size="15" /></button><template v-if="canDecideCostException(row, user, side)"><button class="secondary-btn" :disabled="saving" @click="review(row, 'approve')"><Check :size="15" />批准</button><button class="secondary-btn" :disabled="saving" @click="review(row, 'reject')"><X :size="15" />拒绝</button></template></div></td></template></tr><tr v-if="!visibleRows.length"><td :colspan="tab === 'parties' ? 5 : 6" class="empty">暂无记录</td></tr></tbody></table></div>
+    <div v-else class="table-scroll"><table><thead><tr v-if="tab === 'parties'"><th>名称</th><th>类别</th><th>企业编号</th><th>用户编号</th><th>币种</th></tr><tr v-else><th>申请编号 / 退款关联</th><th>保留成本</th><th>承担主体</th><th>申请侧</th><th>状态</th><th>操作</th></tr></thead><tbody><tr v-for="row in visibleRows" :key="row.id"><template v-if="tab === 'parties'"><td>{{ row.name }}</td><td>{{ partyKinds[row.kind] }}</td><td>{{ row.enterprise_id || '—' }}</td><td>{{ row.user_id || '—' }}</td><td>{{ row.currency }}</td></template><template v-else><td>{{ row.id }}<br />{{ row.refund_id }}</td><td>{{ money(row.retained_cost) }} {{ row.currency }}</td><td>{{ row.bearer_participant_name }}</td><td>{{ row.creator_side === 'platform' ? '平台' : '提供方' }}</td><td>{{ statusLabel(row.status) }}</td><td><div class="toolbar"><button class="icon-btn" title="查看例外证据" aria-label="查看例外证据" @click="showEvidence(row)"><Eye :size="15" /></button><template v-if="canDecideCostException(row, user, side)"><button class="secondary-btn" :disabled="saving" @click="review(row, 'approve')"><Check :size="15" />批准</button><button class="secondary-btn" :disabled="saving" @click="review(row, 'reject')"><X :size="15" />拒绝</button></template></div></td></template></tr><tr v-if="!visibleRows.length"><td :colspan="tab === 'parties' ? 5 : 6" class="empty">暂无记录</td></tr></tbody></table></div>
     <PaginationControls v-if="tab !== 'allocations'" :page="page" :page-size="pageSize" :total="(tab === 'exceptions' ? exceptions : parties).length" :busy="busy" @page="page = $event" @size="resize" />
     <aside v-if="detail && tab === 'exceptions'" class="editor"><div class="toolbar"><h3>成本例外证据</h3><button class="icon-btn" title="关闭证据" aria-label="关闭证据" @click="detail = null"><X :size="15" /></button></div><dl><template v-for="[key, label] in [['order_id','订单关联'],['baseline_id','最终基线'],['baseline_hash','基线校验值'],['creator_id','申请人'],['reviewer_id','审批人'],['approved_at','批准时间'],['reason','申请依据'],['decision_reason','审批依据']]" :key="key"><dt>{{ label }}</dt><dd>{{ detail[key] || '—' }}</dd></template><dt>证据引用</dt><dd v-for="(ref, i) in detail.evidence_refs || []" :key="i">{{ ref }}</dd></dl></aside>
+    <section v-if="detail?.source_allocations?.length && !decision" class="editor" aria-label="逐段成本例外证据"><h3>逐段成本例外证据</h3><p v-if="evidenceLoading" role="status">正在读取来源名称…</p><section v-for="(source, i) in shownSources" :key="source.segment_id" class="cost-source"><h4>来源 {{ i + 1 }} · {{ source.order_no || '来源订单名称未提供' }} · {{ source.settlement_no || '来源清算名称未提供' }}</h4><dl><dt>原批次 / 版本</dt><dd>{{ source.batch_no || '未提供' }} / {{ source.version_name || '未提供' }}</dd><dt>本段保留成本</dt><dd>{{ money(source.retained_cost) }} {{ detail.currency }}</dd><dt>最终基线校验值</dt><dd>{{ source.baseline_hash }}</dd><dt>本段证据引用</dt><dd v-for="(ref, index) in source.evidence_refs" :key="index">{{ ref }}</dd></dl></section></section>
     </template>
   </section>
 </template>
 <style scoped>
 .settlement-management{min-width:0;width:100%;font-size:12px;color:#27313f}.toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:12px 0}.editor{border-top:1px solid #e5e6eb;padding:14px 0;margin:16px 0}.editor h3{font-size:14px;margin:0 0 12px}.editor fieldset{border:0;margin:0;padding:0;display:grid;gap:12px;max-width:720px;min-width:0}label{display:grid;gap:5px;min-width:0}input,select,textarea{box-sizing:border-box;width:100%;min-width:0;border:1px solid #d9dde3;border-radius:4px;padding:7px 8px;font:inherit;color:inherit;background:white}input,select{height:34px}textarea{min-height:70px}.product-filter{display:flex;align-items:end;flex-wrap:wrap;gap:10px}.product-filter label{width:320px;max-width:100%}.allocation-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(100px,160px) 32px;align-items:end;gap:8px}.table-scroll{max-width:100%;overflow:auto}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:left;border-bottom:1px solid #e5e6eb;padding:10px;white-space:nowrap}th{background:#f7f8fa;font-weight:500;color:#596575}.empty{padding:28px;text-align:center;color:#697586}.error{color:#bd2929}button{display:inline-flex;align-items:center;justify-content:center;gap:6px}.icon-btn{width:32px;height:32px}dl{display:grid;grid-template-columns:140px minmax(0,1fr);gap:10px;max-width:900px}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}dt{color:#697586}@media(max-width:600px){.allocation-row{grid-template-columns:minmax(0,1fr) 100px 32px}dl{grid-template-columns:1fr;gap:6px}dd{margin-bottom:10px}}
+</style>
+<style scoped>
+.cost-source{min-width:0;border-top:1px solid #e5e6eb;padding:12px 0;display:grid;gap:12px}.cost-source h4{font-size:12px;margin:0;line-height:1.7;overflow-wrap:anywhere}.cost-source dl,.cost-total{margin:0}.cost-total{font-variant-numeric:tabular-nums;font-weight:500}
 </style>

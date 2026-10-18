@@ -33,7 +33,7 @@ FUNDS = ("payable_amount", "paid_amount", "payable_offset_amount", "unpaid_amoun
          "receivable_amount", "recovered_amount", "receivable_offset_amount", "unrecovered_amount", "internal_profit")
 BRIDGE = ("opening_payable", "payable_added", "paid", "payable_offset", "closing_payable",
           "opening_receivable", "receivable_added", "recovered", "receivable_offset", "closing_receivable",
-          "opening_internal_profit", "internal_profit_added", "internal_absorption", "closing_internal_profit")
+          "opening_internal_profit", "internal_profit_added", "internal_absorption", "closing_internal_profit", "internal_absorption_reversal")
 HEADERS = dict(zip(MONEY, ("清算收入", "供货成本", "可分配利润", "平台分成", "提供方分成",
     "服务方分成", "专家分成", "渠道分成", "提供方合计应收", "净清算额", "退款冲回")))
 HEADERS.update(id="内部关联ID", settlement_no="清算单号", order_no="订单号", order_id="订单关联ID",
@@ -60,9 +60,10 @@ HEADERS.update(buyer_enterprise_id="买方企业关联ID", buyer_name="买方名
 HEADERS.update({role + "_rate": label for role, label in zip(ROLES, ("平台比例", "提供方比例", "服务方比例", "专家比例", "渠道比例"))})
 HEADERS.update(dict(zip(BRIDGE, ("期初未付", "本期新增应付", "本期付款登记", "本期应付抵扣", "期末未付",
     "期初待追回", "本期新增应追回", "本期回款登记", "本期应追回抵扣", "期末待追回",
-    "期初平台内部收益", "本期平台内部收益", "本期平台补差吸收", "期末平台内部收益"))))
+    "期初平台内部收益", "本期平台内部收益", "本期平台补差吸收", "期末平台内部收益", "本期平台补差吸收返还"))))
 HEADERS.update(funding_absorption_loss="平台补差吸收损失", baseline_total_receivable="基线应收合计",
                net_total_receivable="补差后净应收", supplementary_funding_json="独立补差来源承担及证据")
+HEADERS.update(funding_absorption_reversal="平台补差吸收返还", funded_refund_json="退款补差返还证据")
 HEADERS.update(dict(zip(FUNDS, ("已知应付", "已确认付款登记", "应付已抵扣", "未付余额", "已知应追回",
     "已确认回款登记", "应追回已抵扣", "待追回余额", "平台内部收益"))))
 
@@ -95,6 +96,7 @@ def utc(value):
 def aggregate(rows):
     result = {key: format(sum((decimal(row[key]) for row in rows), Decimal(0)), ".2f") for key in MONEY}
     result["funding_absorption_loss"] = format(sum((decimal(r.get("funding_absorption_loss")) for r in rows), Decimal(0)), ".2f")
+    result["funding_absorption_reversal"] = format(sum((decimal(r.get("funding_absorption_reversal")) for r in rows), Decimal(0)), ".2f")
     for suffix, predicate in (("positive", lambda n: n > 0), ("reversal", lambda n: n < 0)):
         result[suffix] = {key: format(sum((decimal(r[key]) for r in rows if predicate(decimal(r[key]))), Decimal(0)), ".2f") for key in MONEY}
     result.update(income_order_count=len({r["order_id"] for r in rows if r["source_kind"] == "original" and decimal(r["gross_amount"]) > 0}),
@@ -171,7 +173,7 @@ def csv_response(report, kind):
             return "未知"
         text = str(value)
         # Decimal amounts are server-generated numeric literals, never user text.
-        numeric = key in MONEY or key in FUNDS or key in BRIDGE or key in {"amount", "profit_share", "total_receivable", "loss_amount", "funding_absorption_loss", "baseline_total_receivable", "net_total_receivable"}
+        numeric = key in MONEY or key in FUNDS or key in BRIDGE or key in {"amount", "profit_share", "total_receivable", "loss_amount", "funding_absorption_loss", "funding_absorption_reversal", "baseline_total_receivable", "net_total_receivable"}
         if not numeric and (text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n"))):
             return "'" + text
         return text
@@ -324,6 +326,50 @@ def install(ns):
             return {}
         return {b.settlement_id: funding_projection(db, b, proof) for b, proof in db.execute(
             select(Baseline, Proof).join(Proof, Proof.settlement_id == Baseline.settlement_id).where(Baseline.settlement_id.in_(ids)))}
+
+    def scoped_funded_refunds(db, ids):
+        hooks = ns.get("settlement_funded_refund", {})
+        Posting, describe = hooks.get("Posting"), hooks.get("describe")
+        if Posting is None or not callable(describe):
+            return {}
+        finance = ns["settlement_finance"]
+        result = {}
+        for posting in db.scalars(select(Posting).where(Posting.settlement_id.in_(ids))):
+            try:
+                value = describe(db, posting.settlement_id)
+                baseline = db.get(finance["Baseline"], posting.settlement_id)
+                snapshot = json.loads(baseline.snapshot_json)
+                amount = decimal(value["absorption_reversal"])
+                recorded = datetime.fromisoformat(value["recorded_at"])
+                if (value["kind"] != "internal_funding_absorption_reversal" or value["currency"] != baseline.currency
+                        or (value["participant_type"], value["participant_id"], value["direction"]) != ("platform", "platform", "internal")
+                        or amount < 0 or amount != decimal(snapshot["absorption_reversal"])
+                        or baseline.revenue + amount != -decimal(snapshot["buyer_cash_amount"])
+                        or decimal(value["external_paid"]) or decimal(value["external_recovered"])
+                        or not isinstance(baseline.created_at, datetime) or recorded < utc(baseline.created_at)
+                        or recorded > datetime.now(timezone.utc)):
+                    raise ValueError()
+                if sum((decimal(r["absorption_reversal"]) for r in value["references"]), Decimal(0)) != amount:
+                    raise ValueError()
+                platform_subject = None
+                for ref in value["references"]:
+                    source = db.get(finance["Baseline"], ref["reference_settlement_id"])
+                    funding = funding_projection(db, source, db.get(finance["FundingProof"], source.settlement_id))
+                    if (source.order_id != baseline.order_id or source.provider_enterprise_id != baseline.provider_enterprise_id
+                            or source.snapshot_hash != ref["baseline_hash"] or not funding.get("valid")
+                            or funding["kind"] != "platform_absorption" or ref["funding"]["proof_hash"] != funding["evidence_hash"]
+                            or ref["funding"]["absorption_hash"] != funding["absorption_evidence_hash"]
+                            or not 0 <= decimal(ref["absorption_reversal"]) <= decimal(funding["amount"])):
+                        raise ValueError()
+                    if platform_subject is None:
+                        entry = next(e for e in json.loads(source.snapshot_json)["entries"] if
+                            (e["kind"], e["share_kind"], e["participant_type"], e["participant_id"]) ==
+                            ("profit", "platform_fee", "platform", "platform"))
+                        platform_subject = {key: entry[key] for key in ("participant_type", "participant_id", "participant_name")}
+                result[posting.settlement_id] = dict(value, valid=True, platform_subject=platform_subject)
+            except (HTTPException, AttributeError, KeyError, ValueError, TypeError, ArithmeticError, StopIteration):
+                result[posting.settlement_id] = dict(valid=False, reason="funded_refund_reporting_evidence_unproven")
+        return result
 
     def subject_rows(db, row, order, linked, batch, baseline, positions):
         provisional = baseline is None
@@ -562,6 +608,7 @@ def install(ns):
         changes = dict(db.execute(select(Link.settlement_id, Adjustment.change_id).join(Adjustment,
             Adjustment.id == Link.adjustment_id).where(Link.settlement_id.in_(ids))).all()) if Link is not None and Adjustment is not None else {}
         funding_by_id = scoped_funding(db, ids)
+        funded_refunds = scoped_funded_refunds(db, ids) if scope["kind"] != "beneficiary" else {}
         for settlement, order, baseline, provider_name in db.execute(query):
             linked = batches[settlement.id]
             if f["batch_id"] and not any(f["batch_id"] in (b.id, b.batch_no) for b in linked):
@@ -592,6 +639,7 @@ def install(ns):
             if baseline.currency != "CNY":
                 issues.add("unsupported_currency")
                 continue
+            snapshot = {}
             try:
                 if hashlib.sha256(baseline.snapshot_json.encode()).hexdigest() != baseline.snapshot_hash:
                     raise ValueError()
@@ -613,6 +661,14 @@ def install(ns):
             if funding:
                 facts.append(dict(funding_request_id=funding.get("request_id"), evidence_hash=funding.get("evidence_hash"),
                     absorption_evidence_hash=funding.get("absorption_evidence_hash"), effective_at=funding.get("effective_at")))
+            if scope["kind"] != "beneficiary" and (snapshot.get("funded_refund_plan_hash") or settlement.id in funded_refunds):
+                credit = funded_refunds.get(settlement.id, {})
+                if not credit.get("valid"):
+                    issues.add("funded_refund_reporting_evidence_unproven")
+                elif datetime.fromisoformat(credit["recorded_at"]) < through:
+                    field = "opening_internal_profit" if datetime.fromisoformat(credit["recorded_at"]) < start else "internal_absorption_reversal"
+                    totals[field] += decimal(credit["absorption_reversal"])
+                    facts.append(dict(funded_refund_posting=settlement.id, evidence_hash=credit["evidence_hash"], recorded_at=credit["recorded_at"]))
             for p in rows:
                 if p.direction == "internal":
                     signed = decimal(p.amount) * (-1 if baseline.revenue < 0 or p.kind == "loss" else 1)
@@ -682,7 +738,7 @@ def install(ns):
                     issues.add("historical_position_overallocated")
         totals["closing_payable"] = totals["opening_payable"] + totals["payable_added"] - totals["paid"] - totals["payable_offset"]
         totals["closing_receivable"] = totals["opening_receivable"] + totals["receivable_added"] - totals["recovered"] - totals["receivable_offset"]
-        totals["closing_internal_profit"] = totals["opening_internal_profit"] + totals["internal_profit_added"] - totals["internal_absorption"]
+        totals["closing_internal_profit"] = totals["opening_internal_profit"] + totals["internal_profit_added"] - totals["internal_absorption"] + totals["internal_absorption_reversal"]
         if any(value < 0 for key, value in totals.items() if "internal" not in key):
             issues.add("negative_historical_balance")
         values = {key: format(value, ".2f") for key, value in totals.items()}
@@ -940,6 +996,7 @@ def install(ns):
         # Restrict related records with a subquery, avoiding a 2000-row or SQL IN cap.
         ids = stmt.with_only_columns(S.id)
         funding_by_id = scoped_funding(db, ids)
+        funded_refunds = scoped_funded_refunds(db, ids)
         receipts = defaultdict(list)
         Payment = ns.get("Payment")
         if Payment is not None:
@@ -1031,14 +1088,29 @@ def install(ns):
                 row["provider_total_receivable"] = format(decimal(row["cost_amount"]) + decimal(row["provider_share"]), ".2f")
             subjects = subject_rows(db, row, order, linked, batch, baseline, positions[settlement.id])
             funding = funding_by_id.get(settlement.id, {})
+            credit = funded_refunds.get(settlement.id, {})
+            if (snapshot.get("funded_refund_plan_hash") or credit) and not credit.get("valid"):
+                raise HTTPException(409, "funded_refund_reporting_evidence_unproven")
+            reversal = decimal(credit["absorption_reversal"]) if credit else Decimal(0)
             absorption = decimal(funding["amount"]) if funding.get("valid") and funding.get("kind") == "platform_absorption" else Decimal(0)
             row["supplementary_funding"] = {key: value for key, value in funding.items() if key != "absorption_allocations"}
             row["supplementary_funding_json"] = canonical(row["supplementary_funding"])
-            row["funding_absorption_loss"] = format(absorption, ".2f")
+            row["funded_refund"] = credit
+            row["funded_refund_json"] = canonical(credit)
+            row["funding_absorption_reversal"] = format(reversal, ".2f")
+            row["funding_absorption_loss"] = format(absorption - reversal, ".2f")
+            if reversal > 0 and not any((s["participant_type"], s["participant_id"]) == ("platform", "platform") for s in subjects):
+                # A rounded-zero ordinary share has no Position; its verified
+                # supplementary internal credit still belongs to the real platform.
+                subjects.append(dict(credit["platform_subject"], subject_type="platform", subject_unassigned=False,
+                    cost_amount="0.00", profit_share="0.00", loss_amount="0.00", total_receivable="0.00", amount="0.00",
+                    provisional=False, subject_source="immutable_funded_refund_posting"))
             for subject in subjects:
-                burden = absorption if (subject["participant_type"], subject["participant_id"]) == ("platform", "platform") else Decimal(0)
+                platform_subject = (subject["participant_type"], subject["participant_id"]) == ("platform", "platform")
+                burden = absorption - reversal if platform_subject else Decimal(0)
                 subject["baseline_total_receivable"] = subject["total_receivable"]
                 subject["funding_absorption_loss"] = format(burden, ".2f")
+                subject["funding_absorption_reversal"] = format(reversal if platform_subject else Decimal(0), ".2f")
                 subject["net_total_receivable"] = format(decimal(subject["total_receivable"]) - burden, ".2f")
                 subject["total_receivable"] = subject["net_total_receivable"]
             row.update(detail_fields(db, order, settlement, baseline, snapshot, adjustments.get(settlement.id)))
@@ -1100,6 +1172,7 @@ def install(ns):
                     participant_id=position.participant_id, participant_type=position.participant_type,
                     direction=position.direction, currency=position.currency, amount=str(position.amount),
                     remaining_amount=format(balance - (funding.get("absorption_allocations", {}).get(position.id, Decimal(0)) if funding.get("valid") else Decimal(0)), ".2f"), blocked_reason=blocked))
+            totals["internal_profit"] += reversal
             # Missing coverage is unknown, including an all-zero baseline with no evidence.
             covered = baseline is not None and bool(position_details)
             if not covered:
@@ -1126,8 +1199,8 @@ def install(ns):
                 # Unassigned subjects remain record-local; no fabricated shared identity.
                 key = (p["participant_type"], p["subject_type"], p["participant_id"], "" if p["participant_id"] else row["id"])
                 target = participants.setdefault(key, dict(p, amount="0.00", cost_amount="0.00", loss_amount="0.00",
-                    profit_share="0.00", total_receivable="0.00", funding_absorption_loss="0.00", baseline_total_receivable="0.00", net_total_receivable="0.00", settlement_ids=[]))
-                for field in ("amount", "cost_amount", "profit_share", "loss_amount", "total_receivable", "funding_absorption_loss", "baseline_total_receivable", "net_total_receivable"):
+                    profit_share="0.00", total_receivable="0.00", funding_absorption_loss="0.00", funding_absorption_reversal="0.00", baseline_total_receivable="0.00", net_total_receivable="0.00", settlement_ids=[]))
+                for field in ("amount", "cost_amount", "profit_share", "loss_amount", "total_receivable", "funding_absorption_loss", "funding_absorption_reversal", "baseline_total_receivable", "net_total_receivable"):
                     target[field] = format(decimal(target[field]) + decimal(p[field]), ".2f")
                 target["provisional"] = target["provisional"] or p["provisional"]
                 if target["subject_source"] != p["subject_source"]:

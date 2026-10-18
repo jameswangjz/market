@@ -10,6 +10,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import test_message_business_events as fixtures
+import test_refund_execution as execution_fixture
 
 
 class SettlementReportingTests(unittest.TestCase):
@@ -1288,6 +1289,165 @@ class SettlementReportingTests(unittest.TestCase):
         self.assertEqual(segment["share_rates"], dict(platform="20.0000", provider="80.0000", service="0.0000", expert="0.0000", channel="0.0000"))
         exported = list(csv.DictReader(io.StringIO(self.download(kind="details", source_kind="refund").content.decode("utf-8-sig"))))
         self.assertEqual(json.loads(exported[0][self.reporting.HEADERS.get("economic_segments_json", "业务字段：economic_segments_json")]), row["economic_segments"])
+
+
+class FundedRefundReportingIntegrationTests(unittest.TestCase):
+    """Real completion/resources, adapter and capture; isolated SQLite/Redis.
+
+    The inherited charge-summary fixture and simulated buyer payment provider
+    remain explicit. No completed-evidence or funded describe hook is mocked.
+    """
+    setUpClass = classmethod(execution_fixture.RefundExecutionTests.setUpClass.__func__)
+    tearDownClass = classmethod(execution_fixture.RefundExecutionTests.tearDownClass.__func__)
+    setUp = execution_fixture.RefundExecutionTests.setUp
+    tearDown = execution_fixture.RefundExecutionTests.tearDown
+    request = execution_fixture.RefundExecutionTests.request
+    create_order = execution_fixture.RefundExecutionTests.create_order
+    monthly = execution_fixture.RefundExecutionTests.monthly
+    create = execution_fixture.RefundExecutionTests.create
+    review = execution_fixture.RefundExecutionTests.review
+    ledger = execution_fixture.RefundExecutionTests.ledger
+    approve = execution_fixture.RefundExecutionTests.approve
+    execute = execution_fixture.RefundExecutionTests.execute
+    step = execution_fixture.RefundExecutionTests.step
+    clock_patch = SettlementReportingTests.clock_patch
+
+    def test_real_completed_funded_refund_projection_csv_and_cross_year_credit(self):
+        self.exercise_completed_funded_refund("20.00")
+
+    def test_partial_cent_credit_with_zero_platform_position_has_exact_scoped_subject(self):
+        self.exercise_completed_funded_refund("0.05")
+
+    def exercise_completed_funded_refund(self, amount):
+        from sqlalchemy import select, update
+        m, finance = self.m, self.m.settlement_finance
+        reporting = importlib.import_module(m.__package__ + ".settlement_reporting")
+        finance_module = importlib.import_module(m.__package__ + ".settlement_finance")
+        funded_module = importlib.import_module(m.__package__ + ".settlement_funded_refund")
+        with self.clock_patch(finance_module, datetime(2026, 10, 19, tzinfo=timezone.utc)), m.SessionLocal() as db:
+            original = m.Settlement(settlement_no="SET-FUNDED-REPORT-SOURCE", order_id=self.order_id, status="locked",
+                gross_amount=110, net_amount=110, cost_amount=40, profit_amount=70, platform_fee=10, provider_share=60,
+                created_at=datetime(2026, 10, 19, tzinfo=timezone.utc))
+            batch = m.SettlementBatch(batch_no="BATCH-FUNDED-REPORT-SOURCE", cycle="manual", status="confirmed",
+                idempotency_key="funded-report-source")
+            db.add_all([original, batch])
+            db.flush()
+            db.add(m.SettlementLine(batch_id=batch.id, settlement_id=original.id, participant_type="provider", amount=60))
+            db.flush()
+            baseline = finance["capture"](db, original, actor="finance")
+            original_id, original_snapshot = original.id, baseline.snapshot_json
+            db.commit()
+        with self.clock_patch(finance_module, datetime(2026, 10, 20, tzinfo=timezone.utc)), m.SessionLocal() as db:
+            proposal = finance["propose_funding"](db, db.get(m.User, "finance"), dict(request_id="report-fund", settlement_id=original_id,
+                kind="platform_absorption", amount="10.00", reason="Approved final adjustment", evidence_refs=["review:report-source"]))
+            finance["decide_funding"](db, db.get(m.User, "ops"), proposal["id"], dict(request_id="report-approve", expected_version=1,
+                decision="approved", note="Checked independent absorption"))
+            finance["verify_funding"](db, db.get(m.User, "ops"), proposal["id"], dict(request_id="report-verify", expected_version=2))
+            db.commit()
+        tiny = Decimal(amount) == Decimal("0.05")
+        if tiny:
+            # One real quota unit for a five-cent refund; all recovery adapters
+            # and completion proofs still execute through the original Saga.
+            with m.SessionLocal() as db:
+                order = db.get(m.Order, self.order_id)
+                delivery = json.loads(order.delivery_snapshot_json)
+                delivery["quota"]["monthly_quota"] = 2000
+                order.delivery_snapshot_json = json.dumps(delivery)
+                db.commit()
+            periods = json.loads(self.redis.hget(self.key, "subscription_periods"))
+            periods[0]["monthly_quota"] = 2000
+            self.redis.hset(self.key, "subscription_periods", json.dumps(periods))
+        approved = self.review(self.create(amount), decision="approve")
+        self.execute(approved)
+        for _ in range(5):
+            self.step()
+        negative_at = datetime(2026, 12, 31, 15, 59, 59, tzinfo=timezone.utc)
+        credit_at = datetime(2026, 12, 31, 16, tzinfo=timezone.utc)
+        with self.clock_patch(finance_module, negative_at), self.clock_patch(funded_module, credit_at), m.SessionLocal() as db:
+            refund = db.get(m.Refund, approved["id"])
+            self.assertEqual((refund.status, refund.amount), ("completed", Decimal(amount)))
+            completion = db.get(self.Completion, refund.id)
+            execution = db.get(self.Execution, completion.execution_id)
+            before = (completion.economic_plan_json, execution.resource_plan_json, execution.proof_json, execution.funding_json)
+            negative = m.refund_settlement["negative_settlement"](db, refund)
+            expected = (Decimal("-0.06"), Decimal("-0.02"), Decimal("-0.04")) if tiny else (Decimal(-22), Decimal(-8), Decimal(-14))
+            self.assertEqual((negative.gross_amount, negative.cost_amount, negative.profit_amount), expected)
+            negative.created_at = negative_at
+            m.refund_settlement["prepare_lock"](db, negative, actor="finance")
+            negative.status = "locked"
+            db.flush()
+            captured = finance["capture"](db, negative, actor="finance")
+            self.assertIsInstance(captured, finance["Baseline"])
+            negative_id = negative.id
+            self.assertEqual(finance["capture"](db, negative, actor="finance").settlement_id, negative_id)
+            self.assertEqual(db.query(m.settlement_funded_refund["Posting"]).count(), 1)
+            self.assertEqual(db.get(finance["Baseline"], original_id).snapshot_json, original_snapshot)
+            self.assertEqual(before, (completion.economic_plan_json, execution.resource_plan_json, execution.proof_json, execution.funding_json))
+            self.assertEqual((db.get(m.Payment, "paid-source").amount, db.get(m.Order, self.order_id).refunded_amount), (Decimal(100), Decimal(amount)))
+            if tiny:
+                self.assertEqual(db.query(finance["Position"]).filter_by(settlement_id=negative_id, participant_type="platform").count(), 0)
+            db.commit()
+        if tiny:
+            self.check_partial_cent_projection(reporting, negative_id)
+            return
+        with self.clock_patch(reporting, datetime(2028, 1, 2, tzinfo=timezone.utc)):
+            report = self.request("GET", "/api/settlement-reporting/report", actor="finance", params=dict(year=2026))
+            self.assertEqual(report["total"], 2)
+            self.assertTrue(report["summary"]["funds"]["known"], report["items"])
+            self.assertEqual((report["summary"]["funding_absorption_loss"], report["summary"]["funding_absorption_reversal"]), ("8.00", "2.00"))
+            self.assertEqual((report["summary"]["funds"]["internal_profit"], report["summary"]["funds"]["paid_amount"], report["summary"]["funds"]["recovered_amount"]), ("0.00", "0.00", "0.00"))
+            platform = next(p for p in report["participants"] if p["participant_type"] == "platform")
+            self.assertEqual((platform["profit_share"], platform["baseline_total_receivable"], platform["net_total_receivable"]), ("8.00", "8.00", "0.00"))
+            row = next(r for r in report["items"] if r["id"] == negative_id)
+            self.assertEqual((row["funding_absorption_loss"], row["funding_absorption_reversal"], row["funds"]["internal_profit"]), ("-2.00", "2.00", "0.00"))
+            bridge = report["balance_bridge"]
+            self.assertTrue(bridge["known"], bridge)
+            self.assertEqual((bridge["internal_absorption"], bridge["internal_absorption_reversal"], bridge["closing_internal_profit"]), ("10.00", "0.00", "-2.00"))
+            following = self.request("GET", "/api/settlement-reporting/report", actor="finance", params=dict(year=2027))["balance_bridge"]
+            self.assertTrue(following["known"], following)
+            self.assertEqual((following["opening_internal_profit"], following["internal_absorption_reversal"], following["closing_internal_profit"]), ("-2.00", "2.00", "0.00"))
+            response = self.client.get("/api/settlement-reporting/export", headers={"Authorization": "Bearer " + self.tokens["finance"]},
+                params=dict(year=2026, kind="participants"))
+            self.assertEqual(response.status_code, 200)
+            csv_rows = list(csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))))
+            csv_platform = next(p for p in csv_rows if p["分成类别"] == "platform")
+            self.assertEqual((csv_platform["平台补差吸收损失"], csv_platform["平台补差吸收返还"], csv_platform["补差后净应收"]), ("8.00", "2.00", "0.00"))
+            with m.SessionLocal() as db:
+                db.execute(update(m.settlement_funded_refund["Posting"].__table__).values(payload_hash="0" * 64))
+                db.commit()
+            failed = self.request("GET", "/api/settlement-reporting/report", actor="finance", expected=409, params=dict(year=2026))
+            self.assertEqual(failed["detail"], "funded_refund_reporting_evidence_unproven")
+
+    def check_partial_cent_projection(self, reporting, negative_id):
+        m = self.m
+        with self.clock_patch(reporting, datetime(2028, 1, 2, tzinfo=timezone.utc)):
+            report = self.request("GET", "/api/settlement-reporting/report", actor="finance", params=dict(year=2026))
+            row = next(r for r in report["items"] if r["id"] == negative_id)
+            platform = next(p for p in row["participants"] if p["participant_type"] == "platform")
+            self.assertEqual((platform["participant_id"], platform["participant_name"]), ("platform", row["funded_refund"]["platform_subject"]["participant_name"]))
+            self.assertEqual((platform["profit_share"], platform["baseline_total_receivable"], platform["funding_absorption_loss"],
+                platform["funding_absorption_reversal"], platform["net_total_receivable"]), ("0.00", "0.00", "-0.01", "0.01", "0.01"))
+            self.assertEqual(platform["subject_source"], "immutable_funded_refund_posting")
+            self.assertEqual(sum(Decimal(p["net_total_receivable"]) for p in row["participants"]), Decimal("-0.05"))
+            self.assertEqual(sum(Decimal(p["net_total_receivable"]) for p in report["participants"]), Decimal("99.95"))
+            self.assertEqual(report["summary"]["funds"]["internal_profit"], "0.01")
+            self.assertEqual(report["balance_bridge"]["closing_internal_profit"], "0.00")
+            following = self.request("GET", "/api/settlement-reporting/report", actor="finance", params=dict(year=2027))["balance_bridge"]
+            self.assertEqual((following["internal_absorption_reversal"], following["closing_internal_profit"]), ("0.01", "0.01"))
+            response = self.client.get("/api/settlement-reporting/export", headers={"Authorization": "Bearer " + self.tokens["finance"]},
+                params=dict(year=2026, kind="participants", source_kind="refund"))
+            self.assertEqual(response.status_code, 200)
+            csv_platform = next(p for p in csv.DictReader(io.StringIO(response.content.decode("utf-8-sig"))) if p["分成类别"] == "platform")
+            self.assertEqual((csv_platform["利润分成"], csv_platform["补差后净应收"]), ("0.00", "0.01"))
+            with m.SessionLocal() as db:
+                db.add(m.settlement_parties["Participant"](id="cent-own-expert", name="Own Expert", kind="expert", user_id="buyer",
+                    enterprise_id="", owner_enterprise_id="provider_tenant", currency="CNY", creator_id="finance"))
+                db.commit()
+            own = self.request("GET", "/api/settlement-reporting/report", actor="buyer",
+                params=dict(year=2026, business_view="beneficiary", participant_id="cent-own-expert"))
+            self.assertEqual(own["items"], [])
+            for private in ("platform_subject", "funded_refund", "funding_absorption_reversal", platform["participant_name"]):
+                self.assertNotIn(private, json.dumps(own))
 
 
 if __name__ == "__main__":

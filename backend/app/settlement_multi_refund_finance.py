@@ -46,7 +46,10 @@ def install(ns, core):
                 profit_amount=str(normal['profit_amount']), shares=normal['shares'],
                 entries=[e for e in snapshot['entries'] if e['kind'] != 'loss']))
         for row in db.scalars(select(Source).where(Source.source_settlement_id == source_id)):
-            records.append(source_record(db, row))
+            record = source_record(db, row)
+            normal = record.get('default_basis', record)
+            records.append(dict(record, profit_amount=normal['profit_amount'], shares=normal['shares'],
+                                entries=[e for e in record['entries'] if e['kind'] != 'loss']))
         return records
 
     def check_source_budget(source, records, values):
@@ -60,7 +63,7 @@ def install(ns, core):
             if value > 0 or abs(value) + sum(abs(money(r['shares'][field])) for r in records) > money(snapshot['shares'][field]):
                 raise HTTPException(409, 'reversal_exceeds_original_baseline')
 
-    def reversal_entries(source, records, values):
+    def reversal_entries(source, records, values, *, retained_cost=Decimal(0)):
         original = parsed(source.snapshot_json, source.snapshot_hash)['entries']
         previous_entries = [e for r in records for e in r['entries']]
 
@@ -91,7 +94,7 @@ def install(ns, core):
                     raise HTTPException(409, 'subject_rounding_requires_explicit_reversal_plan')
                 if amount:
                     result.append(dict(e, amount=str(amount)))
-        if sum((money(e['amount']) for e in result), Decimal(0)) != -money(values['gross_amount']):
+        if sum((money(e['amount']) for e in result), Decimal(0)) != -money(values['gross_amount']) - retained_cost:
             raise HTTPException(409, 'original_subject_mapping_incomplete')
         return result
 
@@ -130,6 +133,10 @@ def install(ns, core):
                 or sum(totals.values()) != money(manifest['profit_amount'])
                 or any(totals[k] != money(getattr(settlement, k)) or totals[k] != money(manifest['shares'][k]) for k in SHARES)):
             raise HTTPException(409, 'multi_source_amount_conservation_failed')
+        cost_hooks = ns.get('settlement_multi_cost_exception')
+        if manifest.get('cost_exception_application_hash') and not cost_hooks:
+            raise HTTPException(409, 'multi_cost_capture_contract_required')
+        application = cost_hooks['validate_capture'](db, settlement.refund_id, manifest) if cost_hooks else None
         old = db.get(Baseline, settlement.id)
         if old:
             snapshot = parsed(old.snapshot_json, old.snapshot_hash)
@@ -140,6 +147,10 @@ def install(ns, core):
                 raise HTTPException(409, 'frozen_multi_source_capture_mismatch')
             for row in rows:
                 source_record(db, row)
+            if application:
+                posting = db.get(cost_hooks['Posting'], settlement.refund_id)
+                if not posting or posting.settlement_id != settlement.id or posting.plan_hash != application.plan_hash:
+                    raise HTTPException(409, 'frozen_multi_cost_posting_mismatch')
             return old
         ids = sorted(r['reference_settlement_id'] for r in refs)
         sources = {b.settlement_id: b for b in db.scalars(select(Baseline).where(Baseline.settlement_id.in_(ids))
@@ -157,8 +168,19 @@ def install(ns, core):
                     or sum(money(ref['shares'][k]) for k in SHARES) != money(ref['profit_amount'])):
                 raise HTTPException(409, 'multi_source_baseline_scope_mismatch')
             records = source_reversals(db, source.settlement_id)
-            check_source_budget(source, records, ref)
-            entries = reversal_entries(source, records, ref)
+            normal = ref.get('default_basis', ref)
+            budget = dict(ref, profit_amount=normal['profit_amount'], shares=normal['shares'])
+            exception = ref.get('cost_exception') or {}
+            retained = money(exception.get('retained_cost', 0))
+            loss = exception.get('loss')
+            check_source_budget(source, records, budget)
+            entries = reversal_entries(source, records, budget, retained_cost=retained)
+            if retained:
+                if not application or not loss or money(loss['amount']) != retained:
+                    raise HTTPException(409, 'approved_multi_loss_plan_required')
+                entries.append({k: v for k, v in loss.items() if k not in ('currency', 'direction')})
+            if sum((money(e['amount']) for e in entries), Decimal(0)) != -money(ref['gross_amount']):
+                raise HTTPException(409, 'multi_loss_entry_conservation_failed')
             legacy = settlement.status == 'paid' or any(p.blocked_reason == 'legacy_paid_without_allocations'
                 for p in db.scalars(select(Position).where(Position.settlement_id == source.settlement_id)))
             if legacy:
@@ -171,7 +193,8 @@ def install(ns, core):
             shares=manifest['shares'], reference_settlement_id='', references=slices,
             entries=[e for r in slices for e in r['entries']], actual_receipts=None, receipt_records=[],
             receipt_basis='verified_multi_source_final_baselines', bank_receipt_verified=False,
-            blocked_reason='', multi_source_manifest_hash=manifest_hash, multi_source_manifest=payload)
+            blocked_reason='', multi_source_manifest_hash=manifest_hash, multi_source_manifest=payload,
+            multi_cost_application_hash=manifest.get('cost_exception_application_hash'))
         encoded = canonical(snapshot)
         with db.begin_nested():
             baseline = Baseline(settlement_id=settlement.id, order_id=order.id,
@@ -193,6 +216,8 @@ def install(ns, core):
                     db.flush()
                     db.add(PositionSource(position_id=position.id, settlement_id=settlement.id,
                         segment_id=ref['segment_id'], source_settlement_id=ref['reference_settlement_id']))
+            if cost_hooks:
+                cost_hooks['post'](db, application, settlement.id)
             audit(db, str(actor), 'finance_multi_source_refund_capture', settlement.id,
                   manifest_hash=manifest_hash, source_settlement_ids=ids, cash_recovered=False)
             db.flush()
@@ -244,7 +269,8 @@ def install(ns, core):
                     for source in positions:
                         if (source.settlement_id != link.source_settlement_id or source.direction != 'payable'
                                 or core['cash_block'](db, source) or any(getattr(source, k) != getattr(debt, k)
-                                    for k in ('kind', 'share_kind', 'participant_type', 'participant_id', 'currency'))):
+                                    for k in ('participant_type', 'participant_id', 'currency'))
+                                or (debt.kind != 'loss' and (source.kind, source.share_kind) != (debt.kind, debt.share_kind))):
                             continue
                         value = min(core['balance'](db, debt), core['balance'](db, source))
                         if value <= 0:

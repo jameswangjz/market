@@ -54,7 +54,9 @@ def main():
                     raise ValueError('Invalid report contract')
                 checks.append({'report': 'passed', 'total': report['total'], 'full_totals_separate_from_page': True})
                 for path in ('/settlement-finance/positions', '/settlement-finance/transactions',
-                             '/settlement-reporting/annual-reports'):
+                             '/settlement-reporting/annual-reports',
+                             '/settlement-finance/funding-adjustments',
+                             '/settlement-finance/manual-funding-evidence'):
                     result = get(path, page=1, page_size=10)
                     if not isinstance(result.get('items'), list):
                         raise ValueError('Invalid list contract: ' + path)

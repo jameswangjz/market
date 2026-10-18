@@ -915,6 +915,13 @@ def install(ns):
         return serialize_transaction(db, tx)
 
     def capture(db, settlement, actor='system', *, _segment_context=None, _source_negative=None):
+        funded = ns.get('settlement_funded_refund', {})
+        funded_model = funded.get('Plan')
+        if funded_model is not None and getattr(settlement, 'refund_id', '') and db.get(funded_model, settlement.refund_id):
+            hook = ns.get('settlement_funded_refund_capture', {}).get('capture')
+            if not callable(hook):
+                return dict(status='waiting', reason='funded_refund_capture_contract_required')
+            return hook(db, settlement, actor)
         multi = ns.get('refund_settlement', {})
         model = multi.get('MultiSourceManifest')
         frozen = db.get(model, settlement.id) if model is not None else None
@@ -1204,6 +1211,8 @@ def install(ns):
             actual_receipts=json.loads(b.snapshot_json).get('actual_receipts'),
             blocked_reason=json.loads(b.snapshot_json).get('blocked_reason', ''),
             funding=funding_status(db, settlement_id),
+            funded_refund=(ns['settlement_funded_refund']['describe'](db, settlement_id)
+                           if 'settlement_funded_refund' in ns else None),
             references=multi_finance['describe'](db, settlement_id) if multi_finance else [],
             shares=json.loads(b.snapshot_json)['shares'], reference_settlement_id=b.reference_settlement_id,
             positions=[position_dict(db, p, b) for p in rows],
@@ -1317,6 +1326,10 @@ def install(ns):
             total = money(defaultvalues['original_amount'], True)
             cumulative = money(defaultvalues['cumulative_refund_amount'], True)
             amount = money(refund.amount, True)
+            if b.revenue > total and amount <= cumulative <= total:
+                hook = ns.get('settlement_funded_refund_capture', {}).get('basis')
+                if callable(hook):
+                    return hook(db, refund, b)
             if total != b.revenue or not amount <= cumulative <= total:
                 return dict(status='unsupported', reason='refund_basis_or_supplement_mismatch')
             def values(v):
@@ -1429,4 +1442,11 @@ def install(ns):
                  RefundPositionSource=RefundPositionSource, source_reversals=source_reversals,
                  check_source_budget=check_source_budget, reversal_entries=reversal_entries)
     ns['settlement_finance'] = hooks
+    from .settlement_manual_funding import install as install_manual_funding
+    install_manual_funding(ns, hooks)
+    if ns.get('Refund') is not None:
+        from .settlement_funded_refund import install as install_funded_refund
+        install_funded_refund(ns)
+        from .settlement_funded_refund_capture import install as install_funded_capture
+        install_funded_capture(ns, dict(core, **hooks))
     return hooks

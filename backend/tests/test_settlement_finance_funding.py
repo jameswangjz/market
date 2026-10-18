@@ -3,6 +3,7 @@ import hashlib
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import HTTPException
 from sqlalchemy import select, func
@@ -68,15 +69,34 @@ class FundingTests(unittest.TestCase):
         self.assertEqual(self.db.get(self.ns['Payment'], 'payment').amount, 150)
         self.assertEqual(self.db.get(self.h['Baseline'], 's').snapshot_json, self.frozen)
 
-    def test_external_approval_without_receipt_verifier_remains_blocked(self):
+    def test_external_approval_with_installed_verifier_but_no_reviewed_proof_remains_blocked(self):
         proposed = self.proposal('external_receipt')
-        self.assertFalse(self.approve(proposed)['can_verify'])
-        self.assertEqual(proposed['verification_unavailable_reason'], 'trusted_funding_receipt_verifier_unavailable')
+        approved = self.approve(proposed)
+        self.assertTrue(approved['trusted_receipt_verifier_available'])
+        self.assertTrue(approved['can_verify'])
+        self.assertEqual(approved['verification_unavailable_reason'], '')
+        self.assertEqual(approved['status'], 'approved')
+        self.assertFalse(approved['bank_receipt_verified'])
         with self.assertRaises(HTTPException) as error:
             self.verify(proposed)
-        self.assertEqual(error.exception.detail, 'trusted_funding_receipt_verifier_unavailable')
+        self.assertEqual(error.exception.detail, 'reviewed_manual_funding_evidence_required')
+        self.assertIsNone(self.db.get(self.h['FundingProof'], 's'))
         self.assertEqual(self.h['funding_status'](self.db, 's')['status'], 'uncovered')
+        self.assertEqual(self.db.get(self.ns['Payment'], 'payment').amount, 150)
+        self.assertEqual(self.db.get(self.h['Baseline'], 's').snapshot_json, self.frozen)
         self.assert_blocked()
+
+    def test_external_approval_without_configured_verifier_remains_blocked(self):
+        with patch.dict(self.ns, settlement_funding_proofs={}):
+            proposed = self.proposal('external_receipt')
+            self.assertFalse(self.approve(proposed)['can_verify'])
+            self.assertEqual(proposed['verification_unavailable_reason'], 'trusted_funding_receipt_verifier_unavailable')
+            with self.assertRaises(HTTPException) as error:
+                self.verify(proposed)
+            self.assertEqual(error.exception.detail, 'trusted_funding_receipt_verifier_unavailable')
+            self.assertIsNone(self.db.get(self.h['FundingProof'], 's'))
+            self.assertEqual(self.h['funding_status'](self.db, 's')['status'], 'uncovered')
+            self.assert_blocked()
 
     def test_trusted_manual_receipt_is_separate_from_buyer_payment_and_refund_basis(self):
         proposed = self.proposal('external_receipt')
