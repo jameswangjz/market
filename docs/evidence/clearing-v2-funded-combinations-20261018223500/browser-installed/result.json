@@ -1,0 +1,18 @@
+﻿{
+    "checks":  [
+
+               ],
+    "screenshots":  [
+
+                    ],
+    "error":  "stat: cannot stat \u0027/tmp/clr2-funded-browser-20261018232318/platform.token\u0027: No such file or directory (os error 2)",
+    "scope":  "installed clearing UI; GET/HEAD only; no business writes",
+    "diagnostic":  {
+                       "tabs":  [
+
+                                ],
+                       "management":  false,
+                       "manual":  false
+                   },
+    "status":  "failed"
+}

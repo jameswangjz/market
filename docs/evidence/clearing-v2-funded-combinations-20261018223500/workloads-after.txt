@@ -1,0 +1,8 @@
+NAME                       DESIRED   UPDATED   READY   IMAGE
+market-api                 1         1         1       market-api:20261018232318-ab08724
+market-web                 1         1         1       market-web:20261018232318-ab08724
+message-center-worker      2         2         2       market-api:20261018232318-ab08724
+online-delivery-worker     1         1         1       market-api:20261018232318-ab08724
+refund-execution-worker    1         1         1       market-api:20261018232318-ab08724
+version-change-worker      1         1         1       market-api:20261018232318-ab08724
+api-charge-ledger-worker   1         1         1       market-api:20261018232318-ab08724

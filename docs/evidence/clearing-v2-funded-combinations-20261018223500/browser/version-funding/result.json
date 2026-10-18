@@ -1,0 +1,24 @@
+﻿{
+    "screenshots":  [
+                        "funded-combinations-1440.png",
+                        "funded-combinations-390.png"
+                    ],
+    "status":  "passed",
+    "scope":  "Synthetic read-only DTO presentation mounted in actual Vue SFCs; no backend or DB; not a financial algorithm or installed-app test",
+    "checks":  [
+                   "Buyer cash30, financial reversal-32 and funding return2 are distinct rendered fields",
+                   "Funding return is a separate pending payable, not ordinary profit",
+                   "Unknown frozen rights do not claim paid status",
+                   "Actual DTO payment and offset balances have distinct states",
+                   "Manual and offset presentation explicitly retain bank verification false",
+                   "Retained cost3 and independent exception loss3 remain separate from five-role profit table",
+                   "Source order/settlement/batches/final baseline and manual funding proof are readable",
+                   "Refund detail and economic segment components preserve source and cash/credit evidence",
+                   "All mounted evidence components are read-only",
+                   "VC internal absorption restoration is internal equity only, not external payable, payment or buyer refund",
+                   "VC external payer return projection retains original funding proof without inferring payment",
+                   "No page horizontal overflow at 1440",
+                   "No page horizontal overflow at 390"
+               ],
+    "blocked_requests":  0
+}
