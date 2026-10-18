@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "checks": [
+    "expired_pre_correction_login_rejected",
+    "new_login_credential_works",
+    "existing_mock_saas_client_still_issues_valid_oauth_token",
+    "expired_oauth_token_is_inactive",
+    "oidc_discovery_and_api_health_work",
+    {
+      "active_refund_execution_count": 0,
+      "no_money_execution_requested": true
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+﻿{
+    "screenshots":  [
+                        "clearing-1440.png",
+                        "clearing-390.png"
+                    ],
+    "status":  "passed",
+    "scope":  "isolated disposable SQLite fixture; synthetic funds only",
+    "checks":  [
+                   "Four standard workspace tabs render",
+                   "Report displays income150 and provider cost-plus-profit140",
+                   "Workspace tab 1 has no API contract error",
+                   "Workspace tab 2 has no API contract error",
+                   "Workspace tab 3 has no API contract error",
+                   "Workspace tab 0 has no API contract error",
+                   "Workspace tab 1 has no API contract error",
+                   "Cost100 and profit40 combine into a140 payment with separate allocations",
+                   "Payment draft dialog receives keyboard focus",
+                   "Workspace tab 2 has no API contract error",
+                   "Browser creates a real draft through the fixture API",
+                   "Creator cannot review own payment voucher",
+                   "Workspace tab 2 has no API contract error",
+                   "Different operator confirms voucher through browser",
+                   "Workspace tab 1 has no API contract error",
+                   "Confirmed voucher updates cost balance",
+                   "Workspace fits viewport 1440",
+                   "Workspace fits viewport 390"
+               ]
+}
