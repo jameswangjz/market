@@ -5,4 +5,5 @@ COPY requirements.txt /tmp/market-requirements.txt
 RUN if ! cmp -s /app/requirements.txt /tmp/market-requirements.txt; then \
       pip install --no-cache-dir -r /tmp/market-requirements.txt; \
     fi && cp /tmp/market-requirements.txt /app/requirements.txt
+RUN rm -rf /app/app
 COPY app ./app
