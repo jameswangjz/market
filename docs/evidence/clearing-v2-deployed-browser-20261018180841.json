@@ -1,17 +1,17 @@
-﻿{
-    "screenshots":  [
-                        "clearing-1440.png",
-                        "clearing-390.png"
-                    ],
-    "status":  "passed",
-    "scope":  "installed clearing UI; GET/HEAD only; no business writes",
-    "checks":  [
-                   "Four standard workspace tabs render",
-                   "Workspace tab 1 has no API contract error",
-                   "Workspace tab 2 has no API contract error",
-                   "Workspace tab 3 has no API contract error",
-                   "Workspace tab 0 has no API contract error",
-                   "Workspace fits viewport 1440",
-                   "Workspace fits viewport 390"
-               ]
+{
+  "screenshots": [
+    "clearing-1440.png",
+    "clearing-390.png"
+  ],
+  "status": "passed",
+  "scope": "installed clearing UI; GET/HEAD only; no business writes",
+  "checks": [
+    "Four standard workspace tabs render",
+    "Workspace tab 1 has no API contract error",
+    "Workspace tab 2 has no API contract error",
+    "Workspace tab 3 has no API contract error",
+    "Workspace tab 0 has no API contract error",
+    "Workspace fits viewport 1440",
+    "Workspace fits viewport 390"
+  ]
 }
