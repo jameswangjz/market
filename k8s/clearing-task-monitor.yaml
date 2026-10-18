@@ -1,0 +1,50 @@
+# Default: logs only. Add --notify explicitly to enable super_admin messages.
+# clearing-task-monitor-scripts must contain the four keys listed below.
+# Package the new monitor plus clearing/list/trading controllers from committed HEAD;
+# do not package the dirty working-tree trading_task_control.py.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: clearing-task-monitor
+  namespace: market
+spec:
+  schedule: '*/10 * * * *'
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 240
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - name: monitor
+              image: PLACEHOLDER
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command: [python, /app/clearing-monitor/clearing_v2_monitor.py, --stale-minutes, '60']
+              envFrom:
+                - configMapRef: {name: market-config}
+              env:
+                - {name: PYTHONPATH, value: /app}
+                - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+                - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 500m, memory: 512Mi}
+              volumeMounts:
+                - {name: scripts, mountPath: /app/clearing-monitor, readOnly: true}
+          volumes:
+            - name: scripts
+              configMap:
+                name: clearing-task-monitor-scripts
+                items:
+                  - {key: clearing_v2_monitor.py, path: clearing_v2_monitor.py}
+                  - {key: clearing_v2_tasks_control.py, path: clearing_v2_tasks_control.py}
+                  - {key: list_tasks_control.py, path: list_tasks_control.py}
+                  - {key: trading_task_control.py, path: trading_task_control.py}
