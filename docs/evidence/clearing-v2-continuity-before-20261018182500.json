@@ -1,0 +1,55 @@
+{
+  "status": "explicit_gap_required",
+  "continuity_proven": false,
+  "missing_count": null,
+  "reasons": [
+    "physical_run_id_mismatch",
+    "no_paused_seal_continuity_not_proven"
+  ],
+  "ledger": {
+    "total_charges": 0,
+    "gaps": 1,
+    "source_charges": 0
+  },
+  "diagnostic_only": true,
+  "resume_authorized": false,
+  "redis_run_id": "c928479dbbf744b3456f8d4d6fd57c3f39388428",
+  "source": {
+    "source_id": "be58b226a84236331731e3b203869d0b5e545508",
+    "stream": "market:apisix:charges:v1:be58b226a84236331731e3b203869d0b5e545508",
+    "status": "active",
+    "process_run_id": "fba1e957ae50a92bb353b20c7bef971f4105917a",
+    "sealed": false
+  },
+  "marker_matches_source": true,
+  "physical_run_matches_source": false,
+  "stream": {
+    "exists": true,
+    "is_stream": true,
+    "length": 2,
+    "first_id": "1792130543877-0",
+    "last_id": "1792130543942-0"
+  },
+  "cursor": {
+    "last_id": "1792130543942-0",
+    "source_id": "be58b226a84236331731e3b203869d0b5e545508",
+    "registered": true,
+    "entry_present": true
+  },
+  "persistence": {
+    "loading": 0,
+    "aof_enabled": 1,
+    "aof_last_write_status": "ok",
+    "aof_last_bgrewrite_status": "ok",
+    "rdb_last_bgsave_status": "ok",
+    "aof_rewrite_in_progress": 0,
+    "rdb_bgsave_in_progress": 0
+  },
+  "persistence_config": {
+    "appendonly": "yes",
+    "appendfsync": "everysec",
+    "save": "3600 1",
+    "no-appendfsync-on-rewrite": "no"
+  },
+  "captured_at": "2026-10-18T10:26:41.069903+00:00"
+}
