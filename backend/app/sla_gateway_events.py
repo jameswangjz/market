@@ -11,6 +11,7 @@ import json
 import math
 import os
 
+import anyio
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, and_, or_, not_, func, select, text
@@ -108,6 +109,8 @@ def _aware(value):
 
 
 def install(ns):
+    ingest_capacity = anyio.CapacityLimiter(4)
+
     class SourceWindow(ns["Base"]):
         __tablename__ = "sla_gateway_source_windows"
         producer_id = mapped_column(String(180), primary_key=True)
@@ -337,7 +340,15 @@ def install(ns):
                     raise HTTPException(503, "Gateway ingestion temporarily unavailable; retry batch",
                                         headers={"Retry-After": "2"}) from None
                 raise
-        return await run_in_threadpool(persist)
+        try:
+            ingest_capacity.acquire_nowait()
+        except anyio.WouldBlock:
+            raise HTTPException(503, "Gateway ingestion busy; retry batch",
+                                headers={"Retry-After": "2"}) from None
+        try:
+            return await run_in_threadpool(persist)
+        finally:
+            ingest_capacity.release()
 
     ns["app"].post(ENDPOINT, include_in_schema=False)(receiver)
 
