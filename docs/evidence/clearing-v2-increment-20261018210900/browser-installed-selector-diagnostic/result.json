@@ -1,0 +1,43 @@
+﻿{
+    "checks":  [
+                   "Four standard workspace tabs retain order, with optional authorized management tab",
+                   "Workspace tab 1 has no API contract error",
+                   "Workspace tab 2 has no API contract error",
+                   "Workspace tab 3 has no API contract error",
+                   "Workspace tab 0 has no API contract error"
+               ],
+    "screenshots":  [
+
+                    ],
+    "error":  "Browser state timed out",
+    "scope":  "installed clearing UI; GET/HEAD only; no business writes",
+    "diagnostic":  {
+                       "tabs":  [
+                                    {
+                                        "count":  5,
+                                        "labels":  [
+                                                       "清算报表",
+                                                       "应收应付",
+                                                       "资金凭证",
+                                                       "年度快照",
+                                                       "主体与成本例外"
+                                                   ]
+                                    },
+                                    {
+                                        "count":  6,
+                                        "labels":  [
+                                                       "清算明细",
+                                                       "月度",
+                                                       "产品",
+                                                       "提供方",
+                                                       "收益主体",
+                                                       "贡献排名"
+                                                   ]
+                                    }
+                                ],
+                       "management":  false,
+                       "manual":  false,
+                       "busy":  "false"
+                   },
+    "status":  "failed"
+}

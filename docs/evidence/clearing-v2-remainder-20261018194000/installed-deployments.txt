@@ -1,0 +1,8 @@
+NAME                       IMAGE                               READY   UPDATED   DESIRED   GEN   OBSERVED
+market-api                 market-api:20261018201352-c7dc59f   1       1         1         266   266
+market-web                 market-web:20261018201352-c7dc59f   1       1         1         249   249
+message-center-worker      market-api:20261018201352-c7dc59f   2       2         2         67    67
+online-delivery-worker     market-api:20261018201352-c7dc59f   1       1         1         53    53
+refund-execution-worker    market-api:20261018201352-c7dc59f   1       1         1         9     9
+version-change-worker      market-api:20261018201352-c7dc59f   1       1         1         38    38
+api-charge-ledger-worker   market-api:20261018201352-c7dc59f   1       1         1         14    14

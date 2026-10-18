@@ -1,0 +1,18 @@
+﻿{
+    "screenshots":  [
+                        "funding-1440.png",
+                        "funding-390.png"
+                    ],
+    "status":  "failed",
+    "scope":  "isolated SQLite; synthetic funding only; three allowlisted POSTs",
+    "error":  "Funding browser acceptance failed; private diagnostics suppressed",
+    "checks":  [
+                   "Funding API contract has no errors",
+                   "Named SET selector uses the fixed internal settlement identity",
+                   "Creator cannot approve own proposal; no self-review POST",
+                   "Funding API contract has no errors",
+                   "Actual API covered result retains bank_receipt_verified=false",
+                   "Funding panel fits viewport 1440",
+                   "Funding panel fits viewport 390"
+               ]
+}

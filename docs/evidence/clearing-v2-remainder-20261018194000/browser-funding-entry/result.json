@@ -1,0 +1,27 @@
+﻿{
+    "checks":  [
+                   "Management view 3 loads without contract errors",
+                   "Fourth management tab is activated",
+                   "Funding component receives live props and renders its authorized API response",
+                   "Actual funding-adjustments API GET is observed",
+                   "Platform operator has the funding proposal entry",
+                   "Funding entry fits 1440",
+                   "Funding entry fits 390",
+                   "Management view 3 loads without contract errors",
+                   "Provider funding entry remains scoped and read-only",
+                   "Provider funding GET pins enterprise_id and business_view"
+               ],
+    "screenshots":  [
+                        "funding-entry-1440.png",
+                        "funding-entry-390.png"
+                    ],
+    "writes":  [
+
+               ],
+    "funding_queries":  [
+                            "",
+                            "?enterprise_id=provider_tenant\u0026business_view=provider"
+                        ],
+    "status":  "passed",
+    "scope":  "localhost disposable --management fixture; funding entry read/render only; GET/HEAD only"
+}

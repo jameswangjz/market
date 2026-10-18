@@ -1,0 +1,17 @@
+﻿{
+    "screenshots":  [
+                        "multi-cost-final-1440.png",
+                        "multi-cost-final-390.png"
+                    ],
+    "status":  "passed",
+    "scope":  "isolated localhost8129 real synthetic VC sources; only one cost proposal and one opposite-party decision are writable",
+    "checks":  [
+                   "Management view 2 loads without contract errors",
+                   "Latest dist renders both approved source business identities and baseline hashes",
+                   "Latest dist preserves both frozen source invoices",
+                   "Readonly source evidence fits 1440",
+                   "Readonly source evidence fits 390",
+                   "Management view 3 loads without contract errors",
+                   "New manual proof panel renders using actual scoped backend endpoint"
+               ]
+}

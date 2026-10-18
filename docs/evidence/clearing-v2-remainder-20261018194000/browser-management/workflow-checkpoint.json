@@ -1,0 +1,35 @@
+﻿{
+    "checks":  [
+                   "Management view 0 loads without contract errors",
+                   "Provider registration pins the enterprise scope",
+                   "Real API registers a named beneficiary through the browser",
+                   "Management page-size control updates its actual state",
+                   "Management view 1 loads without contract errors",
+                   "Product chooser displays authorized product names",
+                   "Real API saves category allocation version1",
+                   "Management view 2 loads without contract errors",
+                   "Cost application shows the actual selected refund amount",
+                   "Cost application shows frozen original settlement and hash evidence",
+                   "Browser creates a cost exception through the real API",
+                   "Applicant and same-side users have no cost approval controls",
+                   "Management view 2 loads without contract errors",
+                   "Opposite platform side sees approve and reject controls",
+                   "Independent opposite-side reviewer approves the real exception",
+                   "Approved exception exposes evidence references and reviewer reason",
+                   "Workspace 3 has no API errors",
+                   "Annual snapshot maker cannot finalize own snapshot",
+                   "Workspace 3 has no API errors",
+                   "Independent operator can open annual finalization",
+                   "Synthetic prior-year internal-profit snapshot is independently finalized by real API",
+                   "Annual dynamic view renders twelve months and balance bridge, not JSON",
+                   "Workspace 0 has no API errors",
+                   "Report detail renders authoritative five-party rates and amounts"
+               ],
+    "screenshots":  [
+
+                    ],
+    "error":  "Synthetic read-only manifest renders both source identities, final hashes and five-party segment amounts",
+    "scope":  "localhost disposable SQLite --management fixture only; allowlisted synthetic management writes",
+    "status":  "failed",
+    "failure_ui":  "运营工作台\n清算分账\no\nops\n运营\n财务运营 · 可核对分账\n清算分账\n\n按订单版本成本计算利润，再依据利润进行分账。\n\n刷新\n清算单 3\n规则与试算 1\n清算批次 2\n对账差异 0\n退款与冲正 0\n清算报表\n计量计费 0\n清算报表与资金\n平台授权范围\n清算报表\n应收应付\n资金凭证\n年度快照\n主体与成本例外\n\n授权清算数据 · 人工登记 / 模拟确认\n\n开始日期（北京时间）\n结束日期（含当天）\n订单号 / 关键词\n提供方 ID\n产品 ID\n批次 ID\n清算状态\n全部\n待确认\n已锁定\n已确认\n正向已付\n已作废\n经济记录类型\n全部\n原始收入\n退款冲回\n版本变更\n收益类别\n全部\n平台\n提供方\n数据服务方\n专家\n渠道\n检索\n重置\n\n年度快照已复核定稿\n\n收入业务订单数\n0\n完成退款笔数\n1\n业务调整笔数\n0\n清算记录数\n1\n去重关联订单数\n1\n清算收入\n-150.00\n供货成本\n-100.00\n可分配利润\n-50.00\n平台分成\n-10.00\n提供方利润分成\n-40.00\n数据服务方分成\n0.00\n专家分成\n0.00\n渠道分成\n0.00\n提供方合计应收\n-140.00\n期间资金余额桥接 · CNY\n\n2026-10-01 至 2026-10-31 · 历史余额未知，不以当前余额代替 · 期间尚未结束\n\n期初应付\t新增应付\t已付款\t应付抵扣\t期末应付\t期初应追回\t新增应追回\t已回收\t应收抵扣\t期末应追回\n—\t—\t—\t—\t—\t—\t—\t—\t—\t—\n\n操作失败，请稍后重试（业务码：unfrozen_settlement_history）\n\n资金确认截至 2026-10-18T12:05:51.435102+00:00；未核验银行发生时间\n\n2026-10-01 至 2026-10-31（含当天，北京时间） · CNY · 截止 2026-10-18T12:05:51.437706+00:00 · 含未确认记录\n\n清算明细\n月度\n产品\n提供方\n收益主体\n贡献排名\n汇总 CSV\n明细 CSV\n产品 CSV\n提供方 CSV\n主体 CSV\n退款 CSV\n净额排名 CSV\n清算单号\t订单号\t批次号\t产品\t版本\t经济类型\t清算收入\t供货成本\t可分配利润\t平台分成\t提供方利润分成\t数据服务方分成\t专家分成\t渠道分成\t提供方合计应收\t清算状态\t暂估未冻结\t操作\nSET-SYNTHETIC-EVIDENCE\tORD-CLR2-BROWSER\t\tIsolated clearing fixture\t\t退款冲回\t-150.00\t-100.00\t-50.00\t-10.00\t-40.00\t0.00\t0.00\t0.00\t-140.00\t待确认\t是\t\n共 1 条\n每页\n10\n20\n50\n100\n1 / 1\n跳至\n记录详情\n清算单号\nSET-SYNTHETIC-EVIDENCE\n订单号\nORD-CLR2-BROWSER\n批次号\n产品\nIsolated clearing fixture\n版本\n经济类型\n退款冲回\n清算收入\n-150.00\n供货成本\n-100.00\n可分配利润\n-50.00\n平台分成\n-10.00\n提供方利润分成\n-40.00\n数据服务方分成\n0.00\n专家分成\n0.00\n渠道分成\n0.00\n提供方合计应收\n-140.00\n清算状态\n待确认\n暂估未冻结\n是\n最终基线校验值\n财务归属时间\n2026-10-18T12:05:07.322141+00:00\n退款关联\nclr2-evidence-refund\n版本变更关联\n买方\nbuyer_tenant\n卖方\nprovider_tenant\n收益类别\t最终基线比例\t规则比例\t金额\n平台\t20.0000%\t未知\t-10.00\n提供方\t80.0000%\t未知\t-40.00\n数据服务方\t-0.0000%\t未知\t0.00\n专家\t-0.0000%\t未知\t0.00\n渠道\t-0.0000%\t未知\t0.00\n实际收益主体\t类别\t成本\t利润\t承担损失\t净应收\t平台补差吸收损失\t基线应收合计\t补差后净应收\nPlatform\t平台\t0.00\t-10.00\t0.00\t-10.00\t0.00\t-10.00\t-10.00\nprovider_tenant\t提供方\t-100.00\t-40.00\t0.00\t-140.00\t0.00\t-140.00\t-140.00\n未分配主体\t数据服务方\t0.00\t0.00\t0.00\t0.00\t0.00\t0.00\t0.00\n未分配主体\t专家\t0.00\t0.00\t0.00\t0.00\t0.00\t0.00\t0.00\n未分配主体\t渠道\t0.00\t0.00\t0.00\t0.00\t0.00\t0.00\t0.00\n独立补差来源与承担证据\n状态\n未知\n来源\n未提供\n补差金额\n—\n承担主体\n未提供\n资金与回收证据\n\n资金证据未完整核实，不推断为已结清\n\n应付金额\n—\n已付款\n—\n应付已抵扣\n—\n未付余额\n—\n应追回\n—\n已追回\n—\n应收已抵扣\n—\n未追回余额\n—\n\n操作失败，请稍后重试（业务码：finance_positions_missing）\n\n退款逐段来源证据\n来源 1 · ORD-CLR2-BROWSER\n经济段\nsynthetic-source-1\n原清算单\nSET-CLR2-BROWSER\n原批次\nBATCH-CLR2-BROWSER\n最终基线校验值\n098c5b1f4b4eefca67f9f3b51a19c1c61aa08512f77c11adbb5642ff16e06a12\n收入冲回\t成本冲回\t利润冲回\n-75.00\t-50.00\t-25.00\n收益类别\t冻结比例\t本段冲回金额\n平台\t20.0000%\t-5.00\n提供方\t80.0000%\t-20.00\n服务方\t0.0000%\t0.00\n专家\t0.0000%\t0.00\n渠道\t0.0000%\t0.00\n来源 2 · ORD-CLR2-BROWSER\n经济段\nsynthetic-source-2\n原清算单\nSET-CLR2-BROWSER\n原批次\nBATCH-CLR2-BROWSER\n最终基线校验值\n098c5b1f4b4eefca67f9f3b51a19c1c61aa08512f77c11adbb5642ff16e06a12\n收入冲回\t成本冲回\t利润冲回\n-75.00\t-50.00\t-25.00\n收益类别\t冻结比例\t本段冲回金额\n平台\t20.0000%\t-5.00\n提供方\t80.0000%\t-20.00\n服务方\t0.0000%\t0.00\n专家\t0.0000%\t0.00\n渠道\t0.0000%\t0.00"
+}

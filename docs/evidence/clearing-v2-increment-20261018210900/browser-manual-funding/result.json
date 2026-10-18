@@ -1,0 +1,21 @@
+﻿{
+    "checks":  [
+                   "Management view 3 loads without contract errors",
+                   "Actual registration is immutable pending manual review, never bank verified",
+                   "Management view 3 loads without contract errors",
+                   "Independent review consumes version1 and removes repeat-review control",
+                   "Existing cover uses reviewed evidence, no arbitrary receipt reference input",
+                   "Actual existing cover result is version3 with bank_receipt_verified false",
+                   "Manual proof layout fits 1440",
+                   "Manual proof layout fits 390"
+               ],
+    "write_count":  3,
+    "screenshots":  [
+                        "manual-funding-1440.png",
+                        "manual-funding-390.png"
+                    ],
+    "scope":  "localhost8126 isolated SQLite; exactly manual register, independent review, existing cover",
+    "prior_review":  "existing independently reviewed synthetic evidence; review is not replayed",
+    "prior_registration":  "existing isolated synthetic receipt; registration is not replayed",
+    "status":  "passed"
+}
