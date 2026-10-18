@@ -143,6 +143,7 @@ metadata:
   labels: {app: market-postgres}
 spec:
   replicas: 1
+  strategy: {type: Recreate}
   selector: {matchLabels: {app: market-postgres}}
   template:
     metadata: {labels: {app: market-postgres}}
@@ -157,8 +158,8 @@ spec:
             - {name: POSTGRES_USER, value: market}
             - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: market-secrets, key: POSTGRES_PASSWORD}}}
           volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
-          readinessProbe: {exec: {command: ["sh", "-c", "pg_isready -U market -d market"]}, initialDelaySeconds: 8, periodSeconds: 5}
-          livenessProbe: {exec: {command: ["sh", "-c", "pg_isready -U market -d market"]}, initialDelaySeconds: 20, periodSeconds: 10}
+          readinessProbe: {exec: {command: ["sh", "-c", "pg_isready -U market -d market"]}, initialDelaySeconds: 8, periodSeconds: 5, timeoutSeconds: 5}
+          livenessProbe: {exec: {command: ["sh", "-c", "pg_isready -U market -d market"]}, initialDelaySeconds: 20, periodSeconds: 10, timeoutSeconds: 5, failureThreshold: 6}
       volumes: [{name: data, persistentVolumeClaim: {claimName: market-postgres-data}}]
 ---
 apiVersion: v1
