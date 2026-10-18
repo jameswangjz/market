@@ -5,7 +5,7 @@ metadata:
   name: r3-trading-task-monitor
   namespace: market
 spec:
-  schedule: '*/10 * * * *'
+  schedule: '3-59/10 * * * *'
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 240

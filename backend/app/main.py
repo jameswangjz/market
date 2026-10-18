@@ -2554,7 +2554,7 @@ def startup():
 
 
 @app.get("/api/health")
-def health():
+async def health():
     return {"status": "ok", "service": "market-api", "time": now()}
 
 

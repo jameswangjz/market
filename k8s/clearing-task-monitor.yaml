@@ -8,7 +8,7 @@ metadata:
   name: clearing-task-monitor
   namespace: market
 spec:
-  schedule: '*/10 * * * *'
+  schedule: '1-59/10 * * * *'
   timeZone: Etc/UTC
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 240
