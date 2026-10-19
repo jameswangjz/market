@@ -1,18 +1,194 @@
 """Verified automatic fulfillment for API and model API orders."""
 import hashlib
+import json
 import logging
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fastapi import HTTPException
-from sqlalchemy import event, select
+from sqlalchemy import Column, ForeignKey, String, Text, event, select
 
 from .order_economics import money
+from .subscription_calendar import CalendarAnchor
+from .api_provider_lifecycle import QUOTAS, frozen_snapshot, period_snapshot
 
 logger = logging.getLogger(__name__)
+
+
+def provider_periods(ns, db, rows):
+    """Translate verified gateway rights without changing quota units."""
+    result = []
+    for row in rows:
+        order = db.get(ns['Order'], row['order_id'])
+        term = db.get(ns['subscription_terms']['Term'], row['segment_id'])
+        if not order or not term:
+            raise HTTPException(409, 'Provider period ownership is unavailable')
+        delivery = ns['subscription_terms']['effective_snapshot'](db, order, term)['delivery']
+        quotas = {key: row.get(key, delivery['quota'][key]) for key in QUOTAS}
+        combo = db.get(ns['subscription_terms']['Combination'], term.combination_id)
+        if not combo or combo.generation != term.generation:
+            raise HTTPException(409, 'Provider period calendar is unavailable')
+        index = int(row['period_key'].rsplit(':', 1)[1])
+        bounds = CalendarAnchor(combo.anchor_at).period(index)
+        if (row['period_key'] != f'{combo.id}:{combo.generation}:{index}'
+                or index < term.start_month or index >= term.start_month + term.months):
+            raise HTTPException(409, 'Provider period calendar identity changed')
+        # Gateway native buckets use integer seconds; retain the exact calendar
+        # edges when those seconds still identify an unmodified native bucket.
+        start = row.get('starts_at') or (bounds.start if row['start_at'] == int(bounds.start.timestamp())
+            else datetime.fromtimestamp(row['start_at'], timezone.utc))
+        end = row.get('ends_at') or (bounds.end if row['end_at'] == int(bounds.end.timestamp())
+            else datetime.fromtimestamp(row['end_at'], timezone.utc))
+        start = datetime.fromisoformat(start) if isinstance(start, str) else start
+        end = datetime.fromisoformat(end) if isinstance(end, str) else end
+        start, end = max(start, bounds.start, term.starts_at), min(end, bounds.end, term.ends_at)
+        result.append(period_snapshot(order, term, start, end, quotas))
+    return result
+
+
+def provider_operation(ns, db, order, term, combo, *, endpoint, periods,
+                       event_type, operation_key, version=None, **optional):
+    if not endpoint:
+        return {'status': 'skipped_unmanaged', 'provider_synced': False}
+    hooks = ns.get('api_provider_lifecycle')
+    if not hooks:
+        raise HTTPException(409, 'API provider lifecycle is not installed')
+    old = db.scalar(select(hooks['Plan']).where(
+        hooks['Plan'].enterprise_id == order.buyer_enterprise_id,
+        hooks['Plan'].product_id == order.product_id,
+        hooks['Plan'].operation_key == operation_key))
+    tenant = db.scalar(select(hooks['Tenant']).where(
+        hooks['Tenant'].enterprise_id == order.buyer_enterprise_id,
+        hooks['Tenant'].product_id == order.product_id))
+    body = frozen_snapshot(order, term, combo, event_type=event_type,
+        operation_key=operation_key, periods=periods,
+        starts_at=min(datetime.fromisoformat(p['starts_at']) for p in periods) if periods else combo.anchor_at,
+        expires_at=max(datetime.fromisoformat(p['expires_at']) for p in periods) if periods
+            else CalendarAnchor(combo.anchor_at).boundary(combo.total_months),
+        tenant_id=json.loads(old.body_json)['tenant_id'] if old else (tenant.tenant_id if tenant else None),
+        version=version, **optional)
+    record, _ = hooks['prepare'](db, body, endpoint)
+    if isinstance(record, dict):
+        raise HTTPException(409, 'Configured provider operation was not prepared')
+    return {'plan_id': record.id, 'endpoint': endpoint, 'payload': body}
+
+
+def execute_provider(ns, db, operation):
+    if operation == {'status': 'skipped_unmanaged', 'provider_synced': False}:
+        return operation
+    hooks = ns.get('api_provider_lifecycle')
+    if not hooks or not isinstance(operation, dict):
+        raise HTTPException(409, 'Frozen provider operation is unavailable')
+    record = db.get(hooks['Plan'], operation.get('plan_id'))
+    if (not record or record.endpoint != operation.get('endpoint')
+            or json.loads(record.body_json) != operation.get('payload')):
+        raise HTTPException(409, 'Frozen provider operation changed')
+    return hooks['execute'](db, record)
 
 
 def install(ns):
     ApiCredential, Route = ns['ApiCredential'], ns['ApiGatewayRoute']
     compensation_key = '_api_delivery_redis_compensations'
+    Preparation = ns.get('_api_delivery_preparation_model')
+    if Preparation is None:
+        class Preparation(ns['Base']):
+            __tablename__ = 'api_delivery_preparations'
+            order_id = Column(ForeignKey('orders.id'), primary_key=True)
+            enterprise_id = Column(String(36), nullable=False)
+            product_id = Column(String(36), nullable=False)
+            frozen_json = Column(Text, nullable=False)
+        ns['_api_delivery_preparation_model'] = Preparation
+
+        def immutable(*args):
+            raise ValueError('API delivery preparations are immutable')
+        event.listen(Preparation, 'before_update', immutable)
+        event.listen(Preparation, 'before_delete', immutable)
+
+    def assert_no_pending(db, enterprise_id, product_id, order_id=None):
+        Term = ns['subscription_terms']['Term']
+        pending = db.scalars(select(Preparation).outerjoin(Term,
+            Term.order_id == Preparation.order_id).where(
+                Preparation.enterprise_id == enterprise_id,
+                Preparation.product_id == product_id, Term.id.is_(None))).all()
+        if any(row.order_id != order_id for row in pending):
+            raise HTTPException(409, 'Another API delivery is awaiting provider and gateway verification')
+        lifecycle = ns.get('api_provider_lifecycle')
+        if lifecycle:
+            plans = db.scalars(select(lifecycle['Plan']).where(
+                lifecycle['Plan'].enterprise_id == enterprise_id,
+                lifecycle['Plan'].product_id == product_id,
+                lifecycle['Plan'].operation_key.like('delivery:%'))).all()
+            for plan in plans:
+                owner = json.loads(plan.body_json)['order_id']
+                if owner != order_id and db.scalar(select(Term.id).where(Term.order_id == owner)) is None:
+                    raise HTTPException(409, 'Another provider delivery is awaiting gateway verification')
+
+    def combination_state(combo):
+        if combo is None:
+            return None
+        return {key: (getattr(combo, key).isoformat() if key == 'anchor_at' else getattr(combo, key))
+            for key in ('id', 'generation', 'anchor_at', 'total_months', 'version_id',
+                        'version_code', 'delivery_method', 'status')}
+
+    def prepare_delivery(db, order, delivery):
+        terms = ns['subscription_terms']
+        combo = terms['lock_combination'](db, order.buyer_enterprise_id, order.product_id)
+        assert_no_pending(db, order.buyer_enterprise_id, order.product_id, order.id)
+        guard = ns.get('version_change_saga', {}).get('assert_no_pending')
+        if callable(guard):
+            guard(db, order.buyer_enterprise_id, order.product_id)
+        saved = db.get(Preparation, order.id)
+        if saved:
+            frozen = json.loads(saved.frozen_json)
+            if frozen['before'] != combination_state(combo):
+                raise HTTPException(409, 'Subscription changed after API delivery preparation')
+            body = frozen['provider']['payload']
+            if (body['version'] != {'id': order.product_version_id, 'code': order.product_version_code}
+                    or body['subscription_months'] != order.subscription_months
+                    or body['order_no'] != order.order_no or frozen['delivery'] != delivery):
+                raise HTTPException(409, 'API delivery frozen version changed')
+            return frozen, False
+        if not (delivery.get('integration_api_url') or '').strip():
+            return None, False
+        at = ns['now']()
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        live = combo is not None and combo.status == 'active' and at < CalendarAnchor(combo.anchor_at).boundary(combo.total_months)
+        if live and (combo.version_id != order.product_version_id
+                or combo.version_code != order.product_version_code
+                or combo.delivery_method != order.delivery_method_snapshot):
+            raise HTTPException(409, 'API delivery version differs from active subscription')
+        if live and at < combo.anchor_at:
+            raise HTTPException(409, 'API delivery precedes the subscription anchor')
+        start_month = combo.total_months if live else 0
+        projected = SimpleNamespace(id=combo.id if combo else str(uuid.uuid4()),
+            enterprise_id=order.buyer_enterprise_id, product_id=order.product_id,
+            generation=combo.generation if live else (combo.generation + 1 if combo else 1),
+            anchor_at=combo.anchor_at if live else at, total_months=start_month + order.subscription_months)
+        term = SimpleNamespace(id=str(uuid.uuid4()), order_id=order.id, combination_id=projected.id,
+            generation=projected.generation, months=order.subscription_months,
+            version_id=order.product_version_id, version_code=order.product_version_code)
+        periods = provider_periods(ns, db, terms['quota_periods'](
+            db, order.buyer_enterprise_id, order.product_id)) if live else []
+        anchor = CalendarAnchor(projected.anchor_at)
+        for index in range(start_month, projected.total_months):
+            bounds = anchor.period(index)
+            periods.append(period_snapshot(order, term, bounds.start, bounds.end, delivery['quota']))
+        lifecycle = ns.get('api_provider_lifecycle')
+        tenant = db.scalar(select(lifecycle['Tenant']).where(
+            lifecycle['Tenant'].enterprise_id == order.buyer_enterprise_id,
+            lifecycle['Tenant'].product_id == order.product_id)) if lifecycle else None
+        operation = provider_operation(ns, db, order, term, projected,
+            endpoint=delivery['integration_api_url'].strip(), periods=periods,
+            event_type='RENEW' if live else ('RESTORE' if tenant is not None else 'OPEN'),
+            operation_key='delivery:' + order.id)
+        frozen = dict(before=combination_state(combo), planned_at=at.isoformat(),
+            combination_id=projected.id, term_id=term.id, provider=operation, delivery=delivery)
+        db.add(Preparation(order_id=order.id, enterprise_id=order.buyer_enterprise_id,
+            product_id=order.product_id, frozen_json=json.dumps(frozen, sort_keys=True)))
+        db.flush()
+        return frozen, True
 
     def fail():
         raise HTTPException(409, 'API 路由或订阅策略尚未通过交付核验')
@@ -234,7 +410,8 @@ def install(ns):
                 or money(order.refunded_amount) != 0
                 or order.main_status in {'cancelled', 'closed', 'refunded'}):
             raise HTTPException(409, 'API 自动交付须使用全额支付且未退款的有效订单')
-        product = db.get(ns['Product'], order.product_id)
+        product = db.scalar(select(ns['Product']).where(ns['Product'].id == order.product_id)
+            .with_for_update().execution_options(populate_existing=True))
         version = db.get(ns['ProductReleaseVersion'], order.product_version_id)
         gateway_product = product and (product.product_type in {'api', 'model'}
             or method in {'api', 'model_api'})
@@ -242,6 +419,12 @@ def install(ns):
                 or version.product_id != product.id or version.version_code != order.product_version_code
                 or version.status != 'active'):
             raise HTTPException(409, 'API 产品或订单版本无效')
+
+        frozen, created = prepare_delivery(db, order, delivery)
+        if created:
+            return None
+        if frozen:
+            execute_provider(ns, db, frozen['provider'])
 
         # verify_delivery performs SSRF-safe live health validation and checks the
         # version's stored integration evidence. APISIX enabled is required below too.
@@ -307,7 +490,9 @@ def install(ns):
                     for row in refreshed}
                 compensation = track_root_transaction(db, redis, old_policies)
             order.delivery_status, order.main_status = 'accepted', 'pending_confirmation'
-            term = ns['subscription_terms']['on_delivery_success'](db, order, user)
+            reserved = dict(at=datetime.fromisoformat(frozen['planned_at']),
+                combination_id=frozen['combination_id'], term_id=frozen['term_id']) if frozen else {}
+            term = ns['subscription_terms']['on_delivery_success'](db, order, user, **reserved)
             if not term:
                 fail()
             if method in {'api', 'model_api'}:
@@ -335,4 +520,7 @@ def install(ns):
             raise
         return True
 
-    return {'process': process, 'route_matches': route_matches}
+    hooks = {'process': process, 'route_matches': route_matches,
+        'assert_no_pending': assert_no_pending, 'Preparation': Preparation}
+    ns['api_auto_delivery'] = hooks
+    return hooks

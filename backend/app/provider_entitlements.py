@@ -1,5 +1,6 @@
 """Read-only, product-scoped provider reconciliation over persisted terms."""
 
+import json
 from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, Query, Request, Response
@@ -168,6 +169,28 @@ def install(ns):
                         tenant_id=subscription.external_tenant_id if subscription else None,
                         subscription_status=subscription.status if subscription else None,
                         subscription_expires_at=aware(subscription.expires_at) if subscription else None)
+            lifecycle = ns.get('api_provider_lifecycle')
+            item['provider_management'] = {'managed': False, 'status': 'unmanaged'}
+            if lifecycle and order.delivery_method_snapshot in {'api', 'model_api'}:
+                binding = db.scalar(select(lifecycle['Tenant']).where(
+                    lifecycle['Tenant'].product_id == product.id,
+                    lifecycle['Tenant'].enterprise_id == order.buyer_enterprise_id))
+                if binding and combination and binding.combination_id == combination.id:
+                    item['tenant_id'] = binding.tenant_id
+                    receipts = db.execute(select(lifecycle['Plan'], lifecycle['Receipt']).join(
+                        lifecycle['Receipt'], lifecycle['Receipt'].plan_id == lifecycle['Plan'].id).where(
+                            lifecycle['Plan'].product_id == product.id,
+                            lifecycle['Plan'].enterprise_id == order.buyer_enterprise_id)
+                        .order_by(lifecycle['Receipt'].recorded_at.desc())).all()
+                    latest = next((json.loads(receipt.evidence_json) for plan, receipt in receipts
+                        if plan.payload['combination_id'] == combination.id), None)
+                    if latest:
+                        item['provider_management'] = {
+                            'managed': True, 'status': latest['status'],
+                            'event_id': latest['event_id'], 'operation': latest['type'],
+                            'generation': latest['generation'],
+                            'starts_at': latest['starts_at'], 'expires_at': latest['expires_at'],
+                            'effective_at': latest['effective_at'], 'tenant_id': latest['tenant_id']}
             try:
                 overlay = overlay_for(db, order, term) if term else None
                 periods = combination_rights(db, combination, product, rights_cache) if combination else []

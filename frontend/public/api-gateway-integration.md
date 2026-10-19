@@ -1,354 +1,313 @@
-# API 应用接入统一网关接口与规范
+# API应用提供方接入统一网关接口与规范
 
-版本：v1.4（订单期限与提供方权益对账）
-适用范围：数据集运营服务管理平台中的“API 服务”和“模型 API”产品
+版本：v2.0；管理协议：market-api-management-v1；管理请求schema_version：整数1。
 
-本版取消旧调用方式兼容及兼容期要求。提供方按最新规范验证平台OAuth令牌并实现资源接口；商品版本和调用协议分开，已有商业权益不自动改写。平台为新接入版本生成路由标识，审核后先进入待接入验证，验证成功才可购买；已有合法路由标识继续保留。开发环境已部署每5分钟健康检查，连续3次失败记录异常及通知，但不暂停新购、不自动安全下架。生产多节点故障切换和真实供应商联调仍需另行验证。每版本配置接口使用下文已实现字段。
+本文件面向API提供方及平台集成人员，不包含购买方凭据申领/轮换接口。模型推理API作为API应用接入；“模型”商品仍按文件交付，历史model_api交付兼容本管理协议。示例域名、标识及Token都是占位值，实际接入须取得真实产品配置和测试环境。
 
-## 1. 总体架构
-
-平台采用“统一 API 网关集群 + API 服务独立部署”架构。API 服务提供方独立部署业务 API 服务，平台统一 API 网关负责入口路由、身份认证、企业授权、限流、配额、超时控制和调用统计。
+## 1. 架构与实施顺序
 
 ```text
-API 提供方业务服务
-    ^
-    | HTTP/HTTPS 转发
-    统一 API 网关集群（Apache APISIX）
-    |
-    | 按 route_key 路由
-    +--> API 服务 A 独立 Service/Deployment
-    +--> API 服务 B 独立 Service/Deployment
-    +--> API 服务 C 独立 Service/Deployment
+业务数据面：购买方应用 -> 平台APISIX网关 -> 提供方版本业务上游URL
+管理控制面：平台交易/交付进程 -> API服务管理接口地址 -> 提供方权益台账
+认证签发：平台内部客户端 -> 平台OAuth授权服务器 -> 产品级机器Bearer
+认证校验：提供方服务端 -> 平台Token内省端点 -> active/产品/Scope
 ```
 
-网关地址：开发联调使用 `http://<平台地址>:30082`，对应 Apache APISIX 数据面；生产环境应通过 HTTPS 域名或 Ingress 暴露，不应直接使用 NodePort。`30081` 为迁移期间的旧 FastAPI 兼容入口，不作为新接入地址。
+网关是凭据、期限、频次、额度和计费来源的执行权威。管理接口负责提供方自身开通记录、版本/权益同步及执行回执，不替代网关，不自行发起买方付款、退款或清算。
 
-API 提供方的业务 API 不要求部署在数据集运营服务管理平台所在的 Kubernetes 集群中。`upstream_url` 可以是第三方公网 HTTPS 地址、专用网络地址，或平台 Kubernetes 集群内的 Service 地址；前提是统一 API 网关所在网络能够访问该地址，并完成 TLS、访问控制和健康检查配置。
+1. 提供方实现业务API、业务健康检查及独立管理接口，保存幂等结果。
+2. 登记API商品及Logo、管理地址；每版本填写上游URL、说明、月价/月成本及网关策略。
+3. 完成业务、质量、安全、运营审核。平台创建产品机器OAuth客户端，商品进入待接入验证。
+4. 提供方取得OAuth配置，在服务端配置产品标识、内省地址、稳定issuer、audience和Scope。
+5. 平台验证版本业务健康及网关路由，成功的版本才可购买；此检查不替代管理接口的端到端测试。
+6. 买方支付后，平台冻结期限和管理请求，执行提供方及网关核验后完成交付。
+7. 后续续费、升降级、退款权益调整和到期按本规范同步，并通过第9节核对账目关联。
 
-## 2. API 产品上架流程
+提供方业务不必部署在平台K8S内，但必须从平台受控网络可达。不需要自建OAuth授权服务器，也不要求实现OIDC用户SSO。
 
-1. 在“登记数据或服务”中选择产品类型“API 服务”。
-2. 完成产品名称、所属目录、提供方、描述、适用场景、版本、价格策略、安全等级和授权条件等元数据登记。
-3. 提供方准备独立部署的 API 服务，并提供网关可访问的后端地址。
-4. 平台管理员或产品提供企业管理员配置网关路由。
-5. 产品依次通过业务、质量、安全和运营审核，进入“待接入验证”。
-6. 平台自动执行各版本健康检查和 APISIX 发布；至少一个版本验证成功后商品发布，只有验证成功的版本可以购买。失败版本修复后重新验证。
-7. 提供方根据本规范完成 API 服务端适配并配合验收。
+## 2. 登记地址与每版本配置
 
-## 3. 网关接入配置接口
+| 地址 | 字段及用途 | 示例 |
+| --- | --- | --- |
+| API服务管理接口地址 | 产品integration_api_url，完整POST管理端点 | https://provider.example/management |
+| 版本上游URL | 版本integration.upstream_url，业务转发地址 | https://provider.example/v1 |
+| 版本健康路径 | health_path，与版本上游拼接 | /health |
 
-本章描述的是产品完成登记、审核和发布后，将 API 服务接入统一网关的控制面接口，不是第三方 API 的业务接口，也不是完整的产品登记接口。
+产品级“提供方后端访问URL”已从新登记界面移除，不再要求重复填写。管理地址独立输入，不从业务URL推导；所有版本可共用管理入口，由product_id及version区分。每版本可独立主机或路径。
 
-产品登记通过平台产品登记页面完成，登记内容包括产品名称、目录、提供方、描述、版本、适用场景、价格策略、安全等级、授权条件等元数据。API 提供方需要先向平台提供以下接入信息：
+每版本还需：版本号、介绍、月价/月成本、每分钟限流、每日配额、订阅月配额、超时时长、健康GET/HEAD方法、上游认证及Scope、路径前缀策略。已售版本配置不可覆盖，应登记新版本。
 
-- 可从统一网关访问的 `upstream_url`；
-- API 路由标识和业务版本；
-- 支持的 HTTP 方法、路径、请求参数和响应格式；
-- 健康检查地址、超时要求和访问控制要求；
-- 文件或流式响应约定；
-- 限流、每日配额和月度配额建议值。
+route_key由平台维护，是网关标识，不是提供方业务路径。入口认证指购买方到网关；上游认证指网关到提供方。strip_prefix决定移除平台 `/gateway/{route_key}` 前缀后怎样拼接版本业务地址，应实测避免路径重复或丢失。
 
-产品完成审核发布后，平台会对已保存的网关后端地址执行健康检查；检查通过后自动发布网关路由，状态为 `active`。检查失败时状态为 `publish_failed`，产品仍可审核通过，但不会对外转发；修正配置后可重新执行检查。具备平台授权的产品提供企业管理员可以调用以下控制面接口完成配置，但第三方 API 应用本身不需要实现这些接口。
+同版本续费延长期限，不叠加同期配额、不清零已用量。日配额按北京时间自然日，月配额按服务生效日划分订阅月；升级/降级保留当前周期用量。平台统一采用最新调用协议，不要求兼容旧调用方式，但商品版本不会未经授权自动切换。
 
-所有平台控制面接口基础路径为 `/api`，需要平台登录令牌。
+HTTP受系统“应用接入地址允许HTTP”控制，开发可明确允许，生产应使用HTTPS。管理URL不允许用户名/密码、查询参数或片段。私网由平台运维显式配置UPSTREAM_ALLOWED_HOSTS或受控网段，禁止放开回环、链路本地、云元数据及绕过SSRF校验。
 
-### 3.1 保存网关配置
+## 3. 平台统一OAuth2认证
+
+### 3.1 三类凭证不可互换
+
+| 链路 | 凭证及Scope |
+| --- | --- |
+| 购买方到APISIX | 平台购买方网关凭据；申领操作不在本文 |
+| APISIX到业务上游 | 平台机器Bearer，resource.invoke |
+| 平台到提供方管理接口 | 平台机器Bearer，resource.manage |
+| 提供方人员下载配置/查询对账 | 提供企业管理员的平台登录Bearer |
+
+resource.invoke不能调用管理接口，resource.manage不能代替业务调用。两种机器Token由同一平台授权服务器签发、绑定产品，不代表某个买方用户或租户。
+
+### 3.2 完整流程
+
+```text
+平台进程/APISIX        平台OAuth授权服务器            提供方
+     |--内部client_credentials--->|
+     |<--access_token/Scope-------|
+     |----------------业务/管理请求+Bearer-------------->|
+     |                            |<--POST introspect----|
+     |                            |---active及claims----->|
+     |                            |       校验Scope/产品/业务身份
+     |<----------------实际结果及管理回执-----------------|
+```
+
+平台内部使用产品client_id/client_secret向自身 `/oauth/token` 发送form-urlencoded，grant_type=client_credentials，scope按链路选择resource.invoke或resource.manage。提供方不实现另一取Token接口，也不用OIDC Secret或买方API Key取机器Token。
+
+当前机器有效期约3600秒，claims含iss/aud/client_id/product_id/scope/iat/exp/jti，aud为market-resource。Token exp是认证有效期，不是客户服务截止日期。
+
+提供方收到Authorization Bearer后，在服务端请求：
 
 ```http
-PUT /api/products/{product_id}/gateway-config
-Authorization: Bearer <platform-token>
-Content-Type: application/json
-```
-
-请求示例：
-
-```json
-{
-  "upstream_url": "http://api-quality-service:8080/v1",
-  "route_key": "quality-api",
-  "version": "v1",
-  "auth_mode": "api_key",
-  "rate_limit_per_minute": 600,
-  "daily_quota": 100000,
-  "monthly_quota": 3000000,
-  "timeout_ms": 30000,
-  "strip_prefix": true,
-  "health_path": "/health",
-  "health_method": "GET",
-  "upstream_auth_mode": "oauth2",
-  "upstream_scope": "resource.invoke"
-}
-```
-
-字段说明：
-
-| 字段 | 必填 | 说明 |
-|---|---|---|
-| `upstream_url` | 是 | API 服务在 Kubernetes 或内部网络中的 HTTP/HTTPS 地址 |
-| `route_key` | 否 | 网关路由标识；为空时由平台生成 |
-| `version` | 否 | API 版本，例如 `v1`、`v2` |
-| `auth_mode` | 否 | 首版支持 `api_key`；内部健康检查场景可配置 `none` |
-| `rate_limit_per_minute` | 否 | 单个 API Key 每分钟最大请求数 |
-| `daily_quota` | 否 | 单个 API Key 每日最大请求数 |
-| `monthly_quota` | 否 | 版本每订阅月调用次数；`0` 表示月度不限额，每日限额独立生效 |
-| `timeout_ms` | 否 | 网关等待后端响应的最大时间，范围 100 至 120000 毫秒 |
-| `strip_prefix` | 否 | 是否只将路由后的路径转发给后端服务 |
-| `health_path` | 否 | 审核后健康检查路径，默认 `/health` |
-| `health_method` | 否 | 健康检查方法，仅支持 `GET` 或 `HEAD` |
-| `upstream_auth_mode` | 否 | 网关访问提供方服务的认证方式，默认 `oauth2`，也可为 `none` |
-| `upstream_scope` | 否 | 平台 Token 请求的作用域 |
-
-### 3.2 发布网关路由
-
-```http
-POST /api/products/{product_id}/gateway-config/publish
-Authorization: Bearer <platform-token>
-```
-
-产品必须已经完成产品审核并处于“已发布”状态，网关路由才可以启用。
-
-### 3.3 审核后自动健康检查
-
-```http
-POST /api/products/{product_id}/gateway-config/health-check
-Authorization: Bearer <platform-token>
-```
-
-平台审核接口在审核结论为通过时会自动执行同样的健康检查。健康检查返回 2xx 后，路由自动变为 `active`；检查中为 `pending_health`，失败为 `publish_failed`。产品版本可以分别定义 `rate_limit_per_minute`、`daily_quota`、`monthly_quota`，订单凭据按购买版本继承对应策略，凭据自身配置不为空时优先使用凭据策略。
-
-### 3.4 平台统一 OAuth2
-
-API 提供方和 SaaS 应用统一作为平台 OAuth2 资源服务。产品审核通过后，平台为产品生成 OAuth 客户端，并由统一网关或 SaaS 调用模块使用 `client_credentials` 获取平台访问令牌。提供方服务不再自行提供 Token 地址，也不使用调用方的 API Key 作为后端认证。
-
-平台 Token 接口：
-
-```http
-POST /oauth/token
+POST {introspection_url}
 Content-Type: application/x-www-form-urlencoded
 
-grant_type=client_credentials&client_id=<platform-client-id>&client_secret=<platform-client-secret>&scope=resource.invoke
+token={received_machine_bearer}
 ```
 
-提供方服务应从 `Authorization: Bearer <platform-access-token>` 读取令牌，并通过平台 `POST /oauth/introspect` 校验。当前版本以 introspection 为标准校验方式；平台后续可增加 JWKS 公钥校验方式。平台 Token 的 `aud` 为 `market-resource`，并包含产品标识、客户端标识和作用域。
+```json
+{"active":true,"iss":"https://platform.example","aud":"market-resource","product_id":"product-1","scope":"resource.manage"}
+```
 
-产品审核通过后，产品所有者可在产品页面下载统一 OAuth2 接入配置文件：
+仅布尔active=true合格；检查预配置的issuer、audience、product_id及完整Scope值。未知/过期/撤销Token拒绝，内省不可达失败关闭，不允许失败放行。当前机器JWT是HS256，由平台验签；提供方通过内省，不使用OIDC JWKS或索要平台JWT签名密钥。当前内省未要求额外资源服务器客户端认证，生产须评估TLS、网络入口限制、限流及认证加固，不能假设已启用mTLS。
+
+管理HTTP401会使平台清除对应旧Token缓存，后续业务重试再取Token，不在该次失败请求中立即无限重放。上游业务Token由APISIX缓存。提供方不能只看JWT未过期而忽略客户端撤销或产品归属。
+
+### 3.3 获取实际配置
+
+提供方已实名、已激活的所属企业超级管理员/管理员，从产品页面下载：
 
 ```http
 GET /api/products/{product_id}/oauth-credentials-download
-Authorization: Bearer <platform-login-token>
+Authorization: Bearer <提供方人员平台登录Token>
 ```
 
-下载文件包含 `client_id`、`client_secret`、Token 地址、校验地址、Issuer、Audience 和 Scope，产品提供方应仅在服务端安全保存敏感字段。
+当前API下载是受控TXT附件，不是SaaS的OIDC JSON。保留原client_id/client_secret/token_url等兼容字段，新增api_management_url、api_management_protocol、api_management_scope、api_business_scope。提供方验证Token主要使用product_id、introspection_url、issuer、audience及Scope。文件可能包含敏感Secret，须服务端妥善保存，不交购买方、不放浏览器或仓库；不得因拥有文件而代平台任意改动客户权益。
 
-网关转发到提供方时会自动获取、缓存和刷新 Token，并将 Token 放入上游请求的 `Authorization` 请求头；调用方传入的认证头不会直接转发。提供方服务应至少校验 Token 有效期、签发方、受众、产品标识和 `resource.invoke` 作用域。
+已配置管理地址的产品在审核时获得resource.manage授权；已有客户端ID/Secret/停用状态不自动改变。K8S内部market-api:8000不保证第三方可达，平台须协调可达内省端点和稳定issuer，不能擅改已签发Token中的issuer。本文不提供有效测试Secret。
 
-## 4. API 服务端接入规范
+## 4. 业务API与健康检查
 
-API 服务应提供标准 HTTP 接口，推荐使用 JSON 作为请求和响应格式。
+APISIX按版本转发提供方业务HTTP路径、参数和响应，替换上游Authorization为resource.invoke机器Bearer。提供方需处理其声明的方法/Content-Type，文件返回正确Content-Disposition，流式响应按约定返回chunk或SSE，并在网关超时内响应。业务写入需自行实现业务幂等，管理幂等键不自动保护业务请求。
 
-### 4.1 请求要求
+当前不能假定所有原生APISIX请求都携带经过平台签名的企业/租户/订单头；机器Token也没有买方身份。不能信任客户端随意传入的X-Market-Enterprise-Id等头来授权。平台入口负责客户授权，提供方台账通过管理消息和第9节查询关联；业务另需客户上下文时须单独约定可信注入，不能依据本文未承诺的请求头实现租户鉴权。
 
-- 使用 HTTP/HTTPS。
-- 正确处理 `GET`、`POST`、`PUT`、`PATCH`、`DELETE` 等业务方法。
-- 支持标准 `Content-Type: application/json`。
-- 请求体不得依赖网关改写后的认证信息。
-- 单次请求应在网关配置的超时时间内完成。
-- 不应依赖客户端直接传入企业身份，企业身份以网关注入请求头为准。
+业务健康按版本upstream_url+health_path访问，最多10秒、不跟随重定向、需2xx。可提供只读公开健康接口，但不能因此取消业务鉴权。管理接口与业务健康不是同一URL，登记的管理地址必须是真实管理程序。
 
-### 4.2 网关注入请求头
+上游业务错误不等于没有扣额：平台退款用量采用网关实际扣额事实。调用失败统计、银行到账和清算回款不由提供方自行推断。
 
-认证成功后，网关会向后端 API 服务注入：
+## 5. 管理HTTP与完整数据契约
+
+### 5.1 HTTP、响应和幂等
 
 ```http
-X-Market-Enterprise-Id: <调用企业ID>
-X-Market-Route-Key: <网关路由标识>
+POST {产品登记的API服务管理接口完整地址}
+Authorization: Bearer <resource.manage机器Token>
+Content-Type: application/json
+Idempotency-Key: <固定操作键>
 ```
 
-API 服务可以基于 `X-Market-Enterprise-Id` 进行企业级数据权限判断。后端服务不得信任客户端自行伪造的同名请求头；生产环境应只允许来自网关服务网段的访问。
+当前管理调用超时10秒、不跟随跳转；变更后再STATUS回读。请求为JSON对象，成功HTTP 2xx且整数ret=0，关键结果必须在根节点，不仅放入data。
 
-### 4.3 响应要求
+绑定product_id+enterprise_id+combination_id；generation区分到期再买后的权益代次。tenant_id可为提供方外部客户/租户ID，也允许不创建实体SaaS租户。平台企业产品共享网关凭据，订单独立留存，不按续费订单另开租户。
 
-推荐返回：
+产品/企业范围内持久化event_id和idempotency_key；先查首次结果，再判断状态。同键同完整请求返回首次结果，同键改内容409。业务变化与首次回执同一事务提交，重启后也不能重复延期。STATUS只读真实当前状态，不回显请求伪装成功。
+
+### 5.2 根字段与周期字段
+
+| 根字段 | 类型及含义 |
+| --- | --- |
+| schema_version | 整数1 |
+| type | OPEN/RENEW/CHANGE/CLOSE/RESTORE/ADJUST/STATUS |
+| event_id / idempotency_key | 固定事件标识/操作键，操作键最长128字符 |
+| product_id / enterprise_id / combination_id | 产品、购买企业、平台订阅组合 |
+| generation | 正整数代次，不能以旧代覆盖新代 |
+| tenant_id | 可空外部标识，已有绑定必须一致 |
+| order_id / order_no | 本次关联订单ID及可读订单号 |
+| version | 对象{id,code}，目标商品版本 |
+| subscription_months | 关联订单本次购买月数，不是组合累计月数 |
+| starts_at / expires_at | 本次目标组合总体边界，不是Token期限 |
+| periods | 完整目标权益时段列表，不是增量 |
+| change_id / direction | 变更时附带，direction=upgrade/downgrade/restore |
+| refund_id | 退款权益调整时附带，非付款ID |
+
+每个period固定包含order_id、order_no、term_id、starts_at、expires_at、quotas。quotas固定包含rate_limit_per_minute、daily_quota、monthly_quota、quota_amount四个非负整数，布尔值不合格。monthly_quota是该订阅月实际额度；quota_amount为冻结版本元数据，不与monthly_quota相加另造额度。0表示不限；无权益用空periods/closed表达，不能用0表示退款清零。
+
+根starts_at是组合起点。**本笔续费开始/截止，在periods中按本order_id取最小starts_at和最大expires_at**，不能把组合原起点误认为本次续费开始。多月订单可有多个订阅月period，term_id相同、周期不同。
+
+所有时间为UTC ISO 8601（Z或+00:00）、最多6位小数，区间左闭右开。平台计算并冻结，提供方按目标执行，不按请求次数本地加月份。月周期使用原始服务日历锚点；目标月没有该日取月末，后续仍恢复原日，不按自然月或固定30天。
+
+### 5.3 开通完整请求
 
 ```json
 {
-  "code": 0,
-  "message": "success",
-  "data": {},
-  "request_id": "业务请求号"
+  "schema_version": 1,
+  "type": "OPEN",
+  "event_id": "event-open-1",
+  "idempotency_key": "delivery:order-1",
+  "product_id": "product-1",
+  "enterprise_id": "buyer-enterprise-1",
+  "combination_id": "combination-1",
+  "generation": 1,
+  "tenant_id": null,
+  "order_id": "order-1",
+  "order_no": "ORD-example-1",
+  "version": {"id": "version-1", "code": "v1"},
+  "subscription_months": 1,
+  "starts_at": "2026-10-19T08:00:00+00:00",
+  "expires_at": "2026-11-19T08:00:00+00:00",
+  "periods": [{
+    "order_id": "order-1", "order_no": "ORD-example-1", "term_id": "term-1",
+    "starts_at": "2026-10-19T08:00:00+00:00", "expires_at": "2026-11-19T08:00:00+00:00",
+    "quotas": {"rate_limit_per_minute": 60, "daily_quota": 1000, "monthly_quota": 10000, "quota_amount": 10000}
+  }]
 }
 ```
 
-HTTP 状态码应符合以下约定：
+### 5.4 完整回执要求
 
-| 状态码 | 含义 |
-|---|---|
-| 200 | 请求成功 |
-| 400 | 请求参数错误 |
-| 401 | 认证失败或凭证缺失 |
-| 403 | 无权访问资源 |
-| 404 | API 资源不存在 |
-| 409 | 请求状态冲突或幂等冲突 |
-| 429 | 超过限流或配额 |
-| 500 | API 服务内部错误 |
-| 502 | 网关无法连接后端服务 |
-| 504 | 后端服务响应超时 |
+响应保留请求中全部协议、操作、身份、版本、订单、日期、periods及可选变更/退款字段，并增加ret/status/effective_at；tenant_id可改为实际生成的稳定外部ID。以下Python示意产生完整响应，不是要求使用Python：
 
-## 5. 网关转发与服务端行为
-
-### 5.1 限流与配额行为
-
-- Redis 保存分布式分钟、日和订阅月计数。
-- 新订阅以订单冻结的版本策略为准，不能由买方任意覆盖审核后的限额。
-- 超过分钟限流或每日配额时，网关返回 `429`，不会转发到后端服务。
-- 新订阅的 `monthly_quota` 按原始服务生效日划分订阅月；目标月无对应日期时取月末，后续仍按原日期计算。日限额按北京时间自然日重置。企业与产品共享计数，同版本续费只延长期限，不叠加或重置当前配额；轮换凭据不清零用量。超过配额返回 `429`。
-- 历史订单暂保留旧计数模式，有历史用量的凭据迁移新模式须经过单独校验，不允许直接清零切换。本阶段的正常购买仅支持同版本续费，跨版本升降级仍待后续联调。
-- 平台调用策略由平台运营人员配置，提供方应能够正确处理平台返回的 429。
-
-### 5.3 参数、幂等和内容类型
-
-- 路径参数和查询参数按产品 API 定义传递，网关不会修改业务参数。
-- `Content-Type`、`Accept`、`Content-Encoding` 等非认证请求头会按原值转发；认证头不会转发给后端。
-- `X-Request-Id` 会由网关透传或生成，提供方应在日志和业务响应中保留该标识；写操作应支持 `Idempotency-Key`。
-- 第三方服务应保证相同幂等号的重复写请求不会重复扣费、重复创建或重复变更。
-
-### 5.4 文件、大响应和流式响应
-
-- 文件下载接口应返回正确的 `Content-Type`、`Content-Disposition` 和文件名，网关透传响应头和二进制内容，不应将文件内容转换为 JSON。
-- 大响应建议使用分页、压缩或异步任务；第三方服务应在登记资料中说明最大响应大小和超时要求。
-- 当请求带有 `X-Market-Stream: true` 或 `Accept: text/event-stream` 时，网关以流式方式转发数据，不等待完整响应；提供方应定期发送心跳并处理客户端断开。
-- 流式响应仍受网关超时和配额策略限制，提供方应在接口文档中说明流式事件格式和最大持续时间。
-
-### 5.5 错误和重试约定
-
-网关和第三方服务建议统一返回：
-
-```json
-{"code":"QUOTA_EXCEEDED","message":"超过 API 每日调用配额","request_id":"req-001","retryable":false}
+```python
+# 在真实业务事务内完成资源变更后，保存该首次完整响应。
+receipt = dict(validated_request)
+receipt.update(ret=0, tenant_id=actual_tenant_id,
+               status="closed" if receipt["type"] == "CLOSE" else "active",
+               effective_at=actual_first_commit_time_utc)
 ```
 
-提供方应按 HTTP 状态码和统一错误 JSON 返回可解析的业务错误，并明确 `retryable`。统一 API 网关当前不自动重试业务请求，提供方不得依赖网关重试来完成业务操作；幂等写请求必须支持使用相同幂等号查询或复用最终结果。
+effective_at是第三方首次实际完成本操作的时刻，不使用请求starts_at、付款时间或当前重试时间。开通时API已具备平台冻结时段，区别于SaaS先准备再激活的阶段划分，但OAuth技术体系相同。不得仅返回ret=0而省略证明字段。
 
-## 6. Kubernetes 部署示例（可选）
+## 6. 生命周期接口
 
-API 提供方可以自行选择虚拟机、物理服务器、云主机或其他 Kubernetes 集群部署 API。以下仅是 API 服务部署在平台或可达 Kubernetes 环境中的示例，不构成强制部署要求。
+### 6.1 OPEN 开通
 
-每个 API 应用独立部署为自己的 Deployment 和 Service，网关只配置 Service 地址。例如：
+首次组合按完整目标periods建立权益及台账，返回active，再由STATUS核验。租户标识必须稳定，同键超时重试不得创建多个。身份、时间或周期错误拒绝，平台不因HTTP 200就认定已交付。
 
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: quality-api-service
-  namespace: market
-spec:
-  selector:
-    app: quality-api
-  ports:
-    - port: 8080
-      targetPort: 8080
-```
+### 6.2 RENEW 续费
 
-网关配置的后端地址可以是：
+在续费订单支付成功后调用，type=RENEW，根order_id/order_no为新续费订单，subscription_months是本次月数。periods包含保留旧时段与新增时段，根expires_at为续费后总体截止。提供方应用完整目标，不在当前截止上再加月数。
 
-```text
-http://quality-api-service.market.svc.cluster.local:8080/v1
-```
+例：旧订单10月19日至11月19日，续费1个月；根starts_at仍为10月19日，expires_at改为12月19日，新订单period为11月19日至12月19日。提前付款不提前重置未来周期额度。
 
-API 服务应配置 Readiness、Liveness、资源请求与限制，并支持至少两个副本。不同 API 服务之间不得共享不可控的本地状态；会话、任务和缓存应使用平台认可的持久化组件。
+普通API续费不使用SaaS退款缩期的expected_expires_at。已到期重新购买由平台冻结新的generation和起止日期，受控RESTORE恢复；不补算过期时段，不恢复旧代额度。
 
-## 7. 安全要求
+### 6.3 CHANGE 升降级和补偿
 
-- HTTP地址由平台系统配置统一控制；允许HTTP时支持开发接入，默认仍要求HTTPS，生产部署建议HTTPS。HTTP例外不关闭令牌验证、回调匹配或地址访问限制。
-- 提供方不得要求调用方把 API Key 写入业务请求体；网关认证信息不得写入服务日志。
-- 提供方不得记录或保存调用方的完整认证信息。
-- API 服务只允许网关网络访问，避免绕过网关直接暴露。
-- 敏感参数不得出现在普通日志中。
-- API 服务应自行完成业务级数据权限、参数校验和敏感数据脱敏。
-- 涉及国密要求的 API，应在产品登记和安全合规审核中明确 SM2/SM3/SM4 使用边界。
+附change_id与direction。upgrade/downgrade应用目标version及全部periods；restore是补偿恢复原目标，使用独立固定键。平台准备时可能同时冻结正向及补偿计划，不表示两者立即执行。第三方只按实际收到的操作执行。
 
-## 8. 版本、变更和下线
+多笔未来续费也在periods内，不能只改来源订单。保存真实effective_at，保留已用量，不自行重算差价或擅自延长期限。平台核验后继续网关与财务流程，一次CHANGE成功不代表资金或清算成功。
 
-- 每个 API 产品应使用稳定的 `route_key`，业务版本通过 `/v1`、`/v2` 等路径区分。
-- 提供方统一采用本规范最新调用协议、认证与响应约定，不要求兼容旧调用方式，不设旧调用方兼容期；登记页面不再要求选择版本兼容性。
-- 接口协议、路径或字段变更应同步最新开发指导文档及迁移说明，并通知相关使用方。
-- 商品版本仍用于区分价格、配额、期限和授权路由。统一调用方式不表示自动升级已购商品版本或转发到无授权路由；资源和财务变更仍走受控升降级流程。
-- API 下线前应配合平台完成下线通知和迁移；紧急安全下线时应提供影响范围、替代地址和恢复方案。
+### 6.4 ADJUST 退款权益调整
 
-## 9. 测试环境与联调验收
+附refund_id，periods为退款后的完整目标。有限额度API按已批准比例缩减额度，不限额度按比例缩短未用尾部；金额、成本、用量及经济段由平台核定，第三方不另算买方退款。
 
-开发环境网关地址：`http://192.168.10.10:30082`。生产环境必须使用 HTTPS 域名或 Ingress；`30081` 仅用于旧网关回退验证。
+保留其他订单时段，不因一笔退款关闭全企业组合。没有剩余权益时可用CLOSE；不能以quota=0表示不允许调用。STATUS须返回实际调整后截止及periods，不能用原始未退款日期冒充结果。
 
-联调步骤：
+### 6.5 CLOSE 关闭
 
-1. API 提供方在平台登记 API 产品，提供可访问的测试后端地址，配置路由和限流策略。
-2. 产品审核发布并启用路由，由平台集成管理员提供临时测试凭据。
-3. 提供方使用网关健康检查 `GET /health` 和测试路由完成正常请求、文件、流式、超额、后端 502 和超时 504 联调。
-4. 在平台调用统计中核对调用次数、成功率、HTTP 状态码、平均耗时和请求/响应字节数。
+periods为空，返回closed。仅指定产品/企业/组合/代次，不删除全局产品路由，不影响其他买方；保留历史订单和回执。关闭不表示退款/追款资金完成。
 
-最低验收标准：
+到期网关按自身期限拒绝，提供方关闭可稍后同步，不能因其尚未回执而继续放行。手工产品下架不自动关闭已售权益。达到重试上限转人工，不假称提供方已关闭。
 
-- 有效网关请求可以访问正确路由，企业身份请求头能够传递到后端。
-- 分钟、每日和月度配额分别生效，超额请求返回 429 且不转发到后端。
-- 文件内容、响应头和流式数据能够正常透传。
-- 后端不可用返回 502，后端超时返回 504，调用统计仍保留失败记录。
-- 相同 `X-Request-Id` 或 `Idempotency-Key` 的写请求不会造成重复业务结果。
+### 6.6 RESTORE 恢复
 
-## 10. 上架验收清单
+恢复指定绑定及目标periods，例如到期后的新付费购买。generation和日期由平台决定，允许合法同代恢复或新代，不允许旧代覆盖新权益；原关闭及退款回执保留。
 
-- 产品元数据完整并通过审核。
-- 测试或生产后端地址可从统一 API 网关网络访问并通过健康检查。
-- 网关配置保存成功，路由标识唯一。
-- 平台认证失败请求不会转发到后端。
-- 有效网关请求可以正确转发并返回后端响应。
-- 超过限流返回 `429`，后端服务未收到被拦截请求。
-- 后端不可用时返回 `502`，超时时返回 `504`。
-- 平台可以查询调用量、成功率、错误数和平均耗时。
-- 认证信息、企业标识和敏感参数不出现在日志明文中。
+### 6.7 STATUS 实际状态
 
-## 11. 每版本接入与重试接口
+平台将原完整请求type改为STATUS并增加target_type，其他字段供身份和预期关联；查询不能改变资源。响应是最近实际保存的完整变更回执，根type/event_id/idempotency_key仍为最近执行操作，不是直接回显STATUS。
 
-本节仅面向 API/模型 API 提供方及平台集成管理员，不涉及购买方凭据。平台沿用统一 OAuth2 授权服务器；提供方接入凭据与购买方调用网关凭据完全分开。资源服务继续验证平台签发的访问令牌，不能把接入 client_secret 放入公开产品详情。
+平台比较变更响应与实际STATUS的全部身份、版本、periods、日期、status和effective_at。旧操作重放可返回旧首次回执，但STATUS必须保持最新实际状态；二者不一致时平台拒绝当作当前成功，不能为通过校验回退资源。
 
-接口需携带平台登录 Bearer Token，操作人员为产品提供企业的活跃超级管理员、企业管理员，或平台超级管理员、平台运营人员：
+## 7. 分阶段执行、并发与错误
 
-| 方法 | 地址 | 用途 |
-| --- | --- | --- |
-| PUT | `/api/products/{product_id}/versions/{version_id}/integration` | 保存指定版本接入配置 |
-| GET | 同上 | 查看配置状态、健康结果、路由信息；不返回 client_secret |
-| POST | 上述地址加 `/verify` | 完成四审后验证和发布；失败返回状态 `failed`，不能购买该版本 |
+首购/续费先提交不可变管理计划、预分配组合/时段ID和日期，此时没有实际交付成功记录；下一阶段执行提供方核验，再建立真实订阅并核对APISIX路由、Consumer和策略。远程成功但响应丢失或平台回滚，仍重用已提交的相同请求和固定日期。未完成计划不能被另一订单越过。
 
-PUT 请求例：
+版本及退款计划与原资源准备一起冻结，失败不推进资金完成；双方状态可能需补偿/重试，第三方不能把一次资源调用当整个交易已完成。空历史管理地址保留明确unmanaged，不临时改用现有业务地址或虚构回执。
 
-```json
-{"upstream_url":"https://api.example.com","route_key":"example-v1","version":"v1","auth_mode":"api_key","upstream_auth_mode":"oauth2","upstream_scope":"resource.invoke","rate_limit_per_minute":60,"daily_quota":10000,"monthly_quota":100000,"timeout_ms":30000,"strip_prefix":true,"health_path":"/health","health_method":"GET"}
-```
+自动交付每轮最多3次失败尝试、失败间隔10秒，正常阶段推进不算失败；到期关闭独立分阶段执行、最多3次，崩溃租约用于安全恢复。版本/退款由各自Saga调度，不承诺完全相同的时序。
 
-`version` 必须与登记的版本号一致，`route_key` 在所有版本间唯一。每天、每月配额为 0 表示不限制；每分钟限流仍须正整数。网关代理使用配置的超时时长，接入健康探测单次最长 10 秒，不跟随重定向；健康检查应返回 2xx。供应方应提供无需个人登录的只读健康检查端点。
+错误建议：无效Token401，Scope/产品不符403，参数400/422，无绑定404，同键异体/状态冲突409，限流429，依赖故障503。平台未按retryable实现通用分类调度，不能只靠该字段指定重试。当前非2xx或错误证明均视为失败，不要返回虚假的active以规避重试。
 
-成功验证结果包含 `version_id`、`route_id`、`status=verified`、`healthy=true`、`health_status_code`、`verified_at`；POST 另外返回 `product_status`。失败必须查看上述状态，HTTP 200 本身不代表验证通过。运营审核时自动尝试已有配置；无专属配置时，以登记上游地址和该版本策略生成配置。需要不同上游、Scope、健康路径的版本应提前保存专属配置。
+## 8. 最小持久化与安全
 
-已售版本禁止覆盖接入和策略配置，应登记新版本。旧产品单路由及旧订单 ID 保留兼容；对多版本产品调用旧 `gateway-config` 读取、验证、发布、回滚或调用统计接口时，必须增加 `?version=v1`，否则返回 409，避免误操作另一版本。
+保存产品配置、企业组合/外部租户、generation、订单及periods、每操作原始请求摘要、首次完整响应、真实effective_at、变更/退款关联。唯一键使用完整产品/企业/组合标识，不能截断ID或仅按企业名称去重。
 
-私网后端需由平台运维显式配置 `UPSTREAM_ALLOWED_HOSTS`（精确主机名）或 `UPSTREAM_ALLOWED_CIDRS`（网段）；不能授权回环、链路本地及云元数据地址。探测验证全部 DNS 地址，并固定 IP、保留 Host 和 TLS SNI，APISIX 新接入路由也使用验证后的 IP。地址变更需重新验证；访问控制配置只应由运维调整，不由产品提交者放宽。
+先查幂等再校验状态；CLOSE成功后同键重放仍返回首次结果，不能因已closed而报错误。首次回执与状态同事务提交，旧回执、最近状态、版本/退款记录分别保留，防止互相覆盖。SQLite只是开发模拟方案，正式多副本应使用共享可靠存储。
 
-## 12. 提供方订单期限与权益对账
+无效内省、网络失败、缺失身份均失败关闭。凭据、Bearer不得进业务URL/访问日志/错误页。客户端身份头不作为平台证明；只访问固定受信内省端点，不从Token自行指定任意授权服务器。
 
-API购买、续费、升降级及退款的实际期限和额度由平台网关执行，不新增要求API业务服务实现的 OPEN/RENEW 管理接口，也不会将买方Secret放入上游请求。本节仅面向提供方，不是买方调用网关的指导。
-
-提供方可查询平台持久化的订单及权益时段：
+## 9. 提供方只读权益对账
 
 ```http
-GET /api/provider/products/{product_id}/entitlements?page=1&page_size=50&order_no=ORD-xxx
-Authorization: Bearer <提供方企业超级管理员或管理员的平台登录令牌>
+GET /api/provider/products/{product_id}/entitlements?page=1&page_size=50&order_no=ORD-example-1
+Authorization: Bearer <提供企业管理员的平台登录Token>
 ```
 
-该接口验证产品所属企业和管理员角色；授权平台管理员也可查询。购买方API Key、平台内部资源调用机器Token不能作为提供方对账凭证。本版不额外分发机器OAuth客户端密钥。响应使用 `Cache-Control: no-store`，不返回密钥、买方个人资料或内部成本。
+仅产品所属提供企业超级管理员/管理员及授权平台管理员可查，不接受买方API Key或业务/管理机器Token。支持enterprise_id/order_id/order_no精确筛选，带时区starts_before/ends_after按登记时段交集筛选；page从1开始，page_size默认50、最大100。
 
-参数：`enterprise_id/order_id/order_no` 精确筛选；`starts_before/ends_after` 为带时区日期，按订单登记时段交集筛选；`page>=1`，`page_size` 默认50、最大100。返回 `items/total/page/page_size/has_more`。可读取已到期、下架产品的相关历史，不会因为查询恢复访问。
+返回items/total/page/page_size/has_more；包括订单、买方企业、原版本、登记时段、组合/代次、退款及变更关联。starts_at/ends_at和recorded_combination_expires_at是登记历史，effective_rights及combination_expires_at是实际权益。已管理API关联tenant_id及provider_management中的最近已核验状态/操作/截止；无管理绑定明确unmanaged。
 
-每项区分原始订单版本、登记服务起止时间、订阅组合和退款调整后的权益信息。所有日期为 UTC ISO 8601，区间左闭右开；未交付或无法确定的日期不伪造。相同企业重复购买同版本会延长时段，不叠加同期配额，因此不能把一笔订单结束时间当成整个企业服务的截止时间。版本变更和退款须结合各受影响时段核对，而不是仅查最近订单。
+旧代记录不自动获新权限；periods/segments不是清算分录。接口不会扣额、付款或续费，不返回内部成本/Secret。证据缺失/不一致返回409，不推定缺失用量为0。财务对账仍需支付、退款和清算报告，期限回执不代表银行到账或追款完成。
 
-附加 `reconciliation_context` 的 `schema_version=1`，包含订单ID/订单号、产品/企业关联、`order_starts_at/order_ends_at`、`subscription_expires_at`、`period_status` 和时间口径。该上下文不替代网关权限，也不是金融到账证明。OAuth `exp` 仅是机器Token失效时间，不能当成订阅截止日期。
+## 10. 独立联调测试
 
-本版采用提供方主动只读查询，不发送新的第三方权益Webhook，不向上游业务请求自动注入订单截止日期。需要自动化拉取时仍须使用被授权的提供方登录令牌，不能使用购买方API Key或索取平台内部机器密钥。
+提供方准备可达管理URL、版本业务URL及健康路径；平台准备独立测试产品、企业、订单和OAuth元数据。管理Token来自受控平台测试，不复用买方API Key，不在文档/代码保存真实Token。
+
+```bash
+curl --fail-with-body -X POST "$INTROSPECTION_URL" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode "token=$RECEIVED_MANAGEMENT_TOKEN"
+
+curl --fail-with-body -X POST "$API_MANAGEMENT_URL" \
+  -H "Authorization: Bearer $PLATFORM_MANAGEMENT_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: delivery:order-1' --data-binary @payload.json
+```
+
+payload.json采用第5节完整请求，其他操作按第6节替换完整目标，不只发送变化字段。开发模拟管理端点为K8S内 `http://market-mock-api:8300/management`，SQLite须挂持久卷；真实第三方不能直接使用内部DNS作为公网地址。公开/health只证明进程就绪，不证明管理及网关链路全通过。
+
+| 编号 | 场景 | 预期 |
+| --- | --- | --- |
+| A01 | 登记/编辑 | 无重复产品URL，管理地址/各版本上游必填，已售保护不放宽 |
+| A02 | Token、Scope、产品错误或撤销 | invoke不能管理、manage不代业务；内省失败不放行 |
+| A03 | 首购支付两阶段 | 准备无成功时段/审计，提供方与网关核验后交付 |
+| A04 | 提前续费、多月、月末/闰年 | 新订单周期正确，同组合，不重置/叠加同期额度 |
+| A05 | 同键重放/异体、超时、重启 | 首次回执持久，异体409，平台回滚后请求不变 |
+| A06 | 升级/降级/补偿 | 当前及未来periods正确，独立键，版本/资金分别证明 |
+| A07 | 部分/全额退款及其他订单 | 仅缩减批准权益，新截止正确，不用0表达无权 |
+| A08 | 到期关闭、新代恢复 | 只影响一个组合，旧代不覆盖，失败如实记录 |
+| A09 | 跨企业/产品/组合/租户 | 拒绝越权，不信任客户端伪造身份头 |
+| A10 | 较新变更后重放旧操作 | 旧首次回执可重放，STATUS不回退最新状态 |
+| A11 | 业务文件/流式/超时/5xx | 透传及网关限额有效，错误统计可追踪 |
+| A12 | 对账分页/历史/退款日期 | 订单号一致，原始/实际权益分开，无Secret/成本泄漏 |
+
+留存脱敏事件ID、订单号、请求摘要、首次回执、目标/实际日期及periods、平台任务结果。必须在真实提供方环境执行矩阵才能称该供应商对接通过，模拟测试不替代正式验收。当前支付/退款为平台模拟或人工确认，不代表真实银行已接入。
+
+## 11. 平台控制面与边界
+
+提供方不需要实现平台产品登记或网关配置API。平台人员控制面使用登录Token：GET/PUT `/api/products/{product_id}/versions/{version_id}/integration` 保存/查看版本配置，POST同路径加 `/verify` 验证发布；已售版本不可覆盖。管理接口无单独发布页面，地址在产品登记中维护。
+
+旧订单冻结快照没有integration_api_url时不自动向新管理地址补发历史开通/续费；历史迁移须独立盘点，不改已售快照制造证明，不重置用量。当前不新增OIDC、买方凭据后台、机器对账客户端、权益Webhook或银行自动对账。
+
+标准背景：[OAuth 2.0 RFC 6749](https://www.rfc-editor.org/rfc/rfc6749)、[Token内省 RFC 7662](https://www.rfc-editor.org/rfc/rfc7662)。平台协议以本文件和实际产品配置为准，不依赖另一本内部设计文档猜测字段。
+
+v2.0：移除重复产品地址，新增独立管理URL及resource.manage；覆盖生命周期、订单/组合期限、代次、配额、持久化回执、失败恢复和12项测试矩阵。购买方使用说明仍单独保留，不混入提供方接口。

@@ -117,7 +117,7 @@ def install(ns):
                     pending = saas['process'](db, order, task, user, automatic=automatic) is None
             elif method(order) in {'api', 'model_api'}:
                 with db.begin_nested():
-                    api['process'](db, order, task, user)
+                    pending = api['process'](db, order, task, user) is None
             else:
                 verify(db, order)
         except HTTPException as exc:
@@ -131,7 +131,8 @@ def install(ns):
                 if method(order) in {'api', 'model_api'} else 'SaaS 自动开通或结果校验失败')
         if pending:
             task.next_retry_at = ns['now']() + timedelta(seconds=2)
-            task.note = 'SaaS 自动开通阶段已持久化，等待后台继续处理'
+            task.note = ('API 自动交付阶段已持久化，等待后台继续处理'
+                if method(order) in {'api', 'model_api'} else 'SaaS 自动开通阶段已持久化，等待后台继续处理')
             order.delivery_status = 'in_delivery'
             order.updated_at = ns['now']()
             db.flush()

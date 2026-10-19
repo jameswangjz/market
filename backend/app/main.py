@@ -3564,6 +3564,8 @@ def create_product(body: ProductBody, request: Request, enterprise_id: str = Que
     trading_policy["delivery_category"](body.delivery_method)
     trading_policy["validate_product_delivery"](db, None, body.product_type, body.delivery_method)
     values = body.model_dump()
+    if body.delivery_method in {"api", "model_api"}:
+        values.pop("upstream_url", None)
     category = resolve_product_category(db, values)
     from .registration_config import pop_registration_config
     pop_registration_config(values)
@@ -3601,12 +3603,18 @@ def update_product(product_id: str, body: ProductBody, request: Request, enterpr
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
     trading_policy["validate_product_delivery"](db, product, body.product_type, body.delivery_method)
+    omitted_legacy_upstream = (product.delivery_method in {"api", "model_api"}
+                               and "upstream_url" not in body.model_fields_set)
     if db.scalar(select(Order.id).where(Order.product_id == product.id, Order.paid_amount > 0).limit(1)):
         if json.loads(product.oidc_redirect_uris_json or "[]") != body.oidc_redirect_uris:
             raise HTTPException(409, "已售产品的OIDC回调地址不可覆盖")
-        if any(getattr(product, key) != getattr(body, key) for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")):
+        if any(getattr(product, key) != getattr(body, key)
+               for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")
+               if key != "upstream_url" or not omitted_legacy_upstream):
             raise HTTPException(409, "已售产品的交付类型和接入地址不可覆盖")
     values = body.model_dump()
+    if omitted_legacy_upstream:
+        values.pop("upstream_url", None)
     category = resolve_product_category(db, values)
     from .registration_config import pop_registration_config
     pop_registration_config(values)
@@ -3755,12 +3763,18 @@ def saas_management_target(product: Product, db: Session) -> tuple[str, str]:
 
 
 def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.invoke") -> OAuthClient:
+    managed_api = (product.delivery_method in {"api", "model_api"}
+                   and bool((product.integration_api_url or "").strip()))
     if product.product_type == "saas":
         scope = "saas.tenant saas.user saas.department"
+    elif managed_api:
+        scope = " ".join(dict.fromkeys([*scope.split(), "resource.invoke", "resource.manage"]))
     client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id))
     if client:
         if product.product_type == "saas":
             client.scope = scope
+        elif managed_api and "resource.manage" not in (client.scope or "").split():
+            client.scope = f"{client.scope or ''} resource.manage".strip()
         existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if existing_saas:
             existing_saas.client_id = client.client_id
@@ -4470,6 +4484,11 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
         "audience: market-resource",
         f"scope: {client.scope}",
         f"business_url: {config.base_url if config else ''}",
+        *([f"api_management_url: {product.integration_api_url}",
+           "api_management_protocol: market-api-management-v1",
+           "api_management_scope: resource.manage",
+           "api_business_scope: resource.invoke"]
+          if product.delivery_method in {'api', 'model_api'} else []),
         "认证模式: OAuth2 client_credentials",
         "请妥善保存 client_secret，不要提交到前端代码或公开代码仓库。资源服务应校验平台签发的 Token。",
         "",
@@ -7974,6 +7993,9 @@ order_fulfillment = install_order_fulfillment(globals())
 from .subscription_terms import install as install_subscription_terms
 
 subscription_terms = install_subscription_terms(globals())
+from .api_provider_lifecycle import install as install_api_provider_lifecycle
+
+api_provider_lifecycle = install_api_provider_lifecycle(globals())
 from .provider_entitlements import install as install_provider_entitlements
 
 provider_entitlements = install_provider_entitlements(globals())

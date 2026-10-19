@@ -30,6 +30,11 @@ export function isValidOidcRedirectUri(value, options = {}) {
 
 export function registrationPayload(form, options = {}) {
   const payload = Object.fromEntries(productFields.map((key) => [key, form[key]]));
+  if (["api", "model_api"].includes(form.delivery_method)) {
+    delete payload.upstream_url;
+    payload.integration_api_url = requiredHttpUrl(form.integration_api_url, "API服务管理接口地址");
+    validateVersionUpstreams(form.versions);
+  }
   const redirects = form.oidc_redirect_uris ?? [];
   if (!Array.isArray(redirects) || redirects.some((uri) => typeof uri !== "string")) {
     throw new TypeError("OIDC回调地址须为字符串数组");
@@ -44,6 +49,22 @@ export function registrationPayload(form, options = {}) {
     compatibility_mode: version.compatibility_mode ?? "compatible",
     compatibility_notes: version.compatibility_notes ?? "",
   })) };
+}
+
+function requiredHttpUrl(value, label) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  try {
+    const url = new URL(normalized);
+    if (normalized.length <= 500 && ["http:", "https:"].includes(url.protocol) && url.hostname) return normalized;
+  } catch {}
+  throw new TypeError(`${label}须为完整HTTP或HTTPS URL（必填，最多500字符）`);
+}
+
+function validateVersionUpstreams(versions) {
+  for (const version of versions) {
+    if (version.is_sold === true) continue;
+    requiredHttpUrl(version.integration?.upstream_url, `版本${version.version_code}上游URL`);
+  }
 }
 
 export function emptyVersionIntegration() {
@@ -68,6 +89,7 @@ export function bindRegistrationVersions(versions, saved) {
 
 export async function saveRegistrationAttachments(api, form, productId) {
   if (["api", "model_api"].includes(form.delivery_method)) {
+    validateVersionUpstreams(form.versions);
     for (const version of form.versions) {
       if (version.is_sold === true) continue;
       const config = version.integration;

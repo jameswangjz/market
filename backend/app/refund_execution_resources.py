@@ -18,6 +18,7 @@ from .refund_segment_store import canonical, digest, safe_policy, strict_json, s
 from .quota_cutover import token
 from .subscription_terms import UTCDateTime
 from .saas_reconciliation import reconciliation_context, event_context
+from .api_auto_delivery import provider_periods, provider_operation, execute_provider
 
 PREFIX = 'market:apisix:refund:execution:v1:'
 EPOCH = 'market:apisix:charges:source'
@@ -372,6 +373,22 @@ def install(ns):
             if plan['kind'] == 'api':
                 plan['entitlement_periods'] = [p for p in strict_json(plan['target']['subscription_periods'])
                     if p.get('order_id') == order.id and p.get('segment_id') == term.id]
+                guard = ns.get('api_auto_delivery', {}).get('assert_no_pending')
+                if callable(guard):
+                    guard(db, combo.enterprise_id, combo.product_id)
+                delivery = ns['subscription_terms']['effective_snapshot'](db, order, term)['delivery']
+                endpoint = (delivery.get('integration_api_url') or '').strip()
+                periods = strict_json(plan['target']['subscription_periods'])
+                if plan.get('effective_ends_at'):
+                    cutoff = aware(plan['effective_ends_at'])
+                    periods = [dict(p, ends_at=cutoff.isoformat())
+                        if p.get('segment_id') == term.id and p['end_at'] > cutoff.timestamp()
+                        else p for p in periods]
+                plan['provider'] = provider_operation(ns, db, order, term, combo,
+                    endpoint=endpoint, periods=provider_periods(ns, db, periods) if endpoint else [],
+                    event_type='ADJUST' if periods else 'CLOSE',
+                    operation_key='refund:' + refund.id, refund_id=refund.id,
+                    version={'id': combo.version_id, 'code': combo.version_code})
             else:
                 from .subscription_calendar import CalendarAnchor
                 anchor = CalendarAnchor(combo.anchor_at)
@@ -435,6 +452,13 @@ def install(ns):
                     or combo.id != plan['combination_id'] or combo.generation != plan['generation']):
                 fail('Refund execution ownership changed')
             if plan['kind'] == 'api':
+                operation = plan.get('provider')
+                if operation is None:
+                    delivery = ns['subscription_terms']['effective_snapshot'](db, order, term)['delivery']
+                    if delivery.get('integration_api_url'):
+                        fail('Configured refund lacks a frozen provider operation')
+                    operation = {'status': 'skipped_unmanaged', 'provider_synced': False}
+                provider_evidence = execute_provider(ns, db, operation)
                 credential = db.get(ns['ApiCredential'], plan['credential_id'])
                 if (not credential or credential.status != 'active' or credential.route_id != plan['route_id']
                         or credential.enterprise_id != order.buyer_enterprise_id
@@ -464,6 +488,7 @@ def install(ns):
                             or any(actual.get(k) != v for k, v in plan['target'].items() if k != 'subscription_periods')
                             or scoped(actual) != scoped(plan['target'])):
                         fail('Refund resource recovery readback failed')
+                    receipt = dict(receipt, provider=provider_evidence)
                 finally:
                     client.close()
             elif plan['kind'] == 'saas':

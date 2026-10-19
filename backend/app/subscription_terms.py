@@ -414,7 +414,7 @@ def install(ns):
                 raise HTTPException(409, '有效订阅使用其他版本，请使用升级流程')
         return combination
 
-    def on_delivery_success(db, order, user, at=None):
+    def on_delivery_success(db, order, user, at=None, *, combination_id=None, term_id=None):
         """Trusted verified-success caller only; parent Order must be locked/refreshed."""
         if order.snapshot_version != 1 or order.delivery_method_snapshot not in MONTHLY:
             return None
@@ -428,7 +428,15 @@ def install(ns):
         existing = db.scalar(select(Term).where(Term.order_id == order.id).with_for_update()
                              .execution_options(populate_existing=True))
         if existing is not None:
+            if ((term_id is not None and existing.id != term_id)
+                    or (combination_id is not None and existing.combination_id != combination_id)):
+                raise HTTPException(409, 'Reserved subscription identity conflicts with delivery')
             return existing
+        if combination_id is not None and combination is not None and combination.id != combination_id:
+            raise HTTPException(409, 'Reserved subscription combination changed')
+        api_guard = ns.get('api_auto_delivery', {}).get('assert_no_pending')
+        if callable(api_guard):
+            api_guard(db, order.buyer_enterprise_id, order.product_id, order.id)
         if order.delivery_status not in {'pending_acceptance', 'accepted'}:
             raise HTTPException(409, '实际交付成功后才能创建订阅期限')
         live = combination is not None and combination.status == 'active' and success_at < expires(combination)
@@ -451,6 +459,8 @@ def install(ns):
                 delivery_method=order.delivery_method_snapshot, version_id=order.product_version_id,
                 version_code=order.product_version_code, anchor_at=success_at, generation=1,
                 total_months=order.subscription_months, status='active', updated_at=success_at)
+            if combination_id is not None:
+                combination.id = combination_id
             db.add(combination)
             db.flush()
         else:
@@ -467,6 +477,8 @@ def install(ns):
                     version_id=order.product_version_id, version_code=order.product_version_code,
                     start_month=start_month, months=order.subscription_months,
                     starts_at=bounds.start, ends_at=bounds.end, status='active', created_at=success_at)
+        if term_id is not None:
+            term.id = term_id
         db.add(term)
         db.flush()
         event_version = term.id

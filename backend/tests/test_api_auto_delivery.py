@@ -114,6 +114,8 @@ class ApiAutoDeliveryTests(unittest.TestCase):
         raise AssertionError((method, path))
 
     def redis_eval(self, _script, numkeys, *args):
+        if len(args) == numkeys:
+            return 1  # Charge-ledger baseline initialization has no ARGV payload.
         data = json.loads(args[numkeys])
         self.redis_values.setdefault(args[0], {}).update(
             {str(field): str(value) for field, value in data.items()})

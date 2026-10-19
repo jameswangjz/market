@@ -689,7 +689,6 @@ const emptyProductForm = () => ({
   description: "",
   usage_scenarios: "",
   delivery_method: "file",
-  upstream_url: "",
   application_url: "",
   integration_api_url: "",
   oidc_redirect_uris: [],
@@ -4816,7 +4815,7 @@ onUnmounted(() => {
           <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
         </div>
         <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
-          <label class="wide">提供方后端访问URL<input v-model="productForm.upstream_url" :disabled="productForm.delivery_fields_locked" type="url" required placeholder="https://provider.example.com/api" /></label>
+          <label class="wide">API服务管理接口地址<input v-model="productForm.integration_api_url" :disabled="productForm.delivery_fields_locked" type="url" maxlength="500" required /></label>
         </div>
         <div v-if="productForm.delivery_method === 'tenant_access'" class="form-grid">
           <label>应用访问URL<input v-model="productForm.application_url" :disabled="productForm.delivery_fields_locked" type="url" required /></label>

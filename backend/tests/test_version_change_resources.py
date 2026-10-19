@@ -487,6 +487,7 @@ class VersionChangeResourceTests(unittest.TestCase):
         route.validated_ip = '192.0.2.10'
         combo = SimpleNamespace(id='combo-1', product_id='prod-1', enterprise_id='ent-1')
         plan = {'change_id': 'chg-api', 'kind': 'api', 'old_route_id': 'old-route',
+            'provider': {'target': {'status': 'skipped_unmanaged', 'provider_synced': False}},
             'target_route_id': 'target-route', 'old_route_key': 'route-v1',
             'old_config_id': 'old-config', 'target_config_id': 'target-config',
             'target_route_key': 'route-v2', 'old_config_revision_id': 'rev-1',
@@ -588,6 +589,8 @@ class VersionChangeResourceTests(unittest.TestCase):
                 return {}
             raise AssertionError((method, path))
         plan = {'change_id': 'chg-replay', 'kind': 'api', 'old_route_id': 'old-route',
+            'provider': {side: {'status': 'skipped_unmanaged', 'provider_synced': False}
+                for side in ('target', 'original')},
             'target_route_id': 'target-route', 'old_route_key': 'route-v1', 'target_route_key': 'route-v2',
             'old_config_id': 'old-cfg', 'target_config_id': 'cfg',
             'old_config_revision_id': 'rev-1', 'target_config_revision_id': 'rev-2',
