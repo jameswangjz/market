@@ -2,6 +2,7 @@
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -49,8 +50,8 @@ class SaaSPublicationCredentialTests(unittest.TestCase):
         self.assertEqual(credentials['code_challenge_method'], 'S256')
         self.assertEqual(self.download().json(), credentials)
         machine = self.download(endpoint='oauth-credentials-download')
-        self.assertEqual(machine.status_code, 200, machine.text)
-        self.assertIn('saas.department', machine.text)
+        self.assertEqual(machine.status_code, 410, machine.text)
+        self.assertIn('saas-integration-credentials-download', machine.json()['detail'])
         self.assertNotIn(credentials['client_secret'], machine.text)
         with self.m.SessionLocal() as db:
             oidc = db.query(self.m.OIDCClient).one()
@@ -119,8 +120,16 @@ class SaaSPublicationCredentialTests(unittest.TestCase):
         self.request('POST', '/api/products/product/review', 'ops',
             json={'decision': 'approve', 'comment': 'Approve combined configuration'})
 
-    def test_combined_file_preserves_two_independent_credentials_and_audit(self):
+    def test_combined_file_preserves_platform_credentials_and_audit(self):
+        clock = patch.object(self.m, 'now', side_effect=lambda: datetime.now(timezone.utc))
+        clock.start()
+        self.addCleanup(clock.stop)
         self.approve_for_bundle()
+        with self.m.SessionLocal() as db:
+            machine = db.query(self.m.OAuthClient).one()
+            original = (machine.id, machine.client_id, machine.client_secret, machine.scope)
+            config = db.query(self.m.SaaSIntegrationConfig).one()
+            original_config = (config.id, config.client_id, config.client_secret, config.token_url)
         listed = self.request('GET', '/api/products', 'provider')
         self.assertEqual(next(row for row in listed['items'] if row['id'] == 'product')['enterprise_id'],
             'provider_tenant')
@@ -132,26 +141,80 @@ class SaaSPublicationCredentialTests(unittest.TestCase):
         self.assertIn('attachment;', response.headers['content-disposition'])
         self.assertIn('.json', response.headers['content-disposition'])
         bundle = response.json()
-        self.assertEqual(bundle['schema_version'], '1.0')
-        self.assertEqual(bundle['product']['id'], 'product')
-        machine, login = bundle['oauth2_api'], bundle['oidc_sso']
-        self.assertNotEqual(machine['client_id'], login['client_id'])
-        self.assertNotEqual(machine['client_secret'], login['client_secret'])
-        self.assertEqual(machine['grant_type'], 'client_credentials')
+        self.assertEqual(bundle['schema_version'], '2.0')
+        self.assertEqual(bundle['product'], {'id': 'product',
+            'name': next(row['name'] for row in listed['items'] if row['id'] == 'product'),
+            'application_url': 'https://saas.example.invalid/app',
+            'integration_api_url': 'https://saas.example.invalid/isv.php'})
+        self.assertNotIn('oauth2_api', bundle)
+        login = bundle['oidc_sso']
+        self.assertEqual(bundle['resource_server'], {
+            'authentication': 'Bearer', 'validation_method': 'introspection',
+            'introspection_url': self.m.platform_oauth_issuer().rstrip('/') + '/oauth/introspect',
+            'issuer': self.m.platform_oauth_issuer(), 'audience': 'market-resource',
+            'scopes': sorted(original[3].split())})
+        for key in ('client_id', 'client_secret', 'token_url'):
+            self.assertNotIn(key, bundle['resource_server'])
+        for value in original[1:3]:
+            self.assertNotIn(value, response.text)
+        self.assertNotIn(self.m.platform_oauth_token_url(), response.text)
         self.assertEqual(login['grant_type'], 'authorization_code')
         self.assertEqual(login['code_challenge_method'], 'S256')
         self.assertTrue(bundle['instructions'])
         self.assertEqual(self.download(endpoint='saas-integration-credentials-download').json(), bundle)
-        self.assertEqual(self.download().json()['client_secret'], login['client_secret'])
-        self.assertIn(machine['client_secret'], self.download(endpoint='oauth-credentials-download').text)
+        self.assertEqual(self.download(endpoint='saas-integration-credentials-download').content, response.content)
+        self.assertEqual(self.download().json(), login)
+        self.assertEqual(self.download(endpoint='oauth-credentials-download').status_code, 410)
+        metadata = self.request('GET', '/api/products/product/credential-metadata', 'provider')
+        self.assertFalse(metadata['oauth_download_available'])
+        self.assertTrue(metadata['oidc_download_available'])
         with self.m.SessionLocal() as db:
+            machine = db.query(self.m.OAuthClient).one()
+            self.assertEqual((machine.id, machine.client_id, machine.client_secret, machine.scope), original)
+            config = db.query(self.m.SaaSIntegrationConfig).one()
+            self.assertEqual((config.id, config.client_id, config.client_secret, config.token_url), original_config)
+            self.assertEqual((config.client_id, config.client_secret), original[1:3])
+            with patch.object(self.m.httpx, 'post', side_effect=lambda url, **kwargs:
+                    self.client.post('/oauth/token', data=kwargs['data'])) as token_request:
+                self.m._saas_tokens.pop(config.id, None)
+                platform_token = self.m.saas_access_token(config)
+                self.assertEqual(token_request.call_args.kwargs['data']['client_secret'], original[2])
+            self.m._saas_tokens.pop(config.id, None)
             self.assertEqual(db.query(self.m.OIDCClient).count(), 1)
             self.assertEqual(db.query(self.m.OAuthClient).count(), 1)
             logs = db.query(self.m.AuditLog).all()
             self.assertTrue(any(log.action == 'download_saas_integration_credentials' for log in logs))
             for log in logs:
-                self.assertNotIn(machine['client_secret'], str(log.detail))
+                self.assertNotIn(original[2], str(log.detail))
                 self.assertNotIn(login['client_secret'], str(log.detail))
+        token = self.client.post('/oauth/token', data={'grant_type': 'client_credentials',
+            'client_id': original[1], 'client_secret': original[2]})
+        self.assertEqual(token.status_code, 200, token.text)
+        access_token = token.json()['access_token']
+        self.assertEqual(self.m.jwt.get_unverified_header(access_token)['alg'], 'HS256')
+        self.m.jwt.decode(access_token, self.m.JWT_SECRET, algorithms=['HS256'],
+            audience='market-resource', issuer=self.m.platform_oauth_issuer())
+        validated = self.client.post('/oauth/introspect', data={'token': access_token})
+        self.assertEqual(validated.status_code, 200, validated.text)
+        self.assertTrue(validated.json()['active'])
+        self.assertTrue(self.client.post('/oauth/introspect',
+            data={'token': platform_token}).json()['active'])
+
+    def test_legacy_export_permission_and_api_model_compatibility(self):
+        self.approve_for_bundle()
+        for actor in ('buyer', 'outsider', 'member', 'platform', 'ops', 'finance'):
+            self.assertEqual(self.download(actor, 'oauth-credentials-download').status_code, 403, actor)
+        for kind in ('api', 'model'):
+            with self.m.SessionLocal() as db:
+                db.get(self.m.Product, 'product').product_type = kind
+                machine = db.query(self.m.OAuthClient).one()
+                secret = machine.client_secret
+                db.commit()
+            exported = self.download(endpoint='oauth-credentials-download')
+            self.assertEqual(exported.status_code, 200, exported.text)
+            self.assertIn(secret, exported.text)
+            self.assertTrue(self.request('GET', '/api/products/product/credential-metadata',
+                'provider')['oauth_download_available'])
 
     def test_combined_file_allows_both_provider_admin_roles_and_denies_others(self):
         self.approve_for_bundle()

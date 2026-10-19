@@ -34,6 +34,7 @@ import jwt
 import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from PIL import Image
@@ -4444,6 +4445,8 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
         selected_id or header_id or (product.enterprise_id if request is None else ""))
     if membership.enterprise_id != product.enterprise_id or membership.role not in {"super_admin", "enterprise_admin"}:
         raise HTTPException(403, "只有当前企业管理员可以下载接入凭据")
+    if product.product_type == "saas":
+        raise HTTPException(410, f"SaaS接入配置请使用 /api/products/{product.id}/saas-integration-credentials-download")
     if product.product_type not in {"api", "model", "saas"} or product.status not in {"published", "pending_integration", "draft"}:
         raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
     if product.status == "draft" and not (product.reviewed_at and product.reviewed_by):
@@ -4497,7 +4500,7 @@ def product_credential_metadata(product_id: str, request: Request, enterprise_id
         SaaSIntegrationConfig.product_id == product.id)) if product.product_type == "saas" else None
     return JSONResponse({"product_id": product.id, "product_status": product.status,
         "provider_admin": provider_admin,
-        "oauth_download_available": provider_admin and approved and product.product_type in {"api", "model", "saas"} and bool(oauth_client),
+        "oauth_download_available": provider_admin and approved and product.product_type in {"api", "model"} and bool(oauth_client),
         "oidc_download_available": provider_admin and product.status in {"published", "pending_integration"}
             and product.product_type == "saas" and product.delivery_method == "tenant_access"
             and bool(oidc_client and oidc_client.secret_encrypted),

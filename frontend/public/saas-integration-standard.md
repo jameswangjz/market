@@ -1,25 +1,25 @@
 # SaaS 应用第三方接口对接规范
 
-版本：v1.2
+版本：v1.3；接入配置 JSON 格式：2.0。
 
 ## 1. 参与方与凭据获取
 
-平台采用“运营平台主动调用第三方 SaaS”的方式。数据集运营服务管理平台为每个审核通过的 SaaS 产品生成 OAuth2 `client_id/client_secret`、Token 地址等接入信息，第三方应用所有者下载凭据文件并在其应用中完成配置；平台使用 OAuth2 `client_credentials` 获取访问令牌。
+平台采用“运营平台主动调用第三方 SaaS”的方式。平台仍为每个审核通过的 SaaS 产品生成并保存机器 OAuth2 客户端ID和密钥，用 `client_credentials` 向平台自身获取机器 Token，再调用 SaaS 管理接口。这组机器凭据仅供平台内部使用，不再包含在第三方下载文件中。SaaS 方获得 OIDC 用户登录凭据及机器 Token 验证元数据。
 
 ### 1.1 产品登记时生成什么信息
 
-平台登记产品时会生成平台侧的 `product_id`，用于识别产品；创建订阅时会生成平台侧的 `subscription_id`，用于识别一次独立购买的租户。二者不是 OAuth2 的 `client_id`。
+平台登记产品时生成 `product_id`；购买后按企业与产品组合绑定订阅及租户，续费复用现有组合。`subscription_id` 识别订阅，不是 OAuth2 或 OIDC 客户端ID，不能假定每次续费新建一个租户。
 
-当前实现方式是：SaaS 产品审核通过时，由数据集运营服务管理平台生成该产品的 OAuth2 接口客户端和 OIDC 登录客户端。提供方企业超级管理员、企业管理员可登录平台，在产品列表中重复下载一份 SaaS 应用接入配置 JSON 文件，按文件内的两个分区配置服务端。测试和生产环境应使用不同客户端。
+SaaS 产品完成四阶段审核后，平台自动生成或复用产品级机器 OAuth2 客户端与独立的 OIDC 登录客户端。提供方企业超级管理员、企业管理员在产品列表中下载 SaaS 应用接入配置 JSON，按 `resource_server` 配置机器接口的 Token 校验，按 `oidc_sso` 配置用户登录。测试和生产环境应使用不同客户端。
 
-因此，产品登记时生成产品基础 ID 和接口配置记录；产品审核通过时生成并持久化 OAuth `client_id/client_secret`。第三方 SaaS 是资源服务，须校验平台签发的 Token 并提供业务接口，不需要为平台提供独立的 Token 授权服务器。
+第三方 SaaS 是机器接口的资源服务和用户登录的 OIDC 客户端，不需要为平台提供另一个机器 Token 授权服务器，也不需要持有平台内部机器客户端密钥。
 
-### 1.3 发布时自动生成两套凭据
+### 1.2 下载配置与内部凭据的边界
 
 四阶段审核通过后进入“待接入验证”，平台在审核事务内自动创建互相独立的 OAuth2 接口客户端和 OIDC 登录客户端。提供方企业的已实名、已激活超级管理员和管理员，可在产品页面点击“下载接入配置”，一次下载完整配置：
 
-- `GET /api/products/{product_id}/saas-integration-credentials-download`：需携带平台登录 Bearer Token；返回禁止缓存的 JSON 附件。购买方、企业普通成员、平台内部角色均无权下载。历史两条单独下载接口仅保留兼容，不再作为 SaaS 前端入口。
-- `oauth2_api`：平台调用管理接口的机器客户端，Scope 为 `saas.tenant saas.user saas.department`；包含客户端、Token 地址、校验地址、Issuer、Audience。平台使用此配置获取机器 Token，SaaS 资源服务负责验证该 Token，不用于用户登录。
+- `GET /api/products/{product_id}/saas-integration-credentials-download`：需携带平台登录 Bearer Token；返回禁止缓存的 JSON 附件。购买方、企业普通成员、平台内部角色均无权下载。
+- `resource_server`：SaaS 管理接口需要的 Bearer Token 验证方式、内省地址、Issuer、Audience及允许的Scope；不包含机器客户端ID、密钥或平台内部取Token地址。
 - `oidc_sso`：SaaS 服务端登录客户端；包含客户端、Issuer、发现地址、授权地址、Token 地址、UserInfo 地址、JWKS 地址、已登记回调地址和 PKCE 参数。
 - `instructions`：用途区分与安全配置说明。文件不包含买方 API 网关凭据，不是购买方授权文件。
 
@@ -27,14 +27,13 @@
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "product": {"id": "product-id", "name": "SaaS产品名称"},
-  "oauth2_api": {
-    "client_id": "machine-client-id", "client_secret": "machine-secret",
-    "grant_type": "client_credentials", "token_url": "https://platform.example/oauth/token",
+  "resource_server": {
+    "authentication": "Bearer", "validation_method": "introspection",
     "introspection_url": "https://platform.example/oauth/introspect",
     "issuer": "https://platform.example", "audience": "market-resource",
-    "scope": "saas.tenant saas.user saas.department"
+    "scopes": ["saas.department", "saas.tenant", "saas.user"]
   },
   "oidc_sso": {
     "client_id": "login-client-id", "client_secret": "login-secret",
@@ -48,36 +47,46 @@
     "redirect_uris": ["https://saas.example/sso/callback"],
     "response_type": "code", "scopes": ["openid", "profile", "email"]
   },
-  "instructions": ["仅服务端保存两套独立凭据，不向购买方提供密钥"]
+  "instructions": ["平台内部机器凭据不下发；OIDC密钥仅由SaaS服务端保存，不向购买方提供"]
 }
 ```
 
-两个客户端均绑定 SaaS 产品，同一产品的买方共享登录客户端配置，但授权码、令牌、用户身份及租户权限独立。买方无需配置提供方的 Client Secret。任何一套客户端停用、缺失或密钥不可恢复时，统一下载返回 409，不提供不完整文件，也不自动生成新密钥。
+两个客户端仍绑定 SaaS 产品，同一产品的买方共享登录客户端配置，但授权码、令牌、用户身份及租户权限独立。买方无需配置提供方的 Client Secret。下载仍检查平台内部机器客户端及 OIDC 客户端有效性，不会因隐藏机器凭据而取消平台认证检查，也不会在下载时自动生成或轮换密钥。
 
 OIDC 使用授权码流程和 PKCE S256，Scope 为 `openid profile email`；SaaS 必须核验 state、nonce、ID Token 签名及 issuer/audience，并按企业和租户隔离用户会话。不能把 client_credentials 令牌当作用户登录令牌。
 
-两套密钥不得混用，不得发送给购买方或写入浏览器代码。下载可重复进行，响应禁止缓存并记录审计。重复发布不自动轮换凭据；历史仅保存摘要的 OIDC 密钥不可恢复，须经过受控轮换。
+OIDC 密钥不得发送给购买方或写入浏览器代码。下载可重复进行，响应禁止缓存并记录审计。重复发布不自动轮换凭据；历史仅保存摘要的 OIDC 密钥不可恢复，须经过受控轮换。
+
+格式 2.0 不再返回 `oauth2_api`。已有接入应改读 `resource_server`，不再从文件读取机器密钥。旧文件无法远程收回，本次格式更新不会自动轮换其中的旧机器密钥。SaaS 历史 `/oauth-credentials-download` 入口返回 410，避免绕过统一下载继续取得机器凭据；API 产品的对应下载行为不受此项调整影响。
 
 提供方完成服务器配置后，调用 `POST /api/products/{product_id}/saas-integration/verify` 验证接入。该检查验证平台取 Token、管理接口健康及 OIDC 登记配置，不替代最终用户浏览器 SSO 联调。产品通过接入检查后正式可购买。
 
 系统配置的“应用接入地址允许HTTP”默认关闭。明确开启后，允许登记 HTTP 应用地址、管理接口地址及回调地址，但仍执行 URL 安全校验、回调精确匹配及上游 SSRF 防护；正式生产环境推荐 HTTPS。
 
-### 1.2 获取 Token
+### 1.3 SaaS 如何验证平台的机器 Token
+
+以下调用由 **SaaS 服务端** 在收到平台管理请求后执行。SaaS 无需向平台提交机器客户端ID或密钥来获取 Token；平台已经在其后台完成 `client_credentials` 取 Token。
 
 ```http
-POST {token_url}
+POST {resource_server.introspection_url}
 Content-Type: application/x-www-form-urlencoded
 
-grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}
+token={received_bearer_token}
 ```
 
-成功响应：
+有效响应示意：
 
 ```json
-{"access_token":"eyJ...","token_type":"Bearer","expires_in":3600,"scope":"saas.tenant saas.user saas.department"}
+{"active":true,"product_id":"product-id","iss":"https://platform.example","aud":"market-resource","scope":"saas.tenant saas.user saas.department"}
 ```
 
-平台在服务端缓存 Token，并在过期前刷新。第三方不得要求浏览器直接获取 Token，也不得把 `client_secret` 放在前端代码中。
+SaaS 必须拒绝内省失败、无法访问内省服务或 `active` 不为 true 的请求；核对返回的产品等于本地接入产品，issuer、audience符合 `resource_server`，操作所需Scope在返回的空格分隔scope中。之后继续校验业务请求的租户、企业、订阅和幂等条件，不能只检查Token有效就执行任意操作。
+
+当前机器 Token 是 HS256 JWT，平台负责验签及客户端／撤销检查；SaaS 通过内省验证，不使用 OIDC JWKS 验证机器 Token，也不使用 OIDC client_secret 作为机器签名密钥。OIDC JWKS 仅用于相应的 RS256 ID Token 校验。当前内省接口未要求额外的资源服务器客户端认证，生产部署须明确网络访问控制、TLS及调用方认证方案，不能自行假设已启用 mTLS。
+
+平台会缓存机器 Token，收到 SaaS HTTP 401 后清除对应旧缓存，后续业务重试再取新 Token；不会在单次失败请求中立即重放。SaaS 应以401表达Token无效，以403表达权限不足。SaaS 不需处理平台取Token的内部密钥及缓存。
+
+开发环境配置中可能出现 K8S 内部地址 `market-api:8000`；集群外的真实 SaaS 必须获得可达内省地址。issuer是须精确匹配的签发标识，不能擅自用公网地址替换已签发Token中的内部issuer。正式接入前需由平台统一协调可达地址及稳定issuer。
 
 ## 2. 业务接口公共约定
 
@@ -86,10 +95,10 @@ POST {base_url}/isv.php
 Authorization: Bearer {access_token}
 Content-Type: application/json
 Accept: application/json
-X-Request-Id: {platform_operation_id}
+X-Request-Id: {optional_operation_id}
 ```
 
-平台发送 JSON 请求，所有请求带 `type` 字段，第三方据此分派操作。`X-Request-Id` 是平台操作流水标识，第三方应记录并支持幂等。
+平台发送 JSON 请求，所有请求带 `type` 字段，第三方据此分派操作。当前通用调用主要通过 JSON 的 `idempotency_key` 传递幂等键，不能要求所有请求必有 `X-Request-Id`。若收到该可选请求头，应与 JSON 幂等键一致，否则拒绝；第三方须记录产品范围内的幂等键并防止同键不同请求重复执行。
 
 成功响应：
 
@@ -123,7 +132,7 @@ HTTP 401 表示 Token 无效；HTTP 408、429、5xx 或 `retryable=true` 表示�
 
 平台保存 `tenant_id` 和 `app_id`，后续租户操作使用 `tenant_id`。一个企业可以多次开通形成多个独立租户。
 
-平台自动交付会传入上述产品、企业、订阅、管理员、OIDC 客户端及订阅时间配置。第三方必须保留身份及到期时间；`oidc_client_id` 必须使用统一接入配置中 `oidc_sso` 的客户端标识，不能使用 `oauth2_api` 的机器客户端标识。`admin_user_id` 是平台用户 ID，必须与后续 USER_ASSIGN 的平台用户及活跃管理员映射一致，不得用第三方用户 ID 替换。完成管理员同步和应用启用后，STATUS 必须按下述完整字段证明交付状态。
+平台自动交付会传入上述产品、企业、订阅、管理员、OIDC 客户端及订阅时间配置。第三方必须保留身份及到期时间；`oidc_client_id` 必须使用统一接入配置中 `oidc_sso.client_id`，不是平台内部机器客户端标识。`admin_user_id` 是平台用户 ID，必须与后续 USER_ASSIGN 的平台用户及活跃管理员映射一致，不得用第三方用户 ID 替换。完成管理员同步和应用启用后，STATUS 必须按下述完整字段证明交付状态。
 
 ### 3.2 关闭租户 `CLOSE`
 
@@ -306,11 +315,11 @@ STATUS 必须返回最后一次实际版本切换的 `change_id/direction/effect
 
 ## 8. 用户单点登录（OIDC）
 
-本节用于用户浏览器登录，不能替代前文机器接口的 `client_credentials`。SaaS 作为 OIDC 客户端和资源服务，平台作为 OP，采用授权码 + PKCE S256。用户 SSO 客户端与产品管理接口客户端必须分开配置，禁止把机器 Token 当作用户身份。
+本节用于用户浏览器登录，不能替代机器接口认证。SaaS 作为 OIDC 客户端，平台作为 OP，采用授权码 + PKCE S256。SaaS 配置 `oidc_sso` 凭据和 `resource_server` 校验信息；平台内部机器客户端不需要由 SaaS 配置，禁止把机器 Token 当作用户身份。
 
 ### 8.1 登记与客户端配置
 
-产品登记时填写 SaaS 应用访问地址和精确 OIDC 回调地址。四阶段审核通过后平台自动创建独立用户登录客户端，无需提供方手工调用创建接口。提供方企业超级管理员、管理员通过第 1.3 节统一下载文件的 `oidc_sso` 分区获得配置，可重复下载，不轮换密钥。`POST /api/products/{product_id}/oidc-client` 仅作为受控兼容配置接口；其创建时的临时返回不替代统一下载功能。客户端密钥必须由服务端安全保存，浏览器不得保存 Secret 或 OIDC Token。
+产品登记时填写 SaaS 应用访问地址和精确 OIDC 回调地址。四阶段审核通过后平台自动创建独立用户登录客户端，无需提供方手工调用创建接口。提供方企业超级管理员、管理员通过第 1.2 节统一下载文件的 `oidc_sso` 分区获得配置，可重复下载，不轮换密钥。`POST /api/products/{product_id}/oidc-client` 仅作为受控兼容配置接口；其创建时的临时返回不替代统一下载功能。客户端密钥必须由服务端安全保存，浏览器不得保存 Secret 或 OIDC Token。
 
 发现文档：`GET {issuer}/.well-known/openid-configuration`；公钥：`GET {issuer}/oidc/jwks`。生产回调使用 HTTPS，精确匹配白名单，不允许通配符；localhost HTTP 仅限显式开启的开发测试。
 
