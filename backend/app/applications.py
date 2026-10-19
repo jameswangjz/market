@@ -75,7 +75,9 @@ def install(ns):
     def launch_subscription(db, user, sid):
         subscription, product = access_for_subscription(db, user, sid)
         address = validated_application_address(product)
-        query = [(key, value) for key, value in parse_qsl(address.query, keep_blank_values=True) if key != 'enterprise_id']
+        query = [(key, value) for key, value in parse_qsl(address.query, keep_blank_values=True)
+            if key not in {'enterprise_id', 'product_id'}]
+        query.append(('product_id', product.id))
         query.append(('enterprise_id', subscription.enterprise_id))
         ns['audit'](db, user.email or user.id, 'launch_saas_application', 'saas_subscription', subscription.id,
             '启动已授权应用；不传递登录令牌或凭据', tenant_id=subscription.enterprise_id)

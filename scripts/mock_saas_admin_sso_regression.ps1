@@ -6,7 +6,7 @@ $ChromePath='C:\Program Files\Google\Chrome\Application\chrome.exe'
 $script:socket=$null; $script:chrome=$null; $script:commandId=0
 $script:blocked=0; $script:nativeDialogs=0; $script:publicAuth=0
 $profile=Join-Path $env:TEMP ('market-mock-admin-sso-'+[Guid]::NewGuid().ToString('N'))
-$result=@{status='failed';checks=@();scope='existing delivered SaaS-APP1; browser launch, consent, callback and local session; no payment or delivery state changes'}
+$result=@{status='failed';checks=@();scope='existing delivered SaaS; browser launch, consent, callback and local session; no payment or delivery state changes'}
 function Allowed-Request([string]$method,[string]$url,[string]$postData) {
     try {
         $u=[Uri]$url
@@ -32,6 +32,11 @@ try {
     $order=ConvertTo-Json $script:fixture.order_id -Compress
     $target=Js "(async()=>{const r=await fetch('/api/orders/'+$order+'/delivery-launch',{method:'POST',headers:{Authorization:'Bearer '+localStorage.getItem('market_token')}});if(!r.ok)throw Error('Launch rejected');return (await r.json()).launch_url})()"
     if(([Uri]$target).GetLeftPart([UriPartial]::Authority) -cne 'http://192.168.10.10:30083'){throw 'Unexpected launch origin'}
+    if($fixture.product_id) {
+        if(([Uri]$target).AbsolutePath -cne ('/apps/'+$fixture.product_id) -or $target.Contains('oidc_')){throw 'Launch did not use stable product entry'}
+        if(-not $target.Contains('product_id='+$fixture.product_id) -or -not $target.Contains('enterprise_id='+$fixture.enterprise_id)){throw 'Launch context missing'}
+        $result.checks+=,'Stable product entry carries authoritative product/enterprise context without OIDC client ID'
+    }
     Cdp 'Page.navigate' @{url=$target}|Out-Null
     WaitJs '!!document.querySelector(".oidc-consent footer button.primary-btn")' 30
     $result.checks+=,'Platform authorized launch reaches OIDC browser consent'

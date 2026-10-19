@@ -19,7 +19,7 @@ from authlib.jose.errors import JoseError
 from authlib.oidc.core import CodeIDToken
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .store import hashed, tenant_expired
@@ -153,13 +153,60 @@ def install(app, store, *, transport=None):
             result = db.execute('DELETE FROM clients WHERE client_id = ?', (client_id,))
         return JSONResponse({'deleted': bool(result.rowcount), 'client_id': client_id}, headers=NO_STORE)
 
-    @app.get('/sso/apps/{client_id}')
-    def login(client_id: str, enterprise_id: str):
-        if not enterprise_id or len(enterprise_id) > 180:
-            raise HTTPException(400, 'Enterprise required')
-        client = store.client(client_id)
+    def context_product(request, expected=None):
+        values = request.query_params.getlist('product_id')
+        values += request.headers.getlist('X-Market-Product-Id')
+        if expected is not None:
+            values.append(expected)
+        if len(set(values)) > 1:
+            raise HTTPException(409, 'Product context mismatch')
+        return values[0] if values else None
+
+    def checked_client(client):
         if not client:
             raise HTTPException(404, 'Application unavailable')
+        base, expected_issuer, _ = settings()
+        if (client.get('issuer') != expected_issuer or client.get('redirect_uri') != base + '/sso/callback'
+                or not client.get('client_secret')):
+            raise HTTPException(409, 'Application configuration mismatch')
+        return client
+
+    def product_client(product_id):
+        if not product_id:
+            raise HTTPException(404, 'Application unavailable')
+        with store.connect() as db:
+            clients = [json.loads(row['config']) for row in db.execute('SELECT config FROM clients')]
+        matches = [client for client in clients if client.get('product_id') == product_id]
+        if len(matches) > 1:
+            raise HTTPException(409, 'Application configuration ambiguous')
+        return checked_client(matches[0] if matches else None)
+
+    @app.api_route('/apps/{product_id}', methods=['GET', 'HEAD'])
+    @app.api_route('/sso/apps', methods=['GET', 'HEAD'])
+    def product_entry(request: Request, product_id: str | None = None, enterprise_id: str | None = None):
+        client = product_client(context_product(request, product_id))
+        if request.method == 'HEAD':
+            return Response(status_code=204, headers=NO_STORE)
+        if enterprise_id is not None:
+            return login(client, enterprise_id)
+        page = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<title>应用</title><main><h1>' + html.escape(client['product_name']) + '</h1></main></html>')
+        return HTMLResponse(page, headers={**NO_STORE, 'Content-Security-Policy':
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'", 'X-Content-Type-Options': 'nosniff'})
+
+    @app.api_route('/sso/apps/{client_id}', methods=['GET', 'HEAD'])
+    def legacy_entry(client_id: str, request: Request, enterprise_id: str | None = None):
+        client = checked_client(store.client(client_id))
+        context_product(request, client['product_id'])
+        if request.method == 'HEAD':
+            return Response(status_code=204, headers=NO_STORE)
+        return login(client, enterprise_id)
+
+    def login(client, enterprise_id):
+        if not enterprise_id or len(enterprise_id) > 180:
+            raise HTTPException(400, 'Enterprise required')
+        client_id = client['client_id']
         try:
             data = metadata()
             state, nonce, verifier, browser = (secrets.token_urlsafe(48) for _ in range(4))

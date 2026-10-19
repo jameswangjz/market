@@ -5353,6 +5353,9 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
     return saas_integration_out(config)
 
 
+from .saas_entry import probe_saas_entry
+
+
 def verify_saas_integration_service(db: Session, product: Product, actor: str, *, publish: bool = True,
                                    commit: bool = True):
     if publish and product.status != "pending_integration":
@@ -5392,6 +5395,7 @@ def verify_saas_integration_service(db: Session, product: Product, actor: str, *
             headers={"Authorization": "Bearer " + token})
         if not 200 <= response.status_code < 300:
             raise RuntimeError("health_check_failed")
+        probe_saas_entry(globals(), db, product)
         callbacks = json.loads(product.oidc_redirect_uris_json or "[]")
         if (not isinstance(callbacks, list) or not callbacks
                 or any(not isinstance(uri, str) or not oidc_provider["valid_redirect"](uri, db=db) for uri in callbacks)):

@@ -43,7 +43,7 @@ XMLHttpRequest.prototype.send=function(...rest){if(this.__downloadPath?.endsWith
     WaitJs '!!window.__providerExportV2' 20
     Check 'window.__providerExportV2.status===200&&window.__providerExportV2.schema==="2.0"' 'Provider product action downloads schema2.0'
     Check 'window.__providerExportV2.hasOidc&&window.__providerExportV2.hasValidation&&!window.__providerExportV2.hasMachineCredentials' 'Downloaded file preserves OIDC and validation metadata without machine credentials'
-    Check '(async()=>{const r=await fetch("/saas-integration-standard.md",{cache:"no-store"});const t=await r.text();return r.ok&&t.includes("v1.3")&&t.includes("\"schema_version\": \"2.0\"")&&t.includes("resource_server")})()' 'Front-end documentation download is v1.3 with schema2.0'
+    Check '(async()=>{const r=await fetch("/saas-integration-standard.md",{cache:"no-store"});const t=await r.text();return r.ok&&t.includes("v1.4")&&t.includes("\"schema_version\": \"2.0\"")&&t.includes("resource_server")})()' 'Front-end documentation download is v1.4 with schema2.0'
     if($script:blocked -or $script:nativeDialogs){throw 'Unexpected mutation or native dialog'}
     $result.status='passed'
 } catch {$result.error=$_.Exception.Message}

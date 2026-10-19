@@ -40,6 +40,8 @@ class MockSaaSAdminTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data['redirect_uri'], PUBLIC + '/sso/callback')
         self.assertEqual(data['issuer'], self.config['issuer'])
+        self.assertEqual(data['public_base'], PUBLIC)
+        self.assertEqual(data['clients'][0]['application_url'], PUBLIC + '/apps/fixture-product')
         self.assertTrue(data['clients'][0]['secret_configured'])
         self.assertNotIn('client_secret', data['clients'][0])
         page = self.client.get('/admin')
@@ -49,11 +51,26 @@ class MockSaaSAdminTests(unittest.TestCase):
             self.assertEqual(response.headers['cache-control'], 'no-store')
             self.assertIn("frame-ancestors 'none'", response.headers['content-security-policy'])
         for name in ('admin-key', 'admin-login', 'client-form', 'client-save',
-                     'clients-list', 'admin-status', 'discovery-check'):
+                     'clients-list', 'admin-status', 'discovery-check', 'application-url'):
             self.assertIn('id="' + name + '"', page.text)
         script = self.client.get('/admin/assets/admin.js').text
         for forbidden in ('localStorage', 'sessionStorage', 'innerHTML', 'alert(', 'prompt(', 'confirm('):
             self.assertNotIn(forbidden, script)
+        self.assertIn('name="application_url" id="application-url" readonly', page.text)
+        self.assertIn('平台OIDC连接检查', page.text)
+        self.assertIn('navigator.clipboard.writeText', script)
+        self.assertIn('input.select()', script)
+        self.assertIn('delete body.application_url', script)
+
+    def test_application_url_quotes_product_and_is_only_metadata(self):
+        response = self.save(client_id='another-client', product_id='product ?#&中文')
+        self.assertEqual(response.status_code, 201)
+        expected = PUBLIC + '/apps/product%20%3F%23%26%E4%B8%AD%E6%96%87'
+        self.assertEqual(response.json()['application_url'], expected)
+        self.assertNotIn('another-client', expected)
+        self.assertNotIn('application_url', self.store.client('another-client'))
+        data = self.client.get('/admin/api/clients', headers=self.admin_headers).json()
+        self.assertEqual(next(c for c in data['clients'] if c['client_id'] == 'another-client')['application_url'], expected)
 
     def test_create_exact_settings_and_secret_required(self):
         for changes in ({'issuer': 'https://untrusted.invalid'},

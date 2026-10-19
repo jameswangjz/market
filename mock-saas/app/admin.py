@@ -1,6 +1,7 @@
 """Bounded administration of the private RP client registry."""
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException, Request
@@ -16,6 +17,7 @@ HEADERS = {'Cache-Control': 'no-store', 'Pragma': 'no-cache',
 def install_admin(app, store, *, enabled, admin, settings, metadata, body_type):
     def visible(config):
         return {**{k: config[k] for k in ('client_id', 'product_id', 'product_name', 'issuer', 'redirect_uri')},
+                'application_url': settings()[0] + '/apps/' + quote(config['product_id'], safe=''),
                 'secret_configured': bool(config.get('client_secret'))}
 
     def gate():
@@ -49,7 +51,7 @@ def install_admin(app, store, *, enabled, admin, settings, metadata, body_type):
         with store.connect() as db:
             rows = db.execute('SELECT config FROM clients ORDER BY client_id').fetchall()
         return JSONResponse({'clients': [visible(json.loads(row['config'])) for row in rows],
-                             'issuer': issuer, 'redirect_uri': base + '/sso/callback'})
+                             'public_base': base, 'issuer': issuer, 'redirect_uri': base + '/sso/callback'})
 
     @app.put('/admin/api/clients')
     async def save(request: Request):

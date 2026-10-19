@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from .order_economics import money
+from .saas_entry import probe_saas_entry
 from .subscription_calendar import CalendarAnchor
 
 
@@ -326,6 +327,7 @@ def install(ns):
             if state == 'pending':
                 return None
             from datetime import datetime
+            probe_saas_entry(ns, db, ctx['product'])
             granted_at = datetime.fromisoformat(activation['platform_delivery_at'])
             sub.expires_at = datetime.fromisoformat(activation['expires_at'])
             sub.status = 'active'

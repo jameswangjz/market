@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
@@ -29,6 +30,10 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
 
     def setUp(self):
         fixture.BusinessRoutesHTTPTests.setUp(self)
+        entry = patch.object(self.m, 'validated_http_request',
+            return_value=SimpleNamespace(status_code=200))
+        self.entry_request = entry.start()
+        self.addCleanup(entry.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         path = Path(__file__).parents[2] / 'mock-saas/app/store.py'
@@ -190,6 +195,24 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
                     self.assertEqual(db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).count(), 0)
                     self.assertNotEqual(db.get(self.m.Order, oid).main_status, 'completed')
                 self.bad_status = None
+
+    def test_entry_failure_retries_without_acceptance_or_term(self):
+        for failure in (404, TimeoutError('private URL and secret')):
+            with self.subTest(failure=failure):
+                self.entry_request.side_effect = failure if isinstance(failure, Exception) else None
+                self.entry_request.return_value = SimpleNamespace(status_code=404)
+                oid = self.create()
+                self.pay(oid)
+                self.assertEqual(self.finish(oid), 'exception')
+                with self.m.SessionLocal() as db:
+                    task = db.get(self.m.DeliveryTask, self.task_id(oid))
+                    order = db.get(self.m.Order, oid)
+                    sub = db.get(self.m.SaaSSubscription, order.subscription_id)
+                    self.assertEqual(task.retry_count, 3)
+                    self.assertNotEqual(order.main_status, 'completed')
+                    self.assertNotEqual(order.delivery_status, 'accepted')
+                    self.assertNotEqual(sub.status, 'active')
+                    self.assertEqual(db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).count(), 0)
 
     def test_mutation_intent_is_persisted_before_any_remote_call(self):
         oid = self.create()

@@ -122,10 +122,27 @@ separate from OIDC user-login credentials.
 
 ## Browser Flow
 
-- Entry: `/sso/apps/{client_id}?enterprise_id={enterprise_id}`.
+- Stable entry: `/apps/{percent-encoded-product_id}?enterprise_id={enterprise_id}`.
+- Generic entry: `/sso/apps?product_id={product_id}&enterprise_id={enterprise_id}`.
+- Legacy entry: `/sso/apps/{client_id}?enterprise_id={enterprise_id}`.
 - Callback: `/sso/callback?code=...&state=...`.
 - Application: `/app`; checks OP userinfo on every request.
 - Logout: `POST /sso/logout`; deletes only the local RP session.
+
+Stable entries resolve exactly one registered client for the product: missing is
+404 and ambiguous is 409. Without enterprise context they return a public 200
+landing containing only the escaped product name and create no flow. Supplied
+query/header product context must agree with the path or legacy client's product;
+conflicts return 409. Generic entries also accept `X-Market-Product-Id`.
+HEAD on all three entry routes validates local configuration only and returns
+204, 404 or 409 without discovery, cookies or flow writes. Deployment settings
+that cannot be validated retain the existing 503 configuration failure.
+
+Authenticated admin list/save responses include the public `application_url`;
+list defaults include `public_base`. The readonly `#application-url` preview
+uses the product ID, and table copy falls back to a selectable input when the
+clipboard is unavailable. `#discovery-check` is the platform OIDC connectivity
+check and does not validate individual clients.
 
 The RP creates server-side state/nonce/verifier, a five-minute single-use flow,
 and an independent HttpOnly/SameSite=Lax flow cookie. Authlib generates S256 PKCE

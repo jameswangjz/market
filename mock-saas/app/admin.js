@@ -33,10 +33,32 @@
     for (const name of ['client_id', 'product_id']) field(name).readOnly = false;
     for (const name of ['issuer', 'redirect_uri']) field(name).value = defaults[name];
     el('form-title').textContent = '新建客户端';
+    preview();
+  }
+  function preview() {
+    field('application_url').value = field('product_id').value && defaults.public_base
+      ? defaults.public_base + '/apps/' + encodeURIComponent(field('product_id').value) : '';
+  }
+  function addressCell(url) {
+    const cell = document.createElement('td');
+    const input = document.createElement('input');
+    input.readOnly = true; input.value = url; input.setAttribute('aria-label', '应用访问地址');
+    const copy = document.createElement('button');
+    copy.type = 'button'; copy.textContent = '复制'; copy.title = '复制应用访问地址';
+    copy.addEventListener('click', async () => {
+      try {
+        if (!window.isSecureContext || !navigator.clipboard) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(url); status('应用访问地址已复制。');
+      } catch (_) {
+        input.focus(); input.select(); status('应用访问地址已选中。');
+      }
+    });
+    cell.append(input, copy);
+    return cell;
   }
   async function load() {
     const data = await api('clients');
-    defaults = {issuer: data.issuer, redirect_uri: data.redirect_uri};
+    defaults = {issuer: data.issuer, redirect_uri: data.redirect_uri, public_base: data.public_base};
     const tbody = el('clients-list').tBodies[0];
     tbody.replaceChildren();
     for (const client of data.clients) {
@@ -47,6 +69,7 @@
         cell.textContent = value;
         row.append(cell);
       }
+      row.append(addressCell(client.application_url));
       const cell = document.createElement('td');
       const edit = document.createElement('button');
       edit.type = 'button'; edit.textContent = '编辑';
@@ -54,6 +77,7 @@
         reset();
         for (const name of ['client_id', 'product_id', 'product_name', 'issuer', 'redirect_uri']) field(name).value = client[name];
         field('client_id').readOnly = true; field('product_id').readOnly = true;
+        preview();
         el('form-title').textContent = '编辑客户端';
         field('client_secret').focus();
       });
@@ -75,6 +99,7 @@
   form.addEventListener('submit', event => {
     event.preventDefault();
     const body = Object.fromEntries(new FormData(form));
+    delete body.application_url;
     field('client_secret').value = '';
     run(el('client-save'), async () => {
       try { await api('clients', 'PUT', body); } finally { body.client_secret = ''; }
@@ -82,8 +107,9 @@
     });
   });
   el('discovery-check').addEventListener('click', () => run(el('discovery-check'), async () => {
-    await api('check', 'POST'); status('连通性与发现配置检查通过；尚未验证密钥或完整 SSO。');
+    await api('check', 'POST'); status('平台OIDC连接检查通过；仅检查平台连通性与发现配置。');
   }));
+  field('product_id').addEventListener('input', preview);
   el('new-client').addEventListener('click', reset);
   el('logout').addEventListener('click', () => { lock(); status('已退出管理。'); });
   window.addEventListener('pagehide', lock);

@@ -96,7 +96,7 @@ class ApplicationListingScopeTests(unittest.TestCase):
         self.assertTrue(item['available'])
         self.assertFalse(item['is_enterprise_admin'])
         launch = self.launch()
-        self.assertEqual(launch, {'launch_url': 'https://saas.example.invalid/app?enterprise_id=buyer_tenant'})
+        self.assertEqual(launch, {'launch_url': 'https://saas.example.invalid/app?product_id=product&enterprise_id=buyer_tenant'})
         for result in (response, launch):
             self.assertNotIn(self.secret, str(result))
             for forbidden in ('secret', 'cost', 'upstream', 'password', 'management', 'access_token'):

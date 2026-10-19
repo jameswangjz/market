@@ -115,6 +115,24 @@ class SaaSPublicationCredentialTests(unittest.TestCase):
         self.assertFalse(result['browser_sso_end_to_end_tested'])
         self.assertEqual(result['integration']['verification_status'], 'verified')
 
+    def test_entry_failure_prevents_publication_after_healthy_management_api(self):
+        self.pending_final_review()
+        self.request('POST', '/api/products/product/review', 'ops',
+            json={'decision': 'approve', 'comment': 'Approved'})
+        for failure in (SimpleNamespace(status_code=404), TimeoutError('private URL')):
+            with self.subTest(failure=failure):
+                with patch.object(self.m, 'saas_access_token', return_value='private-fixture-token'), \
+                        patch.object(self.m, 'validated_http_request', side_effect=[
+                            SimpleNamespace(status_code=200), failure]) as upstream:
+                    result = self.request('POST', '/api/products/product/saas-integration/verify',
+                        'provider', 502)
+                self.assertIn('SaaS应用访问入口检查未通过', result['detail'])
+                self.assertEqual(upstream.call_args.args[0], 'HEAD')
+                self.assertEqual(upstream.call_args.kwargs['headers'], {'X-Market-Product-Id': 'product'})
+                with self.m.SessionLocal() as db:
+                    self.assertEqual(db.get(self.m.Product, 'product').status, 'pending_integration')
+                    self.assertNotEqual(db.query(self.m.SaaSIntegrationConfig).one().verification_status, 'verified')
+
     def approve_for_bundle(self):
         self.pending_final_review()
         self.request('POST', '/api/products/product/review', 'ops',
