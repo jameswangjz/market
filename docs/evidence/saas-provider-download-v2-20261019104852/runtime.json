@@ -1,0 +1,33 @@
+{
+  "status": "passed",
+  "before": false,
+  "snapshots": {
+    "e0d7e27906f32c69ee11fa8a6093dadf": "fe1f06e9ff600e9846ad3d77c656f85972da3b75058df3eca994b509e096f71e",
+    "e101107c3f6414ab48b9ebc43de368e8": "588c7e96c4c2146a402fb5a9efccdb26f533d4b3848838aae01a9192d9b0dc28",
+    "exception_order": "cd279a12735b62ecb14d71f3b31a5b660263634ee940c0beae11b7866c9beb4c"
+  },
+  "checks": [
+    {
+      "product": "SaaS_APP3",
+      "download_schema": "2.0",
+      "machine_credentials_omitted": true,
+      "oidc_credentials_preserved": true,
+      "legacy_machine_download_gone": true,
+      "platform_download_denied": true,
+      "actual_machine_status_call": "passed",
+      "application_ready": true
+    },
+    {
+      "product": "SaaS-APP1",
+      "download_schema": "2.0",
+      "machine_credentials_omitted": true,
+      "oidc_credentials_preserved": true,
+      "legacy_machine_download_gone": true,
+      "platform_download_denied": true,
+      "actual_machine_status_call": "passed",
+      "application_ready": true
+    }
+  ],
+  "credential_rotation": false,
+  "business_order_modified": false
+}
