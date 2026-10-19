@@ -71,7 +71,7 @@ export function orderWorkflowActions(order, user, enterprise) {
 }
 
 export function orderTypeLabel(order) {
-  return ({ new_purchase: "新购", renewal: "续费", upgrade: "升级", downgrade: "降级", refund: "退款" })[order?.order_type] || "-";
+  return ({ new_purchase: "新购", renewal: "续费", upgrade: "升级", downgrade: "降级", refund: "退费" })[order?.order_type] || "-";
 }
 
 export function orderServiceDates(order, formatDate) {

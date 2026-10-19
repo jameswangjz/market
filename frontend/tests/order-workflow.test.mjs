@@ -148,7 +148,7 @@ test("refund list renders negative amounts and Chinese refund and non-applicable
 });
 
 test("order types and service dates use API values without inventing a start date", () => {
-  for (const [order_type, expected] of Object.entries({ new_purchase: "新购", renewal: "续费", upgrade: "升级", downgrade: "降级", refund: "退款" })) {
+  for (const [order_type, expected] of Object.entries({ new_purchase: "新购", renewal: "续费", upgrade: "升级", downgrade: "降级", refund: "退费" })) {
     assert.equal(orderTypeLabel({ order_type }), expected);
   }
   assert.equal(orderTypeLabel({}), "-");

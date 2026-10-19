@@ -544,24 +544,23 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
         self.assertEqual(self.counts()[0], 2)
         self.assertEqual(self.recipients(category="system"), {"buyer", "buyer_admin"})
 
-    def test_saas_renew_http_real_operation_commits_and_owner_receipts(self):
+    def test_legacy_saas_renew_cannot_implicitly_confirm_payment_or_send_success(self):
         m = self.m
         self.seed_scheduled_events()
         with m.SessionLocal() as db:
             db.add(m.SaaSIntegrationConfig(product_id="scheduled_product", status="active"))
             db.commit()
         with patch.object(m, "saas_call", return_value={"status": "renewed"}) as supplier:
-            self.request("POST", "/api/saas-subscriptions/expired/renew", actor="buyer_admin", expected=403, json={"billing_cycle": "annual"})
+            before = self.counts()
+            for actor in ('buyer_admin', 'buyer'):
+                self.request("POST", "/api/saas-subscriptions/expired/renew", actor=actor, expected=409,
+                             json={"billing_cycle": "annual"})
             supplier.assert_not_called()
-            renewed = self.request("POST", "/api/saas-subscriptions/expired/renew", actor="buyer", json={"billing_cycle": "annual"})
-        supplier.assert_called_once()
-        self.assertEqual(renewed["subscription"]["status"], "active")
-        self.assertEqual(self.recipients(title="SaaS 订阅已到期"), {"buyer", "buyer_admin"})
-        self.assertEqual(self.recipients(title="订单支付完成"), {"buyer", "buyer_admin", "provider"})
+        self.assertEqual(self.counts(), before)
         with m.SessionLocal() as db:
-            self.assertEqual(db.scalar(self.select(m.SaaSOperation.status)), "succeeded")
-            self.assertEqual(db.scalar(self.select(m.Payment.status)), "paid")
-            self.assertEqual(db.scalar(self.select(m.Order.buyer_user_id)), "buyer")
+            self.assertEqual(db.scalar(self.select(self.func.count()).select_from(m.SaaSOperation)), 0)
+            self.assertEqual(db.scalar(self.select(self.func.count()).select_from(m.Payment)), 0)
+            self.assertEqual(db.scalar(self.select(self.func.count()).select_from(m.Order)), 0)
 
     def test_saas_order_resolves_creator_id_email_and_phone(self):
         m = self.m
