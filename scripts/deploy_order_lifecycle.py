@@ -10,6 +10,8 @@ from pathlib import Path
 import sys
 import time
 
+sys.dont_write_bytecode = True
+
 
 def load_helpers():
     path = Path(__file__).resolve().with_name('deploy_api_lifecycle_20261019082523.py')
