@@ -1,0 +1,26 @@
+﻿{
+    "screenshots":  [
+                        "admin-1440.png",
+                        "admin-390.png"
+                    ],
+    "status":  "passed",
+    "scope":  "live mock configuration UI; only owned synthetic client writes; no platform order mutation",
+    "checks":  [
+                   "Unauthenticated client list denied",
+                   "Admin key input cleared after login",
+                   "Issuer and callback fixed to deployed trusted configuration",
+                   "Client secret cleared after saving",
+                   "Admin table exposes stable product entry without OIDC client ID",
+                   "HTTP copy fallback selects the complete stable application URL",
+                   "Edit form presents a read-only stable application entry",
+                   "Edit does not expose stored secret and locks client identity",
+                   "Client metadata update succeeds with blank secret",
+                   "Real trusted-backchannel Discovery check succeeds",
+                   "No credentials retained in browser storage",
+                   "No page horizontal overflow at 1440",
+                   "No filled password fields before screenshot",
+                   "No page horizontal overflow at 390",
+                   "No filled password fields before screenshot",
+                   "Logout clears configuration view"
+               ]
+}

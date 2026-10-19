@@ -1,0 +1,8 @@
+{
+  "blank_secret_preserved": true,
+  "original_clients_sha256": "65518a514e798806108c3f8114b5e0440ed286e8a2a642b2e839ea1969f1f86d",
+  "original_client_count": 4,
+  "status": "passed",
+  "owned_fixture_deleted": true,
+  "secrets_returned": false
+}

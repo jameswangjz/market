@@ -49,6 +49,8 @@ try {
     WaitJs "[...document.querySelectorAll('#clients-list tbody tr')].some(r=>r.cells[0].textContent===$client)" 20
     Check 'document.querySelector("[name=client_secret]").value===""' 'Client secret cleared after saving'
     Check "(()=>{const r=[...document.querySelectorAll('#clients-list tbody tr')].find(r=>r.cells[0].textContent===$client);return r.querySelector('input[aria-label]').value.includes('/apps/')&&!r.querySelector('input[aria-label]').value.includes($client)})()" 'Admin table exposes stable product entry without OIDC client ID'
+    Js "[...document.querySelectorAll('#clients-list tbody tr')].find(r=>r.cells[0].textContent===$client).querySelector('button').click();true"|Out-Null
+    Check "(()=>{const i=[...document.querySelectorAll('#clients-list tbody tr')].find(r=>r.cells[0].textContent===$client).querySelector('input[aria-label]');return !isSecureContext&&document.activeElement===i&&i.selectionStart===0&&i.selectionEnd===i.value.length})()" 'HTTP copy fallback selects the complete stable application URL'
     Js "[...document.querySelectorAll('#clients-list tbody tr')].find(r=>r.cells[0].textContent===$client).querySelectorAll('button').forEach(b=>{if(b.textContent==='\u7f16\u8f91')b.click()});true"|Out-Null
     Check 'document.querySelector("#application-url").readOnly&&document.querySelector("#application-url").value.includes("/apps/")' 'Edit form presents a read-only stable application entry'
     Check 'document.querySelector("[name=client_secret]").value===""&&document.querySelector("[name=client_id]").readOnly' 'Edit does not expose stored secret and locks client identity'
