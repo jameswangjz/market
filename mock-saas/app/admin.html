@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mock SaaS 管理</title><link rel="stylesheet" href="/admin/assets/admin.css">
+<script src="/admin/assets/admin.js" defer></script></head>
+<body><header><strong>Mock SaaS</strong><span>开发环境 · 管理</span></header>
+<main><section id="login-section"><h1>管理认证</h1>
+<form id="login-form" autocomplete="off"><label for="admin-key">管理密钥</label>
+<input id="admin-key" type="password" required autocomplete="off">
+<button id="admin-login" type="submit">登录</button></form></section>
+<p id="admin-status" role="status" aria-live="polite"></p>
+<div id="workspace" hidden><section class="section-heading"><h1>OIDC 用户登录</h1>
+<div><button id="discovery-check" type="button">检查连接</button>
+<button id="logout" type="button">退出管理</button></div></section>
+<p>连接检查仅验证连通性与发现配置，不证明客户端密钥有效或完整 SSO 成功。</p>
+<div class="table-scroll"><table id="clients-list"><thead><tr><th>客户端 ID</th><th>产品 ID</th>
+<th>产品名称</th><th>密钥状态</th><th>操作</th></tr></thead><tbody></tbody></table></div>
+<section><h2 id="form-title">客户端配置</h2><form id="client-form" autocomplete="off">
+<label>客户端 ID<input name="client_id" required maxlength="180"></label>
+<label>客户端密钥<input name="client_secret" type="password" maxlength="4096" autocomplete="new-password"><small>新建必填；编辑留空保留原密钥。</small></label>
+<label>产品 ID<input name="product_id" required maxlength="180"></label>
+<label>产品名称<input name="product_name" maxlength="200" value="应用"></label>
+<label>签发方 issuer<input name="issuer" required maxlength="2000" readonly></label>
+<label>回调地址<input name="redirect_uri" required maxlength="2000" readonly></label>
+<div class="actions"><button id="client-save" type="submit">保存</button><button id="new-client" type="button">新建客户端</button></div>
+</form></section><section><h2>机器 OAuth</h2><p>机器接口凭据独立管理，与 OIDC 用户登录凭据不同。</p></section></div></main></body></html>

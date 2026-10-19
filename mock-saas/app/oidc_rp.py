@@ -23,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from .store import hashed, tenant_expired
+from .admin import install_admin
 
 
 FLOW_COOKIE = 'mock_saas_oidc_flow'
@@ -39,6 +40,10 @@ class ClientBody(BaseModel):
     product_id: str = Field(min_length=1, max_length=180)
     issuer: str = Field(min_length=1, max_length=2000)
     product_name: str = Field(default='应用', max_length=200)
+
+
+class AdminClientBody(ClientBody):
+    client_secret: str | None = Field(default=None, max_length=4096)
 
 
 def configured_url(value, allow_http, *, backchannel=False):
@@ -93,6 +98,9 @@ def install(app, store, *, transport=None):
         if any(data.get(key) != value for key, value in expected.items()):
             raise ValueError('Untrusted OP metadata')
         return data
+
+    install_admin(app, store, enabled=admin_enabled, admin=admin, settings=settings,
+                  metadata=metadata, body_type=AdminClientBody)
 
     def checked_identity(claims, info, flow, client):
         if any(not isinstance(claims.get(k), str) or not claims[k]
@@ -160,6 +168,10 @@ def install(app, store, *, transport=None):
                 url, _ = oauth.create_authorization_url(data['authorization_endpoint'], state=state,
                     nonce=nonce, code_verifier=verifier, enterprise_id=enterprise_id)
             with store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute('SELECT config FROM clients WHERE client_id=?', (client_id,)).fetchone()
+                if not current or json.loads(current['config']) != client:
+                    raise ValueError('Client configuration changed')
                 db.execute('DELETE FROM flows WHERE expires_at <= ?', (int(time.time()),))
                 db.execute('INSERT INTO flows(state_hash,browser_hash,client_id,enterprise_id,nonce,verifier,expires_at) '
                            'VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -215,9 +227,11 @@ def install(app, store, *, transport=None):
                 raise ValueError('Expired session')
             session = secrets.token_urlsafe(48)
             with store.connect() as db:
-                # Client deletion during network requests must prevent a new session.
-                if not db.execute('SELECT 1 FROM clients WHERE client_id = ?', (client['client_id'],)).fetchone():
-                    raise ValueError('Client removed')
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute('SELECT config FROM clients WHERE client_id = ?', (client['client_id'],)).fetchone()
+                active_flow = db.execute('SELECT 1 FROM flows WHERE state_hash=?', (flow['state_hash'],)).fetchone()
+                if not current or json.loads(current['config']) != client or not active_flow:
+                    raise ValueError('Client configuration changed')
                 db.execute('INSERT OR IGNORE INTO users VALUES (?, ?, ?)', (identity['tenant_id'], identity['sub'],
                     json.dumps({'user_id': identity['sub'], 'external_user_id': 'mock-user-' + identity['sub'][:12],
                                 'status': 'active'})))

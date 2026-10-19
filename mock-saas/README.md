@@ -44,8 +44,8 @@ file permissions are not encryption or a substitute for protecting backups.
 
 `redirect_uri` must equal `${MOCK_SAAS_PUBLIC_BASE_URL}/sso/callback` and `issuer`
 must equal `OIDC_ISSUER`. Success is 201 and never includes the secret; duplicate
-client IDs return 409 instead of silently rotating credentials. There is no
-configuration GET endpoint. `DELETE /_test/oidc/clients/{client_id}` deletes only
+client IDs return 409 instead of silently rotating credentials. The legacy
+fixture endpoints retain their semantics. `DELETE /_test/oidc/clients/{client_id}` deletes only
 that client and its flows, sessions and OIDC mappings. Shared machine tenant and
 user records are not removed by client deletion. CLOSE the scoped tenant using
 the authenticated machine interface as part of fixture teardown.
@@ -93,6 +93,32 @@ The platform's machine token currently binds only the product; enterprise and
 subscription are frozen by the first authorized OPEN, not independent OP claims.
 USER_UNASSIGN resolves platform or external user IDs to the same persisted row;
 repeated external-ID revocation retains that ID and creates no extra user row.
+
+## Web Administration
+
+When `MOCK_SAAS_ENABLE_TEST_ADMIN=true`, open `${MOCK_SAAS_PUBLIC_BASE_URL}/admin`
+and enter the separately provisioned admin key. Disabled administration returns
+404. The key is held only in browser memory and sent in the existing admin
+header; logout or leaving the page clears it. Do not put keys in URLs or shared
+documents. All assets are local to `app/`; no CDN is required.
+
+The OIDC table supports creating clients and editing their product name or
+write-only client secret. Blank or omitted secrets retain the stored secret;
+creation requires a secret. Product binding cannot change for an existing client.
+Issuer and callback are populated from trusted deployment settings and must
+match exactly. Credential changes atomically remove that client's flows,
+sessions and mappings, while retaining shared tenant and user records. The
+registry reuses the existing private SQLite database on the persistent volume.
+
+`GET /admin/api/clients` requires admin authentication and returns only client
+metadata, `secret_configured`, the trusted issuer and exact callback default.
+`PUT /admin/api/clients` creates or updates one client using the fixture body
+fields (with an optional secret). No response includes client credentials.
+`POST /admin/api/check` checks connectivity and exact discovery endpoint syntax
+through the fixed trusted backchannel. It never fetches a supplied URL and does
+not prove client-secret validity or a successful complete SSO flow. Use a real
+browser login separately for that validation. Machine OAuth credentials remain
+separate from OIDC user-login credentials.
 
 ## Browser Flow
 
