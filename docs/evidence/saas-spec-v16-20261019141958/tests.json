@@ -1,0 +1,10 @@
+{
+  "documentation_tests": {"passed": 8, "seconds": 0.036, "command": "python3 -m unittest backend.tests.test_saas_integration_spec -v"},
+  "existing_mock_tests": {"passed": 110, "seconds": 14.822, "modules": ["test_mock_saas_reconciliation", "test_mock_saas_oidc", "test_mock_saas_admin"]},
+  "total_passed": 118,
+  "documentation_sha256": "e270ce590b8307778b6b60ab85cc340d6e8d971654ca577a8172dc6097c4392a",
+  "release": "20261019141958-fe289b7",
+  "business_code_modified": false,
+  "credentials_rotated": false,
+  "real_supplier_acceptance": false
+}
