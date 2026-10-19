@@ -434,7 +434,7 @@ class OrderFulfillmentTests(unittest.TestCase):
     def test_http_payment_retry_at_every_stage_never_rewinds_or_duplicates_tasks(self):
         oid = self.create(paid=False)
         self.request("POST", f"/api/orders/{oid}/provider-review", "provider", json={"decision": "approve"})
-        first = self.request("POST", f"/api/orders/{oid}/transition", json={"action": "confirm_payment"})
+        first = self.request("POST", f"/api/orders/{oid}/transition", "platform", json={"action": "confirm_payment"})
         self.assertEqual(first["main_status"], "awaiting_start")
         for action, actor, reason, phase in ((None, None, "", "awaiting_start"),
                 ("start_delivery", "provider", "", "in_delivery"),
@@ -450,7 +450,11 @@ class OrderFulfillmentTests(unittest.TestCase):
                 order = db.get(self.m.Order, oid)
                 task = self.task(db, oid)
                 original = (order.updated_at, task.id, task.status, task.note, task.last_error)
-            for retry_actor in ("buyer", "finance", "platform"):
+            for denied_actor in ('buyer', 'finance'):
+                self.request('POST', f'/api/orders/{oid}/transition', denied_actor, expected=403,
+                    json={'action': 'confirm_payment'})
+                self.assertEqual(before, self.counts())
+            for retry_actor in ("ops", "platform"):
                 result = self.request("POST", f"/api/orders/{oid}/transition", retry_actor,
                     json={"action": "confirm_payment"})
                 self.assertEqual(result["main_status"], phase)
@@ -480,7 +484,7 @@ class OrderFulfillmentTests(unittest.TestCase):
         self.request("POST", f"/api/orders/{oid}/provider-review", "provider", json={"decision": "approve"})
         before = self.counts()
         with self.fail_after_create("order"):
-            self.request("POST", f"/api/orders/{oid}/transition", expected=500,
+            self.request("POST", f"/api/orders/{oid}/transition", "platform", expected=500,
                          json={"action": "confirm_payment"})
         self.assertEqual(before, self.counts())
         with self.m.SessionLocal() as db:

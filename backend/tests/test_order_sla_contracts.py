@@ -145,7 +145,7 @@ class OrderSlaContractTests(unittest.TestCase):
         for name, side_effect in [('audit', fail), ('notify_order_event', RuntimeError('Late outbox failure'))]:
             before = self.counts()
             with patch.object(self.m, name, side_effect=side_effect):
-                self.request('POST', f'/api/orders/{order_id}/transition', expected=500, json={'action': 'confirm_payment'})
+                self.request('POST', f'/api/orders/{order_id}/transition', actor='platform', expected=500, json={'action': 'confirm_payment'})
             self.assertEqual(self.counts(), before)
             self.assertIsNone(self.contract(order_id))
             with self.m.SessionLocal() as db:

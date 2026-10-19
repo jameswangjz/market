@@ -40,12 +40,34 @@ test("request visibility is buyer-admin only; payment and confirmation roles are
   const itemPending = { ...item, payment_status: "unpaid" };
   const buyerSuper = { ...buyerAdmin, enterprise_memberships: [{ enterprise_id: "buyer", role: "super_admin", status: "active" }] };
   assert.equal(versionChangeExecutionPermissions(buyerSuper, order, itemPending, buyerEnterprise).startPayment, true);
-  assert.equal(versionChangeExecutionPermissions(buyerSuper, order, { ...item, payment_status: "paying" }, buyerEnterprise).confirmPayment, true);
+  assert.equal(versionChangeExecutionPermissions(buyerSuper, order, { ...item, payment_status: "paying" }, buyerEnterprise).confirmPayment, false);
   assert.equal(versionChangeExecutionPermissions({ ...buyerAdmin, enterprise_memberships: [{ enterprise_id: "buyer", role: "enterprise_admin", status: "active" }] }, order, { ...item, payment_status: "paying" }, buyerEnterprise).confirmPayment, false);
-  assert.equal(versionChangeExecutionPermissions({ platform_role: "finance_settlement", is_active: true }, order, { ...item, payment_status: "paying" }).confirmPayment, true);
+  assert.equal(versionChangeExecutionPermissions({ platform_role: "finance_settlement", is_active: true }, order, { ...item, payment_status: "paying" }).confirmPayment, false);
   assert.equal(versionChangeExecutionPermissions({ platform_role: "finance_settlement", is_active: false }, order, { ...item, payment_status: "paying" }).confirmPayment, false);
   assert.equal(versionChangeExecutionPermissions({ platform_role: "finance_settlement", is_active: false }, order, { ...item, status: "exception" }).retry, false);
-  assert.equal(versionChangeExecutionPermissions({ platform_role: "platform_operator", is_active: true }, order, { ...item, payment_status: "paying" }).confirmPayment, false);
+  assert.equal(versionChangeExecutionPermissions({ platform_role: "platform_operator", is_active: true }, order, { ...item, payment_status: "paying" }).confirmPayment, true);
+  for (const platform_role of ["super_admin", "platform_operator"]) {
+    for (const payment_status of ["unpaid", "paying"]) {
+      const pending = { ...item, payment_status };
+      assert.equal(versionChangeExecutionPermissions({ platform_role, is_active: true }, order, pending).confirmPayment, true);
+      assert.equal(versionChangeExecutionPermissions({ platform_role, is_active: false }, order, pending).confirmPayment, false);
+      assert.equal(versionChangeExecutionPermissions({ platform_role, activation_status: "disabled" }, order, pending).confirmPayment, false);
+    }
+    assert.equal(versionChangeExecutionPermissions({ platform_role }, order, { ...item, payment_status: "paid" }).confirmPayment, false);
+    assert.equal(versionChangeExecutionPermissions({ platform_role }, order, { ...item, status: "completed", payment_status: "paying" }).confirmPayment, false);
+  }
+});
+
+test("downgrade without payment remains pending fulfillment with no payment actions", () => {
+  const buyerSuper = { ...buyerAdmin, enterprise_memberships: [{ enterprise_id: "buyer", role: "super_admin", status: "active" }] };
+  for (const user of [buyerSuper, { platform_role: "super_admin" }, { platform_role: "platform_operator" }]) {
+    for (const patch of [{ payment_amount: -20 }, { payment_status: "not_applicable" },
+      { status: "pending_fulfillment", payment_status: "not_applicable", payment_amount: 0 }]) {
+      const permissions = versionChangeExecutionPermissions(user, order, { ...item, ...patch }, buyerEnterprise);
+      assert.equal(permissions.startPayment, false);
+      assert.equal(permissions.confirmPayment, false);
+    }
+  }
 });
 
 test("history visibility is limited to API/SaaS orders and authorized active verified users", () => {
@@ -66,7 +88,7 @@ test("history visibility is limited to API/SaaS orders and authorized active ver
   assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "file" }, buyerAdmin, buyerEnterprise), false);
   assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, snapshot_version: 0 }, buyerAdmin, buyerEnterprise), false);
   assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, snapshot_version: undefined }, buyerAdmin, buyerEnterprise), false);
-  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "platform_operator", is_active: true, verified_status: "verified" }), false);
+  assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "platform_operator", is_active: true, verified_status: "verified" }), true);
   assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "finance_settlement", is_active: false, verified_status: "verified" }), false);
   assert.equal(canReadVersionChangeHistory({ ...snapshotOrder, delivery_method: "api" }, { platform_role: "finance_settlement", is_active: true, verified_status: "pending" }), false);
 });
@@ -132,15 +154,22 @@ test("a slow list request is not superseded by its four-second poll", async () =
   execution.dispose();
 });
 
-test("buyer super-admin payment confirmation sends its reason; enterprise admins cannot confirm", async () => {
+test("buyers and finance cannot call payment confirmation; platform operators send the reason", async () => {
   const calls = [];
   const api = {
     get: async () => ({ data: { items: [item] } }),
     post: async (path, body) => { calls.push({ path, body }); return { data: item }; },
   };
   const buyerSuper = { ...buyerAdmin, enterprise_memberships: [{ enterprise_id: "buyer", role: "super_admin", status: "active" }] };
-  const execution = createVersionChangeExecution({ api, getContext: () => ({ order, user: buyerSuper, enterprise: buyerEnterprise, combinationId: "combo-1" }), quoteSession: {} });
+  let user = buyerSuper;
+  const execution = createVersionChangeExecution({ api, getContext: () => ({ order, user, enterprise: buyerEnterprise, combinationId: "combo-1" }), quoteSession: {} });
   await execution.open();
+  for (const actor of [buyerSuper, buyerAdmin, { platform_role: "finance_settlement", is_active: true }]) {
+    user = actor;
+    await execution.confirmPayment({ ...item, payment_status: "paying" }, "blocked");
+  }
+  assert.equal(calls.length, 0);
+  user = { platform_role: "platform_operator", is_active: true };
   await execution.confirmPayment({ ...item, payment_status: "paying" }, "模拟支付凭证已核对");
   assert.deepEqual(calls[0], { path: "/version-changes/vc-1/confirm-payment", body: { reason: "模拟支付凭证已核对" } });
   assert.equal(versionChangeExecutionPermissions(buyerAdmin, order, { ...item, payment_status: "paying" }, buyerEnterprise).confirmPayment, false);

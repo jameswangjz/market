@@ -325,7 +325,7 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
         return self.request("POST", "/api/orders", json={"product_id": "product", "product_version_id": "version", "buyer_enterprise_id": "buyer_tenant"})["id"]
 
     def pay(self, order_id):
-        return self.request("POST", f"/api/orders/{order_id}/transition", json={"action": "confirm_payment"})
+        return self.request("POST", f"/api/orders/{order_id}/transition", actor="platform", json={"action": "confirm_payment"})
 
     def task_id(self, order_id):
         with self.m.SessionLocal() as db:
@@ -434,8 +434,10 @@ class BusinessRoutesHTTPTests(unittest.TestCase):
     def test_payment_create_failure_rolls_back_payment_task_and_outbox(self):
         oid = self.create_order()
         before = self.counts()
+        for actor in ("buyer", "finance"):
+            self.request("POST", f"/api/orders/{oid}/transition", actor=actor, expected=403, json={"action": "confirm_payment"})
         with self.fail_after_create("order"):
-            self.request("POST", f"/api/orders/{oid}/transition", expected=500, json={"action": "confirm_payment"})
+            self.request("POST", f"/api/orders/{oid}/transition", actor="ops", expected=500, json={"action": "confirm_payment"})
         self.assertEqual(self.counts(), before)
         with self.m.SessionLocal() as db:
             self.assertEqual(db.get(self.m.Order, oid).payment_status, "unpaid")

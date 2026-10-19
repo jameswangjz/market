@@ -175,6 +175,9 @@ def process_once(SessionLocal=None, *, worker_id=None, now=None, fixture_scope=N
             elif phase == 'exception':
                 # Operator retry sets a concrete phase before this worker claims it.
                 db.rollback(); return False
+            lifecycle = ns.get('order_service_lifecycle')
+            if lifecycle:
+                lifecycle['change_applied'](db, row)
             row.lease_owner = ''; row.lease_expires_at = None
             row.updated_at = instant
             db.commit()

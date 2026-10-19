@@ -393,6 +393,8 @@ def install(ns):
             raise RuntimeError('API credential external compensation failed')
 
     ns['_track_api_consumer_compensation'] = register_consumer_compensation
+    ns['_track_api_policy_compensation'] = track_root_transaction
+    ns['_restore_api_policies'] = restore_policies
     ns['_cleanup_api_consumer_compensation'] = cleanup_consumer_compensation
 
     def process(db, order, task, user):

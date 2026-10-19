@@ -32,6 +32,10 @@ def install(ns):
         periods = terms["quota_periods"](db, credential.enterprise_id, route.product_id)
         bound = []
         for period in periods:
+            lifecycle = ns.get('order_service_lifecycle')
+            state = db.get(lifecycle['State'], period.get('order_id')) if lifecycle and period.get('order_id') else None
+            if state and state.status in {'scheduled', 'retrying', 'needs_manual', 'activation_verified'}:
+                continue
             if period["version_code"] != route.version:
                 continue
             bound.append({key: period[key] for key in (

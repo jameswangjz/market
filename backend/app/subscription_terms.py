@@ -355,11 +355,15 @@ def install(ns):
         return delivery
 
     def paid_snapshot(order):
+        delivery_ok = order.delivery_status in {'pending_acceptance', 'accepted'} or (
+            order.delivery_status in {'awaiting_effective', 'exception'}
+            and getattr(order, 'service_starts_at', None) is not None
+            and order.main_status == 'pending_fulfillment')
         if (order.snapshot_version != 1 or order.delivery_method_snapshot not in MONTHLY
                 or order.payment_status != 'paid' or money(order.paid_amount) != money(order.amount)
                 or money(order.refunded_amount) != 0
                 or order.main_status in {'cancelled', 'closed', 'refunded'}
-                or order.delivery_status not in {'pending_acceptance', 'accepted'}):
+                or not delivery_ok):
             raise HTTPException(409, '订阅须使用已全额支付、未退款且交付成功的新版快照订单')
         return snapshot(order)
 
@@ -375,7 +379,7 @@ def install(ns):
                 or money(order.paid_amount) != money(order.amount)
                 or money(order.refunded_amount) < 0
                 or order.main_status in {'cancelled', 'closed'}
-                or order.delivery_status not in {'pending_acceptance', 'accepted'}):
+                or order.delivery_status not in {'pending_acceptance', 'accepted', 'awaiting_effective'}):
             raise HTTPException(409, 'Refund entitlement recovery is not financially verified')
         snapshot(order)
         for row in overlay['periods']:

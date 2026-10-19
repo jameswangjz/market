@@ -60,10 +60,10 @@ test("pure refund components compile without execution or legacy refund transiti
   }
 });
 
-test("legacy refund buttons are removed while finance payment receipt confirmation remains", () => {
+test("legacy refund buttons are removed and finance cannot confirm payment", () => {
   const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
   const actions = source.slice(source.indexOf("function nextActions(order)"), source.indexOf("onMounted(() =>", source.indexOf("function nextActions(order)")));
   assert.doesNotMatch(actions, /approve_refund|complete_refund/);
   assert.deepEqual(orderWorkflowActions({ snapshot_version: 1, main_status: "pending_payment", payment_status: "paying" },
-    { id: "finance", platform_role: "finance_settlement" }, null), [["confirm_payment", "人工确认支付"]]);
+    { id: "finance", platform_role: "finance_settlement" }, null), []);
 });

@@ -58,15 +58,29 @@ export function orderWorkflowActions(order, user, enterprise) {
   const legacyPayable = order.snapshot_version !== 1 &&
     ["created", "pending_review", "pending_fulfillment", "fulfilling", "pending_confirmation", "completed"].includes(order.main_status);
   if (order.main_status !== "pending_payment" && !legacyPayable) return [];
+  if (order.order_type === "refund" || Number(order.amount) < 0 ||
+    order.payment_status === "not_applicable" || order.delivery_status === "not_applicable") return [];
   const member = currentMembership(user, enterprise);
   const buyer = order.buyer_enterprise_id === enterprise?.id && member?.role === "super_admin";
   const actions = [];
   if (buyer && order.payment_status === "unpaid") actions.push(["start_payment", "发起模拟支付"]);
-  if (buyer && order.payment_status === "paying") actions.push(["confirm_payment", "模拟确认支付"]);
-  if (["super_admin", "finance_settlement"].includes(user.platform_role) && ["unpaid", "paying"].includes(order.payment_status)) {
+  if (["super_admin", "platform_operator"].includes(user.platform_role) && ["unpaid", "paying"].includes(order.payment_status)) {
     actions.push(["confirm_payment", "人工确认支付"]);
   }
   return actions;
+}
+
+export function orderTypeLabel(order) {
+  return ({ new_purchase: "新购", renewal: "续费", upgrade: "升级", downgrade: "降级", refund: "退款" })[order?.order_type] || "-";
+}
+
+export function orderServiceDates(order, formatDate) {
+  return {
+    starts: order?.service_starts_at ? formatDate(order.service_starts_at) : "待交付确定",
+    ends: order?.service_ends_at ? formatDate(order.service_ends_at)
+      : (order?.delivery_method || order?.delivery_method_snapshot) === "file" ? "无限期" : "待交付确定",
+    effective: order?.service_effective_at ? formatDate(order.service_effective_at) : "待交付确定",
+  };
 }
 
 export function providerReviewPayload(quote, form, decision) {

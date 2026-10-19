@@ -576,6 +576,10 @@ class Order(Base):
     billing_cycle: Mapped[str] = mapped_column(String(20), default="")
     subscription_id: Mapped[str] = mapped_column(String(36), default="")
     business_type: Mapped[str] = mapped_column(String(30), default="")
+    order_type: Mapped[str] = mapped_column(String(30), default="new_purchase")
+    service_starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    service_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    service_effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     related_order_id: Mapped[str] = mapped_column(String(36), default="")
     snapshot_version: Mapped[int] = mapped_column(Integer, default=0)
     subscription_months: Mapped[int] = mapped_column(Integer, default=1)
@@ -1625,7 +1629,8 @@ def notify_order_event(db: Session, order: Order, action: str, version: str, *, 
         "confirm_payment": "订单支付完成", "approve_refund": "订单退款处理中", "complete_refund": "订单退款完成",
         "start_delivery": "订单开始交付", "submit_delivery": "订单待验收", "accept_delivery": "订单验收通过",
         "reject_delivery": "订单交付退回整改", "mark_exception": "订单交付异常", "retry_delivery": "订单交付重试",
-        "confirm_order": "订单已完成", "delivery_succeeded": "订单待验收", "delivery_failed": "订单自动交付异常",
+        "confirm_order": "订单已完成", "delivery_succeeded": "订单交付验证通过", "delivery_failed": "订单自动交付异常",
+        "delivery_prepared": "订单权益已配置，等待服务生效",
     }
     if action not in titles:
         return
@@ -2240,6 +2245,10 @@ def ensure_review_and_file_schema():
             "billing_cycle": "VARCHAR(20)",
             "subscription_id": "VARCHAR(36)",
             "business_type": "VARCHAR(30)",
+            "order_type": "VARCHAR(30) DEFAULT 'new_purchase'",
+            "service_starts_at": "TIMESTAMP WITH TIME ZONE",
+            "service_ends_at": "TIMESTAMP WITH TIME ZONE",
+            "service_effective_at": "TIMESTAMP WITH TIME ZONE",
             "related_order_id": "VARCHAR(36)",
             "snapshot_version": "INTEGER DEFAULT 0",
             "subscription_months": "INTEGER DEFAULT 1",
@@ -5514,11 +5523,9 @@ def verify_saas_integration(product_id: str, user: User = Depends(current_user),
 
 
 def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> None:
-    """Legacy purchase/renew simulate payment inline, so cannot admit administrators."""
+    """Retire endpoints that implicitly mark payments complete for the buyer."""
     trading_policy["require_buyer"](db, user, enterprise_id)
-    member = current_membership(db, user, enterprise_id)
-    if member.role != "super_admin":
-        raise HTTPException(403, "该旧订阅接口包含模拟付款，仅企业超级管理员可执行")
+    raise HTTPException(409, '旧订阅接口不再隐式完成支付，请通过订单的新购、续费或版本变更流程办理')
 
 
 @app.post("/api/products/{product_id}/saas-subscriptions")
@@ -5600,6 +5607,7 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
 @app.post("/api/saas-subscriptions/{subscription_id}/change-version")
 def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, current_version, config = subscription_context(subscription_id, user, db)
+    require_legacy_saas_payer(db, user, subscription.enterprise_id)
     if db.scalar(select(saas_combinations["Binding"].id).where(saas_combinations["Binding"].subscription_id == subscription.id)):
         raise HTTPException(409, "该订阅须通过订单版本变更报价与资金资源流程变更版本")
     target = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
@@ -5734,8 +5742,15 @@ def remove_saas_department(subscription_id: str, department_id: str, user: User 
     return {"id": department.id, "status": department.status, "provider_result": result}
 
 
+def order_base_out(o: Order) -> dict[str, Any]:
+    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "provider_enterprise_id": o.provider_enterprise_id, "buyer_name": o.buyer_name, "product_id": o.product_id, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "order_type": o.order_type or 'new_purchase', "service_starts_at": o.service_starts_at, "service_ends_at": o.service_ends_at, "service_effective_at": o.service_effective_at, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+
+
 def order_out(o: Order) -> dict[str, Any]:
-    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "provider_enterprise_id": o.provider_enterprise_id, "buyer_name": o.buyer_name, "product_id": o.product_id, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+    from sqlalchemy.orm import object_session
+    db = object_session(o)
+    projection = order_service_lifecycle['describe'](db, o) if db is not None else {}
+    return {**order_base_out(o), **projection}
 
 
 @app.get("/api/orders")
@@ -5779,6 +5794,7 @@ def create_quoted_order(db: Session, user: User, quote: dict) -> Order:
     subscription = saas_combinations["reserve"](db, user, quote)
     order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=(getattr(version, "name", "") or version.description or version.version_code)[:120], product_name=product.name, buyer_name=buyer.name, amount=quote["amount"], billing_cycle="monthly" if quote["public"]["billing_unit"] == "month" else "", main_status="created")
     order_economics["apply_snapshot"](order, quote)
+    order_service_lifecycle["initialize"](db, order)
     if subscription:
         order.subscription_id = subscription.id
     order_workflow["initialize_order"](db, order, user)
@@ -6314,6 +6330,8 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
         raise HTTPException(400, "订单尚未满足清算条件")
     if version_change_settlement["is_funding_order"](order):
         raise HTTPException(409, "版本变更差价支付单不单独清算，请按月清算关联的经济调整")
+    if order.business_type == 'refund_record':
+        raise HTTPException(409, '退费现金订单不单独生成收入清算，请使用关联退款的负向清算调整')
     existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()).with_for_update().execution_options(populate_existing=True))
     settlement_finance_adapter.protect(globals(), db, [existing.id] if existing else [])
     if existing and existing.status in {"locked", "paid", "archived", "disputed"}:
@@ -6590,7 +6608,7 @@ def simulate_settlement_rule(rule_id: str, body: SettlementBatchBody, user: User
     rule = db.get(SettlementRule, rule_id)
     if not rule:
         raise HTTPException(404, "清算规则不存在")
-    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.business_type != "version_change_payment").limit(20)).all()]
+    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.business_type.notin_(["version_change_payment", "refund_record"])).limit(20)).all()]
     rows = []
     for order_id in order_ids:
         order = db.get(Order, order_id)
@@ -7993,6 +8011,25 @@ order_fulfillment = install_order_fulfillment(globals())
 from .subscription_terms import install as install_subscription_terms
 
 subscription_terms = install_subscription_terms(globals())
+
+from .order_service_lifecycle import install as install_order_service_lifecycle
+order_service_lifecycle = install_order_service_lifecycle(globals())
+
+from .refund_order_records import install as install_refund_order_records
+refund_order_records = install_refund_order_records(globals())
+
+from sqlalchemy import event as sqlalchemy_event
+
+@sqlalchemy_event.listens_for(Session, 'before_flush')
+def synchronize_refund_order_records(db, flush_context, instances):
+    if db.get_bind() is engine:
+        records = refund_order_records['scan_pending'](db)
+        for record in records:
+            source = db.get(Order, record.related_order_id)
+            state = db.get(order_service_lifecycle['State'], record.related_order_id)
+            if (state and source and source.refunded_amount and state.status != 'stopped'
+                    and (state.status != 'needs_manual' or source.refunded_amount >= source.paid_amount)):
+                state.next_check_at = now()
 from .api_provider_lifecycle import install as install_api_provider_lifecycle
 
 api_provider_lifecycle = install_api_provider_lifecycle(globals())

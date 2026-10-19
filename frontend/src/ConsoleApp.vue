@@ -46,7 +46,7 @@ import { explicitOrderPayload } from "./orderClient.js";
 import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
 import { registrationProductTypes, registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments, deliveryForProductType } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
-import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
+import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload, orderTypeLabel, orderServiceDates } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
 import { canReadVersionChangeHistory } from "./versionChangeExecution.js";
@@ -393,8 +393,8 @@ function closeOrder() {
 async function refreshVersionChangeContext() {
   const order = selectedOrder.value?.order;
   versionChangeSession.reset();
-  if (order) await openOrder(order);
-  await refreshData();
+  try { if (order) await openOrder(order); }
+  finally { await refreshData(); }
 }
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
@@ -459,16 +459,16 @@ const options = (values, labels = statusLabels) => values.map(value => ({ value,
 const mainListFields = computed(() => ({
   products: [{ key: "name", label: "产品名称" }, { key: "catalog", label: "目录", options: productCatalogOptions.value }, { key: "provider", label: "提供方" }, { key: "product_type", label: "产品类型", options: options(["dataset", "api", "model", "saas", "training", "consulting", "custom"], typeLabels) }, { key: "status", label: "产品状态", options: options(Object.keys(productStatusOptions), productStatusOptions) }],
   orders: [{ key: "order_no", label: "订单ID / 订单号" }, { key: "product", label: "产品" }, { key: "provider", label: "提供方" }, { key: "buyer", label: "购买方" }, ...Object.entries(orderStatusOptions).map(([key, values]) => ({ key, label: { main_status: "主状态", payment_status: "支付状态", delivery_status: "交付状态", after_sales_status: "售后状态" }[key], options: options(values) }))],
-  tasks: [{ key: "task_id", label: "任务ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "assignee", label: "负责人" }, { key: "method", label: "交付方式", options: Object.keys(deliveryMethods).map(value => ({ value, label: methodLabel(value) })) }, { key: "delivery_mode", label: "模式", options: options(["automatic", "manual"], { automatic: "自动交付", manual: "人工交付" }) }, { key: "status", label: "任务状态", options: options(["preparing", "awaiting_start", "in_delivery", "pending_acceptance", "rectifying", "completed", "exception", "retrying"]) }, { key: "start", label: "SLA截止起日", type: "date" }, { key: "end", label: "SLA截止止日", type: "date" }],
+  tasks: [{ key: "task_id", label: "任务ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "assignee", label: "负责人" }, { key: "method", label: "交付方式", options: Object.keys(deliveryMethods).map(value => ({ value, label: methodLabel(value) })) }, { key: "delivery_mode", label: "模式", options: options(["automatic", "manual"], { automatic: "自动交付", manual: "人工交付" }) }, { key: "status", label: "任务状态", options: options(["preparing", "awaiting_effective", "awaiting_start", "in_delivery", "pending_acceptance", "rectifying", "completed", "exception", "retrying"]) }, { key: "start", label: "SLA截止起日", type: "date" }, { key: "end", label: "SLA截止止日", type: "date" }],
   aftersales: [{ key: "ticket_id", label: "工单ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "product", label: "产品" }, { key: "provider", label: "提供方" }, { key: "buyer", label: "购买方" }, { key: "assignee", label: "负责人" }, { key: "status", label: "工单状态", options: options(Object.keys(afterSalesStatuses), afterSalesStatuses) }, { key: "priority", label: "优先级", options: options(["normal", "important", "urgent"], { normal: "普通", important: "重要", urgent: "紧急" }) }, { key: "start", label: "创建起日", type: "date" }, { key: "end", label: "创建止日", type: "date" }],
 }));
 const productCatalogOptions = ref([]);
 const productStatusOptions = { draft: "草稿", pending_review: "业务审核", quality_review: "质量审核", security_review: "安全审核", operation_review: "运营审核", pending_integration: "待接入验证", published: "已发布", rejected: "已拒绝", security_unpublished: "安全下架" };
 const deliveryMethods = { file: true, object_storage: true, api: true, model_api: true, tenant_access: true, training: true, consulting: true, custom: true };
 const orderStatusOptions = {
-  main_status: ["created", "pending_review", "pending_provider_review", "pending_payment", "pending_fulfillment", "awaiting_start", "fulfilling", "in_delivery", "pending_confirmation", "pending_acceptance", "rectifying", "completed", "cancelled", "closed", "refunded", "rejected"],
-  payment_status: ["unpaid", "paying", "paid", "refunding", "refunded", "cancelled"],
-  delivery_status: ["not_started", "awaiting_start", "preparing", "in_delivery", "retrying", "rectifying", "pending_acceptance", "accepted", "completed", "exception"],
+  main_status: ["created", "pending_review", "pending_provider_review", "pending_payment", "pending_fulfillment", "awaiting_start", "fulfilling", "in_delivery", "pending_confirmation", "pending_acceptance", "rectifying", "completed", "cancelled", "closed", "refunded", "refund_pending", "refund_completed", "refund_rejected", "rejected"],
+  payment_status: ["unpaid", "paying", "paid", "refunding", "refunded", "cancelled", "not_applicable"],
+  delivery_status: ["not_started", "awaiting_effective", "awaiting_start", "preparing", "in_delivery", "retrying", "rectifying", "pending_acceptance", "accepted", "completed", "exception", "revoked", "not_applicable"],
   after_sales_status: ["none", "processing", "resolved", "closed"],
 };
 async function queryMainList(key, reset = false) {
@@ -793,7 +793,13 @@ const statusLabels = {
   paid: "已支付",
   refunding: "退款中",
   refunded: "已退款",
+  refund_pending: "退款待处理",
+  refund_completed: "退款已完成",
+  refund_rejected: "退款已拒绝",
+  not_applicable: "不适用",
+  revoked: "已撤销",
   not_started: "未开始",
+  awaiting_effective: "待生效",
   awaiting_start: "待开始履约",
   rectifying: "整改中",
   preparing: "准备中",
@@ -1768,6 +1774,13 @@ async function transition(action) {
   const order = selectedOrder.value.order;
   orderActionSubmitting.value = true;
   try {
+    if (action === "service_retry") {
+      await api.post(`/orders/${encodeURIComponent(order.id)}/service-retry`);
+      notify("服务生效重试已提交");
+      try { if (selectedOrder.value?.order.id === order.id) await openOrder(order); }
+      finally { await refreshData(); }
+      return;
+    }
     let body = { action, reason: "工作台操作" };
     if (isOfflineFulfillmentOrder(order) && ["start_delivery", "submit_delivery", "accept_delivery", "reject_delivery"].includes(action)) {
       const title = nextActions(order).find(item => item[0] === action)?.[1];
@@ -2801,6 +2814,14 @@ function nextActions(order) {
   const actions = orderWorkflowActions(order, user.value, enterprise.value);
   if (canCreateAfterSales(order, user.value, enterprise.value?.id)) actions.push(["submit_after_sales", "发起售后"]);
   if (isOfflineFulfillmentOrder(order)) return actions;
+  if (order.service_activation_status) {
+    if (["retrying", "needs_manual"].includes(order.service_activation_status) &&
+      ["super_admin", "platform_operator", "delivery_monitor"].includes(user.value?.platform_role) &&
+      user.value?.is_active !== false && (!user.value?.activation_status || user.value.activation_status === "active")) {
+      actions.push(["service_retry", "重试服务生效"]);
+    }
+    return actions;
+  }
   if (["pending_provider_review", "pending_payment", "rejected", "cancelled", "closed"].includes(order.main_status)) return actions;
   if (order.main_status === "created")
     actions.push(["submit_review", "提交审核"]);
@@ -3591,6 +3612,7 @@ onUnmounted(() => {
                     <td>
                       <span class="order-no">{{ order.order_no }}</span
                       ><small>{{ fmtDate(order.created_at) }}</small>
+                      <small>{{ orderTypeLabel(order) }}</small>
                     </td>
                     <td>
                       <template v-if="deliveryMethod(order) === 'saas' && canOpenDeliveryAccess(order)">
@@ -3604,6 +3626,10 @@ onUnmounted(() => {
                     <td>
                       <strong>{{ order.product_name }}</strong
                       ><small>{{ partyName(order, 'provider') }}</small>
+                      <small>版本：{{ order.product_version_code || '-' }}<template v-if="order.product_version_name"> · {{ order.product_version_name }}</template></small>
+                      <small>开始：{{ orderServiceDates(order, fmtDate).starts }}</small>
+                      <small>结束：{{ orderServiceDates(order, fmtDate).ends }}</small>
+                      <small>生效：{{ orderServiceDates(order, fmtDate).effective }}</small>
                     </td>
                     <td>{{ partyName(order, 'buyer') }}</td>
                     <td>
@@ -4466,6 +4492,16 @@ onUnmounted(() => {
           ><b>{{ fmtMoney(selectedOrder.order.amount) }}</b>
         </div>
         <RefundCenter v-if="canViewRefunds(user, enterprise?.id)" :key="`order-refunds:${selectedOrder.order.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :order="selectedOrder.order" :params="afterSalesScope" />
+        <section class="drawer-section" aria-label="订单类型及服务时间">
+          <dl class="subscription-summary">
+            <div><dt>订单类型</dt><dd>{{ orderTypeLabel(selectedOrder.order) }}</dd></div>
+            <div v-if="selectedOrder.order.related_order_no"><dt>原订单号</dt><dd>{{ selectedOrder.order.related_order_no }}</dd></div>
+            <div><dt>订单版本</dt><dd>{{ selectedOrder.order.product_version_code || '-' }}<template v-if="selectedOrder.order.product_version_name"> · {{ selectedOrder.order.product_version_name }}</template></dd></div>
+            <div><dt>服务开始时间</dt><dd>{{ orderServiceDates(selectedOrder.order, fmtDate).starts }}</dd></div>
+            <div><dt>服务结束时间</dt><dd>{{ orderServiceDates(selectedOrder.order, fmtDate).ends }}</dd></div>
+            <div><dt>服务生效时间</dt><dd>{{ orderServiceDates(selectedOrder.order, fmtDate).effective }}</dd></div>
+          </dl>
+        </section>
         <section class="drawer-section subscription-terms-panel" aria-label="订阅期限">
           <div class="drawer-section-title subscription-heading">
             <span>订阅期限</span>
@@ -4495,6 +4531,13 @@ onUnmounted(() => {
             <p v-if="!subscriptionState.item.terms.length" class="muted">暂无订阅期限</p>
           </template>
           <p v-else class="muted">此订单暂无订阅权益</p>
+          <div v-if="['upgrade', 'downgrade'].includes(selectedOrder.order.order_type) && Array.isArray(selectedOrder.order.service_segments)" class="subscription-table-wrap">
+            <table class="subscription-table">
+              <caption>关联服务期限</caption>
+              <thead><tr><th>原订单号</th><th>开始时间</th><th>结束时间</th></tr></thead>
+              <tbody><tr v-for="(segment, index) in selectedOrder.order.service_segments" :key="`${segment.order_id}-${index}`"><td>{{ segment.order_no || '-' }}</td><td>{{ segment.starts_at ? fmtDate(segment.starts_at) : '待交付确定' }}</td><td>{{ segment.ends_at ? fmtDate(segment.ends_at) : '待交付确定' }}</td></tr></tbody>
+            </table>
+          </div>
         </section>
         <VersionChangeExecution
           ref="versionChangeExecutionRef"
@@ -4533,6 +4576,13 @@ onUnmounted(() => {
             }}</strong>
           </div>
         </div>
+        <section v-if="selectedOrder.order.service_activation_status" class="drawer-section" aria-label="服务生效">
+          <dl class="subscription-summary">
+            <div><dt>服务生效</dt><dd>{{ ({ scheduled: '待生效检查', retrying: '重试中', needs_manual: '待人工处理', activation_verified: '生效已验证', active: '已生效', completed: '已结束' })[selectedOrder.order.service_activation_status] || '-' }}</dd></div>
+            <div><dt>尝试次数</dt><dd>{{ selectedOrder.order.service_activation_attempts ?? 0 }}</dd></div>
+          </dl>
+          <p v-if="selectedOrder.order.service_activation_error" class="danger-text" role="alert" style="overflow-wrap: anywhere">{{ selectedOrder.order.service_activation_error }}</p>
+        </section>
         <div class="drawer-section">
           <div class="drawer-section-title">可执行动作</div>
           <div class="action-list">

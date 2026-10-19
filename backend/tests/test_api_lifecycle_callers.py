@@ -212,6 +212,9 @@ class LifecycleDeliveryTests(unittest.TestCase):
             combo_id, generation = combo.id, combo.generation
             expiry = db.query(self.m.SubscriptionTerm).one().ends_at
         with patch.object(self.m, 'now', return_value=expiry + timedelta(seconds=1)):
+            self.assertTrue(self.m.online_delivery['process_once']())
+            with self.m.SessionLocal() as db:
+                self.assertEqual(db.get(self.m.Order, first).main_status, 'completed')
             renewal = self.create()
             self.step(renewal)
             body = self.preparation(renewal)['provider']['payload']

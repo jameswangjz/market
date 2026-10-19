@@ -84,9 +84,11 @@ def install(ns):
                 or delivery.get('direction') != 'upper'):
             raise HTTPException(409, 'Confirmed natural-time delivery SLA is missing')
         paid_at = utc(payment.paid_at)
+        service_start = utc(getattr(order, 'service_starts_at', None))
+        clock_start = max(paid_at, service_start) if service_start else paid_at
         row = Contract(order_id=order.id, source_payment_id=payment.id,
             snapshot_json=json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
-            paid_at=paid_at, deadline_at=paid_at + timedelta(seconds=budget), delivery_method=method)
+            paid_at=paid_at, deadline_at=clock_start + timedelta(seconds=budget), delivery_method=method)
         db.add(row)
         db.flush()
         ns['audit'](db, 'system', 'freeze_order_sla_contract', 'order_sla_contract', row.id,
@@ -104,7 +106,7 @@ def install(ns):
             return row
         if (not row.delivery_eligible or task.order_id != order.id or task.status != 'completed'
                 or task.method != row.delivery_method or order.delivery_status != 'accepted'
-                or order.main_status != 'completed'):
+                or order.main_status not in {'completed', 'fulfilling'}):
             raise HTTPException(409, 'Verified delivery fact does not match the paid contract')
         at = utc(ns['now']())
         if at < utc(row.paid_at):

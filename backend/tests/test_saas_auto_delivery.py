@@ -104,7 +104,7 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
         for _ in range(30):
             with self.m.SessionLocal() as db:
                 status = db.get(self.m.DeliveryTask, self.task_id(oid)).status
-            if status in {'completed', 'exception'}:
+            if status in {'completed', 'exception', 'awaiting_effective'}:
                 return status
             self.step(oid)
         self.fail('Staged SaaS delivery did not converge')
@@ -119,7 +119,7 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
             order = db.get(self.m.Order, oid)
             sub = db.get(self.m.SaaSSubscription, order.subscription_id)
             self.assertEqual((order.main_status, order.delivery_status, sub.status),
-                ('completed', 'accepted', 'active'))
+                ('fulfilling', 'accepted', 'active'))
             term = db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).one()
             self.assertEqual(term.months, 3)
             self.assertEqual(utc(sub.expires_at), utc(term.ends_at))
@@ -147,8 +147,11 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
             sid, tenant_id, starts_at, expiry = old.id, old.external_tenant_id, old.starts_at, old.expires_at
         renewal = self.create(2)
         self.pay(renewal)
-        self.assertEqual(self.finish(renewal), 'completed')
+        self.assertEqual(self.finish(renewal), 'awaiting_effective')
         with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, renewal)
+            self.assertEqual((order.main_status, order.payment_status, order.delivery_status),
+                             ('pending_fulfillment', 'paid', 'awaiting_effective'))
             sub = db.get(self.m.SaaSSubscription, sid)
             term = db.query(self.m.SubscriptionTerm).filter_by(order_id=renewal).one()
             self.assertEqual((sub.id, sub.external_tenant_id, sub.starts_at), (sid, tenant_id, starts_at))

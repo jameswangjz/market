@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { compile, createSSRApp } from "vue";
+import { renderToString } from "@vue/server-renderer";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { canCreateAfterSales } from "../src/afterSales.js";
-import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, offlineDeliveryActions, canUploadDeliveryAttachment, deliveryTransitionPayload } from "../src/orderWorkflow.js";
+import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, offlineDeliveryActions, canUploadDeliveryAttachment, deliveryTransitionPayload, orderTypeLabel, orderServiceDates } from "../src/orderWorkflow.js";
 
 const enterprise = { id: "provider" };
 const admin = { enterprise_role: "enterprise_admin", membership_status: "active" };
@@ -23,11 +25,11 @@ test("provider review requires current active provider admin membership", () => 
   assert.equal(canReviewProviderOrder(order, { ...admin, enterprise_role: "member", enterprise_memberships: [{ enterprise_id: "provider", role: "super_admin", membership_status: "active" }] }, enterprise), true);
 });
 
-test("only current buyer super admin can start or simulate confirm payment", () => {
+test("only current buyer super admin can initiate payment and buyers never confirm", () => {
   const pending = { ...order, main_status: "pending_payment" };
   const buyer = { ...admin, enterprise_role: "super_admin" };
   assert.deepEqual(orderWorkflowActions(pending, buyer, { id: "buyer" }), [["start_payment", "发起模拟支付"]]);
-  assert.deepEqual(orderWorkflowActions({ ...pending, payment_status: "paying" }, buyer, { id: "buyer" }), [["confirm_payment", "模拟确认支付"]]);
+  assert.deepEqual(orderWorkflowActions({ ...pending, payment_status: "paying" }, buyer, { id: "buyer" }), []);
   for (const user of [admin, { ...buyer, membership_status: "disabled" }, { ...buyer, enterprise_memberships: [] }]) {
     assert.deepEqual(orderWorkflowActions(pending, user, { id: "buyer" }), []);
   }
@@ -37,15 +39,15 @@ test("only current buyer super admin can start or simulate confirm payment", () 
   }
 });
 
-test("platform finance and super admin have manual confirmation only", () => {
-  for (const platform_role of ["super_admin", "finance_settlement"]) {
+test("only platform operator and super admin have manual confirmation", () => {
+  for (const platform_role of ["super_admin", "platform_operator"]) {
     for (const payment_status of ["unpaid", "paying"]) {
       assert.deepEqual(orderWorkflowActions({ ...order, main_status: "pending_payment", payment_status }, { platform_role }, null), [["confirm_payment", "人工确认支付"]]);
     }
     assert.deepEqual(orderWorkflowActions(order, { platform_role }, null), []);
     assert.deepEqual(orderWorkflowActions({ ...order, main_status: "pending_payment", payment_status: "paid" }, { platform_role }, null), []);
   }
-  for (const platform_role of ["platform_operator", "delivery_monitor", "security_compliance"]) {
+  for (const platform_role of ["finance_settlement", "delivery_monitor", "security_compliance"]) {
     assert.deepEqual(orderWorkflowActions({ ...order, main_status: "pending_payment" }, { platform_role }, null), []);
   }
 });
@@ -102,6 +104,100 @@ test("confirmed payment applies server order values and only patches the matchin
 });
 
 const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+test("refund and non-applicable orders never offer payment, including inconsistent pending-payment rows", async () => {
+  const buyer = { ...admin, enterprise_role: "super_admin" };
+  for (const actor of [buyer, { platform_role: "super_admin" }, { platform_role: "platform_operator" }]) {
+    for (const patch of [{ amount: -12.5 }, { amount: "-12.50" }, { order_type: "refund" },
+      { payment_status: "not_applicable" }, { delivery_status: "not_applicable" },
+      { order_type: "downgrade", main_status: "pending_fulfillment", payment_status: "not_applicable" }]) {
+      const item = { ...order, main_status: "pending_payment", payment_status: "unpaid", ...patch };
+      assert.deepEqual(orderWorkflowActions(item, actor, { id: "buyer" }), []);
+      const s = harness();
+      s.selectedOrder.value = { order: item };
+      s.user.value = actor;
+      s.enterprise.value = { id: "buyer" };
+      await s.transition("start_payment");
+      await s.transition("confirm_payment");
+      assert.deepEqual(s.calls, []);
+    }
+  }
+});
+
+test("refund list renders negative amounts and Chinese refund and non-applicable states", async () => {
+  const state = {};
+  vm.createContext(state);
+  vm.runInContext(source.slice(source.indexOf("const statusLabels ="), source.indexOf("const settlementStatusLabels")) +
+    source.slice(source.indexOf("function fmtMoney("), source.indexOf("const settlementLifecycleLabels")) +
+    "\nfunction label(value) { return statusLabels[value] || value; }", state);
+  const rowStart = source.indexOf('<tr v-for="order in filteredOrders"');
+  const row = source.slice(rowStart, source.indexOf("</tr>", rowStart) + 5);
+  for (const [main_status, expected] of Object.entries({ refund_pending: "退款待处理", refund_completed: "退款已完成", refund_rejected: "退款已拒绝", pending_fulfillment: "待履约" })) {
+    const order = { id: "refund", order_no: "REF-1", order_type: "refund", amount: -12.5, main_status,
+      payment_status: "not_applicable", delivery_status: "not_applicable", after_sales_status: "none" };
+    const html = await renderToString(createSSRApp({
+      components: { ChevronRight: { render: () => null }, ExternalLink: { render: () => null }, Download: { render: () => null } },
+      setup: () => ({ filteredOrders: [order], fmtMoney: state.fmtMoney, label: state.label, orderTypeLabel, orderServiceDates,
+        fmtDate: () => "-", partyName: () => "企业", deliveryMethod: () => "file", canOpenDeliveryAccess: () => false,
+        deliveryAccessPlaceholder: () => "-", openOrder: () => {} }),
+      render: compile(`<table><tbody>${row}</tbody></table>`),
+    }));
+    assert.match(html, /¥-12\.50/);
+    assert.ok(html.includes(expected));
+    assert.equal((html.match(/不适用/g) || []).length, 2);
+  }
+});
+
+test("order types and service dates use API values without inventing a start date", () => {
+  for (const [order_type, expected] of Object.entries({ new_purchase: "新购", renewal: "续费", upgrade: "升级", downgrade: "降级", refund: "退款" })) {
+    assert.equal(orderTypeLabel({ order_type }), expected);
+  }
+  assert.equal(orderTypeLabel({}), "-");
+  const format = value => `formatted:${value}`;
+  const fields = { service_starts_at: "2030-01-01", service_ends_at: "2030-02-01", service_effective_at: "2030-01-02" };
+  assert.deepEqual(orderServiceDates(fields, format), { starts: "formatted:2030-01-01", ends: "formatted:2030-02-01", effective: "formatted:2030-01-02" });
+  assert.deepEqual(orderServiceDates({ delivery_method: "file", created_at: "2030-01-01", updated_at: "2030-01-02" }, format),
+    { starts: "待交付确定", ends: "无限期", effective: "待交付确定" });
+  assert.equal(orderServiceDates({ delivery_method_snapshot: "file" }, format).ends, "无限期");
+  assert.equal(orderServiceDates({ delivery_method: "api" }, format).ends, "待交付确定");
+  assert.equal(orderServiceDates({ delivery_method: "file", ...fields }, format).ends, "formatted:2030-02-01");
+});
+
+test("list and drawer show immutable order metadata and retain offline status labels", () => {
+  for (const expression of ["orderTypeLabel(order)", "orderTypeLabel(selectedOrder.order)", "order.product_version_code", "selectedOrder.order.product_version_code"]) {
+    assert.ok(source.includes(expression), expression);
+  }
+  for (const field of ["starts", "ends", "effective"]) {
+    assert.ok(source.includes(`orderServiceDates(order, fmtDate).${field}`));
+    assert.ok(source.includes(`orderServiceDates(selectedOrder.order, fmtDate).${field}`));
+  }
+  assert.match(source, /awaiting_effective: "待生效"/);
+  for (const [key, value] of Object.entries({ pending_fulfillment: "待履约", fulfilling: "履约中", completed: "已完成", awaiting_start: "待开始履约", in_delivery: "交付中", pending_acceptance: "待验收", rectifying: "整改中", accepted: "验收通过", exception: "交付异常" })) {
+    assert.ok(source.includes(`${key}: "${value}"`));
+  }
+});
+
+test("confirmed version change refreshes orders even when detail reload fails", async () => {
+  const calls = [];
+  const state = { selectedOrder: { value: { order } }, versionChangeSession: { reset: () => calls.push("reset") },
+    openOrder: async () => { calls.push("detail"); throw new Error("detail unavailable"); },
+    refreshData: async () => calls.push("orders") };
+  vm.createContext(state);
+  vm.runInContext(source.slice(source.indexOf("async function refreshVersionChangeContext()"), source.indexOf("const orderProductFiles")), state);
+  await assert.rejects(state.refreshVersionChangeContext(), /detail unavailable/);
+  assert.deepEqual(calls, ["reset", "detail", "orders"]);
+  const executionSource = readFileSync(new URL("../src/VersionChangeExecution.vue", import.meta.url), "utf8");
+  assert.match(executionSource, /if \(await execution.submit\(\)\) \{ props.quoteSession.reset\(\); emit\("refresh"\); \}/);
+});
+
+test("buyer transition cannot call confirmation even when invoked directly", async () => {
+  const s = harness();
+  s.selectedOrder.value = { order: { ...order, main_status: "pending_payment", payment_status: "paying" } };
+  s.enterprise.value = { id: "buyer" };
+  s.user.value = { ...admin, enterprise_role: "super_admin" };
+  await s.transition("confirm_payment");
+  assert.deepEqual(s.calls, []);
+});
+
 test("order drawer does not expose tenant close or restore actions", () => {
   assert.doesNotMatch(source, /关闭租户|恢复租户/);
   assert.doesNotMatch(source, /saasOrderAction\('(?:close|restore)'\)/);
@@ -127,6 +223,103 @@ function harness() {
   vm.runInContext(source.slice(source.indexOf("async function loadOrderDeliveryAttachments(order)"), source.indexOf("async function saasSyncUser()")) + source.slice(source.indexOf("function nextActions(order)"), source.indexOf("onMounted(() =>")), state);
   return state;
 }
+
+test("service retry is restricted to active delivery operators and retryable activation states", async () => {
+  for (const platform_role of ["super_admin", "platform_operator", "delivery_monitor", "finance_settlement", "security_compliance", ""]) {
+    for (const service_activation_status of ["scheduled", "retrying", "needs_manual", "activation_verified", "active", "completed"]) {
+      const s = harness();
+      s.user.value = { ...admin, platform_role, enterprise_role: "super_admin" };
+      s.selectedOrder.value.order = { ...order, main_status: "fulfilling", delivery_status: "exception", service_activation_status };
+      const expected = ["super_admin", "platform_operator", "delivery_monitor"].includes(platform_role) && ["retrying", "needs_manual"].includes(service_activation_status);
+      assert.equal(s.nextActions(s.selectedOrder.value.order).some(([action]) => action === "service_retry"), expected);
+      assert.equal(s.nextActions(s.selectedOrder.value.order).some(([action]) => action === "retry_delivery"), false);
+      if (!expected) {
+        await s.transition("service_retry");
+        assert.deepEqual(s.calls, []);
+      }
+    }
+  }
+  for (const patch of [{ is_active: false }, { activation_status: "disabled" }]) {
+    const s = harness();
+    s.user.value = { platform_role: "platform_operator", ...patch };
+    s.selectedOrder.value.order.service_activation_status = "needs_manual";
+    await s.transition("service_retry");
+    assert.deepEqual(s.calls, []);
+  }
+});
+
+test("service retry posts once to its dedicated endpoint and reloads authoritative detail and list", async () => {
+  const s = harness();
+  s.user.value = { platform_role: "delivery_monitor" };
+  s.selectedOrder.value.order = { ...order, main_status: "fulfilling", service_activation_status: "needs_manual", service_activation_attempts: 3 };
+  let finish;
+  s.api.post = async (...args) => { s.calls.push(args); await new Promise(resolve => { finish = resolve; }); return { data: { order_id: order.id, status: "scheduled" } }; };
+  const pending = s.transition("service_retry");
+  await s.transition("service_retry");
+  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls[0][0], "/orders/order-1/service-retry");
+  assert.equal(s.calls[0].length, 1);
+  finish();
+  await pending;
+  assert.deepEqual(s.refreshes, ["order-1", "list"]);
+  assert.equal(s.orderActionSubmitting.value, false);
+});
+
+test("service retry errors release busy state and detail failure still refreshes list", async () => {
+  const s = harness();
+  s.user.value = { platform_role: "super_admin" };
+  s.selectedOrder.value.order.service_activation_status = "retrying";
+  s.api.post = async () => { throw new Error("retry failed"); };
+  await s.transition("service_retry");
+  assert.ok(s.messages.includes("retry failed"));
+  assert.equal(s.orderActionSubmitting.value, false);
+  s.api.post = async () => ({ data: { status: "scheduled" } });
+  s.openOrder = async () => { throw new Error("detail failed"); };
+  await s.transition("service_retry");
+  assert.deepEqual(s.refreshes, ["list"]);
+  assert.equal(s.orderActionSubmitting.value, false);
+});
+
+test("activation detail renders escaped error, attempt count and Chinese manual handoff", async () => {
+  const start = source.indexOf('<section v-if="selectedOrder.order.service_activation_status"');
+  const template = source.slice(start, source.indexOf("</section>", start) + 10);
+  for (const [status, expected] of Object.entries({ scheduled: "待生效检查", retrying: "重试中", needs_manual: "待人工处理", activation_verified: "生效已验证", active: "已生效", completed: "已结束" })) {
+    const html = await renderToString(createSSRApp({ setup: () => ({ selectedOrder: { order: {
+      service_activation_status: status, service_activation_attempts: 3, service_activation_error: '<script>alert("failed")</script>',
+    } } }), render: compile(template) }));
+    assert.ok(html.includes(expected));
+    assert.match(html, /尝试次数<\/dt><dd>3<\/dd>/);
+    assert.match(html, /&lt;script&gt;/);
+    assert.doesNotMatch(html, /<script>/);
+  }
+});
+
+test("upgrade and downgrade detail render only public related order and service periods", async () => {
+  const start = source.indexOf('<div v-if="[\'upgrade\', \'downgrade\'].includes(selectedOrder.order.order_type)');
+  const template = source.slice(start, source.indexOf("</div>", start) + 6);
+  const render = (order_type, service_segments) => renderToString(createSSRApp({
+    setup: () => ({ selectedOrder: { order: { order_type, service_segments } }, fmtDate: value => `日期:${value}` }),
+    render: compile(template),
+  }));
+  const segments = [{ order_id: "source-1", order_no: "ORD-SOURCE-1", starts_at: "2030-01-01", ends_at: "2030-02-01", cost: "PRIVATE-COST" },
+    { order_id: "source-2", order_no: "ORD-SOURCE-2", starts_at: null, ends_at: null }];
+  for (const type of ["upgrade", "downgrade"]) {
+    const html = await render(type, segments);
+    assert.match(html, /ORD-SOURCE-1/);
+    assert.match(html, /ORD-SOURCE-2/);
+    assert.match(html, /日期:2030-01-01/);
+    assert.match(html, /日期:2030-02-01/);
+    assert.match(html, /待交付确定/);
+    assert.doesNotMatch(html, /PRIVATE-COST/);
+    assert.doesNotMatch(await render(type, undefined), /<table/);
+  }
+  assert.doesNotMatch(await render("new_purchase", segments), /<table/);
+  const relatedStart = source.indexOf('<div v-if="selectedOrder.order.related_order_no"');
+  const related = source.slice(relatedStart, source.indexOf("</div>", relatedStart) + 6);
+  const html = await renderToString(createSSRApp({ setup: () => ({ selectedOrder: { order: { related_order_no: "ORD-ORIGINAL" } } }), render: compile(related) }));
+  assert.match(html, /原订单号/);
+  assert.match(html, /ORD-ORIGINAL/);
+});
 
 test("quote is fetched only for provider and stays out of buyer state", async () => {
   const s = harness();

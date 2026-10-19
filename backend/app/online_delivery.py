@@ -100,7 +100,7 @@ def install(ns):
             raise HTTPException(409, '此自动交付适配器只支持新版线上订单')
         if (task.order_id != order.id or task.method != method(order) or task.delivery_mode != 'automatic'):
             raise HTTPException(409, '交付任务与订单快照不一致')
-        if task.status == 'completed' and order.main_status == 'completed' and order.delivery_status == 'accepted':
+        if task.status == 'completed' and order.main_status in {'completed', 'fulfilling', 'pending_fulfillment'} and order.delivery_status in {'accepted', 'awaiting_effective'}:
             return True
         if task.status not in {'in_delivery', 'retrying'}:
             raise HTTPException(409, '当前任务不能自动处理，请先人工重试')
@@ -157,7 +157,13 @@ def install(ns):
             order.delivery_status = 'accepted'
             order.main_status = 'completed'
             action = 'delivery_succeeded'
-            ns['order_sla_contracts']['record_verified_delivery'](db, order, task)
+            lifecycle = ns.get('order_service_lifecycle')
+            if lifecycle:
+                lifecycle['delivered'](db, order, task, user)
+            if order.delivery_status == 'awaiting_effective':
+                action = 'delivery_prepared'
+            if order.delivery_status == 'accepted':
+                ns['order_sla_contracts']['record_verified_delivery'](db, order, task)
         for domain in ('main', 'delivery'):
             old = before[domain+'_status']
             new = getattr(order, domain+'_status')
@@ -179,6 +185,9 @@ def install(ns):
 
     def retry(db, user, order, reason):
         ns['require_delivery_operator'](user)
+        lifecycle = ns.get('order_service_lifecycle')
+        if lifecycle and db.get(lifecycle['State'], order.id):
+            raise HTTPException(409, '已配置的订阅请使用订单中的重试服务生效，不重复开通或续费')
         if order.delivery_status != 'exception':
             raise HTTPException(409, '仅交付异常订单可以开始新一轮重试')
         tasks = db.scalars(select(Task).where(Task.order_id == order.id).with_for_update()).all()
@@ -210,7 +219,8 @@ def install(ns):
     def access_order(db, order):
         ns['refund_file_resources']['require_download'](db, order)
         eligible(order)
-        if order.main_status != 'completed' or order.delivery_status != 'accepted':
+        allowed = {'fulfilling'} if method(order) in {'api', 'model_api', 'tenant_access'} and order.service_starts_at else {'completed'}
+        if order.main_status not in allowed or order.delivery_status != 'accepted':
             raise HTTPException(409, '订单交付尚未完成')
 
     def api_access(db, order):
@@ -335,6 +345,10 @@ def install(ns):
                 ns['User'].activation_status == 'active'))
             if not actor:
                 raise RuntimeError('Delivery monitor account unavailable')
+            lifecycle = ns.get('order_service_lifecycle')
+            if lifecycle and lifecycle['process_due'](db, actor):
+                db.commit()
+                return True
             order = db.scalar(select(Order).join(Task, Task.order_id == Order.id).where(
                 Order.snapshot_version == 1, Order.delivery_method_snapshot.in_(['file', 'tenant_access', 'api', 'model_api']),
                 Task.delivery_mode == 'automatic', Task.method == Order.delivery_method_snapshot,
