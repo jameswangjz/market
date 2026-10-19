@@ -1,0 +1,37 @@
+{
+  "captured_at": "2026-10-19T04:31:02.562011+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "REC-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REC-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REC-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REC-DOC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REC-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "REC-QA-001",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "部署20261019122624-674a703；237项测试通过；5产品实际HTTP查询及SaaS_APP4实际OAuth/STATUS核验通过；104后端文件和12前端资源一致；业务数据未变，待用户验收"
+}

@@ -1,0 +1,69 @@
+{
+  "captured_at": "2026-10-19T04:30:13.740681+00:00",
+  "checks": [
+    {
+      "product_id": "67a69ce54e10fca7f23878ed3524129b",
+      "total": 1,
+      "sampled": 1,
+      "unauthorized": 401,
+      "invalid_pagination": 422,
+      "query_status": 200
+    },
+    {
+      "product_id": "qa-vcs-f2dc61386798-p-api",
+      "total": 1,
+      "sampled": 1,
+      "unauthorized": 401,
+      "invalid_pagination": 422,
+      "query_status": 200
+    },
+    {
+      "product_id": "e0d7e27906f32c69ee11fa8a6093dadf",
+      "total": 1,
+      "sampled": 1,
+      "unauthorized": 401,
+      "invalid_pagination": 422,
+      "query_status": 200
+    },
+    {
+      "product_id": "qa-vcq-cf5d432f38b9-p2",
+      "total": 2,
+      "sampled": 2,
+      "unauthorized": 401,
+      "invalid_pagination": 422,
+      "query_status": 200
+    },
+    {
+      "product_id": "e101107c3f6414ab48b9ebc43de368e8",
+      "total": 1,
+      "sampled": 1,
+      "unauthorized": 401,
+      "invalid_pagination": 422,
+      "query_status": 200
+    }
+  ],
+  "business_rows_unchanged": true,
+  "fingerprints": {
+    "Order": {
+      "count": 13,
+      "sha256": "fc5878c54556b35b0d1ea401d008be834750fd57417174a327da9084b5c764d1"
+    },
+    "Payment": {
+      "count": 13,
+      "sha256": "b9f9f752c6344289e84de2a24fc5a38a658d6da92c41f019fd38cf1ccd26497f"
+    },
+    "Refund": {
+      "count": 1,
+      "sha256": "ed32d499e6885e3aa7b31201b16a8a6801cbd8753c07075e560516e8a2658c40"
+    },
+    "SaaSSubscription": {
+      "count": 9,
+      "sha256": "b8151d976ded834fb1fef33f3f22280baf3156a144d7ffa9c8f02d009659da1c"
+    },
+    "SubscriptionTerm": {
+      "count": 8,
+      "sha256": "0b22d7d660892f765bd26a1a98a7525b5f06d250bd9425908012c3caf26590ab"
+    }
+  },
+  "scope": "Actual HTTP read-only provider queries; no trading or financial mutations"
+}
