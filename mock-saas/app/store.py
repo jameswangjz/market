@@ -48,6 +48,92 @@ def tenant_expired(tenant):
         return True
 
 
+def validate_reconciliation_context(context):
+    fields = {'schema_version', 'event_id', 'event_type', 'product_id', 'enterprise_id',
+              'subscription_id', 'tenant_id', 'order_id', 'order_no', 'order_starts_at',
+              'order_ends_at', 'subscription_expires_at', 'effective_at',
+              'effective_at_semantics', 'period_status', 'affected_orders'}
+    def invalid():
+        raise MachineOperationError(400, 'invalid_reconciliation_context')
+
+    def identity(value, nullable=False):
+        if nullable and value is None:
+            return
+        if not isinstance(value, str) or not value.strip() or value != value.strip() or len(value) > 180:
+            invalid()
+
+    def dates(row, pairs):
+        parsed = {}
+        for key in row:
+            if key.endswith('_at') and row[key] is not None:
+                try:
+                    parsed[key] = utc_expiry(row[key])
+                except MachineOperationError:
+                    invalid()
+        for start, end in pairs:
+            if (row[start] is None) != (row[end] is None):
+                invalid()
+            if start in parsed and parsed[start] >= parsed[end]:
+                invalid()
+        return parsed
+
+    if not isinstance(context, dict) or set(context) != fields:
+        invalid()
+    if type(context['schema_version']) is not int or context['schema_version'] != 1:
+        invalid()
+    for key in ('event_id', 'event_type', 'product_id', 'enterprise_id', 'subscription_id'):
+        identity(context[key])
+    for key in ('tenant_id', 'order_id', 'order_no'):
+        identity(context[key], nullable=True)
+    if (context['order_id'] is None) != (context['order_no'] is None):
+        invalid()
+    if (context['effective_at_semantics'] not in ('provider_receipt', 'platform_delivery', 'entitlement_cutoff') or
+            context['period_status'] not in ('provisional', 'confirmed') or
+            not isinstance(context['affected_orders'], list) or len(context['affected_orders']) > 1000):
+        invalid()
+    dates(context, [('order_starts_at', 'order_ends_at')])
+    if context['period_status'] == 'provisional' and (
+            any(context[key] is not None for key in ('order_starts_at', 'order_ends_at',
+                'subscription_expires_at', 'effective_at')) or context['affected_orders']):
+        invalid()
+    affected_fields = {'order_id', 'order_no', 'order_starts_at', 'order_ends_at',
+                       'remaining_starts_at', 'remaining_ends_at', 'term_id'}
+    for row in context['affected_orders']:
+        if not isinstance(row, dict) or set(row) != affected_fields:
+            invalid()
+        for key in ('order_id', 'order_no', 'term_id'):
+            identity(row[key], nullable=True)
+        if (row['order_id'] is None) != (row['order_no'] is None):
+            invalid()
+        parsed = dates(row, [('order_starts_at', 'order_ends_at'),
+                             ('remaining_starts_at', 'remaining_ends_at')])
+        if 'remaining_starts_at' in parsed and (not 'order_starts_at' in parsed or
+                parsed['remaining_starts_at'] < parsed['order_starts_at'] or
+                parsed['remaining_ends_at'] > parsed['order_ends_at']):
+            invalid()
+
+
+def reconciliation_identity(context, tenant, product_id):
+    if context is None:
+        return
+    if context['product_id'] != product_id:
+        raise MachineOperationError(403, 'reconciliation_product_mismatch')
+    if any(context[key] != tenant.get(key) for key in ('enterprise_id', 'subscription_id')) or (
+            context['tenant_id'] is not None and context['tenant_id'] != tenant['tenant_id']):
+        raise MachineOperationError(409, 'reconciliation_identity_mismatch')
+
+
+def reconciliation_result(context, tenant, result):
+    """Record acceptance time, not an actual entitlement effective timestamp."""
+    if context is not None:
+        received_at = datetime.now(timezone.utc).isoformat()
+        receipt = {'received_at': received_at, 'expires_at': tenant.get('expires_at')}
+        tenant.update(reconciliation_context=context, reconciliation_receipt=receipt)
+        result.update(reconciliation_context=context, reconciliation_receipt=receipt,
+                      accepted_at=received_at)
+    return result
+
+
 def assigned_external_id(db, table, platform_field, external_field, prefix, tenant_id, platform_id, body):
     rows = db.execute(f'SELECT {platform_field}, payload FROM {table} WHERE tenant_id = ?',
                       (tenant_id,)).fetchall()
@@ -165,6 +251,9 @@ class Store:
             raise MachineOperationError(403, 'insufficient_scope')
         if not required:
             return {'ret': 1, 'msg': f'unsupported operation: {operation}', 'retryable': False}
+        context = body.get('reconciliation_context')
+        if 'reconciliation_context' in body:
+            validate_reconciliation_context(context)
         for key in ('tenant_id', 'product_id', 'enterprise_id', 'subscription_id', 'oidc_client_id', 'admin_user_id'):
             if key in body and (not isinstance(body[key], str) or not body[key].strip() or len(body[key]) > 180):
                 raise MachineOperationError(400, 'invalid_identity')
@@ -180,6 +269,9 @@ class Store:
         idem = body.get('idempotency_key')
         if idem is not None and (not isinstance(idem, str) or not idem.strip() or len(idem) > 180):
             raise MachineOperationError(400, 'invalid_idempotency_key')
+        if context is not None and operation != 'STATUS' and (
+                context['event_type'] != operation or idem is not None and context['event_id'] != idem):
+            raise MachineOperationError(400, 'reconciliation_event_mismatch')
         if operation == 'STATUS':
             for key in ('tenant_id', 'enterprise_id', 'subscription_id'):
                 if not isinstance(body.get(key), str) or not body[key].strip():
@@ -189,6 +281,7 @@ class Store:
                 if not row:
                     raise MachineOperationError(404, 'tenant_not_found')
                 tenant = json.loads(row['payload'])
+                reconciliation_identity(context, tenant, product_id)
                 if tenant.get('product_id') != product_id:
                     raise MachineOperationError(403, 'tenant_product_mismatch')
                 if any(tenant.get(k) != body[k] for k in ('enterprise_id', 'subscription_id')):
@@ -211,7 +304,9 @@ class Store:
                         'expires_at': tenant.get('expires_at'), 'admin_user_id': admin_id if admin_active else None,
                         'admin_active': admin_active, 'application_ready': bool(tenant.get('login_open')
                         and tenant.get('status') != 'closed' and not tenant_expired(tenant) and matches),
-                        'oidc_client_id': client_id if matches else None}
+                        'oidc_client_id': client_id if matches else None,
+                        **{key: tenant[key] for key in ('reconciliation_context', 'reconciliation_receipt')
+                           if key in tenant}}
         tenant_id = body.get('tenant_id')
         if not tenant_id:
             if operation != 'OPEN' or not body.get('subscription_id'):
@@ -246,6 +341,14 @@ class Store:
             if not row and any(not body.get(key) for key in ('product_id', 'enterprise_id', 'subscription_id')):
                 raise MachineOperationError(400, 'open_identity_required')
             tenant = json.loads(row['payload']) if row else {'tenant_id': tenant_id, 'login_open': False}
+            reconciliation_identity(context, tenant if row else {**body, 'tenant_id': tenant_id}, product_id)
+
+            def contextualize(result):
+                reconciliation_result(context, tenant, result)
+                if context is not None:
+                    db.execute('INSERT INTO tenants VALUES (?, ?) ON CONFLICT(tenant_id) '
+                               'DO UPDATE SET payload = excluded.payload', (tenant_id, json.dumps(tenant)))
+                return result
             if row and tenant.get('status') == 'closed' and operation != 'OPEN':
                 raise MachineOperationError(409, 'tenant_closed')
             if operation == 'OPEN':
@@ -336,6 +439,7 @@ class Store:
                         external = json.loads(resolved['payload']).get('external_user_id') or 'mock-user-' + uid[:12]
                     elif uid.startswith('mock-user-'):
                         result = {'ret': 0, 'tenant_id': tenant_id, 'user_id': uid, 'status': status}
+                        contextualize(result)
                         if idem:
                             db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
                                        (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
@@ -354,6 +458,7 @@ class Store:
                           'user_id': external if status == 'active' else body.get('user_id'),
                           'external_user_id': external if status == 'active' else None,
                           'platform_user_id': body.get('user_id'), 'status': status}
+                contextualize(result)
                 if idem:
                     db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
                                (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
@@ -378,6 +483,7 @@ class Store:
                         external = json.loads(resolved['payload']).get('external_department_id') or 'mock-dept-' + did[:12]
                     elif did.startswith('mock-dept-'):
                         result = {'ret': 0, 'tenant_id': tenant_id, 'department_id': body['department_id'], 'status': status}
+                        contextualize(result)
                         if idem:
                             db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
                                        (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
@@ -394,6 +500,7 @@ class Store:
                            (tenant_id, did, json.dumps(department_payload)))
                 result = {'ret': 0, 'tenant_id': tenant_id, 'department_id': external
                           if status == 'active' else body['department_id'], 'status': status}
+                contextualize(result)
                 if idem:
                     db.execute('INSERT INTO machine_operations VALUES (?, ?, ?, ?)',
                                (product_id, idem, request_hash, json.dumps(result, separators=(',', ':'))))
@@ -480,6 +587,7 @@ class Store:
                           'platform_delivery_at': body.get('platform_delivery_at')}
             else:
                 return {'ret': 1, 'msg': f'unsupported operation: {operation}', 'retryable': False}
+            reconciliation_result(context, tenant, result)
             db.execute('INSERT INTO tenants VALUES (?, ?) ON CONFLICT(tenant_id) '
                        'DO UPDATE SET payload = excluded.payload', (tenant_id, json.dumps(tenant)))
             if idem:

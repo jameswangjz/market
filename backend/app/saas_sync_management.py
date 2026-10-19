@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import Body, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr, field_validator
 from sqlalchemy import select
+from .saas_reconciliation import reconciliation_context
 
 
 class SaaSSyncActionBody(BaseModel):
@@ -34,6 +35,22 @@ def install(ns):
     Subscription = ns["SaaSSubscription"]
     UserMapping, DepartmentMapping = ns["SaaSUserMapping"], ns["SaaSDepartment"]
     max_items = 10
+
+    def execute_sync(db, subscription, operation, payload, config, key):
+        Model = ns['SaaSOperation']
+        existing = db.scalar(select(Model).where(Model.idempotency_key == key))
+        if existing:
+            if existing.subscription_id != subscription.id or existing.operation != operation:
+                raise HTTPException(409, 'SaaS operation identity conflict')
+            payload = json.loads(existing.request_payload)
+        else:
+            payload = dict(payload, reconciliation_context=reconciliation_context(
+                subscription_expires_at=subscription.expires_at,
+                provisional=subscription.expires_at is None and subscription.billing_cycle != 'perpetual',
+                effective_at_semantics='provider_receipt', event_id=key, event_type=operation,
+                product_id=subscription.product_id, enterprise_id=subscription.enterprise_id,
+                subscription_id=subscription.id, tenant_id=subscription.external_tenant_id))
+        return ns['execute_saas_operation'](db, subscription, operation, payload, config, key)
 
     def context(subscription_id, user, db, *, provider=False):
         if user.platform_role or not user.is_active or user.activation_status != "active" or user.verified_status != "verified":
@@ -263,7 +280,7 @@ def install(ns):
                             "department_id": external_depts[0] if external_depts else ""}
                         payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
                         key = operation_key(db, subscription.id, "USER_ASSIGN", target.id, payload_hash)
-                        provider_result = ns["execute_saas_operation"](db, subscription, "USER_ASSIGN", payload, config, key)
+                        provider_result = execute_sync(db, subscription, "USER_ASSIGN", payload, config, key)
                         mapping = existing or UserMapping(subscription_id=subscription.id, user_id=target.id)
                         db.add(mapping)
                         mapping.department_id = platform_depts[0] if platform_depts else ""
@@ -299,7 +316,7 @@ def install(ns):
                                 UserMapping.user_id.in_(list(all_users))).limit(1))
                             if not other_admin:
                                 raise HTTPException(409, "不能移除本企业最后一个已同步管理员")
-                        provider_result = ns["execute_saas_operation"](db, subscription, "USER_UNASSIGN",
+                        provider_result = execute_sync(db, subscription, "USER_UNASSIGN",
                             {"tenant_id": subscription.external_tenant_id, "user_id": mapping.external_user_id or target_id}, config,
                             operation_key(db, subscription.id, "USER_UNASSIGN", target_id))
                         mapping.status = "deleted"; result_id = mapping.id
@@ -320,7 +337,7 @@ def install(ns):
                         row = existing or DepartmentMapping(subscription_id=subscription.id,
                             platform_department_id=department.id, name=department.name, status="syncing")
                         db.add(row); db.flush()
-                        provider_result = ns["execute_saas_operation"](db, subscription, "DEPT_CREATE",
+                        provider_result = execute_sync(db, subscription, "DEPT_CREATE",
                             {"tenant_id": subscription.external_tenant_id, "department_id": row.id,
                              "parent_id": (parent.external_department_id or parent.id) if parent else "", "name": department.name},
                             config, operation_key(db, subscription.id, "DEPT_CREATE", department.id))
@@ -360,7 +377,7 @@ def install(ns):
                                 break
                         if child or dependent_user:
                             raise HTTPException(409, "部门仍有已同步的子部门或用户")
-                        provider_result = ns["execute_saas_operation"](db, subscription, "DEPT_REMOVE",
+                        provider_result = execute_sync(db, subscription, "DEPT_REMOVE",
                             {"tenant_id": subscription.external_tenant_id,
                              "department_id": mapping.external_department_id or mapping.id}, config,
                             operation_key(db, subscription.id, "DEPT_REMOVE", target_id))

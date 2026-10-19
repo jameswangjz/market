@@ -123,6 +123,13 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
             term = db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).one()
             self.assertEqual(term.months, 3)
             self.assertEqual(utc(sub.expires_at), utc(term.ends_at))
+            renew = next(payload for operation, payload in reversed(self.calls) if operation == 'RENEW')
+            context = renew['reconciliation_context']
+            self.assertEqual(context['order_id'], oid)
+            self.assertEqual(context['order_starts_at'], renew['starts_at'])
+            self.assertEqual(context['order_ends_at'], renew['expires_at'])
+            self.assertEqual(context['subscription_expires_at'], renew['expires_at'])
+            self.assertEqual(context['effective_at'], renew['platform_delivery_at'])
             self.assertEqual(db.query(self.m.Order).count(), 1)
             self.assertEqual(db.query(self.m.Payment).count(), 1)
             self.assertEqual(db.query(self.m.SaaSUserMapping).count(), 1)
@@ -147,6 +154,10 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
             self.assertEqual((sub.id, sub.external_tenant_id, sub.starts_at), (sid, tenant_id, starts_at))
             self.assertEqual(utc(term.starts_at), utc(expiry))
             self.assertEqual(utc(sub.expires_at), utc(term.ends_at))
+            renew = next(payload for operation, payload in reversed(self.calls) if operation == 'RENEW')
+            self.assertEqual(renew['reconciliation_context']['order_id'], renewal)
+            self.assertEqual(renew['reconciliation_context']['order_starts_at'], renew['starts_at'])
+            self.assertEqual(renew['reconciliation_context']['subscription_expires_at'], renew['expires_at'])
             self.assertEqual(db.query(self.m.SaaSSubscription).count(), 1)
         self.assertEqual([op for op, _ in self.calls].count('OPEN'), 1)
 
@@ -177,11 +188,29 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
         opens = [payload for op, payload in self.calls if op == 'OPEN']
         self.assertEqual(len(opens), 2)
         self.assertEqual(opens[0], opens[1])
+        context = opens[0]['reconciliation_context']
+        self.assertEqual(context['order_id'], oid)
+        self.assertEqual(context['period_status'], 'provisional')
+        for field in ('order_starts_at', 'order_ends_at', 'subscription_expires_at', 'effective_at'):
+            self.assertIsNone(context[field])
         with self.m.SessionLocal() as db:
             task = db.get(self.m.DeliveryTask, self.task_id(oid))
             self.assertEqual(task.retry_count, 1)
             for row in db.query(self.m.AuditLog).all():
                 self.assertNotIn('PRIVATE ACCESS TOKEN', str(row.detail))
+
+    def test_transient_renew_replays_frozen_dates_and_context(self):
+        oid = self.create()
+        self.pay(oid)
+        self.failures['RENEW'] = 1
+        self.assertEqual(self.finish(oid), 'completed')
+        renews = [payload for operation, payload in self.calls if operation == 'RENEW']
+        self.assertEqual(len(renews), 2)
+        self.assertEqual(renews[0], renews[1])
+        with self.m.SessionLocal() as db:
+            record = db.query(self.m.SaaSOperation).filter_by(
+                idempotency_key=renews[0]['idempotency_key']).one()
+            self.assertEqual(json.loads(record.request_payload), renews[0])
 
     def test_wrong_tenant_or_admin_result_cannot_grant_entitlement(self):
         for bad in ({'ret': None}, {'ret': False}, {'enterprise_id': 'other'}, {'tenant_id': 'other'}, {'admin_active': False},

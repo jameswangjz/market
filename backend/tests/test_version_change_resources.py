@@ -9,6 +9,7 @@ sys.path.insert(0, str(__import__('pathlib').Path(__file__).resolve().parents[1]
 from app.version_change_resources import install
 from app.version_change_resources import _integration_snapshot_matches, _quota_period_plan
 from app.subscription_calendar import CalendarAnchor
+from app.saas_reconciliation import change_context
 
 
 class FakeRedis:
@@ -247,13 +248,17 @@ class VersionChangeResourceTests(unittest.TestCase):
               'SaaSProductVersion': SaaSProductVersion, 'SaaSUserMapping': SaaSUserMapping,
               'OIDCClient': OIDCClient, 'saas_call': saas_call}
         hooks = install(ns)
+        frozen_context = change_context({'segments': [{'order_id': 'order-1', 'order_no': 'O-1',
+            'starts_at': '2026-01-01T00:00:00Z', 'ends_at': '2026-02-01T00:00:00Z'}]},
+            SimpleNamespace(id='order-1', order_no='O-1'), None)
         change = SimpleNamespace(id='chg-1', target_version_id='target', old_version_id='old',
             target_version_code='v2', old_version_code='v1', resource_plan_json=json.dumps({
                 'change_id': 'chg-1', 'kind': 'saas', 'subscription_id': 'sub-1',
                 'tenant_id': 'tenant-1', 'product_id': 'prod-1', 'enterprise_id': 'ent-1',
                 'config_id': 'cfg-1', 'admin_user_id': 'admin-1',
                 'external_admin_id': 'external-admin', 'oidc_client_id': 'oidc-1',
-                'config_fingerprint': self.saas_config_fingerprint(config), 'expires_at': None}), evidence_json='')
+                'config_fingerprint': self.saas_config_fingerprint(config), 'expires_at': None,
+                'reconciliation_context': frozen_context}), evidence_json='')
         db = FakeDB({(SaaSSubscription, 'sub-1'): sub, (SaaSIntegrationConfig, 'cfg-1'): config,
                      (SaaSProductVersion, 'target'): target,
                      (SaaSUserMapping, 'mapping'): SimpleNamespace(user_id='admin-1', external_user_id='external-admin'),
@@ -266,6 +271,12 @@ class VersionChangeResourceTests(unittest.TestCase):
         finally:
             adapter_module.select = original_select
         self.assertEqual([c[0] for c in calls], ['CHANGE', 'STATUS'])
+        outbound = calls[0][1]['reconciliation_context']
+        self.assertEqual(outbound['event_id'], 'version-change:chg-1:target')
+        self.assertEqual(outbound['order_no'], 'O-1')
+        self.assertEqual(outbound['affected_orders'], frozen_context['affected_orders'])
+        self.assertEqual(calls[1][1]['reconciliation_context']['event_type'], 'STATUS')
+        self.assertEqual(json.loads(change.resource_plan_json)['reconciliation_context'], frozen_context)
         self.assertEqual(sub.version_id, 'target')
         self.assertEqual(proof['request_change_id'], 'chg-1')
         self.assertEqual(proof['resource_change_id'], 'chg-1')
@@ -313,13 +324,20 @@ class VersionChangeResourceTests(unittest.TestCase):
                 'kind': 'saas', 'config_id': 'cfg-1',
                 'config_fingerprint': self.saas_config_fingerprint(config),
                 'quote_fingerprint': 'q' * 64}}}),
-            quote_json=json.dumps({'quote_id': 'q' * 64}), resource_plan_json='{}')
+            quote_json=json.dumps({'quote_id': 'q' * 64, 'segments': [
+                {'order_id': 'order-1', 'order_no': 'frozen-number',
+                 'starts_at': '2026-01-01T00:00:00Z', 'ends_at': '2026-02-01T00:00:00Z',
+                 'remaining_starts_at': '2026-01-15T00:00:00Z',
+                 'remaining_ends_at': '2026-02-01T00:00:00Z'}]}),
+            prepared_json=json.dumps([{'order_id': 'order-1', 'term_id': 'term-1'}]),
+            resource_plan_json='{}')
         adapter_module = sys.modules['app.version_change_resources']
         original_select = adapter_module.select
         adapter_module.select = lambda model: Query(model)
         try:
             plan = hooks['prepare'](db, change)
             change.resource_plan_json = json.dumps(plan, indent=2)
+            order.order_no = 'renamed-after-freeze'
             self.assertEqual(hooks['prepare'](db, change), plan)
             config.client_id = 'changed-after-quote'
             with self.assertRaises(Exception):
@@ -329,6 +347,10 @@ class VersionChangeResourceTests(unittest.TestCase):
         self.assertEqual(plan['admin_user_id'], 'buyer-user')
         self.assertEqual(plan['external_admin_id'], 'provider-admin')
         self.assertEqual(plan['oidc_client_id'], 'oidc-1')
+        context = plan['reconciliation_context']
+        self.assertEqual(context['order_no'], 'frozen-number')
+        self.assertEqual(context['affected_orders'][0]['term_id'], 'term-1')
+        self.assertIsNone(context['effective_at'])
 
     def test_saas_wrong_status_identity_rejects_without_local_mutation(self):
         class SaaSSubscription: pass

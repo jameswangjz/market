@@ -10,6 +10,7 @@ from sqlalchemy import select
 from .subscription_calendar import CalendarAnchor
 from .refund_segment_boundary import freeze_policy_switch
 from .refund_segment_store import boundary_periods, saas_switch_evidence
+from .saas_reconciliation import change_context, event_context
 
 
 def _quota_period_plan(combination, terms, snapshots, old_route_key, target_route_key, at):
@@ -313,6 +314,14 @@ def install(ns):
                 oidc_client_id=clients[0].client_id,
                 config_fingerprint=accepted_config_fingerprint,
                 expires_at=datetime_identity(subscription.expires_at))
+            saved = json.loads(change.resource_plan_json or '{}')
+            if saved:
+                if 'reconciliation_context' in saved:
+                    plan['reconciliation_context'] = saved['reconciliation_context']
+            else:
+                plan['reconciliation_context'] = change_context(
+                    json.loads(change.quote_json or '{}'), source_order, plan['expires_at'],
+                    json.loads(getattr(change, 'prepared_json', None) or '[]'))
         else:
             fail('Unsupported subscription delivery method')
         encoded = json.dumps(plan, sort_keys=True, separators=(',', ':'))
@@ -521,17 +530,29 @@ def install(ns):
             ns['OIDCClient'].status == 'active'))
         if not mapping or not client:
             fail('SaaS admin or OIDC identity changed after resource preparation')
-        result = ns['saas_call'](config, 'CHANGE', {'tenant_id': plan['tenant_id'],
+        payload = {'tenant_id': plan['tenant_id'],
             'product_id': plan['product_id'], 'enterprise_id': plan['enterprise_id'],
             'subscription_id': subscription.id, 'to_version': version_code,
             'admin_user_id': plan['admin_user_id'], 'oidc_client_id': plan['oidc_client_id'],
-            'idempotency_key': idem, 'change_id': change.id, 'direction': direction})
+            'idempotency_key': idem, 'change_id': change.id, 'direction': direction}
+        if 'reconciliation_context' in plan:
+            payload['reconciliation_context'] = event_context(plan['reconciliation_context'],
+                event_id=idem, event_type='CHANGE', product_id=plan['product_id'],
+                enterprise_id=plan['enterprise_id'], subscription_id=subscription.id,
+                tenant_id=plan['tenant_id'])
+        result = ns['saas_call'](config, 'CHANGE', payload)
         if not isinstance(result, dict) or result.get('ret') != 0:
             fail('SaaS CHANGE was rejected')
-        status = ns['saas_call'](config, 'STATUS', {'tenant_id': plan['tenant_id'],
+        status_payload = {'tenant_id': plan['tenant_id'],
             'product_id': plan['product_id'], 'enterprise_id': plan['enterprise_id'],
             'subscription_id': subscription.id, 'admin_user_id': plan['admin_user_id'],
-            'oidc_client_id': plan['oidc_client_id'], 'change_id': change.id, 'direction': direction})
+            'oidc_client_id': plan['oidc_client_id'], 'change_id': change.id, 'direction': direction}
+        if 'reconciliation_context' in plan:
+            status_payload['reconciliation_context'] = event_context(plan['reconciliation_context'],
+                event_id=idem + ':STATUS', event_type='STATUS', product_id=plan['product_id'],
+                enterprise_id=plan['enterprise_id'], subscription_id=subscription.id,
+                tenant_id=plan['tenant_id'])
+        status = ns['saas_call'](config, 'STATUS', status_payload)
         if (not isinstance(status, dict) or status.get('ret') != 0
                 or status.get('tenant_id') != plan['tenant_id']
                 or status.get('product_id') != plan['product_id']

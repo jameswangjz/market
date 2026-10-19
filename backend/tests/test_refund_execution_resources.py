@@ -649,11 +649,18 @@ class ExecutionResourcesTests(unittest.TestCase):
 
     def test_saas_exact_microseconds_replay_and_sso_cutoff(self):
         oid, plan = self.saas_fixture()
+        context = plan['reconciliation_context']
+        self.assertEqual(context['order_id'], oid)
+        self.assertEqual(context['subscription_expires_at'], plan['expires_at'])
+        self.assertEqual(context['effective_at'], plan['expires_at'])
+        self.assertEqual(context['effective_at_semantics'], 'entitlement_cutoff')
         cutoff = datetime.fromisoformat(plan['expires_at'])
         self.assertNotEqual(0, cutoff.microsecond)
         first = self.apply(rollback=True)
         self.assertEqual(first, self.apply())
         self.assertEqual(1, len(self.renew_calls))
+        self.assertEqual(self.renew_calls[0]['reconciliation_context']['event_type'], 'RENEW')
+        self.assertEqual(self.renew_calls[0]['reconciliation_context']['order_no'], context['order_no'])
         self.assertIsNotNone(self.entitlement(cutoff - timedelta(microseconds=1)))
         self.assertIsNone(self.entitlement(cutoff))
 

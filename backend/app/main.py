@@ -5239,8 +5239,34 @@ def saas_call(config: SaaSIntegrationConfig, operation: str, payload: dict[str, 
 
 def execute_saas_operation(db: Session, subscription: SaaSSubscription, operation: str, payload: dict[str, Any], config: SaaSIntegrationConfig, idempotency_key: str) -> dict[str, Any]:
     existing = db.scalar(select(SaaSOperation).where(SaaSOperation.idempotency_key == idempotency_key))
+    if existing and (existing.subscription_id != subscription.id or existing.operation != operation):
+        raise HTTPException(409, 'SaaS operation identity conflict')
     if existing and existing.status == "succeeded":
         return json.loads(existing.response_payload or "{}")
+    if existing:
+        payload = json.loads(existing.request_payload)
+    else:
+        from .saas_reconciliation import reconciliation_context
+        payload = dict(payload)
+        if operation == 'RENEW' and 'expires_at' not in payload and 'billing_cycle' in payload:
+            # Legacy renewals have no combination calendar; freeze their own calendar once.
+            start = now()
+            previous_end = subscription.expires_at
+            if previous_end:
+                if previous_end.tzinfo is None:
+                    previous_end = previous_end.replace(tzinfo=timezone.utc)
+                start = max(start, previous_end)
+            cutoff = subscription_expiry(start, payload['billing_cycle'])
+            payload.update(starts_at=start.isoformat(), expires_at=cutoff.isoformat() if cutoff else None)
+        provisional = (operation == 'OPEN' and not subscription.external_tenant_id
+                       or payload.get('expires_at', subscription.expires_at) is None
+                       and payload.get('billing_cycle', subscription.billing_cycle) != 'perpetual')
+        payload.setdefault('reconciliation_context', reconciliation_context(
+            subscription_expires_at=None if provisional else payload.get('expires_at', subscription.expires_at),
+            effective_at_semantics='provider_receipt', provisional=provisional,
+            event_id=idempotency_key, event_type=operation, product_id=subscription.product_id,
+            enterprise_id=subscription.enterprise_id, subscription_id=subscription.id,
+            tenant_id=subscription.external_tenant_id or None))
     record = existing or SaaSOperation(subscription_id=subscription.id, operation=operation, idempotency_key=idempotency_key, request_payload=json.dumps(payload, ensure_ascii=False))
     if not existing:
         db.add(record)
@@ -5539,8 +5565,12 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
                               event_key=f"saas:{subscription.id}:expired:{expires_at.isoformat()}", category="system", tenant_id=subscription.enterprise_id,
                               recipient_ids=[owner] if owner else [], enterprise_ids=[subscription.enterprise_id])
     amount = saas_cycle_price(version, body.billing_cycle)
-    result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}")
-    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
+    renew_key = f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}"
+    result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, renew_key)
+    frozen = json.loads(db.scalar(select(SaaSOperation).where(SaaSOperation.idempotency_key == renew_key)).request_payload)
+    if 'expires_at' in frozen:
+        subscription.expires_at = datetime.fromisoformat(frozen['expires_at']) if frozen['expires_at'] else None
+    elif subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
     elif body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(now(), body.billing_cycle)
     else: subscription.expires_at = None
     add_saas_order(db, subscription, product, version, amount, "renew", paid=True)
@@ -7944,6 +7974,9 @@ order_fulfillment = install_order_fulfillment(globals())
 from .subscription_terms import install as install_subscription_terms
 
 subscription_terms = install_subscription_terms(globals())
+from .provider_entitlements import install as install_provider_entitlements
+
+provider_entitlements = install_provider_entitlements(globals())
 from .saas_combinations import install as install_saas_combinations
 
 saas_combinations = install_saas_combinations(globals())

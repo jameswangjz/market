@@ -9,6 +9,7 @@ from sqlalchemy import select
 from .order_economics import money
 from .saas_entry import probe_saas_entry
 from .subscription_calendar import CalendarAnchor
+from .saas_reconciliation import reconciliation_context
 
 
 class SaaSDeliveryError(Exception):
@@ -111,12 +112,30 @@ def install(ns):
         payload = {**payload, 'idempotency_key': key}
         record = db.scalar(select(Operation).where(Operation.idempotency_key == key)
             .with_for_update().execution_options(populate_existing=True))
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
         if record:
+            frozen = json.loads(record.request_payload)
+            supplied = dict(payload)
+            if 'reconciliation_context' not in supplied:
+                frozen.pop('reconciliation_context', None)
             if (record.subscription_id != subscription.id or record.operation != name
-                    or record.request_payload != encoded):
+                    or json.dumps(frozen, sort_keys=True, separators=(',', ':'))
+                    != json.dumps(supplied, sort_keys=True, separators=(',', ':'))):
                 raise HTTPException(409, 'SaaS 操作幂等键与订阅或请求内容冲突')
             return record, False
+        if 'reconciliation_context' not in payload:
+            activation = name == 'RENEW'
+            payload['reconciliation_context'] = reconciliation_context(order=order,
+                starts_at=payload.get('starts_at') if activation else None,
+                ends_at=payload.get('expires_at') if activation else None,
+                subscription_expires_at=payload.get('expires_at') if activation else (
+                    None if name == 'OPEN' else subscription.expires_at),
+                effective_at=payload.get('platform_delivery_at') if activation else None,
+                effective_at_semantics='platform_delivery' if activation else 'provider_receipt',
+                provisional=name == 'OPEN' or not activation and subscription.expires_at is None,
+                event_id=key, event_type=name,
+                product_id=subscription.product_id, enterprise_id=subscription.enterprise_id,
+                subscription_id=subscription.id, tenant_id=subscription.external_tenant_id or None)
+        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
         record = Operation(subscription_id=subscription.id, operation=name,
             idempotency_key=key, request_payload=encoded, status='prepared', retry_count=0)
         db.add(record)
@@ -318,6 +337,13 @@ def install(ns):
             status_payload = {key: activation[key] for key in (
                 'tenant_id', 'product_id', 'enterprise_id', 'subscription_id', 'version',
                 'admin_user_id', 'oidc_client_id')}
+            if 'reconciliation_context' in activation:
+                from .saas_reconciliation import event_context
+                status_payload['reconciliation_context'] = event_context(
+                    activation['reconciliation_context'],
+                    event_id=f'delivery:{sub.id}:{order.id}:STATUS:{suffix}', event_type='STATUS',
+                    product_id=sub.product_id, enterprise_id=sub.enterprise_id,
+                    subscription_id=sub.id, tenant_id=sub.external_tenant_id)
             def validate_final(result):
                 require_identity(result, ctx, order, status='active')
                 if result.get('expires_at') != activation['expires_at']:

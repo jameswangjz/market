@@ -17,6 +17,7 @@ from sqlalchemy import select, Column, String, Text, ForeignKey, Integer, Unique
 from .refund_segment_store import canonical, digest, safe_policy, strict_json, source_context, STREAM
 from .quota_cutover import token
 from .subscription_terms import UTCDateTime
+from .saas_reconciliation import reconciliation_context, event_context
 
 PREFIX = 'market:apisix:refund:execution:v1:'
 EPOCH = 'market:apisix:charges:source'
@@ -274,9 +275,16 @@ def install(ns):
         return digest({k: getattr(config, k, None) for k in ('id', 'product_id', 'base_url',
             'operation_path', 'token_url', 'client_id', 'scope', 'auth_mode', 'timeout_ms', 'status')})
 
-    def saas_request(plan, refund_id):
-        return {key: plan[key] for key in ('tenant_id', 'product_id', 'enterprise_id', 'subscription_id')} | dict(
+    def saas_request(plan, refund_id, operation='STATUS'):
+        payload = {key: plan[key] for key in ('tenant_id', 'product_id', 'enterprise_id', 'subscription_id')} | dict(
             refund_id=refund_id, action='refund_shorten', protocol='refund_shorten_v1')
+        if 'reconciliation_context' in plan:
+            payload['reconciliation_context'] = event_context(plan['reconciliation_context'],
+                event_id=('refund-shorten:' if operation == 'RENEW' else 'refund-status:') + refund_id,
+                event_type=operation,
+                product_id=plan['product_id'], enterprise_id=plan['enterprise_id'],
+                subscription_id=plan['subscription_id'], tenant_id=plan['tenant_id'])
+        return payload
 
     def saas_later_completed(db, term, combo):
         # Shared tenant expiry cannot represent a hole before an unrelated renewal.
@@ -334,6 +342,10 @@ def install(ns):
         plan = dict(kind='saas', config_id=config.id, subscription_id=sub.id, tenant_id=sub.external_tenant_id,
             product_id=combo.product_id, enterprise_id=combo.enterprise_id, expected_expires_at=expected_expiry.isoformat(),
             expires_at=cutoff.isoformat(), protocol='refund_shorten_v1', config_fingerprint=config_hash(config))
+        plan['reconciliation_context'] = reconciliation_context(order=order,
+            starts_at=term.starts_at, ends_at=term.ends_at,
+            subscription_expires_at=cutoff, effective_at=cutoff,
+            effective_at_semantics='entitlement_cutoff')
         status = ns['saas_call'](config, 'STATUS', saas_request(plan, refund.id))
         if not saas_identity(status, plan, plan['expected_expires_at']):
             fail('SaaS provider does not support verified idempotent refund shortening')
@@ -465,7 +477,7 @@ def install(ns):
                         fail('SaaS expiry changed before refund shortening')
                     if ns['now']() > aware(plan['expires_at']):
                         fail('SaaS refunded tail already elapsed')
-                    result = ns['saas_call'](config, 'RENEW', dict(saas_request(plan, refund.id),
+                    result = ns['saas_call'](config, 'RENEW', dict(saas_request(plan, refund.id, 'RENEW'),
                         expected_expires_at=plan['expected_expires_at'], expires_at=plan['expires_at'],
                         idempotency_key='refund-shorten:' + refund.id))
                     if (not isinstance(result, dict) or type(result.get('ret')) is not int or result.get('ret') != 0

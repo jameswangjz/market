@@ -1,6 +1,6 @@
 # SaaS 应用第三方接口对接规范
 
-版本：v1.4；接入配置 JSON 格式：2.0。
+版本：v1.5；接入配置 JSON 格式：2.0。
 
 ## 1. 参与方与凭据获取
 
@@ -379,3 +379,76 @@ ID Token 与 userinfo 的 `sub`、`enterprise_id`、`subscription_id`、`tenant_
 ### 8.4 验收边界
 
 必须验证真实浏览器登录、同意/拒绝、错误 state/nonce/PKCE、错误 issuer/audience/签名、授权码重放、跨企业拒绝、普通成员授权撤回和到期/禁用拒绝。开发模拟 RP 使用本地持久化会话及实际平台协议；这不代表第三方生产系统已经完成联调。多副本 RP 应使用共享会话存储，不能直接复制本开发用单副本 SQLite 部署。
+
+## 9. 订单期限与第三方权益对账
+
+### 9.1 统一时间和订单上下文
+
+新冻结的管理请求附加 `reconciliation_context`。本节补充前述示例，原管理字段及 OAuth/OIDC 认证方式不变。已经持久化的历史操作仍按原请求重试，不为补字段而更换幂等内容。
+
+| 字段 | 含义 |
+| --- | --- |
+| `schema_version` | 整数 `1`，本对账上下文版本，不是接入配置下载格式版本 |
+| `event_id`、`event_type` | 稳定事件标识及 OPEN/RENEW/CHANGE/STATUS 等管理操作名 |
+| `product_id`、`enterprise_id`、`subscription_id`、`tenant_id` | 产品、买方企业、平台订阅和第三方租户关联；创建租户前 tenant_id 可为空 |
+| `order_id`、`order_no` | 本次关联的平台订单ID和可读订单号；用户/部门等纯租户操作可为空 |
+| `order_starts_at`、`order_ends_at` | 关联订单的服务时段，不是整个租户的累计有效期 |
+| `subscription_expires_at` | 本次操作对应的订阅总体截止时间；续费后含已交付续费，退款时为缩期后的时间 |
+| `effective_at`、`effective_at_semantics` | 时间及口径；平台交付锚点不等于第三方实际切换回执时间 |
+| `period_status` | `provisional` 表示尚未确定实际时段；`confirmed` 表示已冻结的信息，纯租户操作仍允许无单一订单 |
+| `affected_orders` | 版本切换涉及的订单时段列表，包含订单关联及剩余时段；不得只按一笔来源订单计算所有未来续费 |
+
+所有时间使用带时区的 UTC ISO 8601。时段为 `[开始时间, 截止时间)`，到达截止时间即不再有效。未确定日期用 `null` 并说明口径，不用当前时间、Token过期时间或任意默认日期代替。
+
+首次 OPEN 只准备租户，实际交付尚未完成，订单时段可以为空且为 provisional。平台随后使用冻结的 RENEW 激活时段并回读 STATUS。普通续费的订单开始时间是新增续费段开始时间，不能重置已购买的旧时段。版本 CHANGE 不改变总体截止日期；以第三方返回的首次 `effective_at` 证明实际版本切换，不能用上下文中的平台时间代替。退款缩期仍执行第3.6节的原截止、新截止及 refund_id 校验。
+
+第三方应持久化关联上下文及执行回执；对同一幂等键重试返回首次结果，不再次延长/缩短服务或覆盖实际生效时间。上下文不是新的授权来源，仍须校验平台Token及产品、企业、订阅、租户归属。
+
+模拟SaaS对含上下文的新变更请求附加以下回执，STATUS返回最近一次实际操作保存的上下文及回执。查询本身不覆盖它；重放旧变更不回退最新状态：
+
+```json
+{
+  "reconciliation_context": {
+    "schema_version": 1,
+    "event_id": "delivery:sub-1:order-1:RENEW",
+    "event_type": "RENEW",
+    "product_id": "product-1",
+    "enterprise_id": "enterprise-1",
+    "subscription_id": "sub-1",
+    "tenant_id": "tenant-1",
+    "order_id": "order-1",
+    "order_no": "ORD-example",
+    "order_starts_at": "2026-10-19T04:00:00+00:00",
+    "order_ends_at": "2026-11-19T04:00:00+00:00",
+    "subscription_expires_at": "2026-11-19T04:00:00+00:00",
+    "effective_at": "2026-10-19T04:00:00+00:00",
+    "effective_at_semantics": "platform_delivery",
+    "period_status": "confirmed",
+    "affected_orders": []
+  },
+  "accepted_at": "2026-10-19T04:00:00+00:00",
+  "reconciliation_receipt": {
+    "received_at": "2026-10-19T04:00:00+00:00",
+    "expires_at": "2026-11-19T04:00:00+00:00"
+  }
+}
+```
+
+此为字段示意，不是完整业务响应；`received_at/accepted_at` 是首次受理记录时间，不是资源版本切换时间。CHANGE依然必须返回第3.4节的真实 `effective_at`，退款缩期仍必须返回第3.6节的真实新截止及退款回执。历史操作允许没有新增上下文，不得伪造历史回执。
+
+`effective_at_semantics` 还可为 `provider_receipt`（以独立执行回执为准，通常 effective_at 为空）、`entitlement_cutoff`（退款后的权益截断时间，不是退款发生时刻）。CHANGE的 `affected_orders` 每项为 `order_id/order_no/term_id/order_starts_at/order_ends_at/remaining_starts_at/remaining_ends_at`；`term_id` 是订阅订单时段ID，不是财务经济段ID。
+
+### 9.2 提供方只读权益查询
+
+```http
+GET /api/provider/products/{product_id}/entitlements?page=1&page_size=50&order_no=ORD-xxx
+Authorization: Bearer <提供方企业管理员的平台登录令牌>
+```
+
+仅产品提供企业的活跃超级管理员、企业管理员以及授权的平台管理员可查询。不是购买方接口，不接受购买方API Key，也不复用平台内部机器OAuth客户端密钥；本版不新增向提供方分发机器密钥的行为。
+
+支持 `enterprise_id`、`order_id`、`order_no` 精确筛选，以及带时区的 `starts_before`、`ends_after` 时段交集筛选。`page` 从1开始，`page_size` 默认50、最大100。结果包含 `items/total/page/page_size/has_more`，按稳定顺序翻页。未知的未交付时段返回空值，不推定已开通。
+
+订单原始版本、登记时段、当前权益及退款调整信息应按响应字段口径区分。历史下架/到期订单仍可对账；查询不会续费、扣额、调整资金或修改订单。API返回不包含Secret、买方个人登录资料或内部成本。该接口是权益对账，不代表银行到账核验，第三方须结合业务回执而非仅凭截止日期判断资金状态。
+
+查询结果的 `starts_at/ends_at` 与 `recorded_combination_expires_at` 是登记记录；`combination_expires_at`、SaaS的 `subscription_expires_at` 及 `effective_rights` 区分实际权益。`subscription_id/tenant_id` 用于SaaS关联；`refunds/changes/change_revisions` 用于追踪退款及版本变更。`quota_periods` 是网关额度周期，`segments` 是权益区间，不是清算财务分录。证据缺失或不一致时返回409，不静默恢复原始未退款权益。
