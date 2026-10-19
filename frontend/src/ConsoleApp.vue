@@ -1233,22 +1233,16 @@ async function loadViewData(view) {
     slaOverview.value = sla.data;
   }
   if (view === "users") {
-    const [usersData, enterpriseData, personalData, memberData, departmentData, invitationData, myInvitationData] = await Promise.all([
+    const [usersData, enterpriseData, personalData, myInvitationData] = await Promise.all([
       loadIdentityList("users"),
       loadIdentityList("enterprises"),
       api
         .get("/admin/verifications/personal")
         .catch(() => ({ data: { items: [] } })),
-      api.get("/enterprise/members").catch(() => ({ data: { items: [] } })),
-      api.get("/enterprise/departments").catch(() => ({ data: { items: [] } })),
-      api.get("/enterprise/invitations").catch(() => ({ data: { items: [] } })),
       api.get("/enterprise/my-invitations").catch(() => ({ data: { items: [] } })),
     ]);
     if (!contextCurrent()) return;
     personalVerificationItems.value = personalData.data.items;
-    enterpriseMembers.value = memberData.data.items;
-    enterpriseDepartments.value = departmentData.data.items;
-    enterpriseInvitations.value = invitationData.data.items;
     myEnterpriseInvitations.value = myInvitationData.data.items;
   }
   if (view === "settings") {
