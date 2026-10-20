@@ -3728,29 +3728,27 @@ onUnmounted(() => {
                   售后工单 <small>{{ mainLists.aftersales.total }} 项</small>
                 </h3>
               </div>
-              <div class="after-sales-list">
-                <div
-                  v-for="item in afterSalesItems"
-                  :key="item.id"
-                  class="after-sales-item"
-                >
-                  <div>
-                    <button class="text-btn task-code" @click="selectedAfterSalesId = item.id">{{ item.ticket_no }}</button><strong>{{ item.type }}</strong
-                    ><small>{{ item.description }}</small>
-                    <small>产品：{{ item.product_name || '未记录' }} · 提供方：{{ partyName(item, 'provider') }} · 购买方：{{ partyName(item, 'buyer') }}</small>
-                    <small>订单：<button class="text-btn" @click="openOrder({ id: item.order_id })">{{ item.order_no || item.order_id }}</button> · 负责人：{{ item.assignee_name || item.assignee || '未分配' }} · 优先级：{{ { normal: '普通', important: '重要', urgent: '紧急' }[item.priority] || '未记录' }}</small>
-                  </div>
-                  <span
-                    :class="[
-                      'status-pill',
-                      ['completed', 'resolved'].includes(item.status) ? 'status-done' : ['force_closed', 'withdrawn', 'closed'].includes(item.status) ? 'status-todo' : 'status-in_progress',
-                    ]"
-                    >{{ ticketStatus(item.status) }}</span
-                  >
-                </div>
-              </div>
-              <div v-if="!afterSalesItems.length" class="empty-state">
-                <CheckCircle2 :size="28" /><span>暂无售后工单</span>
+              <div class="table-wrap">
+                <table class="data-table compact after-sales-table" aria-label="售后工单列表">
+                  <thead>
+                    <tr><th scope="col">工单号</th><th scope="col">订单号</th><th scope="col">产品</th><th scope="col">提供方</th><th scope="col">购买方</th><th scope="col">工单类型及说明</th><th scope="col">负责人</th><th scope="col">优先级</th><th scope="col">状态</th><th scope="col">创建时间</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in afterSalesItems" :key="item.id">
+                      <td><button class="text-btn task-code" @click="selectedAfterSalesId = item.id">{{ item.ticket_no }}</button></td>
+                      <td><button class="text-btn task-code" @click="openOrder({ id: item.order_id })">{{ item.order_no || item.order_id }}</button></td>
+                      <td>{{ item.product_name || '未记录' }}</td>
+                      <td>{{ partyName(item, 'provider') }}</td>
+                      <td>{{ partyName(item, 'buyer') }}</td>
+                      <td class="after-sales-description"><span>{{ item.type || '-' }}</span><small :title="item.description || ''">{{ item.description || '-' }}</small></td>
+                      <td>{{ item.assignee_name || item.assignee || '未分配' }}</td>
+                      <td>{{ { normal: '普通', important: '重要', urgent: '紧急' }[item.priority] || '未记录' }}</td>
+                      <td><span :class="['status-pill', ['completed', 'resolved'].includes(item.status) ? 'status-done' : ['force_closed', 'withdrawn', 'closed'].includes(item.status) ? 'status-todo' : 'status-in_progress']">{{ ticketStatus(item.status) }}</span></td>
+                      <td>{{ item.created_at ? fmtDate(item.created_at) : '-' }}</td>
+                    </tr>
+                    <tr v-if="!afterSalesItems.length"><td colspan="10"><div class="empty-state"><CheckCircle2 :size="28" /><span>暂无售后工单</span></div></td></tr>
+                  </tbody>
+                </table>
               </div>
               <PaginationControls :page="mainLists.aftersales.page" :page-size="mainLists.aftersales.page_size" :total="mainLists.aftersales.total" :busy="mainLists.aftersales.busy" label="售后工单分页" @page="pageMainList('aftersales', $event)" @size="pageMainList('aftersales', 1, $event)" />
             </div>
@@ -5584,6 +5582,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.after-sales-table { min-width: 1120px; }
+.after-sales-table td { vertical-align: top; }
+.after-sales-table .task-code, .after-sales-table .status-pill { white-space: nowrap; }
+.after-sales-description { min-width: 180px; max-width: 280px; overflow-wrap: anywhere; }
+.after-sales-description small { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 4px; color: #86909c; font-size: 11px; line-height: 1.5; white-space: normal; }
 .report-filter-bar.beneficiary-selector { min-width: 0; margin: 12px 0 18px; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .beneficiary-selector > label { display: flex; flex-direction: column; gap: 5px; width: 320px; max-width: 100%; min-width: 0; margin: 0; font-size: 12px; line-height: 18px; font-weight: 400; color: #4e5969; }
 .beneficiary-selector > label > select { box-sizing: border-box; width: 100%; min-width: 0; height: 34px; padding: 6px 8px; border: 1px solid #d9dde3; border-radius: 4px; background: #fff; color: #27313f; font-size: 12px; line-height: 20px; }
