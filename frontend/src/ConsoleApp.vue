@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import axios from "axios";
 import PasswordSecurity from "./PasswordSecurity.vue";
+import UserAccountMenu from "./UserAccountMenu.vue";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
@@ -2994,7 +2995,6 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="sidebar-bottom">
-        <PasswordSecurity authenticated @changed="logout(); loginError = '密码已修改，请重新登录'" :collapsed="collapsed" />
         <a class="nav-item" href="/" @click.prevent="navigate('/')"><ShoppingCart :size="18" /><span v-if="!collapsed">公开商城</span></a>
         <button
           v-if="canAccessConsoleView(user, enterprise, 'settings')"
@@ -3050,13 +3050,9 @@ onUnmounted(() => {
             <p v-if="!notificationSummary.recent?.length" class="muted">暂无消息</p>
           </section>
           </div>
-          <div class="user-chip" role="button" tabindex="0" @click="showProfileContact = true">
-            <div class="avatar">{{ user.name?.slice(0, 1) }}</div>
-            <div class="user-chip-copy">
-              <strong>{{ user.name }}</strong
-              ><small>{{ currentConsoleRoleLabel }}</small>
-            </div>
-          </div>
+          <UserAccountMenu :name="user.name" :role-label="currentConsoleRoleLabel" @profile="showProfileContact = true">
+            <PasswordSecurity authenticated menu-item @changed="logout(); loginError = '密码已修改，请重新登录'" />
+          </UserAccountMenu>
           <label v-if="!user.platform_role && user.enterprise_memberships?.filter(item => item.status === 'active').length > 1" class="context-select-label">
             <span class="sr-only">当前企业</span>
             <select :value="enterprise?.id || ''" aria-label="当前企业" @change="selectEnterprise($event.target.value)">

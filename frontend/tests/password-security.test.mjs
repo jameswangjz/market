@@ -22,7 +22,9 @@ test('component compiles and both entry points share the platform modal, not bac
   assert.ok(!source.includes('@click.self'));
   const consoleSource = readFileSync(new URL('../src/ConsoleApp.vue', import.meta.url), 'utf8');
   assert.ok(consoleSource.includes('<PasswordSecurity v-if="!registerMode" />'));
-  assert.ok(consoleSource.includes('<PasswordSecurity authenticated @changed="logout();'));
+  assert.ok(consoleSource.includes('<PasswordSecurity authenticated menu-item @changed="logout();'));
+  const sidebar = consoleSource.slice(consoleSource.indexOf('<div class="sidebar-bottom">'), consoleSource.indexOf('</aside>'));
+  assert.ok(!sidebar.includes('PasswordSecurity'));
 });
 test('change submits only old/new password with current login and clears secrets', async () => {
   const h = harness(true); h.show();

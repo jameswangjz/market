@@ -2,7 +2,7 @@
 import { reactive, ref } from "vue";
 import axios from "axios";
 import { KeyRound, X } from "lucide-vue-next";
-const props = defineProps({ authenticated: Boolean, collapsed: Boolean });
+const props = defineProps({ authenticated: Boolean, menuItem: Boolean });
 const emit = defineEmits(["changed"]);
 const open = ref(false), busy = ref(false), error = ref(""), notice = ref("");
 const form = reactive({ identifier: "", code: "", current_password: "", new_password: "", confirmation: "" });
@@ -49,8 +49,8 @@ async function submit() {
 </script>
 
 <template>
-  <button type="button" :class="authenticated ? 'nav-item' : 'text-btn full-btn'" :title="authenticated ? '修改密码' : '忘记密码'" @click="show">
-    <KeyRound v-if="authenticated" :size="18" /><span v-if="!authenticated || !collapsed">{{ authenticated ? '修改密码' : '忘记密码' }}</span>
+  <button type="button" :class="menuItem ? 'account-menu-item' : 'text-btn full-btn'" :role="menuItem ? 'menuitem' : undefined" :title="authenticated ? '修改密码' : '忘记密码'" @click="show">
+    <KeyRound v-if="authenticated" :size="16" /><span>{{ authenticated ? '修改密码' : '忘记密码' }}</span>
   </button>
   <Teleport to="body">
     <div v-if="open" class="modal-scrim password-security-scrim">
