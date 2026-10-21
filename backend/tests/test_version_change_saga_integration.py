@@ -147,9 +147,9 @@ class VersionChangeSagaIntegrationTests(unittest.TestCase):
             request.next_retry_at = self.m.now() - timedelta(seconds=1)
             db.commit()
 
-        self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', expected=409,
+        self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', actor='ops', expected=409,
             json={'reason':'late confirmation'})
-        self.request('POST', f'/api/orders/{funding_id}/transition', expected=409,
+        self.request('POST', f'/api/orders/{funding_id}/transition', actor='ops', expected=409,
             json={'action':'confirm_payment'})
         with self.m.SessionLocal() as db:
             request = db.get(self.m.VersionChangeRequest, change_id)
@@ -164,7 +164,7 @@ class VersionChangeSagaIntegrationTests(unittest.TestCase):
             request.status = 'resource_pending'
             db.commit()
 
-        replay = self.request('POST', f'/api/orders/{funding_id}/transition',
+        replay = self.request('POST', f'/api/orders/{funding_id}/transition', actor='ops',
             json={'action':'confirm_payment'})
         self.assertEqual(replay['payment_status'], 'paid')
         with self.m.SessionLocal() as db:
@@ -227,7 +227,7 @@ class VersionChangeSagaIntegrationTests(unittest.TestCase):
         started = self.request('POST', f"/api/version-changes/{change['id']}/start-payment",
             json={'reason':'lock-order test'})
         response = capture_locks(lambda: self.client.post(
-            f"/api/orders/{started['funding_order_id']}/transition", headers=headers,
+            f"/api/orders/{started['funding_order_id']}/transition", headers={'Authorization': 'Bearer ' + self.tokens['ops']},
             json={'action':'confirm_payment'}))
         self.assertEqual(response.status_code, 200, response.text)
         self.assertLess(observed.index('version_change_requests'), observed.index('orders'))
@@ -245,9 +245,9 @@ class VersionChangeSagaIntegrationTests(unittest.TestCase):
         self.assertEqual(set(created), public_keys)
         started = self.request('POST', f'/api/version-changes/{change_id}/start-payment', actor='buyer', json={'reason':'fixture'})
         self.assertEqual(started['payment_status'], 'paying')
-        paid = self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', actor='buyer', json={'reason':'fixture'})
+        paid = self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', actor='ops', json={'reason':'fixture'})
         self.assertEqual(paid['payment_status'], 'paid')
-        self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', actor='buyer', json={'reason':'replay'})
+        self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', actor='platform', json={'reason':'replay'})
         calls = []
         resources = self.m.version_change_resources
         with patch.dict(resources, {
@@ -273,9 +273,22 @@ class VersionChangeSagaIntegrationTests(unittest.TestCase):
                 self.m.Order.id == change.funding_order_id)).business_type, 'version_change_payment')
             self.assertEqual(db.scalar(select(self.m.Order).where(
                 self.m.Order.id == change.funding_order_id)).snapshot_version, 0)
-            self.assertEqual(db.scalar(select(self.m.func.count()).select_from(self.m.OrderStateLog).where(
+            delivery_logs = db.scalars(select(self.m.OrderStateLog).where(
                 self.m.OrderStateLog.order_id == change.funding_order_id,
-                self.m.OrderStateLog.domain == 'delivery')), 0)
+                self.m.OrderStateLog.domain == 'delivery')).all()
+            self.assertEqual(len(delivery_logs), 1)
+            self.assertEqual((delivery_logs[0].action, delivery_logs[0].to_status),
+                             ('service_period_transition', 'accepted'))
+            main_logs = db.scalars(select(self.m.OrderStateLog).where(
+                self.m.OrderStateLog.order_id == change.funding_order_id,
+                self.m.OrderStateLog.domain == 'main')).all()
+            self.assertEqual([(row.action, row.to_status) for row in main_logs],
+                             [('service_period_transition', 'fulfilling')])
+            payment_logs = db.scalars(select(self.m.OrderStateLog).where(
+                self.m.OrderStateLog.order_id == change.funding_order_id,
+                self.m.OrderStateLog.domain == 'payment')).all()
+            self.assertEqual([(row.action, row.to_status) for row in payment_logs],
+                             [('confirm_payment', 'paid')])
             self.assertTrue(db.scalar(select(self.m.AuditLog.id).where(
                 self.m.AuditLog.target_id == change_id,
                 self.m.AuditLog.action == 'apply_version_change_resource')))
@@ -347,7 +360,7 @@ class VersionChangeSagaIntegrationTests(unittest.TestCase):
         created = self.request_change(source, quote, 'compensate-key')
         change_id = created['id']
         self.request('POST', f'/api/version-changes/{change_id}/start-payment', json={'reason':'fixture'})
-        self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', json={'reason':'fixture'})
+        self.request('POST', f'/api/version-changes/{change_id}/confirm-payment', actor='ops', json={'reason':'fixture'})
         directions = []
 
         def apply(db, change, direction='target'):

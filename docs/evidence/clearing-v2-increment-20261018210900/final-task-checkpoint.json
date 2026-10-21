@@ -1,0 +1,92 @@
+{
+  "captured_at": "2026-10-18T13:41:06.303252+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "CLR2-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-003",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-005",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-006",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-007",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-008",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-009",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-001",
+      "status": "in_progress",
+      "progress": 95
+    },
+    {
+      "code": "CLR2-QA-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-003",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "49号需求三项边界均已确认。发布20261018213300-dd9d20c：逐段成本例外及人工补款独立复核完成；资金组合121项运行120通过1条件跳过，PG隔离并发15通过；新增分币与采集保护专项通过。真实部署接口9组通过、99后端文件及12Web资源一致、计费新来源健康且历史缺口不改零。待验收不代表用户已接受；BE003及QA001仍待多源补差、外部补款后自动退款、补差叠加成本例外接线及验证，非等待用户确认，不能标记全完成。新增边界扩大剩余范围故进度校准为95。"
+}

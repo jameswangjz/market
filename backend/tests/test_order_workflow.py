@@ -35,7 +35,8 @@ class OrderWorkflowTests(unittest.TestCase):
         return self.request("POST", f'/api/orders/{order["id"]}/provider-review', actor=actor,
                             expected=expected, json={"decision": "approve", **body})
 
-    def transition(self, order, action="confirm_payment", actor="buyer", expected=200):
+    def transition(self, order, action="confirm_payment", actor=None, expected=200):
+        actor = actor or ("buyer" if action == "start_payment" else "platform")
         return self.request("POST", f'/api/orders/{order["id"]}/transition', actor=actor,
                             expected=expected, json={"action": action})
 
@@ -78,7 +79,7 @@ class OrderWorkflowTests(unittest.TestCase):
         order = self.create()
         before = self.counts()
         for action in ("submit_review", "approve", "reject", "start_payment", "confirm_payment"):
-            self.transition(order, action, actor="platform" if action in {"approve", "reject"} else "buyer", expected=409)
+            self.transition(order, action, actor="platform" if action in {"approve", "reject", "confirm_payment"} else "buyer", expected=409)
         self.assertEqual(before, self.counts())
 
     def test_new_online_order_cannot_enter_legacy_review_flow(self):
@@ -266,27 +267,27 @@ class OrderWorkflowTests(unittest.TestCase):
             self.assertEqual(self.m.order_cost(db, saved), self.m.Decimal("40.00"))
             self.assertEqual(self.m.delivery_task_config(db, saved)[0], "consulting")
 
-    def test_start_only_buyer_super_and_confirm_buyer_or_platform_finance(self):
+    def test_start_only_buyer_super_and_confirm_platform_admin_or_operator(self):
         order = self.create()
         self.review(order)
         before = self.counts()
         for actor in ("buyer_admin", "provider", "outsider", "platform", "finance", "ops", "inactive"):
             self.transition(order, "start_payment", actor, expected=403)
-        for actor in ("buyer_admin", "provider", "outsider", "ops", "inactive", "disabled_ops"):
+        for actor in ("buyer", "buyer_admin", "provider", "outsider", "finance", "inactive", "disabled_ops"):
             self.transition(order, actor=actor, expected=401 if actor == "disabled_ops" else 403)
         self.assertEqual(before, self.counts())
         self.transition(order, "start_payment")
-        self.transition(order, actor="finance")
-        for actor in ("buyer", "platform"):
+        self.transition(order, actor="ops")
+        for actor in ("ops", "platform"):
             before = self.counts()
             self.transition(order, actor=actor)
             self.assertEqual(before, self.counts())
 
-    def test_online_finance_confirm_without_start_and_paid_retry_no_side_effects(self):
+    def test_online_platform_confirm_without_start_and_paid_retry_no_side_effects(self):
         order = self.create("file")
         self.transition(order, actor="platform")
         before = self.counts()
-        for actor in ("buyer", "finance", "platform"):
+        for actor in ("ops", "platform"):
             self.transition(order, actor=actor)
             self.assertEqual(before, self.counts())
         self.assertEqual(before[2], 1)
@@ -300,37 +301,38 @@ class OrderWorkflowTests(unittest.TestCase):
                 old = getattr(member, field)
                 setattr(member, field, value)
                 db.commit()
-            self.transition(order, expected=403)
+            self.transition(order, "start_payment", actor="buyer", expected=403)
             with self.m.SessionLocal() as db:
                 member = db.scalar(self.select(self.m.Membership).where(self.m.Membership.user_id == "buyer"))
                 setattr(member, field, old)
                 db.commit()
 
-    def test_hooks_bypass_metering_for_both_payment_actions_and_finance_for_legacy(self):
+    def test_hooks_bypass_metering_for_payment_actions_and_operator_for_legacy(self):
         order = self.create("file")
         with self.m.SessionLocal() as db:
             saved = db.get(self.m.Order, order["id"])
             buyer = db.get(self.m.User, "buyer")
             for action in ("start_payment", "confirm_payment"):
-                self.assertIs(self.m.order_workflow["authorize_transition"](db, buyer, saved, action), True)
+                user = buyer if action == "start_payment" else db.get(self.m.User, "ops")
+                self.assertIs(self.m.order_workflow["authorize_transition"](db, user, saved, action), True)
             saved.snapshot_version = 0
             saved.main_status = "created"
             db.commit()
-        self.transition(order, actor="finance")
+        self.transition(order, actor="ops")
         self.assertEqual(self.counts()[2], 1)
 
-    def test_finance_inactive_activation_and_buyer_membership_denied_on_paid_retry(self):
+    def test_operator_inactive_activation_and_buyer_membership_denied_on_paid_retry(self):
         order = self.create("file")
         self.transition(order)
         before = self.counts()
         self.transition(order, actor="buyer_admin", expected=403)
         with self.m.SessionLocal() as db:
-            db.get(self.m.User, "finance").activation_status = "pending_activation"
+            db.get(self.m.User, "ops").activation_status = "pending_activation"
             member = db.scalar(self.select(self.m.Membership).where(self.m.Membership.user_id == "buyer"))
             member.status = "disabled"
             db.commit()
-        self.transition(order, actor="finance", expected=403)
-        self.transition(order, expected=403)
+        self.transition(order, actor="ops", expected=403)
+        self.transition(order, actor="buyer", expected=403)
         self.assertEqual(before, self.counts())
 
     def test_new_buyer_payment_rechecks_personal_and_enterprise_verification(self):
@@ -342,7 +344,7 @@ class OrderWorkflowTests(unittest.TestCase):
                 db.commit()
             before = self.counts()
             for action in ("start_payment", "confirm_payment"):
-                self.transition(order, action, expected=403)
+                self.transition(order, action, actor="buyer", expected=403)
             self.assertEqual(before, self.counts())
             with self.m.SessionLocal() as db:
                 setattr(db.get(model, identity), field, "verified")
@@ -351,17 +353,16 @@ class OrderWorkflowTests(unittest.TestCase):
         with self.m.SessionLocal() as db:
             db.get(self.m.User, "buyer").verified_status = "pending"
             db.commit()
-        self.transition(order, expected=403)
+        self.transition(order, actor="buyer", expected=403)
 
-    def test_finance_can_confirm_new_orders_without_buyer_verification(self):
+    def test_operator_can_confirm_new_orders_without_buyer_verification(self):
         order = self.create()
         self.review(order)
         with self.m.SessionLocal() as db:
             db.get(self.m.User, "buyer").verified_status = "pending"
             db.get(self.m.Enterprise, "buyer_tenant").verification_status = "pending"
-            db.get(self.m.User, "finance").verified_status = "pending"
             db.commit()
-        self.transition(order, actor="finance")
+        self.transition(order, actor="ops")
         before = self.counts()
         self.transition(order, actor="platform")
         self.assertEqual(before, self.counts())

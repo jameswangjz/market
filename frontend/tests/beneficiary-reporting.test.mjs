@@ -14,7 +14,8 @@ const consoleSource = readFileSync(new URL('../src/ConsoleApp.vue', import.meta.
 function report() {
   const row = { position_id: 'own-position', settlement_no: 'SET-OWN', participant_id: identity.participant_id, participant_type: identity.participant_type, participant_name: identity.participant_name,
     product_name: '收益关联产品', provider_name: '提供方', direction: 'payable', source_kind: 'original', currency: 'CNY', profit_share: '20.00', total_receivable: '20.00', paid_amount: '5.00', unpaid_amount: '15.00',
-    cost_amount: 'PRIVATE-COST', platform_fee: 'PRIVATE-PLATFORM', bank_account: 'PRIVATE-BANK', order_no: 'PRIVATE-ORDER', participants: [{ participant_id: 'other', amount: 'PRIVATE-OTHER' }] };
+    cost_amount: 'PRIVATE-COST', platform_fee: 'PRIVATE-PLATFORM', bank_account: 'PRIVATE-BANK', order_no: 'PRIVATE-ORDER', participants: [{ participant_id: 'other', amount: 'PRIVATE-OTHER' }],
+    supplementary_funding: { source_key: 'PRIVATE-FUNDING', evidence_hash: 'PRIVATE-PROOF' }, funding_absorption_loss: 'PRIVATE-LOSS', baseline_total_receivable: 'PRIVATE-BASELINE', net_total_receivable: 'PRIVATE-NET' };
   return { scope: { kind: 'beneficiary', ...identity }, summary: { ...row, income_order_count: 1, refund_count: 0, adjustment_count: 0 },
     items: [row], monthly: [{ month: '2026-10', ...row }], products: [row], providers: [row], participants: [row], rankings: [{ amount: 'PRIVATE-RANK' }], total: 1, page: 1, page_size: 20 };
 }

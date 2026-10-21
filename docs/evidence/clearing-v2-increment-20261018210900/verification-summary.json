@@ -1,0 +1,36 @@
+{
+  "kind": "main-agent summary of executed groups, not raw JUnit output",
+  "groups_overlap": true,
+  "financial_combination_before_cent_followup": {"run": 121, "passed": 120, "conditional_browser_skipped": 1},
+  "funded_report_after_cent_followup": {"run": 2, "passed": 2, "actual_completion_and_capture": true},
+  "existing_funding_report_followup": {"run": 2, "passed": 2},
+  "isolated_postgresql_manual_funding": {"run": 6, "passed": 6},
+  "isolated_postgresql_finance": {"run": 9, "passed": 9},
+  "pg_snapshot_sha256": "8481fea79977e08b533a6b25038f76d399eb711ace59e81f65288f2dc2466165",
+  "pg_finance_code_sha256": "5612c2510f477750e0c6e12b04bdfe7bb44086efc923a080742a3e49a2788f7e",
+  "pg_manual_code_sha256": "f0e49445da03e0dae26dbd5c878154a7d8d7b5d366ba757c62c25ae71a4770f0",
+  "pg_environment": "PostgreSQL16; disposable database and private schemas, no business-database tests",
+  "disposable_databases_removed": true,
+  "temporary_pg_pod_removed": "clr2-pg-20261018205325",
+  "frontend_management_funding": {"run": 35, "passed": 35},
+  "frontend_manual_funding": {"run": 6, "passed": 6},
+  "gateway_timeout_and_event_tests": {"run": 27, "passed": 27},
+  "nonblocking_health_saturated_thread_limiter": {"run": 1, "passed": 1},
+  "gateway_admission_and_business_isolation": {"run": 2, "passed": 2},
+  "recorded_failures": [
+    "Initial module command omitted PYTHONPATH; rerun with backend and tests paths passed.",
+    "Initial reporting integration lacked Redis executable; rerun with isolated Redis8 fixture passed.",
+    "Multi-cost second-source rollback test initially failed; transaction fix and focused rerun passed.",
+    "Original no-verifier assertion needed separation of installed verifier availability from valid reviewed proof; focused funding rerun passed.",
+    "Initial PG execution in the API container exited137; moved to a separate bounded pod and removed its abandoned disposable database.",
+    "Database liveness timeout interrupted deployment backup; no image switch was performed on that attempt.",
+    "Web rollout TCP reset triggered old deploy-gate rollback; retry policy now includes all bounded transient errors.",
+    "Installed a788905 financial report exceeded45seconds despite health success; final dd9d20c admission gate requires separate installed re-verification."
+  ],
+  "limits": [
+    "Funded automatic financial reversal supports one ordinary source with verified platform absorption.",
+    "Multi-funded, externally-funded refund and funded-plus-cost-exception combinations remain explicit financial waiting states.",
+    "Manual independent receipt review is not automated bank reconciliation.",
+    "No real bank payment or recovery is asserted."
+  ]
+}

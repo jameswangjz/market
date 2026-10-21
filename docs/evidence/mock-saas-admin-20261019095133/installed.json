@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "image": "market-mock-saas:20261019095133-8401a89",
+  "commit": "8401a897937632eb634d538bd3b43d4988e44896",
+  "source_files": 7,
+  "archive_sha256": "f7560e895f09bb10ab2f9469227344b0a8dde72352329ecfb9da1bd474b53d36",
+  "tests": {
+    "unit": 47,
+    "browser_configuration": 13,
+    "browser_existing_sso": 3
+  },
+  "SaaS_APP3_or_order_mutated": false
+}

@@ -1,0 +1,29 @@
+﻿{
+    "checks":  [
+                   "Management view 2 loads without contract errors",
+                   "Both actual sources display order, settlement, batch business numbers and final baseline hash",
+                   "Source identities are server-bound; only amounts are editable inputs",
+                   "Each source displays its ordinary refund cost ceiling",
+                   "Two decimal-string allocations produce exact0.03 total",
+                   "Over-cap source is rejected before any network write",
+                   "Multi-source application layout fits 1440",
+                   "Multi-source application layout fits 390",
+                   "Applicant and same-side users cannot approve the whole proposal",
+                   "Actual backend freezes both per-source invoices in one version2-schema proposal",
+                   "Management view 2 loads without contract errors",
+                   "Reviewer sees every frozen source and invoice, with no per-source edit or separate approval",
+                   "One opposite-party decision approves the whole proposal exactly once",
+                   "Buyer actual-paid amount, refund amount, source baselines and completion hashes remain unchanged"
+               ],
+    "screenshots":  [
+                        "multi-cost-application-1440.png",
+                        "multi-cost-application-390.png",
+                        "multi-cost-whole-review-390.png"
+                    ],
+    "post_paths":  [
+                       "/api/settlement-cost-exceptions",
+                       "/api/settlement-cost-exceptions/b98bc81ca33c6f1c6734eb64c2bdecf8/decision"
+                   ],
+    "scope":  "isolated localhost8129 real synthetic VC sources; only one cost proposal and one opposite-party decision are writable",
+    "status":  "passed"
+}

@@ -34,6 +34,7 @@ import jwt
 import redis
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from minio import Minio
 from PIL import Image
@@ -575,6 +576,10 @@ class Order(Base):
     billing_cycle: Mapped[str] = mapped_column(String(20), default="")
     subscription_id: Mapped[str] = mapped_column(String(36), default="")
     business_type: Mapped[str] = mapped_column(String(30), default="")
+    order_type: Mapped[str] = mapped_column(String(30), default="new_purchase")
+    service_starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    service_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    service_effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     related_order_id: Mapped[str] = mapped_column(String(36), default="")
     snapshot_version: Mapped[int] = mapped_column(Integer, default=0)
     subscription_months: Mapped[int] = mapped_column(Integer, default=1)
@@ -1070,7 +1075,7 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def issue_token(user: User) -> str:
     issued = now()
-    return jwt.encode({"sub": user.id, "email": user.email, "iat": issued, "exp": issued + timedelta(hours=12)}, JWT_SECRET, algorithm="HS256")
+    return jwt.encode({"sub": user.id, "email": user.email, "pwd": hashlib.sha256(user.password_hash.encode()).hexdigest(), "iat": issued, "exp": issued + timedelta(hours=12)}, JWT_SECRET, algorithm="HS256")
 
 
 class LoginBody(BaseModel):
@@ -1624,7 +1629,8 @@ def notify_order_event(db: Session, order: Order, action: str, version: str, *, 
         "confirm_payment": "订单支付完成", "approve_refund": "订单退款处理中", "complete_refund": "订单退款完成",
         "start_delivery": "订单开始交付", "submit_delivery": "订单待验收", "accept_delivery": "订单验收通过",
         "reject_delivery": "订单交付退回整改", "mark_exception": "订单交付异常", "retry_delivery": "订单交付重试",
-        "confirm_order": "订单已完成", "delivery_succeeded": "订单待验收", "delivery_failed": "订单自动交付异常",
+        "confirm_order": "订单已完成", "delivery_succeeded": "订单交付验证通过", "delivery_failed": "订单自动交付异常",
+        "delivery_prepared": "订单权益已配置，等待服务生效",
     }
     if action not in titles:
         return
@@ -1818,6 +1824,11 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     if (not user or not user.is_active or user.activation_status in {"disabled", "deleted", "expired"}
             or user.username == "ywsh" or user.platform_role == "business_reviewer"):
         raise HTTPException(401, "登录已失效")
+    password_security = globals().get("PasswordSecurity")
+    if password_security:
+        password_state = db.get(password_security, user.id)
+        if password_state and password_state.changed_at and payload.get("pwd") != hashlib.sha256(user.password_hash.encode()).hexdigest():
+            raise HTTPException(401, "密码已变更，请重新登录")
     return user
 
 
@@ -2239,6 +2250,10 @@ def ensure_review_and_file_schema():
             "billing_cycle": "VARCHAR(20)",
             "subscription_id": "VARCHAR(36)",
             "business_type": "VARCHAR(30)",
+            "order_type": "VARCHAR(30) DEFAULT 'new_purchase'",
+            "service_starts_at": "TIMESTAMP WITH TIME ZONE",
+            "service_ends_at": "TIMESTAMP WITH TIME ZONE",
+            "service_effective_at": "TIMESTAMP WITH TIME ZONE",
             "related_order_id": "VARCHAR(36)",
             "snapshot_version": "INTEGER DEFAULT 0",
             "subscription_months": "INTEGER DEFAULT 1",
@@ -2554,7 +2569,7 @@ def startup():
 
 
 @app.get("/api/health")
-def health():
+async def health():
     return {"status": "ok", "service": "market-api", "time": now()}
 
 
@@ -3563,6 +3578,8 @@ def create_product(body: ProductBody, request: Request, enterprise_id: str = Que
     trading_policy["delivery_category"](body.delivery_method)
     trading_policy["validate_product_delivery"](db, None, body.product_type, body.delivery_method)
     values = body.model_dump()
+    if body.delivery_method in {"api", "model_api"}:
+        values.pop("upstream_url", None)
     category = resolve_product_category(db, values)
     from .registration_config import pop_registration_config
     pop_registration_config(values)
@@ -3600,12 +3617,18 @@ def update_product(product_id: str, body: ProductBody, request: Request, enterpr
     if product.status not in {"draft", "rejected", "security_unpublished"}:
         raise HTTPException(409, "只有草稿或被驳回的产品可以修改")
     trading_policy["validate_product_delivery"](db, product, body.product_type, body.delivery_method)
+    omitted_legacy_upstream = (product.delivery_method in {"api", "model_api"}
+                               and "upstream_url" not in body.model_fields_set)
     if db.scalar(select(Order.id).where(Order.product_id == product.id, Order.paid_amount > 0).limit(1)):
         if json.loads(product.oidc_redirect_uris_json or "[]") != body.oidc_redirect_uris:
             raise HTTPException(409, "已售产品的OIDC回调地址不可覆盖")
-        if any(getattr(product, key) != getattr(body, key) for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")):
+        if any(getattr(product, key) != getattr(body, key)
+               for key in ("delivery_method", "upstream_url", "application_url", "integration_api_url")
+               if key != "upstream_url" or not omitted_legacy_upstream):
             raise HTTPException(409, "已售产品的交付类型和接入地址不可覆盖")
     values = body.model_dump()
+    if omitted_legacy_upstream:
+        values.pop("upstream_url", None)
     category = resolve_product_category(db, values)
     from .registration_config import pop_registration_config
     pop_registration_config(values)
@@ -3754,12 +3777,18 @@ def saas_management_target(product: Product, db: Session) -> tuple[str, str]:
 
 
 def ensure_oauth_client(db: Session, product: Product, scope: str = "resource.invoke") -> OAuthClient:
+    managed_api = (product.delivery_method in {"api", "model_api"}
+                   and bool((product.integration_api_url or "").strip()))
     if product.product_type == "saas":
         scope = "saas.tenant saas.user saas.department"
+    elif managed_api:
+        scope = " ".join(dict.fromkeys([*scope.split(), "resource.invoke", "resource.manage"]))
     client = db.scalar(select(OAuthClient).where(OAuthClient.product_id == product.id))
     if client:
         if product.product_type == "saas":
             client.scope = scope
+        elif managed_api and "resource.manage" not in (client.scope or "").split():
+            client.scope = f"{client.scope or ''} resource.manage".strip()
         existing_saas = db.scalar(select(SaaSIntegrationConfig).where(SaaSIntegrationConfig.product_id == product.id))
         if existing_saas:
             existing_saas.client_id = client.client_id
@@ -4444,6 +4473,8 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
         selected_id or header_id or (product.enterprise_id if request is None else ""))
     if membership.enterprise_id != product.enterprise_id or membership.role not in {"super_admin", "enterprise_admin"}:
         raise HTTPException(403, "只有当前企业管理员可以下载接入凭据")
+    if product.product_type == "saas":
+        raise HTTPException(410, f"SaaS接入配置请使用 /api/products/{product.id}/saas-integration-credentials-download")
     if product.product_type not in {"api", "model", "saas"} or product.status not in {"published", "pending_integration", "draft"}:
         raise HTTPException(409, "只有已审核通过的 API 或 SaaS 产品可以下载接入凭据")
     if product.status == "draft" and not (product.reviewed_at and product.reviewed_by):
@@ -4467,6 +4498,11 @@ def download_oauth_credentials(product_id: str, user: User = Depends(current_use
         "audience: market-resource",
         f"scope: {client.scope}",
         f"business_url: {config.base_url if config else ''}",
+        *([f"api_management_url: {product.integration_api_url}",
+           "api_management_protocol: market-api-management-v1",
+           "api_management_scope: resource.manage",
+           "api_business_scope: resource.invoke"]
+          if product.delivery_method in {'api', 'model_api'} else []),
         "认证模式: OAuth2 client_credentials",
         "请妥善保存 client_secret，不要提交到前端代码或公开代码仓库。资源服务应校验平台签发的 Token。",
         "",
@@ -4497,7 +4533,7 @@ def product_credential_metadata(product_id: str, request: Request, enterprise_id
         SaaSIntegrationConfig.product_id == product.id)) if product.product_type == "saas" else None
     return JSONResponse({"product_id": product.id, "product_status": product.status,
         "provider_admin": provider_admin,
-        "oauth_download_available": provider_admin and approved and product.product_type in {"api", "model", "saas"} and bool(oauth_client),
+        "oauth_download_available": provider_admin and approved and product.product_type in {"api", "model"} and bool(oauth_client),
         "oidc_download_available": provider_admin and product.status in {"published", "pending_integration"}
             and product.product_type == "saas" and product.delivery_method == "tenant_access"
             and bool(oidc_client and oidc_client.secret_encrypted),
@@ -5236,8 +5272,34 @@ def saas_call(config: SaaSIntegrationConfig, operation: str, payload: dict[str, 
 
 def execute_saas_operation(db: Session, subscription: SaaSSubscription, operation: str, payload: dict[str, Any], config: SaaSIntegrationConfig, idempotency_key: str) -> dict[str, Any]:
     existing = db.scalar(select(SaaSOperation).where(SaaSOperation.idempotency_key == idempotency_key))
+    if existing and (existing.subscription_id != subscription.id or existing.operation != operation):
+        raise HTTPException(409, 'SaaS operation identity conflict')
     if existing and existing.status == "succeeded":
         return json.loads(existing.response_payload or "{}")
+    if existing:
+        payload = json.loads(existing.request_payload)
+    else:
+        from .saas_reconciliation import reconciliation_context
+        payload = dict(payload)
+        if operation == 'RENEW' and 'expires_at' not in payload and 'billing_cycle' in payload:
+            # Legacy renewals have no combination calendar; freeze their own calendar once.
+            start = now()
+            previous_end = subscription.expires_at
+            if previous_end:
+                if previous_end.tzinfo is None:
+                    previous_end = previous_end.replace(tzinfo=timezone.utc)
+                start = max(start, previous_end)
+            cutoff = subscription_expiry(start, payload['billing_cycle'])
+            payload.update(starts_at=start.isoformat(), expires_at=cutoff.isoformat() if cutoff else None)
+        provisional = (operation == 'OPEN' and not subscription.external_tenant_id
+                       or payload.get('expires_at', subscription.expires_at) is None
+                       and payload.get('billing_cycle', subscription.billing_cycle) != 'perpetual')
+        payload.setdefault('reconciliation_context', reconciliation_context(
+            subscription_expires_at=None if provisional else payload.get('expires_at', subscription.expires_at),
+            effective_at_semantics='provider_receipt', provisional=provisional,
+            event_id=idempotency_key, event_type=operation, product_id=subscription.product_id,
+            enterprise_id=subscription.enterprise_id, subscription_id=subscription.id,
+            tenant_id=subscription.external_tenant_id or None))
     record = existing or SaaSOperation(subscription_id=subscription.id, operation=operation, idempotency_key=idempotency_key, request_payload=json.dumps(payload, ensure_ascii=False))
     if not existing:
         db.add(record)
@@ -5350,6 +5412,9 @@ def save_saas_integration(product_id: str, body: SaaSIntegrationBody, user: User
     return saas_integration_out(config)
 
 
+from .saas_entry import probe_saas_entry
+
+
 def verify_saas_integration_service(db: Session, product: Product, actor: str, *, publish: bool = True,
                                    commit: bool = True):
     if publish and product.status != "pending_integration":
@@ -5389,6 +5454,7 @@ def verify_saas_integration_service(db: Session, product: Product, actor: str, *
             headers={"Authorization": "Bearer " + token})
         if not 200 <= response.status_code < 300:
             raise RuntimeError("health_check_failed")
+        probe_saas_entry(globals(), db, product)
         callbacks = json.loads(product.oidc_redirect_uris_json or "[]")
         if (not isinstance(callbacks, list) or not callbacks
                 or any(not isinstance(uri, str) or not oidc_provider["valid_redirect"](uri, db=db) for uri in callbacks)):
@@ -5462,11 +5528,9 @@ def verify_saas_integration(product_id: str, user: User = Depends(current_user),
 
 
 def require_legacy_saas_payer(db: Session, user: User, enterprise_id: str) -> None:
-    """Legacy purchase/renew simulate payment inline, so cannot admit administrators."""
+    """Retire endpoints that implicitly mark payments complete for the buyer."""
     trading_policy["require_buyer"](db, user, enterprise_id)
-    member = current_membership(db, user, enterprise_id)
-    if member.role != "super_admin":
-        raise HTTPException(403, "该旧订阅接口包含模拟付款，仅企业超级管理员可执行")
+    raise HTTPException(409, '旧订阅接口不再隐式完成支付，请通过订单的新购、续费或版本变更流程办理')
 
 
 @app.post("/api/products/{product_id}/saas-subscriptions")
@@ -5532,8 +5596,12 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
                               event_key=f"saas:{subscription.id}:expired:{expires_at.isoformat()}", category="system", tenant_id=subscription.enterprise_id,
                               recipient_ids=[owner] if owner else [], enterprise_ids=[subscription.enterprise_id])
     amount = saas_cycle_price(version, body.billing_cycle)
-    result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}")
-    if subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
+    renew_key = f"renew:{subscription.id}:{body.billing_cycle}:{subscription.expires_at}"
+    result = execute_saas_operation(db, subscription, "RENEW", {"tenant_id": subscription.external_tenant_id, "billing_cycle": body.billing_cycle, "enterprise_id": subscription.enterprise_id}, config, renew_key)
+    frozen = json.loads(db.scalar(select(SaaSOperation).where(SaaSOperation.idempotency_key == renew_key)).request_payload)
+    if 'expires_at' in frozen:
+        subscription.expires_at = datetime.fromisoformat(frozen['expires_at']) if frozen['expires_at'] else None
+    elif subscription.expires_at and body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(subscription.expires_at, body.billing_cycle)
     elif body.billing_cycle != "perpetual": subscription.expires_at = subscription_expiry(now(), body.billing_cycle)
     else: subscription.expires_at = None
     add_saas_order(db, subscription, product, version, amount, "renew", paid=True)
@@ -5544,6 +5612,7 @@ def renew_saas_subscription(subscription_id: str, body: SaaSRenewBody, user: Use
 @app.post("/api/saas-subscriptions/{subscription_id}/change-version")
 def change_saas_version(subscription_id: str, body: SaaSChangeBody, user: User = Depends(current_user), db: Session = Depends(db_session)):
     subscription, product, current_version, config = subscription_context(subscription_id, user, db)
+    require_legacy_saas_payer(db, user, subscription.enterprise_id)
     if db.scalar(select(saas_combinations["Binding"].id).where(saas_combinations["Binding"].subscription_id == subscription.id)):
         raise HTTPException(409, "该订阅须通过订单版本变更报价与资金资源流程变更版本")
     target = db.scalar(select(SaaSProductVersion).where(SaaSProductVersion.id == body.version_id, SaaSProductVersion.product_id == product.id, SaaSProductVersion.status == "active"))
@@ -5678,8 +5747,15 @@ def remove_saas_department(subscription_id: str, department_id: str, user: User 
     return {"id": department.id, "status": department.status, "provider_result": result}
 
 
+def order_base_out(o: Order) -> dict[str, Any]:
+    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "provider_enterprise_id": o.provider_enterprise_id, "buyer_name": o.buyer_name, "product_id": o.product_id, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "order_type": o.order_type or 'new_purchase', "service_starts_at": o.service_starts_at, "service_ends_at": o.service_ends_at, "service_effective_at": o.service_effective_at, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+
+
 def order_out(o: Order) -> dict[str, Any]:
-    return {"id": o.id, "order_no": o.order_no, "buyer_user_id": o.buyer_user_id, "buyer_enterprise_id": o.buyer_enterprise_id, "provider_enterprise_id": o.provider_enterprise_id, "buyer_name": o.buyer_name, "product_id": o.product_id, "product_name": o.product_name, "product_version_id": o.product_version_id, "product_version_code": o.product_version_code, "product_version_name": o.product_version_name, "billing_cycle": o.billing_cycle, "subscription_months": o.subscription_months or 1, "delivery_method": o.delivery_method_snapshot or "", "snapshot_version": o.snapshot_version or 0, "unit_price": float(o.unit_price_snapshot) if o.unit_price_snapshot is not None else None, "subscription_id": o.subscription_id, "business_type": o.business_type, "related_order_id": o.related_order_id, "main_status": o.main_status, "payment_status": o.payment_status, "delivery_status": o.delivery_status, "after_sales_status": o.after_sales_status, "amount": float(o.amount or 0), "paid_amount": float(o.paid_amount or 0), "refunded_amount": float(o.refunded_amount or 0), "created_at": o.created_at, "updated_at": o.updated_at}
+    from sqlalchemy.orm import object_session
+    db = object_session(o)
+    projection = order_service_lifecycle['describe'](db, o) if db is not None else {}
+    return {**order_base_out(o), **projection}
 
 
 @app.get("/api/orders")
@@ -5723,6 +5799,7 @@ def create_quoted_order(db: Session, user: User, quote: dict) -> Order:
     subscription = saas_combinations["reserve"](db, user, quote)
     order = Order(order_no=make_order_no(), buyer_enterprise_id=buyer.id, buyer_user_id=user.id, provider_enterprise_id=product.enterprise_id, product_id=product.id, product_version_id=version.id, product_version_code=version.version_code, product_version_name=(getattr(version, "name", "") or version.description or version.version_code)[:120], product_name=product.name, buyer_name=buyer.name, amount=quote["amount"], billing_cycle="monthly" if quote["public"]["billing_unit"] == "month" else "", main_status="created")
     order_economics["apply_snapshot"](order, quote)
+    order_service_lifecycle["initialize"](db, order)
     if subscription:
         order.subscription_id = subscription.id
     order_workflow["initialize_order"](db, order, user)
@@ -6258,6 +6335,8 @@ def generate_settlement(order_id: str, body: SettlementRuleBody | None = None, u
         raise HTTPException(400, "订单尚未满足清算条件")
     if version_change_settlement["is_funding_order"](order):
         raise HTTPException(409, "版本变更差价支付单不单独清算，请按月清算关联的经济调整")
+    if order.business_type == 'refund_record':
+        raise HTTPException(409, '退费现金订单不单独生成收入清算，请使用关联退款的负向清算调整')
     existing = db.scalar(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded").order_by(Settlement.created_at.desc()).with_for_update().execution_options(populate_existing=True))
     settlement_finance_adapter.protect(globals(), db, [existing.id] if existing else [])
     if existing and existing.status in {"locked", "paid", "archived", "disputed"}:
@@ -6534,7 +6613,7 @@ def simulate_settlement_rule(rule_id: str, body: SettlementBatchBody, user: User
     rule = db.get(SettlementRule, rule_id)
     if not rule:
         raise HTTPException(404, "清算规则不存在")
-    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.business_type != "version_change_payment").limit(20)).all()]
+    order_ids = body.order_ids or [x.id for x in db.scalars(select(Order).where(Order.payment_status.in_(["paid", "refunded"]), Order.business_type.notin_(["version_change_payment", "refund_record"])).limit(20)).all()]
     rows = []
     for order_id in order_ids:
         order = db.get(Order, order_id)
@@ -7937,6 +8016,31 @@ order_fulfillment = install_order_fulfillment(globals())
 from .subscription_terms import install as install_subscription_terms
 
 subscription_terms = install_subscription_terms(globals())
+
+from .order_service_lifecycle import install as install_order_service_lifecycle
+order_service_lifecycle = install_order_service_lifecycle(globals())
+
+from .refund_order_records import install as install_refund_order_records
+refund_order_records = install_refund_order_records(globals())
+
+from sqlalchemy import event as sqlalchemy_event
+
+@sqlalchemy_event.listens_for(Session, 'before_flush')
+def synchronize_refund_order_records(db, flush_context, instances):
+    if db.get_bind() is engine:
+        records = refund_order_records['scan_pending'](db)
+        for record in records:
+            source = db.get(Order, record.related_order_id)
+            state = db.get(order_service_lifecycle['State'], record.related_order_id)
+            if (state and source and source.refunded_amount and state.status != 'stopped'
+                    and (state.status != 'needs_manual' or source.refunded_amount >= source.paid_amount)):
+                state.next_check_at = now()
+from .api_provider_lifecycle import install as install_api_provider_lifecycle
+
+api_provider_lifecycle = install_api_provider_lifecycle(globals())
+from .provider_entitlements import install as install_provider_entitlements
+
+provider_entitlements = install_provider_entitlements(globals())
 from .saas_combinations import install as install_saas_combinations
 
 saas_combinations = install_saas_combinations(globals())
@@ -8068,3 +8172,7 @@ from .settlement_reporting import install as install_settlement_reporting
 settlement_parties = install_settlement_parties(globals())
 settlement_finance = install_settlement_finance(globals())
 settlement_reporting = install_settlement_reporting(globals())
+
+from .password_security import install as install_password_security
+
+password_security = install_password_security(globals())

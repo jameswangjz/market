@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: api-provider-expiry
+  namespace: market
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 240
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 120
+      template:
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          containers:
+            - name: api-provider-expiry
+              image: market-api:REPLACE_WITH_DEPLOYED_TAG
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command: [python, -m, app.api_provider_expiry_worker]
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: '1', memory: 512Mi}
+              # Before applying, preserve UPSTREAM_ALLOWED_HOSTS from the current
+              # API Deployment, including any explicit env override of market-config.
+              envFrom:
+                - configMapRef:
+                    name: market-config
+                - secretRef:
+                    name: market-secrets
+              env:
+                - {name: PYTHONPATH, value: /app}
+                - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
+                - {name: OIDC_ISSUER, value: 'http://192.168.10.10:30080'}
+                - {name: OIDC_ALLOW_HTTP_DEVELOPMENT, value: 'true'}
+                - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
+                - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
+                - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
+                - {name: MINIO_SECRET_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_PASSWORD}}}
+                - {name: API_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-api-credentials, key: API_CREDENTIAL_ENCRYPTION_KEY}}}
+                - {name: OIDC_SIGNING_KEY_PEM, valueFrom: {secretKeyRef: {name: market-oidc-signing, key: OIDC_SIGNING_KEY_PEM}}}
+                - {name: OIDC_CREDENTIAL_ENCRYPTION_KEY, valueFrom: {secretKeyRef: {name: market-oidc-credentials, key: OIDC_CREDENTIAL_ENCRYPTION_KEY}}}

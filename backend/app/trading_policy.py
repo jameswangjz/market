@@ -168,8 +168,22 @@ def install(ns):
                     FileObject.scan_status == "clean"))
                 if not file:
                     raise HTTPException(400, "每个启用版本须上传交付文件并完成病毒扫描")
-        if product.delivery_method in {"api", "model_api"} and not product.upstream_url:
-            raise HTTPException(400, "请配置API提供方后端地址")
+        if product.delivery_method in {"api", "model_api"}:
+            try:
+                ns["application_address_policy"]["validate_url"](product.integration_api_url, db=db)
+            except ValueError as exc:
+                raise HTTPException(400, "请配置有效的API服务管理接口地址") from exc
+            Config = ns["version_gateway"]["Config"]
+            for version in versions:
+                config = db.scalar(select(Config).where(
+                    Config.product_id == product.id, Config.version_id == version.id))
+                if config is None:
+                    raise HTTPException(400, "每个启用版本须配置独立的API上游地址")
+                try:
+                    ns["validate_upstream_url"](config.upstream_url)
+                    ns["application_address_policy"]["validate_url"](config.upstream_url, db=db)
+                except ValueError as exc:
+                    raise HTTPException(400, "启用版本的API上游地址无效") from exc
         if product.delivery_method == "tenant_access" and (not product.application_url or not product.integration_api_url):
             raise HTTPException(400, "请配置SaaS应用访问地址及平台管理接口地址")
 

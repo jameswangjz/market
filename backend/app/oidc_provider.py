@@ -487,23 +487,19 @@ def install(ns):
             raise HTTPException(409, '现有OIDC回调登记无效')
 
         platform_issuer = ns['platform_oauth_issuer']()
-        token_url = ns['platform_oauth_token_url']()
         oidc_issuer = issuer()
         payload = {
-            'schema_version': '1.0',
+            'schema_version': '2.0',
             'product': {'id': product.id, 'name': product.name,
                 'application_url': product.application_url or '',
                 'integration_api_url': product.integration_api_url or ''},
-            'oauth2_api': {
-                'client_id': machine.client_id,
-                'client_secret': machine.client_secret,
-                'token_url': token_url,
+            'resource_server': {
+                'authentication': 'Bearer',
+                'validation_method': 'introspection',
                 'introspection_url': platform_issuer.rstrip('/') + '/oauth/introspect',
                 'issuer': platform_issuer,
                 'audience': 'market-resource',
-                'scope': machine.scope,
-                'grant_type': 'client_credentials',
-                'token_validation': 'Resource services validate platform signature, issuer, audience and expiry; use introspection where applicable.',
+                'scopes': sorted(machine.scope.split()),
             },
             'oidc_sso': {
                 'client_id': oidc.client_id,
@@ -521,15 +517,16 @@ def install(ns):
                 'scopes': sorted(SCOPES),
             },
             'instructions': [
-                '两个客户端均为产品共享客户端，不代表购买方或最终用户身份。',
+                '机器OAuth2 client_id/client_secret由平台生成、保存并仅由平台用于SaaS调用，不包含在提供方下载中。',
+                'OIDC客户端为产品共享登录配置，不代表购买方身份；购买方企业与最终用户身份由每次登录的令牌声明区分。',
                 'OIDC用户令牌按用户、企业及订阅隔离，不得作为机器凭据使用。',
-                'OAuth2密钥主要用于向平台获取机器Token；SaaS仍须验证平台签发的Token，不用于用户登录。',
+                '当前机器Token使用HS256签名；SaaS资源服务须通过resource_server.introspection_url验证Bearer Token，不得使用OIDC JWKS验证机器Token。',
                 '凭据仅供提供方服务器端配置，禁止发送给购买方或放入浏览器、前端代码及公开仓库。',
             ],
         }
         ns['audit'](db, user.email or user.phone or user.id,
             'download_saas_integration_credentials', 'product', product.id,
-            '下载SaaS机器OAuth与OIDC集成凭据；审计不包含密钥',
+            '下载SaaS资源验证元数据与OIDC集成凭据；审计不包含密钥',
             tenant_id=product.enterprise_id)
         db.commit()
         filename = quote(f'{product.name}-saas-integration-credentials.json', safe='')

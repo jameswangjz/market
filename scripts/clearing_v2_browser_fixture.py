@@ -1,5 +1,6 @@
 """Disposable SQLite browser fixture; never opens a deployed database."""
 import argparse
+import hashlib
 from datetime import datetime, timezone
 from decimal import Decimal
 import json
@@ -72,6 +73,7 @@ def main():
     parser.add_argument('--port', type=int, default=8126)
     parser.add_argument('--tokens', type=Path, required=True)
     parser.add_argument('--beneficiaries', action='store_true', help='Seed isolated expert/channel identities and real finance positions')
+    parser.add_argument('--management', action='store_true', help='Seed approved synthetic refunds for isolated management browser writes')
     parser.add_argument('--check-only', action='store_true', help='Verify synthetic reporting HTTP contracts and exit')
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
@@ -79,7 +81,7 @@ def main():
     import test_message_business_events as fixture
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
-    from sqlalchemy import create_engine, event
+    from sqlalchemy import create_engine, event, select
     from sqlalchemy.orm import sessionmaker
     import uvicorn
 
@@ -138,9 +140,63 @@ def main():
             db.commit()
             if args.beneficiaries:
                 seed_beneficiaries(m, db, stamp, case.tokens)
+            if args.management:
+                db.add(m.User(id='security', name='Read only security', password_hash='unused', email='security@example.invalid',
+                    platform_role='security_compliance', verified_status='verified', is_active=True, activation_status='active'))
+                db.add_all([m.Refund(id='clr2-management-refund-' + str(i), refund_no='REF-CLR2-MANAGEMENT-' + str(i),
+                    order_id=order.id, payment_id=db.scalar(select(m.Payment.id).where(m.Payment.order_id == order.id)), amount=50, status='approved', reason='Synthetic invoice review', requested_by='buyer') for i in (1, 2)])
+                db.flush()
+                m.settlement_parties['create_participant'](db, db.get(m.User, 'provider'), dict(request_id='management-provider',
+                    name='Synthetic cost bearer', kind='provider', enterprise_id='provider_tenant', currency='CNY'),
+                    request=type('ScopeRequest', (), {'query_params': {'enterprise_id': 'provider_tenant', 'business_view': 'provider'}, 'headers': {}})())
+                # Read-only presentation fixture, not an executed refund/accounting scenario.
+                # References use the actual isolated baseline; financial algorithm tests are separate.
+                refund = m.Refund(id='clr2-evidence-refund', refund_no='REF-SYNTHETIC-EVIDENCE', order_id=order.id,
+                    payment_id=db.scalar(select(m.Payment.id).where(m.Payment.order_id == order.id)), amount=150,
+                    status='completed', reason='Synthetic multi-source presentation only', requested_by='buyer', completed_at=stamp)
+                db.add(refund)
+                db.flush()
+                negative = m.Settlement(id='clr2-evidence-settlement', settlement_no='SET-SYNTHETIC-EVIDENCE',
+                    order_id=order.id, refund_id=refund.id, is_refund=True, gross_amount=-150, net_amount=-150,
+                    cost_amount=-100, profit_amount=-50, platform_fee=-10, provider_share=-40, status='pending', created_at=stamp)
+                db.add(negative)
+                db.flush()
+                baseline = db.get(m.settlement_finance['Baseline'], settlement.id)
+                refs = [dict(segment_id='synthetic-source-' + str(i), source_order_id=order.id,
+                    reference_settlement_id=settlement.id, baseline_hash=baseline.snapshot_hash,
+                    gross_amount='-75.00', cost_amount='-50.00', profit_amount='-25.00',
+                    shares=dict(platform_fee='-5.00', provider_share='-20.00', service_share='0.00', expert_fee='0.00', channel_fee='0.00')) for i in (1, 2)]
+                payload = json.dumps(dict(settlement_id=negative.id, refund_id=refund.id, order_id=order.id, references=refs),
+                    sort_keys=True, separators=(',', ':'))
+                db.add(m.refund_settlement['MultiSourceManifest'](settlement_id=negative.id, refund_id=refund.id,
+                    payload_json=payload, payload_hash=hashlib.sha256(payload.encode()).hexdigest(), actor='synthetic-ui-only'))
+                # The real annual API rejects empty years. Use a fully evidenced
+                # internal-profit-only prior-year record, with no external debt.
+                past = stamp.replace(year=stamp.year - 1, month=12, day=15)
+                annual_order = m.Order(id='clr2-annual-order', order_no='ORD-SYNTHETIC-ANNUAL', buyer_user_id='buyer',
+                    buyer_enterprise_id='buyer_tenant', provider_enterprise_id='provider_tenant', product_id='product',
+                    product_version_id='version', product_name='Synthetic annual UI fixture', buyer_name='Synthetic buyer',
+                    amount=10, paid_amount=10, payment_status='paid', economic_snapshot_json=json.dumps({'currency': 'CNY'}))
+                db.add(annual_order)
+                db.flush()
+                db.add(m.Payment(order_id=annual_order.id, payment_no='PAY-SYNTHETIC-ANNUAL', amount=10,
+                    status='paid', paid_at=past, proof='Synthetic internal-profit receipt', confirmed_by='finance'))
+                annual_batch = m.SettlementBatch(id='clr2-annual-batch', batch_no='BATCH-SYNTHETIC-ANNUAL', cycle='monthly',
+                    period_start=past.replace(day=1), status='confirmed', idempotency_key='synthetic-annual', total_amount=10, total_profit=10)
+                annual_settlement = m.Settlement(id='clr2-annual-settlement', settlement_no='SET-SYNTHETIC-ANNUAL',
+                    order_id=annual_order.id, gross_amount=10, net_amount=10, cost_amount=0, profit_amount=10,
+                    platform_fee=10, provider_share=0, status='locked', created_at=past)
+                db.add_all([annual_batch, annual_settlement])
+                db.flush()
+                db.add(m.SettlementLine(batch_id=annual_batch.id, settlement_id=annual_settlement.id,
+                    participant_type='platform', participant_id='platform', participant_name='Platform', amount=10, status='locked'))
+                db.flush()
+                m.settlement_finance['capture'](db, annual_settlement, 'synthetic-annual-ui')
+                db.commit()
+                case.tokens['security'] = m.issue_token(db.get(m.User, 'security'))
         args.tokens.mkdir(mode=0o700, parents=True, exist_ok=False)
         tokens_created = True
-        for actor in ('platform', 'ops', 'finance', 'provider', 'buyer', *(['expert', 'channel', 'unrelated', 'expert_member'] if args.beneficiaries else [])):
+        for actor in ('platform', 'ops', 'finance', 'provider', 'buyer', *(['expert', 'channel', 'unrelated', 'expert_member'] if args.beneficiaries else []), *(['security'] if args.management else [])):
             path = args.tokens / (actor + '.token')
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, 'w') as output:

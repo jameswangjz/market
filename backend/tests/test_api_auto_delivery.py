@@ -114,6 +114,8 @@ class ApiAutoDeliveryTests(unittest.TestCase):
         raise AssertionError((method, path))
 
     def redis_eval(self, _script, numkeys, *args):
+        if len(args) == numkeys:
+            return 1  # Charge-ledger baseline initialization has no ARGV payload.
         data = json.loads(args[numkeys])
         self.redis_values.setdefault(args[0], {}).update(
             {str(field): str(value) for field, value in data.items()})
@@ -141,7 +143,7 @@ class ApiAutoDeliveryTests(unittest.TestCase):
             order = db.get(self.m.Order, oid)
             task = db.get(self.m.DeliveryTask, self.task_id(oid))
             self.assertEqual((order.main_status, order.delivery_status, task.status),
-                ('completed', 'accepted', 'completed'), task.last_error)
+                ('fulfilling', 'accepted', 'completed'), task.last_error)
             self.assertIn('API 路由、上游健康与订阅策略已核验', task.note)
             self.assertIn('企业共享凭据状态已保留', task.note)
             self.assertIn('买方企业管理员可在订单中查看和管理凭据', task.note)

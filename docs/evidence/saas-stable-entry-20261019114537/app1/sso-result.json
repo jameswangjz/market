@@ -1,0 +1,10 @@
+﻿{
+    "scope":  "existing delivered SaaS; browser launch, consent, callback and local session; no payment or delivery state changes",
+    "status":  "passed",
+    "checks":  [
+                   "Stable product entry carries authoritative product/enterprise context without OIDC client ID",
+                   "Platform authorized launch reaches OIDC browser consent",
+                   "Authorization-code PKCE callback establishes real mock SaaS session",
+                   "Mock SaaS session remains valid on reload"
+               ]
+}

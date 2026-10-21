@@ -11,10 +11,11 @@ import json
 import math
 import os
 
+import anyio
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text, and_, or_, not_, func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import mapped_column
 from starlette.concurrency import run_in_threadpool
 
@@ -108,6 +109,8 @@ def _aware(value):
 
 
 def install(ns):
+    ingest_capacity = anyio.CapacityLimiter(4)
+
     class SourceWindow(ns["Base"]):
         __tablename__ = "sla_gateway_source_windows"
         producer_id = mapped_column(String(180), primary_key=True)
@@ -320,9 +323,32 @@ def install(ns):
         except (ValueError, TypeError, RecursionError):
             raise HTTPException(422, "Invalid gateway payload") from None
         def persist():
-            with ns["SessionLocal"].begin() as db:
-                return ingest(db, payload["events"], source_statuses=payload.get("source_statuses"), window_seals=payload.get("window_seals"))
-        return await run_in_threadpool(persist)
+            postgresql = False
+            try:
+                with ns["SessionLocal"].begin() as db:
+                    postgresql = db.get_bind().dialect.name == "postgresql"
+                    if postgresql:
+                        # Transaction-local limits cannot leak through pooled connections.
+                        db.execute(text("SET LOCAL lock_timeout = '2s'"))
+                        db.execute(text("SET LOCAL statement_timeout = '10s'"))
+                    result = ingest(db, payload["events"], source_statuses=payload.get("source_statuses"), window_seals=payload.get("window_seals"))
+                return result
+            except DBAPIError as exc:
+                # The transaction context has rolled back before acknowledging retry.
+                code = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+                if postgresql and code in {"55P03", "57014", "40P01"}:
+                    raise HTTPException(503, "Gateway ingestion temporarily unavailable; retry batch",
+                                        headers={"Retry-After": "2"}) from None
+                raise
+        try:
+            ingest_capacity.acquire_nowait()
+        except anyio.WouldBlock:
+            raise HTTPException(503, "Gateway ingestion busy; retry batch",
+                                headers={"Retry-After": "2"}) from None
+        try:
+            return await run_in_threadpool(persist)
+        finally:
+            ingest_capacity.release()
 
     ns["app"].post(ENDPOINT, include_in_schema=False)(receiver)
 

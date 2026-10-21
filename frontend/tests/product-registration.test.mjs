@@ -158,9 +158,90 @@ test("integration loading and saving whitelist config without carrying credentia
 
 test("integration save generates a missing route key from persisted IDs", async () => {
   const versions = [{ id: "v-1", version_code: "v1", integration: emptyVersionIntegration() }];
+  versions[0].integration.upstream_url = "https://business.example/v1";
   let request;
   await saveRegistrationAttachments({ put: async (url, body) => { request = { url, body }; } }, { delivery_method: "api", versions }, "p-1");
   assert.equal(request.body.route_key, "p-p-1-v-v-1");
+});
+
+for (const delivery_method of ["api", "model_api"]) {
+  const apiForm = () => ({
+    delivery_method,
+    integration_api_url: " https://management.example/control ",
+    upstream_url: "https://legacy-business.example",
+    versions: ["v1", "v2"].map(version_code => ({ version_code, integration: { ...emptyVersionIntegration(), upstream_url: `https://business.example/${version_code}` } })),
+  });
+
+  test(`${delivery_method} projects management independently and writes business URLs only per version`, async () => {
+    const form = apiForm();
+    const payload = registrationPayload(form);
+    assert.equal(payload.integration_api_url, "https://management.example/control");
+    assert.equal("upstream_url" in payload, false);
+    assert.equal(JSON.stringify(payload).includes("business.example"), false);
+    assert.equal(form.upstream_url, "https://legacy-business.example");
+    bindRegistrationVersions(form.versions, [{ id: "one", version_code: "v1" }, { id: "two", version_code: "v2" }]);
+    const calls = [];
+    await saveRegistrationAttachments({ put: async (url, body) => calls.push({ url, body }) }, form, "product");
+    assert.deepEqual(calls.map(call => call.body.upstream_url), ["https://business.example/v1", "https://business.example/v2"]);
+    assert.ok(calls.every(call => !("integration_api_url" in call.body)));
+  });
+
+  test(`${delivery_method} requires management and every editable version upstream before draft persistence`, async () => {
+    for (const value of [undefined, "", " ", "/control", "ftp://management.example", "https://", "https://example/" + "a".repeat(500)]) {
+      const form = apiForm();
+      form.integration_api_url = value;
+      assert.throws(() => registrationPayload(form), /API服务管理接口地址/);
+    }
+    const form = apiForm();
+    form.versions[1].integration.upstream_url = "";
+    assert.throws(() => registrationPayload(form), /版本v2上游URL/);
+    await assert.rejects(saveRegistrationAttachments({ put: async () => assert.fail("No partial writes") }, form, "product"), /版本v2上游URL/);
+    form.versions[1].is_sold = true;
+    assert.doesNotThrow(() => registrationPayload(form));
+    delete form.versions[0].integration;
+    assert.throws(() => registrationPayload(form), /版本v1上游URL/);
+  });
+}
+
+test("version loading keeps distinct business upstreams and never supplies a management fallback", async () => {
+  const form = { delivery_method: "api", integration_api_url: "", upstream_url: "https://legacy.example", versions: [{ id: "one", version_code: "v1", is_sold: true }, { id: "two", version_code: "v2" }] };
+  await loadRegistrationIntegrations({ get: async url => ({ data: { route: url.includes("/one/") ? { upstream_url: "https://business.example/v1" } : null } }) }, "product", form.versions);
+  assert.equal(form.versions[0].integration.upstream_url, "https://business.example/v1");
+  assert.equal(form.versions[0].is_sold, true);
+  assert.equal(form.versions[1].integration.upstream_url, "");
+  assert.equal(form.integration_api_url, "");
+  assert.throws(() => registrationPayload(form), /API服务管理接口地址/);
+});
+
+test("new and edit draft handlers reject missing API management before making requests", async () => {
+  const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+  for (const [name, next] of [["createProduct", "closeProductEditor"], ["saveProductEdit", "updateVersionMonthlyQuota"]]) {
+    const start = source.indexOf(`async function ${name}()`);
+    const end = source.indexOf(`${next === "closeProductEditor" ? "async " : ""}function ${next}(`, start);
+    const notices = [];
+    const state = {
+      productSaving: ref(false), selectedProductId: ref(name === "createProduct" ? "" : "existing"), productReadOnlyMode: ref(false),
+      productForm: ref({ delivery_method: "api", versions: [] }), applicationAddressPolicy: ref({ allow_http: false }),
+      registrationPayload, notify: message => notices.push(message),
+      api: { post: () => assert.fail("Invalid draft must not POST"), put: () => assert.fail("Invalid draft must not PUT") },
+      TypeError,
+    };
+    vm.createContext(state);
+    vm.runInContext(source.slice(start, end) + `\nthis.save = ${name};`, state);
+    await state.save();
+    assert.match(notices[0], /API服务管理接口地址/);
+    assert.equal(state.productSaving.value, false);
+  }
+});
+
+test("API form separates management from required version upstream and preserves SaaS labels and sold locks", () => {
+  const source = readFileSync(new URL("../src/ConsoleApp.vue", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /v-model="productForm.upstream_url"|提供方后端访问URL/);
+  assert.match(source, /API服务管理接口地址<input v-model="productForm.integration_api_url" :disabled="productForm.delivery_fields_locked"[^>]*required/);
+  assert.match(source, /租户\/权限开通API URL<input v-model="productForm.integration_api_url"/);
+  assert.match(source, /应用访问URL<input v-model="productForm.application_url"/);
+  assert.match(source, /版本上游URL<input v-model="version.integration.upstream_url"[^>]*required/);
+  assert.match(source, /:disabled="productReadOnlyMode \|\| version.is_sold === true"/);
 });
 
 test("missing saved version identity stops attachment writes", () => {

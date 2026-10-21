@@ -19,10 +19,11 @@ from authlib.jose.errors import JoseError
 from authlib.oidc.core import CodeIDToken
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from .store import hashed, tenant_expired
+from .admin import install_admin
 
 
 FLOW_COOKIE = 'mock_saas_oidc_flow'
@@ -39,6 +40,10 @@ class ClientBody(BaseModel):
     product_id: str = Field(min_length=1, max_length=180)
     issuer: str = Field(min_length=1, max_length=2000)
     product_name: str = Field(default='应用', max_length=200)
+
+
+class AdminClientBody(ClientBody):
+    client_secret: str | None = Field(default=None, max_length=4096)
 
 
 def configured_url(value, allow_http, *, backchannel=False):
@@ -94,6 +99,9 @@ def install(app, store, *, transport=None):
             raise ValueError('Untrusted OP metadata')
         return data
 
+    install_admin(app, store, enabled=admin_enabled, admin=admin, settings=settings,
+                  metadata=metadata, body_type=AdminClientBody)
+
     def checked_identity(claims, info, flow, client):
         if any(not isinstance(claims.get(k), str) or not claims[k]
                or info.get(k) != claims[k] for k in IDENTITY_FIELDS):
@@ -145,13 +153,60 @@ def install(app, store, *, transport=None):
             result = db.execute('DELETE FROM clients WHERE client_id = ?', (client_id,))
         return JSONResponse({'deleted': bool(result.rowcount), 'client_id': client_id}, headers=NO_STORE)
 
-    @app.get('/sso/apps/{client_id}')
-    def login(client_id: str, enterprise_id: str):
-        if not enterprise_id or len(enterprise_id) > 180:
-            raise HTTPException(400, 'Enterprise required')
-        client = store.client(client_id)
+    def context_product(request, expected=None):
+        values = request.query_params.getlist('product_id')
+        values += request.headers.getlist('X-Market-Product-Id')
+        if expected is not None:
+            values.append(expected)
+        if len(set(values)) > 1:
+            raise HTTPException(409, 'Product context mismatch')
+        return values[0] if values else None
+
+    def checked_client(client):
         if not client:
             raise HTTPException(404, 'Application unavailable')
+        base, expected_issuer, _ = settings()
+        if (client.get('issuer') != expected_issuer or client.get('redirect_uri') != base + '/sso/callback'
+                or not client.get('client_secret')):
+            raise HTTPException(409, 'Application configuration mismatch')
+        return client
+
+    def product_client(product_id):
+        if not product_id:
+            raise HTTPException(404, 'Application unavailable')
+        with store.connect() as db:
+            clients = [json.loads(row['config']) for row in db.execute('SELECT config FROM clients')]
+        matches = [client for client in clients if client.get('product_id') == product_id]
+        if len(matches) > 1:
+            raise HTTPException(409, 'Application configuration ambiguous')
+        return checked_client(matches[0] if matches else None)
+
+    @app.api_route('/apps/{product_id}', methods=['GET', 'HEAD'])
+    @app.api_route('/sso/apps', methods=['GET', 'HEAD'])
+    def product_entry(request: Request, product_id: str | None = None, enterprise_id: str | None = None):
+        client = product_client(context_product(request, product_id))
+        if request.method == 'HEAD':
+            return Response(status_code=204, headers=NO_STORE)
+        if enterprise_id is not None:
+            return login(client, enterprise_id)
+        page = ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width,initial-scale=1">'
+                '<title>应用</title><main><h1>' + html.escape(client['product_name']) + '</h1></main></html>')
+        return HTMLResponse(page, headers={**NO_STORE, 'Content-Security-Policy':
+            "default-src 'none'; frame-ancestors 'none'; base-uri 'none'", 'X-Content-Type-Options': 'nosniff'})
+
+    @app.api_route('/sso/apps/{client_id}', methods=['GET', 'HEAD'])
+    def legacy_entry(client_id: str, request: Request, enterprise_id: str | None = None):
+        client = checked_client(store.client(client_id))
+        context_product(request, client['product_id'])
+        if request.method == 'HEAD':
+            return Response(status_code=204, headers=NO_STORE)
+        return login(client, enterprise_id)
+
+    def login(client, enterprise_id):
+        if not enterprise_id or len(enterprise_id) > 180:
+            raise HTTPException(400, 'Enterprise required')
+        client_id = client['client_id']
         try:
             data = metadata()
             state, nonce, verifier, browser = (secrets.token_urlsafe(48) for _ in range(4))
@@ -160,6 +215,10 @@ def install(app, store, *, transport=None):
                 url, _ = oauth.create_authorization_url(data['authorization_endpoint'], state=state,
                     nonce=nonce, code_verifier=verifier, enterprise_id=enterprise_id)
             with store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute('SELECT config FROM clients WHERE client_id=?', (client_id,)).fetchone()
+                if not current or json.loads(current['config']) != client:
+                    raise ValueError('Client configuration changed')
                 db.execute('DELETE FROM flows WHERE expires_at <= ?', (int(time.time()),))
                 db.execute('INSERT INTO flows(state_hash,browser_hash,client_id,enterprise_id,nonce,verifier,expires_at) '
                            'VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -215,9 +274,11 @@ def install(app, store, *, transport=None):
                 raise ValueError('Expired session')
             session = secrets.token_urlsafe(48)
             with store.connect() as db:
-                # Client deletion during network requests must prevent a new session.
-                if not db.execute('SELECT 1 FROM clients WHERE client_id = ?', (client['client_id'],)).fetchone():
-                    raise ValueError('Client removed')
+                db.execute('BEGIN IMMEDIATE')
+                current = db.execute('SELECT config FROM clients WHERE client_id = ?', (client['client_id'],)).fetchone()
+                active_flow = db.execute('SELECT 1 FROM flows WHERE state_hash=?', (flow['state_hash'],)).fetchone()
+                if not current or json.loads(current['config']) != client or not active_flow:
+                    raise ValueError('Client configuration changed')
                 db.execute('INSERT OR IGNORE INTO users VALUES (?, ?, ?)', (identity['tenant_id'], identity['sub'],
                     json.dumps({'user_id': identity['sub'], 'external_user_id': 'mock-user-' + identity['sub'][:12],
                                 'status': 'active'})))

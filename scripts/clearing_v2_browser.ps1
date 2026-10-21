@@ -49,9 +49,18 @@ try {
     Cdp 'Page.navigate' @{url="$BaseUrl/console"}|Out-Null
     WaitJs 'document.readyState==="complete"' 20
     Enter 'platform'
-    Check 'document.querySelectorAll(".settlement-finance > .console-tabs")[0].querySelectorAll("[role=tab]").length===4' 'Four standard workspace tabs render'
+    Check '(()=>{const tabs=[...document.querySelectorAll(".settlement-finance > .console-tabs")[0].querySelectorAll("[role=tab]")];return [4,5].includes(tabs.length)&&tabs.slice(0,4).every((t,i)=>t.textContent.includes(["\u6e05\u7b97\u62a5\u8868","\u5e94\u6536\u5e94\u4ed8","\u8d44\u91d1\u51ed\u8bc1","\u5e74\u5ea6\u5feb\u7167"][i]))&&(tabs.length===4||tabs[4].textContent.includes("\u4e3b\u4f53\u4e0e\u6210\u672c\u4f8b\u5916"))})()' 'Four standard workspace tabs retain order, with optional authorized management tab'
     if(-not $ReadOnly){Check 'document.querySelector(".settlement-finance").textContent.includes("150.00") && document.querySelector(".settlement-finance").textContent.includes("140.00")' 'Report displays income150 and provider cost-plus-profit140'}
     foreach($i in @(1,2,3,0)){Tab $i}
+    if($ReadOnly){
+        WaitJs 'document.querySelectorAll(".settlement-finance > .console-tabs")[0]?.querySelectorAll("[role=tab]").length===5' 30
+        Tab 4
+        WaitJs '!!document.querySelector(".settlement-management .console-tabs")' 20
+        Js 'document.querySelectorAll(".settlement-management .console-tabs button")[3].click();true'|Out-Null
+        WaitJs '!!document.querySelector(".manual-funding") && !document.querySelector(".manual-funding [role=alert]")' 25
+        Check 'document.querySelector(".manual-funding").textContent.includes("\u4e0d\u662f\u94f6\u884c\u81ea\u52a8\u5bf9\u8d26")' 'Installed manual funding explicitly distinguishes independent review from bank reconciliation'
+        Tab 0
+    }
     if(-not $ReadOnly){
     Tab 1
     Js '[...document.querySelectorAll(".settlement-finance tbody tr")].find(r=>r.textContent.includes("100.00")).querySelector("button.secondary-btn").click();true'|Out-Null
@@ -85,7 +94,10 @@ try {
     }
     if($script:blocked -or $script:nativeDialogs){throw 'Unexpected request or native dialog'}
     $result.status='passed'
-} catch {$result.error=$_.Exception.Message}
+} catch {
+    $result.error=$_.Exception.Message
+    try {$result.diagnostic=Js '({tabs:[...document.querySelectorAll(".settlement-finance > .console-tabs")].map(n=>({count:n.querySelectorAll("[role=tab]").length,labels:[...n.querySelectorAll("button")].map(b=>b.textContent.trim())})),management:!!document.querySelector(".settlement-management"),manual:!!document.querySelector(".manual-funding"),busy:document.querySelector(".settlement-finance")?.getAttribute("aria-busy")})'} catch {}
+}
 finally {
     if($script:socket){$script:socket.Dispose()}
     if($script:chrome){Stop-Process -Id $script:chrome.Id -Force -ErrorAction SilentlyContinue}

@@ -7,7 +7,7 @@ const moneyStatuses = { unpaid: "未支付", paying: "支付处理中", paid: "�
 export const versionChangeRefundStatusLabel = value => moneyStatuses[value] || (value ? "处理中" : "无");
 export function canReadVersionChangeHistory(order, user, enterprise = null) {
   if (!order || order.snapshot_version !== 1 || !["api", "model_api", "tenant_access", "saas"].includes(order.delivery_method || order.delivery_method_snapshot)) return false;
-  const activeVerifiedPlatform = ["super_admin", "finance_settlement"].includes(user?.platform_role) &&
+  const activeVerifiedPlatform = ["super_admin", "platform_operator", "finance_settlement"].includes(user?.platform_role) &&
     user?.is_active === true && user?.verified_status === "verified" &&
     (!user.activation_status || user.activation_status === "active");
   return activeVerifiedPlatform || versionChangeExecutionPermissions(user, order, null, enterprise).request;
@@ -33,10 +33,11 @@ export function versionChangeExecutionPermissions(user, order, item = null, ente
   const finance = user?.platform_role === "finance_settlement";
   const activePlatformUser = Boolean(user?.platform_role && activeUser);
   const status = item?.status;
+  const payable = !(Number(item?.payment_amount) < 0) && item?.payment_status !== "not_applicable";
   return {
     request,
-    startPayment: Boolean(superBuyer && status === "pending_payment" && ["unpaid", "paying"].includes(item?.payment_status)),
-    confirmPayment: Boolean((superBuyer || activePlatformUser && (platformSuper || finance)) && status === "pending_payment" && item?.payment_status === "paying"),
+    startPayment: Boolean(payable && superBuyer && status === "pending_payment" && ["unpaid", "paying"].includes(item?.payment_status)),
+    confirmPayment: Boolean(payable && activePlatformUser && (platformSuper || user.platform_role === "platform_operator") && status === "pending_payment" && ["unpaid", "paying"].includes(item?.payment_status)),
     retry: Boolean(activePlatformUser && (platformSuper || finance) && ["exception", "refund_pending"].includes(status)),
   };
 }

@@ -1,0 +1,92 @@
+{
+  "captured_at": "2026-10-18T15:58:51.690718+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "CLR2-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-005",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-006",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-007",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-008",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-009",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-003",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "最终补丁5444106已部署，修复普通跨版本成本例外误判，并验证旧侧补款已返还后目标版本不继承补差。22项跨版本旧回归通过，分类/原始依据/成本组合64项运行62通过2并发条件项由真实PG另验；针对受影响链路的开发集群PostgreSQL用例通过。新版本101后端文件及12Web资产匹配，9组接口和10项安装后浏览器只读核验再次通过，7个相关Deployment Ready且8个API镜像CronJob统一版本。提交待用户验收，银行真实到账不在本轮范围。"
+}

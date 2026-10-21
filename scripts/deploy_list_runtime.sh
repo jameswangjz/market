@@ -32,6 +32,6 @@ kubectl -n market set image deployment/market-api "api=market-api:${IMAGE_TAG}"
 kubectl -n market rollout status deployment/market-api --timeout=240s
 kubectl -n market set image deployment/market-web "web=market-web:${IMAGE_TAG}"
 kubectl -n market rollout status deployment/market-web --timeout=240s
-curl --fail --silent --show-error --max-time 20 http://192.168.10.10:30080/api/health
+curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 2 --max-time 20 http://192.168.10.10:30080/api/health
 trap - ERR
 echo "List API/Web deployed: ${IMAGE_TAG}; workers, Redis, APISIX data-plane and financial data unchanged"

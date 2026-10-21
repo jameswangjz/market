@@ -32,6 +32,7 @@ def install(tree, name, context):
 g = dict(json=json, Decimal=Decimal, CENT=Decimal('.01'), Confirmation='confirmation', Baseline='baseline', Finalization='finalization', date=date, datetime=datetime, timedelta=timedelta, timezone=timezone, re=re, SHANGHAI=ZoneInfo('Asia/Shanghai'), Query=lambda default, **kwargs: default, HTTPException=Exception)
 install(finance, 'money', g)
 install(finance, 'balance', g)
+install(finance, 'cash_block', g)
 install(finance, 'serialize_transaction', g)
 install(finance, 'position_dict', g)
 install(finance, 'list_positions', g)
@@ -129,6 +130,8 @@ test('participant columns display authoritative cost, signed profit, positive lo
   assert.equal(state.cell({ loss_amount: '123456789012.01' }, 'loss_amount'), '123,456,789,012.01');
   assert.equal(state.cell({ cost_amount: '100.00', profit_share: '40.00' }, 'loss_amount'), '—');
   assert.equal(state.cell({ cost_amount: '100.00', profit_share: '40.00' }, 'total_receivable'), '—');
+  const absorption = { loss_amount: '5.00', funding_absorption_loss: '12.00', baseline_total_receivable: '25.00', net_total_receivable: '13.00', total_receivable: '25.00' };
+  for (const key of ['loss_amount', 'funding_absorption_loss', 'baseline_total_receivable', 'net_total_receivable', 'total_receivable']) assert.equal(state.cell(absorption, key), absorption[key]);
 });
 
 test('filter enumerations and read roles agree with actual backend declarations', () => {
@@ -205,6 +208,10 @@ test('table cells render actual backend transaction, annual metadata, and positi
   assert.equal(state.canRegister(backendFixtures.position), true);
   assert.equal(state.canRegister({ ...backendFixtures.position, blocked_reason: 'missing_subject_mapping' }), false);
   assert.equal(state.canRegister({ ...backendFixtures.position, balance: '0.00' }), false);
+  assert.equal(state.cell({ kind: 'funding_return' }, 'kind'), '原补差付款方返还应付');
+  assert.equal(state.cell({ kind: 'funding_absorption_return' }, 'kind'), '平台内部吸收恢复');
+  assert.equal(state.canRegister({ ...backendFixtures.position, kind: 'funding_absorption_return' }), false);
+  assert.equal(state.canRegister({ ...backendFixtures.position, kind: 'funding_return', direction: 'receivable' }), false);
 });
 
 function runtime() {
@@ -320,6 +327,72 @@ test('combined payment dialog renders separate cost and profit checkboxes and th
   }));
   assert.equal((html.match(/type="checkbox"/g) || []).length, 2);
   assert.match(html, /供货成本/); assert.match(html, /利润分成/); assert.match(html, /合计 140\.00 CNY/);
+});
+test('funding return is a separate exact same-payee payout group, never ordinary cost/profit or internal restoration', async () => {
+  const anchor = { ...backendFixtures.position, id: 'return-a', kind: 'funding_return', balance: '2.00' };
+  const second = { ...anchor, id: 'return-b', balance: '0.10' };
+  const excluded = [{ ...anchor, id: 'cost', kind: 'cost' }, { ...anchor, id: 'profit', kind: 'profit' },
+    { ...anchor, kind: 'funding_absorption_return' }, { ...anchor, participant_id: 'other' }, { ...anchor, currency: 'USD' },
+    { ...anchor, participant_type: 'platform' }, { ...anchor, direction: 'internal' }, { ...anchor, balance: '0.00' },
+    { ...anchor, blocked_reason: 'source_unproven' }, { ...anchor, status: 'blocked' }];
+  const selection = helpers.paymentSelection(anchor, [anchor, second], ['return-a', 'return-b'], { 'return-a': '2.00', 'return-b': '0.10' });
+  assert.equal(selection.total, '2.10');
+  for (const row of excluded) assert.equal(helpers.samePayee(row, anchor), false);
+  assert.equal(helpers.samePayee(anchor, { ...anchor, kind: 'cost' }), false);
+  assert.throws(() => helpers.paymentSelection(anchor, [excluded[0]], ['cost'], { cost: '2.00' }));
+  const loaded = await helpers.payablePositions({ get: async () => ({ data: { items: [anchor, second, ...excluded], total: 12 } }) }, anchor, {}, () => true);
+  assert.deepEqual(loaded.map(row => row.id), ['return-a', 'return-b']);
+});
+test('actual workspace returns load candidates, posts manual independent allocations and blocks simulated/internal writes', async () => {
+  const state = mutationRuntime(), requests = [];
+  const row = { ...backendFixtures.position, id: 'return', kind: 'funding_return', balance: '2.00' };
+  state.modal.value.row = row; state.paymentRows.value = [row]; state.selectedPaymentIds.value = [row.id]; state.paymentAmounts.value = { return: '2.00' };
+  state.props.api = { post: async (path, payload) => requests.push({ path, payload }) };
+  state.form.mode = 'simulated'; await state.submit(); assert.equal(requests.length, 0); assert.match(state.state.error, /人工登记/);
+  state.form.mode = 'manual'; await state.submit();
+  assert.equal(requests.length, 1); assert.equal(requests[0].path, '/settlement-finance/transactions');
+  assert.equal(requests[0].payload.mode, 'manual'); assert.equal(requests[0].payload.kind, 'payout');
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[0].payload.allocations)), [{ position_id: 'return', amount: '2.00' }]);
+  assert.ok(requests[0].payload.request_id);
+  state.modal.value = { kind: 'create', context: 'a', row: { ...row, kind: 'funding_absorption_return' } };
+  await state.submit(); assert.equal(requests.length, 1); assert.equal(state.canRegister(state.modal.value.row), false);
+  assert.equal(helpers.canReviewTransaction({ id: 'draft', status: 'draft', creator_id: 'maker', version: 1 }, { id: 'maker' }, true), false);
+  assert.equal(helpers.canReviewTransaction({ id: 'draft', status: 'draft', creator_id: 'maker', version: 1 }, { id: 'reviewer' }, true), true);
+});
+test('actual component candidate loader retains selected return and independent reviewer posts versioned confirmation', async () => {
+  const row = { ...backendFixtures.position, id: 'return', kind: 'funding_return', balance: '2.00' };
+  const state = mutationRuntime(), requests = [];
+  state.modal.value.row = row; state.paymentRows.value = [row]; state.selectedPaymentIds.value = ['return'];
+  state.paymentAmounts.value = { return: '2.00' }; state.knownPositions = { value: {} };
+  state.paymentGuard = helpers.requestGuard(() => 'a'); state.payablePositions = helpers.payablePositions;
+  state.props.api = { get: async () => ({ data: { items: [row, { ...row, id: 'cost', kind: 'cost' }, { ...row, id: 'internal', kind: 'funding_absorption_return' }], total: 3 } }), post: async (path, payload) => requests.push({ path, payload }) };
+  vm.runInContext(source.slice(source.indexOf('async function loadPaymentRows()'), source.indexOf('function close()')), state);
+  await state.loadPaymentRows();
+  assert.deepEqual(Array.from(state.paymentRows.value, row => row.id), ['return']);
+  assert.deepEqual(Array.from(state.selectedPaymentIds.value), ['return']);
+  assert.equal(state.paymentLoading.value, false);
+  const draft = { id: 'return-draft', creator_id: 'maker', status: 'draft', version: 1 };
+  state.canConfirm = row => helpers.canReviewTransaction(row, state.props.user, state.access.value.write);
+  state.modal.value = { kind: 'confirm', context: 'a', row: draft }; state.props.user = { id: 'maker' };
+  await state.submit(); assert.equal(requests.length, 0);
+  state.props.user = { id: 'reviewer' }; await state.submit();
+  assert.equal(requests[0].path, '/settlement-finance/transactions/return-draft/confirm');
+  assert.equal(requests[0].payload.expected_version, 1); assert.ok(requests[0].payload.request_id);
+});
+test('return modal renders isolated group and manual-only registration while ordinary mode remains unchanged', async () => {
+  const start = source.indexOf('<template v-if="modal.kind === \'create\'">');
+  const end = source.indexOf('<label>业务凭证 / 参考号', start);
+  const template = source.slice(start, end) + '</template>';
+  async function modalHtml(kind) {
+    const row = { ...backendFixtures.position, id: 'return', kind, balance: '2.00' };
+    return renderToString(createSSRApp({ components: { RefreshCw: { render: () => null } },
+      setup: () => ({ form: { kind: 'payout', mode: 'manual' }, submitting: false, modal: { kind: 'create', row }, paymentLoading: false, paymentLoadError: '', paymentRows: [row], selectedPaymentIds: [row.id], paymentAmounts: { return: '2.00' }, paymentPreview: { total: '2.00', error: '' }, labels: { funding_return: '原补差付款方返还应付' }, money: helpers.money, loadPaymentRows() {} }), render: compile(template) }));
+  }
+  const html = await modalHtml('funding_return');
+  assert.match(html, /独立付款组/); assert.match(html, /原补差付款方返还应付/); assert.match(html, /独立复核/);
+  assert.ok(!html.includes('value="simulated"'));
+  assert.match(html, /<select disabled>/);
+  assert.ok((await modalHtml('cost')).includes('value="simulated"'));
 });
 
 test('modal enters an enabled control while payment candidates load and preserves existing dialog focus', async () => {

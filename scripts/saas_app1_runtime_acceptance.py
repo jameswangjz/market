@@ -30,21 +30,35 @@ def main():
         tokens = {key: {'Authorization': 'Bearer ' + m.issue_token(user)}
             for key, user in [('provider', provider), ('buyer', buyer), ('admin', admin)]}
         prefix = '/api/products/' + product.id
+        machine = db.scalar(select(m.OAuthClient).where(m.OAuthClient.product_id == product.id))
+        config = db.scalar(select(m.SaaSIntegrationConfig).where(m.SaaSIntegrationConfig.product_id == product.id))
+        original_machine = (machine.id, machine.client_id, machine.client_secret, machine.scope)
+        original_config = (config.id, config.client_id, config.client_secret, config.token_url)
+        assert machine.client_id and machine.client_secret
+        assert (config.client_id, config.client_secret) == (machine.client_id, machine.client_secret)
     with httpx.Client(base_url='http://192.168.10.10:30080', trust_env=False, timeout=20) as client:
         oidc = client.get(prefix + '/oidc-credentials-download', headers=tokens['provider'])
         oauth = client.get(prefix + '/oauth-credentials-download', headers=tokens['provider'])
-        assert oidc.status_code == oauth.status_code == 200
-        assert oidc.headers['cache-control'] == oauth.headers['cache-control'] == 'no-store'
+        assert oidc.status_code == 200 and oauth.status_code == 410
+        assert 'saas-integration-credentials-download' in oauth.json()['detail']
+        assert oidc.headers['cache-control'] == 'no-store'
         login = oidc.json()
         assert login['client_secret'] and login['client_id'] not in oauth.text
-        assert 'saas.department' in oauth.text
         bundle = client.get(prefix + '/saas-integration-credentials-download', headers=tokens['provider'])
         assert bundle.status_code == 200 and bundle.headers['cache-control'] == 'no-store'
         combined = bundle.json()
-        assert combined['schema_version'] == '1.0' and combined['product']['id'] == product.id
-        assert combined['oidc_sso']['client_secret'] == login['client_secret']
-        assert combined['oauth2_api']['client_secret'] in oauth.text
-        assert combined['oauth2_api']['client_id'] != combined['oidc_sso']['client_id']
+        assert combined['schema_version'] == '2.0' and combined['product']['id'] == product.id
+        assert combined['oidc_sso'] == login
+        assert 'oauth2_api' not in combined
+        assert combined['resource_server'] == {
+            'authentication': 'Bearer', 'validation_method': 'introspection',
+            'introspection_url': m.platform_oauth_issuer().rstrip('/') + '/oauth/introspect',
+            'issuer': m.platform_oauth_issuer(), 'audience': 'market-resource',
+            'scopes': sorted(original_machine[3].split())}
+        assert original_machine[1] not in bundle.text and original_machine[2] not in bundle.text
+        assert m.platform_oauth_token_url() not in bundle.text
+        assert client.get(prefix + '/saas-integration-credentials-download',
+            headers=tokens['provider']).content == bundle.content
         assert combined['instructions']
         for actor in ('buyer', 'admin'):
             assert client.get(prefix + '/saas-integration-credentials-download', headers=tokens[actor]).status_code == 403
@@ -55,6 +69,11 @@ def main():
         assert '/sso/apps/' in access.json()['saas']['application_url']
         policy = client.get('/api/settings/application-address-policy', headers=tokens['buyer'])
         assert policy.json() == {'allow_http': True}
+    with m.SessionLocal() as db:
+        machine = db.get(m.OAuthClient, original_machine[0])
+        config = db.get(m.SaaSIntegrationConfig, original_config[0])
+        assert (machine.id, machine.client_id, machine.client_secret, machine.scope) == original_machine
+        assert (config.id, config.client_id, config.client_secret, config.token_url) == original_config
     print(json.dumps({'status': 'passed', 'order_no': order.order_no,
         'delivery_status': 'accepted', 'subscription_status': 'active',
         'retry_count': task.retry_count, 'operation_count': len(operations),

@@ -90,10 +90,10 @@ def install(ns):
         if action not in {"start_payment", "confirm_payment"}:
             return False
         active(user)
-        buyer = not user.platform_role and member(db, user, order.buyer_enterprise_id, ("super_admin",))
-        finance = action == "confirm_payment" and user.platform_role in {"super_admin", "finance_settlement"}
+        buyer = action == "start_payment" and not user.platform_role and member(db, user, order.buyer_enterprise_id, ("super_admin",))
+        finance = action == "confirm_payment" and user.platform_role in {"super_admin", "platform_operator"}
         if not (buyer or finance):
-            raise HTTPException(403, "仅买方企业超级管理员可发起支付；平台超级管理员或财务清算人员可确认到账")
+            raise HTTPException(403, "仅买方企业超级管理员可发起支付；平台超级管理员或平台运营人员可确认到账")
         if buyer and order.snapshot_version == 1:
             ns["trading_policy"]["require_buyer"](db, user, order.buyer_enterprise_id)
         if order.main_status in {"rejected", "cancelled", "closed"}:

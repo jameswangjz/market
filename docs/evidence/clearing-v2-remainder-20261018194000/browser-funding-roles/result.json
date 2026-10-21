@@ -1,0 +1,47 @@
+﻿{
+    "write_evidence":  "prior normal chain evidence plus fixed covered/version3 GET; no write replay",
+    "checks":  [
+                   "Actual API covered result retains bank_receipt_verified=false",
+                   "Funding API contract has no errors",
+                   "Provider sees detail actions only; no write controls",
+                   "Actual API covered result retains bank_receipt_verified=false",
+                   "Security has no management write surface",
+                   "Actual API covered result retains bank_receipt_verified=false"
+               ],
+    "post_count":  0,
+    "allowed_request_paths":  [
+                                  "GET /api/auth/me",
+                                  "GET /api/enterprise-settlements",
+                                  "GET /api/notifications/sender-context",
+                                  "GET /api/notifications/stream",
+                                  "GET /api/notifications/summary",
+                                  "GET /api/settings/application-address-policy",
+                                  "GET /api/settlement-batches",
+                                  "GET /api/settlement-corrections",
+                                  "GET /api/settlement-finance/funding-adjustments",
+                                  "GET /api/settlement-measurements",
+                                  "GET /api/settlement-parties",
+                                  "GET /api/settlement-reconciliations",
+                                  "GET /api/settlement-reporting/beneficiaries",
+                                  "GET /api/settlement-reporting/report",
+                                  "GET /api/settlement-rules",
+                                  "GET /api/settlements",
+                                  "GET /api/storefront/buyer-enterprises",
+                                  "GET /assets/ConsoleApp-B8vfZ3_J.css",
+                                  "GET /assets/ConsoleApp-COGnJvha.js",
+                                  "GET /assets/index-Df0-_gCn.js",
+                                  "GET /assets/index-Dtv1HLRn.css",
+                                  "GET /assets/x-DHa5O_Iz.js",
+                                  "GET /console",
+                                  "GET /favicon.ico"
+                              ],
+    "http_status":  200,
+    "screenshots":  [
+                        "funding-provider-readonly.png",
+                        "funding-security-readonly.png"
+                    ],
+    "scope":  "read-only role continuation; existing fixed covered proposal; zero POSTs",
+    "prior_successful_write_count":  3,
+    "status":  "passed",
+    "stage":  "covered-bankfalse-security"
+}

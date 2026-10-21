@@ -1,0 +1,57 @@
+{
+  "status": "passed",
+  "mode": "verify",
+  "snapshot": {
+    "business": {
+      "credentials:e101107c3f6414ab48b9ebc43de368e8": "614046052e04a4df6ec286520364b48157ea07de1a5924963d682655f93db5d2",
+      "subscriptions:e101107c3f6414ab48b9ebc43de368e8": "36b33200bc308139a33863dc4b48c66949c70297a5f6c8b2559b547855439b20",
+      "credentials:e0d7e27906f32c69ee11fa8a6093dadf": "190c1ab8a70a31e7b77cbfd799019ef7637a8dcbf0eb13c175d47da424760464",
+      "subscriptions:e0d7e27906f32c69ee11fa8a6093dadf": "d6ca775f8256ff5a8d9f87eed9a44e985087fe297aa0ef591f2c77bba936689f",
+      "credentials:67a69ce54e10fca7f23878ed3524129b": "1e06d46d817d2e23a923bffd273b7e4f01394181570f11b618adad9139c88004",
+      "subscriptions:67a69ce54e10fca7f23878ed3524129b": "fcb740fbaa101fc45c044f46263b0cee61c29a125656d5bd5c039634c3cd7198",
+      "ORD-261019032206CB07:orders": "7696d239891cf60bcfb76a2fef9159fe9f73752471bfefc5552bfe247776a8b3",
+      "ORD-261019032206CB07:payments": "5cb27db1c2c6907a7389197c3cc532bbe0995de9c4c3a9641a86e0f702dfa90e",
+      "ORD-261019032206CB07:refunds": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "ORD-261019032206CB07:settlements": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "ORD-261019032206CB07:order_state_logs": "b35b39dde1b52d69a58aed08bd1e2eb57c4d0914239ea51598043ae5f731658f",
+      "ORD-261014032800AA14:orders": "2e49ce0e09d22006aba6fb56f00fb7ee89cc72a637ab8abe61845c9f46e1b0bb",
+      "ORD-261014032800AA14:payments": "31abd22a5938b616cbae33c096780d4c20bbfa9e58224cb7b835aeb81daee934",
+      "ORD-261014032800AA14:refunds": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "ORD-261014032800AA14:settlements": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "ORD-261014032800AA14:order_state_logs": "84d73e4c15a7b53f0b22c48579e67183e9363e507f5d3e903a84884908897e45",
+      "ORD-261012005144E1B3:orders": "de27e78b6c996c09cc02986187b51e7ca32b0d9e60c2ec9a3fd746739c5aabbb",
+      "ORD-261012005144E1B3:payments": "4475a185d517903c08538020e696125aef93be6193b19e23dd5098ed91f093bd",
+      "ORD-261012005144E1B3:refunds": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "ORD-261012005144E1B3:settlements": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "ORD-261012005144E1B3:order_state_logs": "ce5614485064378173c2980db8c1ded223ca94d33afb73bd76a342806c6257cb"
+    },
+    "entries": {
+      "e101107c3f6414ab48b9ebc43de368e8": "http://192.168.10.10:30083/apps/e101107c3f6414ab48b9ebc43de368e8",
+      "e0d7e27906f32c69ee11fa8a6093dadf": "http://192.168.10.10:30083/apps/e0d7e27906f32c69ee11fa8a6093dadf",
+      "67a69ce54e10fca7f23878ed3524129b": "http://192.168.10.10:30083/apps/67a69ce54e10fca7f23878ed3524129b"
+    }
+  },
+  "checks": [
+    {
+      "product": "SaaS-APP1",
+      "stable_head_status": 204,
+      "public_landing_status": 200,
+      "actual_safe_probe": "passed",
+      "missing_entry_rejected": true
+    },
+    {
+      "product": "SaaS_APP3",
+      "stable_head_status": 204,
+      "public_landing_status": 200,
+      "actual_safe_probe": "passed",
+      "missing_entry_rejected": true
+    },
+    {
+      "product": "SaaS_APP4",
+      "stable_head_status": 204,
+      "public_landing_status": 200,
+      "actual_safe_probe": "passed",
+      "missing_entry_rejected": true
+    }
+  ]
+}

@@ -226,8 +226,20 @@ def install(ns):
             if original['product_version_id'] != old.original_version_id:
                 fail('original_segment_version_mismatch')
             raw_revenue = cents(original['amount'])
-        if b.revenue != raw_revenue or abs(old.revenue) > raw_revenue or old.revenue >= 0:
+        if abs(old.revenue) > raw_revenue or old.revenue >= 0:
             fail('source_segment_revenue_requires_explicit_funding_plan')
+        if b.revenue < raw_revenue:
+            fail('source_segment_revenue_requires_explicit_funding_plan')
+        if b.revenue > raw_revenue:
+            proof = ns.get('settlement_version_funding', {}).get('source_proof')
+            if not callable(proof):
+                fail(dict(code='source_funding_projection_required', reason='source_funding_contract_unavailable'))
+            try:
+                proof(db, b, raw_revenue)
+            except HTTPException as exc:
+                fail(dict(code='source_funding_projection_required', reason=exc.detail))
+            except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+                fail(dict(code='source_funding_projection_required', reason='source_funding_evidence_invalid'))
         return b
 
     def funding_context(db, change, source_order_id):
@@ -338,9 +350,25 @@ def install(ns):
             order, term, revision, change, pair, economic, receipt = window_context(db, w)
             source = source_baseline(db, w, order, term, revision, pair['old'])
             old_values = proportional_values(source, abs(pair['old'].revenue))
+            projection = None
+            source_snapshot = strict_json(source.snapshot_json)
+            if source_snapshot.get('actual_receipts') is not None and source.revenue > cents(source_snapshot['actual_receipts']):
+                project = ns.get('settlement_version_funding', {}).get('project')
+                if not callable(project):
+                    fail(dict(code='source_funding_projection_required', reason='source_funding_contract_unavailable'))
+                negative = linked_settlement(db, pair['old'])
+                try:
+                    projection = project(db, source, cents(source_snapshot['actual_receipts']), abs(pair['old'].revenue),
+                                         w, change, receipt, negative.id)
+                except HTTPException as exc:
+                    fail(dict(code='source_funding_projection_required', reason=exc.detail))
+                except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+                    fail(dict(code='source_funding_projection_required', reason='source_funding_projection_invalid'))
             if a.side == 'old':
                 values = dict(gross_amount=str(-abs(a.revenue)), cost_amount=str(-old_values['cost']),
                     profit_amount=str(-old_values['profit']), shares={k: str(-v) for k, v in old_values['shares'].items()})
+                if projection:
+                    values = projection['values']
             else:
                 revenue, cost, profit = (cents(getattr(settlement, k)) for k in ('gross_amount', 'cost_amount', 'profit_amount'))
                 shares = {k: cents(getattr(settlement, k)) for k in old_values['shares']}
@@ -366,6 +394,10 @@ def install(ns):
                     context['participant_allocations'][role] = allocate(db, frozen_order, role, cents(values['shares'][field]))
             context['segment_net_amount'] = context['funding']['segment_net_amount']
             context['change_total_net_amount'] = context['funding']['change_total_net_amount']
+            if projection:
+                context.update(schema_version=2, version_funding_projection=projection,
+                    returned_unused_supplement=projection['returned_unused_supplement'],
+                    source_reversal=projection['values'])
             context['context_hash'] = digest(context)
             return dict(status='ready', **context)
         except HTTPException as exc:
@@ -409,7 +441,14 @@ def install(ns):
         """Explicitly project final old-side values without editing posted economic evidence."""
         context = financial_context(db, settlement)
         if context['status'] != 'ready':
+            reason = context.get('reason')
+            if isinstance(reason, dict) and reason.get('code') == 'source_funding_projection_required':
+                fail(reason)
             return context
+        if context.get('version_funding_projection') and context['side'] == 'target':
+            projection = context['version_funding_projection']
+            if ns['settlement_version_funding']['describe'](db, projection['settlement_id']) is None:
+                fail('source_funding_old_capture_required')
         if settlement.status in ('locked', 'paid', 'superseded'):
             fail('segment_projection_requires_mutable_settlement')
         before = dict(cost_amount=str(settlement.cost_amount), profit_amount=str(settlement.profit_amount))
@@ -483,6 +522,26 @@ def install(ns):
             return dict(status='waiting', reason=exc.detail)
         except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
             return dict(status='unsupported', reason='segment_refund_final_evidence_invalid')
+
+    def refund_segment_basis(db, refund, plan):
+        """Ordinary exact slice for a multi-source manifest; no exception writes."""
+        try:
+            amount = cents(plan['refund_amount'])
+            if (plan['source_order_id'] != refund.order_id or amount <= 0
+                    or amount > cents(refund.amount)):
+                fail('refund_segment_scope_or_amount_mismatch')
+            subject = SimpleNamespace(id=refund.id, order_id=refund.order_id, amount=amount)
+            result = refund_basis(db, subject, plan, apply_exception=False)
+            if result['status'] != 'ready':
+                return result
+            window = db.get(ns['refund_segment_store']['Window'], plan['segment_id'])
+            receipt = db.get(ns['refund_segment_store']['Receipt'], window.receipt_id)
+            return dict(result, receipt_id=receipt.id, receipt_hash=receipt.receipt_hash,
+                        revision_id=window.revision_id, term_id=window.term_id, change_id=window.change_id)
+        except HTTPException as exc:
+            return dict(status='waiting', reason=exc.detail)
+        except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+            return dict(status='waiting', reason='segment_refund_final_evidence_invalid')
 
     def is_funding_order(order):
         return bool(order and getattr(order, "business_type", "") == "version_change_payment")
@@ -629,7 +688,7 @@ def install(ns):
              "describe": describe,
              'SegmentBaselineLink': SegmentBaselineLink, 'financial_context': financial_context,
              'bind_baseline': bind_baseline, 'refund_basis': refund_basis, 'prepare_lock': prepare_lock,
-             'paired_target': paired_target,
+             'paired_target': paired_target, 'refund_segment_basis': refund_segment_basis,
              "is_funding_order": is_funding_order, "is_change_refund": is_change_refund}
     ns["VersionChangeSettlementLink"] = VersionChangeSettlementLink
     ns["version_change_settlement"] = hooks

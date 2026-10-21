@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
@@ -29,6 +30,10 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
 
     def setUp(self):
         fixture.BusinessRoutesHTTPTests.setUp(self)
+        entry = patch.object(self.m, 'validated_http_request',
+            return_value=SimpleNamespace(status_code=200))
+        self.entry_request = entry.start()
+        self.addCleanup(entry.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         path = Path(__file__).parents[2] / 'mock-saas/app/store.py'
@@ -99,7 +104,7 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
         for _ in range(30):
             with self.m.SessionLocal() as db:
                 status = db.get(self.m.DeliveryTask, self.task_id(oid)).status
-            if status in {'completed', 'exception'}:
+            if status in {'completed', 'exception', 'awaiting_effective'}:
                 return status
             self.step(oid)
         self.fail('Staged SaaS delivery did not converge')
@@ -114,10 +119,17 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
             order = db.get(self.m.Order, oid)
             sub = db.get(self.m.SaaSSubscription, order.subscription_id)
             self.assertEqual((order.main_status, order.delivery_status, sub.status),
-                ('completed', 'accepted', 'active'))
+                ('fulfilling', 'accepted', 'active'))
             term = db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).one()
             self.assertEqual(term.months, 3)
             self.assertEqual(utc(sub.expires_at), utc(term.ends_at))
+            renew = next(payload for operation, payload in reversed(self.calls) if operation == 'RENEW')
+            context = renew['reconciliation_context']
+            self.assertEqual(context['order_id'], oid)
+            self.assertEqual(context['order_starts_at'], renew['starts_at'])
+            self.assertEqual(context['order_ends_at'], renew['expires_at'])
+            self.assertEqual(context['subscription_expires_at'], renew['expires_at'])
+            self.assertEqual(context['effective_at'], renew['platform_delivery_at'])
             self.assertEqual(db.query(self.m.Order).count(), 1)
             self.assertEqual(db.query(self.m.Payment).count(), 1)
             self.assertEqual(db.query(self.m.SaaSUserMapping).count(), 1)
@@ -135,13 +147,20 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
             sid, tenant_id, starts_at, expiry = old.id, old.external_tenant_id, old.starts_at, old.expires_at
         renewal = self.create(2)
         self.pay(renewal)
-        self.assertEqual(self.finish(renewal), 'completed')
+        self.assertEqual(self.finish(renewal), 'awaiting_effective')
         with self.m.SessionLocal() as db:
+            order = db.get(self.m.Order, renewal)
+            self.assertEqual((order.main_status, order.payment_status, order.delivery_status),
+                             ('pending_fulfillment', 'paid', 'awaiting_effective'))
             sub = db.get(self.m.SaaSSubscription, sid)
             term = db.query(self.m.SubscriptionTerm).filter_by(order_id=renewal).one()
             self.assertEqual((sub.id, sub.external_tenant_id, sub.starts_at), (sid, tenant_id, starts_at))
             self.assertEqual(utc(term.starts_at), utc(expiry))
             self.assertEqual(utc(sub.expires_at), utc(term.ends_at))
+            renew = next(payload for operation, payload in reversed(self.calls) if operation == 'RENEW')
+            self.assertEqual(renew['reconciliation_context']['order_id'], renewal)
+            self.assertEqual(renew['reconciliation_context']['order_starts_at'], renew['starts_at'])
+            self.assertEqual(renew['reconciliation_context']['subscription_expires_at'], renew['expires_at'])
             self.assertEqual(db.query(self.m.SaaSSubscription).count(), 1)
         self.assertEqual([op for op, _ in self.calls].count('OPEN'), 1)
 
@@ -172,11 +191,29 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
         opens = [payload for op, payload in self.calls if op == 'OPEN']
         self.assertEqual(len(opens), 2)
         self.assertEqual(opens[0], opens[1])
+        context = opens[0]['reconciliation_context']
+        self.assertEqual(context['order_id'], oid)
+        self.assertEqual(context['period_status'], 'provisional')
+        for field in ('order_starts_at', 'order_ends_at', 'subscription_expires_at', 'effective_at'):
+            self.assertIsNone(context[field])
         with self.m.SessionLocal() as db:
             task = db.get(self.m.DeliveryTask, self.task_id(oid))
             self.assertEqual(task.retry_count, 1)
             for row in db.query(self.m.AuditLog).all():
                 self.assertNotIn('PRIVATE ACCESS TOKEN', str(row.detail))
+
+    def test_transient_renew_replays_frozen_dates_and_context(self):
+        oid = self.create()
+        self.pay(oid)
+        self.failures['RENEW'] = 1
+        self.assertEqual(self.finish(oid), 'completed')
+        renews = [payload for operation, payload in self.calls if operation == 'RENEW']
+        self.assertEqual(len(renews), 2)
+        self.assertEqual(renews[0], renews[1])
+        with self.m.SessionLocal() as db:
+            record = db.query(self.m.SaaSOperation).filter_by(
+                idempotency_key=renews[0]['idempotency_key']).one()
+            self.assertEqual(json.loads(record.request_payload), renews[0])
 
     def test_wrong_tenant_or_admin_result_cannot_grant_entitlement(self):
         for bad in ({'ret': None}, {'ret': False}, {'enterprise_id': 'other'}, {'tenant_id': 'other'}, {'admin_active': False},
@@ -190,6 +227,24 @@ class SaaSAutoDeliveryTests(unittest.TestCase):
                     self.assertEqual(db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).count(), 0)
                     self.assertNotEqual(db.get(self.m.Order, oid).main_status, 'completed')
                 self.bad_status = None
+
+    def test_entry_failure_retries_without_acceptance_or_term(self):
+        for failure in (404, TimeoutError('private URL and secret')):
+            with self.subTest(failure=failure):
+                self.entry_request.side_effect = failure if isinstance(failure, Exception) else None
+                self.entry_request.return_value = SimpleNamespace(status_code=404)
+                oid = self.create()
+                self.pay(oid)
+                self.assertEqual(self.finish(oid), 'exception')
+                with self.m.SessionLocal() as db:
+                    task = db.get(self.m.DeliveryTask, self.task_id(oid))
+                    order = db.get(self.m.Order, oid)
+                    sub = db.get(self.m.SaaSSubscription, order.subscription_id)
+                    self.assertEqual(task.retry_count, 3)
+                    self.assertNotEqual(order.main_status, 'completed')
+                    self.assertNotEqual(order.delivery_status, 'accepted')
+                    self.assertNotEqual(sub.status, 'active')
+                    self.assertEqual(db.query(self.m.SubscriptionTerm).filter_by(order_id=oid).count(), 0)
 
     def test_mutation_intent_is_persisted_before_any_remote_call(self):
         oid = self.create()

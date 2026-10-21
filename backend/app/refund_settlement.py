@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .refund_execution import canonical, digest
 from .refund_execution_resources import strict_json
+from .refund_multi_source import install as install_multi_source
 
 
 CENT = Decimal('0.01')
@@ -111,6 +112,8 @@ def install(ns):
     def financial_basis(db, refund, plan):
         """Financial evaluation only; resource/funding evidence is never changed."""
         segments = plan.get('segments', [plan])
+        if len(segments) > 1:
+            return multi['financial_basis'](db, refund, plan)
         if (len(segments) != 1 or segments[0].get('calculation_version') not in
                 ('ordinary-refund-plan-v1', 'ordinary-file-refund-plan-v1', 'economic-segment-refund-v1')):
             return dict(status='unsupported', reason='exact_segment_final_baseline_required')
@@ -124,8 +127,11 @@ def install(ns):
             return dict(status='waiting', reason='settlement_finance_unavailable')
         try:
             segment = segments[0]
-            result = hook(db, refund, segment if revised else dict(original_amount=segment['original_amount'],
-                          cumulative_refund_amount=segment['cumulative_refund_amount']))
+            funded_hook = ns.get('settlement_funded_refund_capture', {}).get('segment_basis')
+            result = funded_hook(db, refund) if revised and callable(funded_hook) else None
+            if result is None:
+                result = hook(db, refund, segment if revised else dict(original_amount=segment['original_amount'],
+                              cumulative_refund_amount=segment['cumulative_refund_amount']))
             if not isinstance(result, dict) or result.get('status') not in ('ready', 'waiting', 'unsupported'):
                 raise ValueError('invalid financial basis response')
             if result['status'] != 'ready':
@@ -134,7 +140,13 @@ def install(ns):
             cost = -money(-Decimal(str(result['cost_amount'])))
             profit = -money(-Decimal(str(result['profit_amount'])))
             shares = {k: -money(-Decimal(str(result['shares'][k]))) for k in SHARES}
-            if (revenue != -money(refund.amount) or revenue - cost != profit or
+            funded = result.get('kind') == 'confirmed_funded_refund'
+            buyer_amount = money(refund.amount)
+            if funded and (money(result['buyer_cash_amount']) != buyer_amount
+                    or revenue != -buyer_amount - money(result['absorption_reversal']) - money(result.get('external_funding_return', 0))
+                    or money(result['external_paid']) != 0 or money(result['external_recovered']) != 0):
+                raise ValueError('funded buyer cash mismatch')
+            if ((not funded and revenue != -buyer_amount) or revenue - cost != profit or
                     sum(shares.values()) != profit or not result.get('reference_settlement_id') or
                     not result.get('baseline_hash') or result['currency'] != segment['economic_snapshot']['currency']):
                 raise ValueError('financial basis mismatch')
@@ -142,6 +154,8 @@ def install(ns):
                         baseline_hash=result['baseline_hash'], currency=result['currency'],
                         gross_amount=str(revenue), cost_amount=str(cost), profit_amount=str(profit),
                         shares={k: str(v) for k, v in shares.items()})
+            if funded:
+                values = dict(result, **values)
             if revised:
                 values.update({k: result[k] for k in ('segment_id', 'window_hash', 'segment_context_hash',
                                                       'cumulative_refund_amount', 'original_amount')})
@@ -181,10 +195,16 @@ def install(ns):
         if not link:
             raise HTTPException(409, 'legacy_refund_requires_final_baseline_review')
         refund = db.get(ns['Refund'], settlement.refund_id)
+        funded_adapter = ns.get('settlement_funded_refund_capture')
+        if funded_adapter:
+            funded_adapter['guard_order'](db, settlement)
         create(db, refund, actor)  # Revalidate the independent completion proof.
         result = financial_basis(db, refund, strict_json(link.evidence_json)['economic_plan'])
         if result['status'] != 'ready':
             raise HTTPException(409, dict(code='refund_final_baseline_not_ready', **result))
+        if result.get('kind') == 'multi_source_refund':
+            if not callable(ns.get('settlement_finance', {}).get('capture_multi_refund')):
+                raise HTTPException(409, 'multi_source_refund_capture_contract_required')
         before = dict(cost_amount=str(settlement.cost_amount), profit_amount=str(settlement.profit_amount),
                       reference_settlement_id=settlement.reference_settlement_id)
         previous = assessment(db, settlement.id)
@@ -204,12 +224,16 @@ def install(ns):
             batch = db.get(ns['SettlementBatch'], batch_id)
             batch.total_profit = Decimal(str(batch.total_profit)) + settlement.profit_amount - Decimal(before['profit_amount'])
         record_assessment(db, settlement, result, actor)
+        if result.get('kind') == 'multi_source_refund':
+            multi['freeze'](db, settlement, refund, result, actor)
+        elif result.get('kind') == 'confirmed_funded_refund':
+            funded_adapter['freeze'](db, refund, result, actor)
         ns['audit'](db, actor, 'refund_final_baseline_review', 'settlement', settlement.settlement_no,
                     category='settlement', business_domain='settlement', order_id=settlement.order_id,
                     before=before, after=result)
         db.flush()
 
-    def create(db, refund, actor='system'):
+    def completed_evidence(db, refund):
         Refund, Settlement = ns['Refund'], ns['Settlement']
         # Serialize on the durable refund, including the first mapping insertion.
         refund_id = getattr(refund, 'id', None)
@@ -297,6 +321,15 @@ def install(ns):
                 segments=[dict(segment_id=p['segment_id'], revenue=str(-v[0]), cost=str(-v[1]),
                                profit=str(v[2]), shares={k: str(n) for k, n in v[3].items()})
                           for p, v in zip(segments, values)]))
+        except (ValueError, TypeError, KeyError, AttributeError, ArithmeticError) as exc:
+            raise HTTPException(409, 'ordinary_refund_settlement_evidence_invalid') from exc
+        return refund, plan, evidence, (amount, cost, profit, shares)
+
+    def create(db, refund, actor='system'):
+        Settlement = ns['Settlement']
+        refund, plan, evidence, (amount, cost, profit, shares) = completed_evidence(db, refund)
+        proven = strict_json(evidence)
+        try:
             link = db.get(RefundSettlementLink, refund.id, populate_existing=True)
             existing = db.scalars(select(Settlement).where(Settlement.refund_id == refund.id)).all()
             if link:
@@ -325,7 +358,7 @@ def install(ns):
                 settlement.settlement_no, 'Completed ordinary refund settlement',
                 category='settlement_adjustment', business_domain='settlement',
                 order_id=refund.order_id, after=dict(status=settlement.status,
-                    refund_id=refund.id, execution_id=execution.id, plan_hash=completion.plan_hash,
+                    refund_id=refund.id, execution_id=proven['completion_execution_id'], plan_hash=proven['plan_hash'],
                     evidence_hash=hashlib.sha256(evidence.encode()).hexdigest(),
                     net_amount=str(settlement.net_amount), cost_amount=str(settlement.cost_amount),
                     profit_amount=str(settlement.profit_amount), financial_basis_status=basis['status'],
@@ -360,11 +393,47 @@ def install(ns):
         completion = db.get(ns['refund_execution']['Completion'], link.refund_id)
         detail = strict_json(link.evidence_json)
         segments = detail['economic_plan'].get('segments', [detail['economic_plan']])
+        basis = assessment(db, settlement_id)
+        order = db.get(ns['Order'], refund.order_id)
+        baseline_model = ns.get('settlement_finance', {}).get('Baseline')
+        display_refs = []
+        for stored_ref in basis.get('references', []):
+            ref = dict(stored_ref)
+            try:
+                source = db.get(baseline_model, ref['reference_settlement_id']) if baseline_model is not None else None
+                original = db.get(ns['Settlement'], ref['reference_settlement_id'])
+                if (not order or not source or not original or ref.get('source_order_id') != order.id
+                        or source.order_id != order.id or original.order_id != order.id
+                        or source.provider_enterprise_id != order.provider_enterprise_id
+                        or source.snapshot_hash != ref.get('baseline_hash')
+                        or hashlib.sha256(source.snapshot_json.encode()).hexdigest() != source.snapshot_hash
+                        or source.currency != ref.get('currency') or source.revenue <= 0
+                        or original.status not in ('locked', 'paid')):
+                    raise ValueError('source identity mismatch')
+                snapshot = strict_json(source.snapshot_json)
+                source_shares = {k: money(snapshot['shares'][k]) for k in SHARES}
+                if sum(source_shares.values()) != source.profit or source.profit < 0:
+                    raise ValueError('source share mismatch')
+                rates = {role: str((source_shares[field] * 100 / source.profit).quantize(
+                    Decimal('.0001'), rounding=ROUND_HALF_UP)) if source.profit else None
+                    for role, field in zip(('platform', 'provider', 'service', 'expert', 'channel'), SHARES)}
+                Batch, Line = ns['SettlementBatch'], ns['SettlementLine']
+                batches = db.scalars(select(Batch).join(Line, Line.batch_id == Batch.id).where(
+                    Line.settlement_id == source.settlement_id, Line.status != 'superseded',
+                    Batch.status != 'rolled_back').distinct()).all()
+                ref.update(source_order_no=order.order_no, reference_settlement_no=original.settlement_no,
+                    reference_batch_no=batches[0].batch_no if len(batches) == 1 else None,
+                    share_rates=rates, baseline_created_at=source.created_at, display_status='verified')
+            except (HTTPException, ValueError, TypeError, KeyError, AttributeError, ArithmeticError):
+                ref.update(display_status='unavailable', display_reason='source_identity_or_baseline_unverified')
+            display_refs.append(ref)
+        if 'references' in basis:
+            basis = dict(basis, references=display_refs)
         return dict(refund_id=link.refund_id, refund_no=refund.refund_no,
                     execution_id=completion.execution_id, plan_hash=completion.plan_hash,
                     source_order_ids=sorted({p['source_order_id'] for p in segments}),
                     rule_version=','.join(sorted({p['economic_snapshot']['settlement_rule']['version'] for p in segments})),
-                    completed_at=completion.completed_at, financial_basis=assessment(db, settlement_id))
+                    completed_at=completion.completed_at, financial_basis=basis)
 
     def ledger_status(db, refund_id):
         link = db.get(RefundSettlementLink, refund_id)
@@ -383,8 +452,12 @@ def install(ns):
             return 'in_batch'
         return 'settlement_generated'
 
+    multi = install_multi_source(ns, completed_evidence, money, segment_values, SHARES)
+    ns['settlement_funded_refund_evidence'] = dict(completed_evidence=completed_evidence)
     hooks = dict(Model=RefundSettlementLink, FinancialAssessment=FinancialAssessment,
                  negative_settlement=negative_settlement, describe=describe, ledger_status=ledger_status,
-                 financial_basis=financial_basis, assessment=assessment, prepare_lock=prepare_lock)
+                 financial_basis=financial_basis, assessment=assessment, prepare_lock=prepare_lock,
+                 MultiSourceManifest=multi['Model'], capture_manifest=multi['capture_manifest'],
+                 raw_multi_basis=multi['raw_multi_basis'])
     ns['refund_settlement'] = hooks
     return hooks

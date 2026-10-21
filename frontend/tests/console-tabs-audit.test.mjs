@@ -43,6 +43,11 @@ test('finance, participant configuration and annual report actions stay Chinese 
     finance_cost_exception_plan: '冻结成本例外冲回方案', finance_segment_funding_link: '关联版本变更经济段资金依据',
     bind_version_change_final_baseline: '绑定版本变更最终清算基线', project_version_change_final_baseline: '锁定前应用版本变更最终基线',
     approve_segment_cost_exception_refresh: '批准版本段成本例外并待刷新基线',
+    create_settlement_cost_exception: '申请不可返还成本例外', decide_settlement_cost_exception: '审批不可返还成本例外',
+    'decide_settlement_cost_exception:exception-42': '审批不可返还成本例外',
+    finance_funding_propose: '提出补差资金责任', finance_funding_decide: '审批补差资金责任', 'finance_funding_decide:request-42': '审批补差资金责任',
+    finance_funding_verify: '核验补差资金依据', 'finance_funding_verify:request-42': '核验补差资金依据',
+    finance_multi_source_refund_capture: '冻结多来源退款清算基线', finance_multi_source_offset: '登记多来源退款抵扣',
     refund_final_baseline_review: '复核退款最终清算基线', create_settlement_participant: '创建清算收益主体',
     configure_settlement_participants: '配置清算收益主体', 'configure_settlement_participants:product-42': '配置清算收益主体',
     export_settlement_reporting: '导出清算分析报表', create_settlement_annual_report: '创建年度清算报告草稿',
@@ -61,6 +66,9 @@ test('finance, participant configuration and annual report actions stay Chinese 
   }
   assert.equal(auditActionLabel({ action: 'finance_draft', action_label: '后端提供的中文名称' }), '后端提供的中文名称');
   assert.equal(auditActionLabel('configure_settlement_participants_future'), '其他操作（configure_settlement_participants_future）');
+  assert.equal(auditActionLabel('finance_funding_propose:unknown'), '其他操作（finance_funding_propose:unknown）');
+  assert.equal(auditActionLabel('future_action:private-id'), '其他操作（future_action:private-id）');
+  assert.equal(context.settlementLifecycleAction('finance_funding_propose:unknown'), 'finance_funding_propose:unknown');
   assert.equal(context.settlementLifecycleAction('future_finance_action'), 'future_finance_action');
   assert.equal(context.settlementLifecycleAction('lock_settlement'), '锁定清算单');
 });

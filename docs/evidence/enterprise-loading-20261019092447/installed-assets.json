@@ -1,0 +1,8 @@
+{
+  "status": "passed",
+  "tag": "20261019092447-125a59f",
+  "commit": "125a59f69e3df7dc3f924b7109fefaf09c05830c",
+  "asset_count": 11,
+  "all_asset_hashes_match": true,
+  "scope": "Web-only release; API image unchanged"
+}

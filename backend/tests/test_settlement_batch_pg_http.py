@@ -5,15 +5,18 @@ uses DATABASE_URL or starts application lifespan/background workers.
 """
 import os
 import secrets
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 import test_settlement_finance_integration as integration
 import test_cross_version_final_baseline as cross_version
+import test_cross_version_multi_source_refund as multi_source
 
 
 class PrivatePostgresFixtureMixin:
@@ -91,6 +94,62 @@ class SettlementBatchPostgresHTTPTests(PrivatePostgresFixtureMixin, integration.
                      'requires explicit isolated PostgreSQL test database')
 class CrossVersionCostPostgresHTTPTests(PrivatePostgresFixtureMixin, cross_version.CrossVersionFinalBaselineTests):
     """Select the exact combined-cost method to avoid running inherited cases."""
+
+
+@unittest.skipUnless(os.environ.get('CLEARING_TEST_DATABASE_URL'),
+                     'requires explicit isolated PostgreSQL test database')
+class CrossVersionMultiPostgresHTTPTests(PrivatePostgresFixtureMixin, multi_source.MultiSourceRefundTests):
+    def test_concurrent_http_refunds_cannot_overdraw_the_same_source(self):
+        self.two_changes()
+        m = self.m
+        with m.SessionLocal() as db:
+            first = self.seed_completed(db, self.plans(db, amount='20.00'), 'first')
+            first_set = m.refund_settlement['negative_settlement'](db, first)
+            second = self.seed_completed(db, self.plans(db, amount='20.00', prior='20.00'), 'second', offset=1)
+            second_set = m.refund_settlement['negative_settlement'](db, second)
+            ids = {first_set.id, second_set.id}
+            for sid in ids:
+                self.assertEqual(m.refund_settlement['assessment'](db, sid)['status'], 'ready')
+            db.commit()
+        barrier = threading.Barrier(2)
+        observed = set()
+        mutex = threading.Lock()
+
+        def simultaneous_parent_locks(connection, cursor, statement, parameters, context, many):
+            if 'FOR UPDATE' not in statement.upper() or not isinstance(parameters, dict):
+                return
+            parent = next((v for v in parameters.values() if isinstance(v, str) and v in ids), None)
+            if parent is None:
+                return
+            with mutex:
+                if parent in observed:
+                    return
+                observed.add(parent)
+            barrier.wait(timeout=10)
+
+        def lock(sid):
+            return self.client.post(f'/api/settlements/{sid}/lock',
+                headers={'Authorization': 'Bearer ' + self.tokens['finance']})
+
+        event.listen(m.engine, 'before_cursor_execute', simultaneous_parent_locks)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(lock, sid) for sid in sorted(ids)]
+                responses = [future.result(timeout=30) for future in futures]
+        finally:
+            event.remove(m.engine, 'before_cursor_execute', simultaneous_parent_locks)
+        self.assertEqual(observed, ids, 'Both real PostgreSQL transactions must reach their independent row locks')
+        self.assertEqual(sorted(r.status_code for r in responses), [200, 409], [r.text for r in responses])
+        h = m.settlement_finance
+        with m.SessionLocal() as db:
+            self.assertEqual(db.scalar(select(func.count()).select_from(h['Baseline']).where(h['Baseline'].settlement_id.in_(ids))), 1)
+            children = db.scalars(select(h['RefundSource']).where(h['RefundSource'].settlement_id.in_(ids))).all()
+            self.assertEqual(len(children), 2)
+            self.assertEqual(len({r.settlement_id for r in children}), 1)
+            source = db.get(h['Baseline'], self.target_ids[0])
+            records = h['source_reversals'](db, source.settlement_id)
+            from decimal import Decimal
+            self.assertLessEqual(sum(abs(Decimal(r['gross_amount'])) for r in records), source.revenue)
 
 
 if __name__ == '__main__':

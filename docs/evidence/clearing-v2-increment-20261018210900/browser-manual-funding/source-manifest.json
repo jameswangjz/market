@@ -1,0 +1,31 @@
+{
+  "head": "c7dc59ff050dcc80f2c523f767fd97319da6c0fc",
+  "source_state": "dirty shared worktree; no commit or deployment",
+  "focused_tests": "42 passed: settlement-management + settlement-funding + settlement-manual-funding",
+  "build": "npm run build passed, 62 seconds, chunk-size warning only",
+  "sha256": {
+    "frontend/src/SettlementManagement.vue": "e9347182ffb9b17d05cb14501de5265bc3145a20ecdb4e996acf26ec2ca08c86",
+    "frontend/src/settlementManagement.js": "8cdaac83d630b06431a9aa5f4b2d3e8a940a4261360784425b2b6095185d1dab",
+    "frontend/src/SettlementManualFunding.vue": "891c60c8cb3e8d373f74f3b189d1600ea1a1b7dc8ee7b012bdcd2237b00fc955",
+    "frontend/src/settlementManualFunding.js": "da594d3bf14d5cf4b46bc3226d69c4db593173087a3806a12298dbb100adbd4d",
+    "frontend/dist/assets/ConsoleApp-C9l0HQVT.js": "55ba8ce18f034e0c08fe3b2b27163cbbc88faeafac9ef983ba5ad3dc803da2df",
+    "backend/app/settlement_manual_funding.py": "f0e49445da03e0dae26dbd5c878154a7d8d7b5d366ba757c62c25ae71a4770f0",
+    "backend/app/settlement_parties.py": "c600eea693ff8d1144562c6a8b26408b3d3de8c5b6e422077e95b663b272164a",
+    "backend/app/settlement_multi_cost_exception.py": "2fac6c3a70f60728d70dbe2edfe3cce4e1524e751837e6adfeca828c40abb69a"
+  },
+  "browser_evidence": {
+    "multi_cost_write_chain": "../market-clr2-multi-cost-phase2/result.json: 14 checks; previous build before final loading/review guards",
+    "multi_cost_final_dist": "../market-clr2-multi-cost-latest-readonly/result.json: 7 checks; latest build, zero writes",
+    "manual_register": "../market-clr2-manual-funding/result.json: registration succeeded; runner clicked before reviewer list finished loading",
+    "manual_review": "../market-clr2-manual-funding-review-cover/result.json: review succeeded; runner asserted before refreshed state arrived",
+    "manual_cover": "result.json: 8 passed; continues existing reviewed evidence, final covered/version3/bank_receipt_verified=false",
+    "manual_total_actual_posts": 3,
+    "no_successful_operation_replayed": true
+  },
+  "remaining_boundaries": [
+    "Actual multi-source API lacks reliable per-source product-version name; UI says 未提供 rather than inventing one.",
+    "Manual evidence registration and independent review are not automated bank reconciliation.",
+    "Proportional funded refund reversal UI was not expanded or validated in this focused task.",
+    "Sagan-owned SettlementFundingManagement.vue and settlementFunding.js were not edited."
+  ]
+}

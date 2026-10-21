@@ -143,8 +143,8 @@ class MockSaaSOIDCTests(unittest.TestCase):
         return self.machine('OPEN', product_id='fixture-product', subscription_id='fixture-subscription',
             enterprise_id='fixture-enterprise', enterprise_name='测试企业', version='1')
 
-    def login(self, **params):
-        response = self.client.get('/sso/apps/fixture-client', params={'enterprise_id': 'fixture-enterprise', **params})
+    def login(self, path='/sso/apps/fixture-client', **params):
+        response = self.client.get(path, params={'enterprise_id': 'fixture-enterprise', **params})
         self.assertEqual(response.status_code, 302, response.text)
         self.query = parse_qs(urlsplit(response.headers['location']).query)
         self.assertEqual(self.query['scope'], ['openid profile email'])
@@ -157,6 +157,92 @@ class MockSaaSOIDCTests(unittest.TestCase):
         self.assertEqual(self.query['code_challenge'], [expected])
         self.code = 'fixture-code-' + secrets.token_hex(6)
         return response
+
+    def test_stable_entries_reuse_oidc_security_and_callback(self):
+        for path, params in (('/apps/fixture-product', {}),
+                             ('/sso/apps', {'product_id': 'fixture-product'}),
+                             ('/sso/apps/fixture-client', {'product_id': 'fixture-product'})):
+            with self.subTest(path=path):
+                response = self.login(path, **params)
+                self.assertEqual(self.query['client_id'], ['fixture-client'])
+                self.assertEqual(self.flow['enterprise_id'], 'fixture-enterprise')
+                self.assertIn('HttpOnly', response.headers['set-cookie'])
+                self.assertIn('Path=/sso', response.headers['set-cookie'])
+                self.assertEqual(self.callback().status_code, 303)
+                self.assertEqual(self.client.get('/app').status_code, 200)
+
+    def test_product_resolution_unknown_ambiguous_and_cross_product(self):
+        other = {**self.config, 'client_id': 'other-client', 'product_id': 'other-product'}
+        self.assertEqual(self.client.post('/_test/oidc/clients', json=other,
+                                         headers=self.admin_headers).status_code, 201)
+        for path in ('/apps/other-product', '/sso/apps?product_id=other-product'):
+            response = self.client.get(path, params={'enterprise_id': 'fixture-enterprise',
+                **({'product_id': 'other-product'} if path.startswith('/sso/apps?') else {})})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(parse_qs(urlsplit(response.headers['location']).query)['client_id'], ['other-client'])
+        duplicate = {**self.config, 'client_id': 'duplicate-client'}
+        self.client.post('/_test/oidc/clients', json=duplicate, headers=self.admin_headers)
+        for method in (self.client.get, self.client.head):
+            for path, expected in (('/apps/missing', 404), ('/sso/apps', 404),
+                    ('/sso/apps?product_id=missing', 404), ('/apps/fixture-product', 409),
+                    ('/sso/apps?product_id=fixture-product', 409)):
+                self.assertEqual(method(path).status_code, expected)
+        self.assertEqual(self.client.head('/sso/apps/fixture-client').status_code, 204)
+
+    def test_head_and_public_landing_do_not_fetch_or_write(self):
+        with self.store.connect() as db:
+            before = {table: [tuple(row) for row in db.execute('SELECT * FROM ' + table)]
+                      for table in ('flows', 'sessions', 'mappings')}
+        requests_before = len(self.requests)
+        self.metadata_changes['issuer'] = 'https://untrusted.invalid'
+        for path in ('/apps/fixture-product', '/sso/apps?product_id=fixture-product',
+                     '/sso/apps/fixture-client?enterprise_id=fixture-enterprise'):
+            response = self.client.head(path)
+            self.assertEqual(response.status_code, 204)
+            self.assertEqual(response.content, b'')
+            self.assertNotIn('set-cookie', response.headers)
+        self.assertEqual(self.client.head('/sso/apps', headers={
+            'X-Market-Product-Id': 'fixture-product'}).status_code, 204)
+        for path in ('/apps/fixture-product', '/sso/apps?product_id=fixture-product'):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('set-cookie', response.headers)
+        self.assertEqual(len(self.requests), requests_before)
+        with self.store.connect() as db:
+            for table, rows in before.items():
+                self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM ' + table)], rows)
+        self.assertEqual(self.client.head('/sso/apps/missing').status_code, 404)
+        with self.store.connect() as db:
+            broken = {**self.config, 'redirect_uri': PUBLIC + '/wrong'}
+            db.execute('UPDATE clients SET config=?', (json.dumps(broken),))
+        self.assertEqual(self.client.head('/apps/fixture-product').status_code, 409)
+
+    def test_conflicting_product_context_never_routes(self):
+        requests_before = len(self.requests)
+        for method in (self.client.get, self.client.head):
+            for path in ('/apps/fixture-product', '/sso/apps/fixture-client',
+                         '/sso/apps?product_id=fixture-product'):
+                self.assertEqual(method(path, headers={'X-Market-Product-Id': 'other'}).status_code, 409)
+            for path in ('/apps/fixture-product?product_id=other',
+                         '/sso/apps/fixture-client?product_id=other',
+                         '/sso/apps?product_id=fixture-product&product_id=other'):
+                self.assertEqual(method(path).status_code, 409)
+        self.assertEqual(len(self.requests), requests_before)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM flows').fetchone()[0], 0)
+
+    def test_public_product_name_is_escaped_and_credentials_private(self):
+        name = '<script>alert("x")</script><img src=x onerror=alert(1)>'
+        response = self.client.put('/admin/api/clients', headers=self.admin_headers,
+                                   json={**self.config, 'product_name': name})
+        self.assertEqual(response.status_code, 200)
+        for path in ('/apps/fixture-product', '/sso/apps?product_id=fixture-product'):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn('&lt;script&gt;', response.text)
+            for private in (name, '<script>', '<img', self.config['client_id'], self.config['client_secret']):
+                self.assertNotIn(private, response.text)
+            self.assertIn("default-src 'none'", response.headers['content-security-policy'])
 
     def callback(self, **changes):
         return self.client.get('/sso/callback', params={'state': self.query['state'][0], 'code': self.code, **changes})

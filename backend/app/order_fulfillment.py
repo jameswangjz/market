@@ -164,6 +164,11 @@ def install(ns):
         target = {"start_delivery": "in_delivery", "submit_delivery": "pending_acceptance",
                   "accept_delivery": "completed", "reject_delivery": "rectifying"}[action]
         before = state(order, task)
+        if action == 'start_delivery':
+            order.service_starts_at = order.service_starts_at or ns['now']()
+            order.service_effective_at = order.service_effective_at or order.service_starts_at
+        elif action == 'accept_delivery':
+            order.service_ends_at = ns['now']()
         set_state(db, user, order, task, target,
                   "accepted" if action == "accept_delivery" else target,
                   "completed" if action == "accept_delivery" else target, action, reason)

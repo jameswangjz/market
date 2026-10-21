@@ -1,0 +1,12 @@
+﻿{
+    "scope":  "installed platform administrator users page; GET/HEAD only",
+    "status":  "passed",
+    "checks":  [
+                   "initial: no current-enterprise management requests",
+                   "initial: no XHR403 responses",
+                   "initial: users tab rendered",
+                   "reload: no current-enterprise management requests",
+                   "reload: no XHR403 responses",
+                   "reload: users tab rendered"
+               ]
+}

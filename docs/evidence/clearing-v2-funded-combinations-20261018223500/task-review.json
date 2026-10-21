@@ -1,0 +1,92 @@
+{
+  "captured_at": "2026-10-18T15:31:41.465586+00:00",
+  "created": [],
+  "items": [
+    {
+      "code": "CLR2-ARC-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-004",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-005",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-006",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-007",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-008",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-BE-009",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-FE-003",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-OPS-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-001",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-002",
+      "status": "review",
+      "progress": 100
+    },
+    {
+      "code": "CLR2-QA-003",
+      "status": "review",
+      "progress": 100
+    }
+  ],
+  "note": "已完成多来源补差退款、外部补款方返还、成本例外组合及升降级未用补款冲回，平台内部恢复与外部应付分开；raw成本依据及前端提案/返还付款已接线。开发集群隔离PG20项及最新VC增量8项通过，后端party组合62项、金融前端94项通过；部署后101后端文件和12Web资产完全匹配，9组真实接口及10项浏览器只读核验通过，受保护订单未变，计费源健康且历史缺口保留。版本20261018232318-ab08724，提交待用户验收，不冒充银行真实到账验证。"
+}

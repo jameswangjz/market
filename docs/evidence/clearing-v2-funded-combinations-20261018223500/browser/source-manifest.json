@@ -1,0 +1,22 @@
+{
+  "verification": "Actual Google Chrome via existing CDP helpers; 11 read-only checks passed",
+  "scope": "Synthetic DTO presentation in actual Vue SFCs; no backend, database, installed-app or financial-algorithm validation",
+  "viewports": [1440, 390],
+  "network": "Only GET/HEAD to owned localhost8131; API requests and writes denied",
+  "source_sha256": {
+    "frontend/src/SettlementReportEvidence.vue": "11d1be8333965a8d562732faede55d0727e31149b967b611cf9048c4da430c99",
+    "frontend/src/SettlementRefundEvidence.vue": "8c85834f3e8dd077d6b3ed1448c2dc3e1e6c134bbf5dc9fd5ae29038a46eae3d",
+    "frontend/src/SettlementEconomicSegments.vue": "8f69795661b45faa67351749bb13ec539397bcf88fe268b819e2440f350b4f28",
+    "frontend/tests/fixtures/funded-combinations.js": "634fbb6e3a9502ec5d95d47739e281fca50e23f27b1f08a5854eb27d5dbbd101"
+  },
+  "presentation_cases": [
+    "Buyer cash refund30 vs financial gross reversal-32 vs supplemental payer return entitlement2",
+    "Unknown frozen rights do not imply paid; pending, manual-payment and offset states distinguishable",
+    "Retained provider cost3 vs separate exception bearer loss3, distinct from five-role profits",
+    "Original ORD/SET/multiple BATCH/final baseline/manual funding proof visible",
+    "Refund detail and economic segments preserve cash and independent credit boundaries",
+    "No page-level horizontal overflow at both viewport widths; wide evidence tables scroll locally"
+  ],
+  "cleanup": "Owned fixture stopped; no credential tokens were created",
+  "no_application_source_edits_in_browser_followup": true
+}

@@ -1,0 +1,11 @@
+{
+  "product_id": "67a69ce54e10fca7f23878ed3524129b",
+  "checks": [
+    {
+      "subscription_id": "f7ff415b3324902b638292ec143bbbfd",
+      "expires_at_matches": true,
+      "oauth_introspection_status_success": true
+    }
+  ],
+  "scope": "Real machine OAuth and HTTP STATUS with new context; no mutation"
+}

@@ -1,0 +1,10 @@
+NAME                      SCHEDULE          IMAGE
+application-health        2-59/5 * * * *    market-api:20261018235216-5444106
+clearing-task-monitor     1-59/10 * * * *   market-api:20261018235216-5444106
+market-clamav-freshclam   17 */6 * * *      clamav/clamav:1.4
+message-center-cleanup    23 3 * * *        market-api:20261018235216-5444106
+r3-trading-task-monitor   3-59/10 * * * *   market-api:20261018235216-5444106
+sla-calendar-sync         15 3 * * *        market-api:20261018235216-5444106
+sla-online-monitor        4-59/5 * * * *    market-api:20261018235216-5444106
+ticket-sla-monitor        */5 * * * *       market-api:20261018235216-5444106
+trading-task-monitor      5-59/10 * * * *   market-api:20261018235216-5444106

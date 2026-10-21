@@ -1,0 +1,22 @@
+﻿{
+    "checks":  [
+                   "Workspace 0 has no API errors",
+                   "Report detail renders authoritative five-party rates and amounts",
+                   "Synthetic read-only manifest renders both source business numbers, original batches, final hashes and five-party segment amounts",
+                   "Management view 2 loads without contract errors",
+                   "Management layout fits 1440",
+                   "Management layout fits 390",
+                   "Read-only security role receives no management capability",
+                   "Read-only role cannot see management write forms"
+               ],
+    "screenshots":  [
+                        "report-evidence-1440.png",
+                        "management-1440.png",
+                        "management-390.png"
+                    ],
+    "writes":  [
+
+               ],
+    "scope":  "localhost disposable --management fixture; evidence/style continuation; GET/HEAD only",
+    "status":  "passed"
+}

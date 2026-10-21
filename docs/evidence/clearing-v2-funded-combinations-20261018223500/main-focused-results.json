@@ -1,0 +1,99 @@
+{
+  "stage": "deployed-awaiting-user-acceptance",
+  "deployed": true,
+  "release": {
+    "commit": "544410629fb4b9795c6021699725c3dfdab6ac2a",
+    "tag": "20261018235216-5444106",
+    "manifest_sha256": "38cfde03f62967dd78b793467bd4c2854d2b621df53f222c57e194738375f8ad",
+    "backend_files_verified": 101,
+    "web_assets_verified": 12,
+    "runtime_check_groups": 9,
+    "installed_browser_readonly_checks": 10,
+    "related_deployments_ready": 7,
+    "api_image_cronjobs_updated": 8
+  },
+  "final_installed_evidence_directory": "compat-final/",
+  "initial_release": "20261018232318-ab08724",
+  "buyer_business_data_modified": false,
+  "groups": [
+    {
+      "modules": ["test_settlement_finance", "test_settlement_finance_funding"],
+      "run": 31,
+      "result": "passed"
+    },
+    {
+      "modules": ["test_cross_version_multi_source_refund", "test_multi_source_cost_exceptions", "test_settlement_parties_multi_cost"],
+      "run": 45,
+      "result": "passed"
+    },
+    {
+      "modules": ["test_settlement_funded_refund", "test_settlement_funded_refund_normal_plan", "test_settlement_funded_cost_exception"],
+      "run": 44,
+      "result": "passed"
+    },
+    {
+      "modules": ["test_settlement_funded_combinations_http", "test_settlement_funded_segment_bindings_http"],
+      "run": 11,
+      "result": "passed"
+    }
+  ],
+  "count_note": "Groups can overlap through test fixtures; do not sum as unique acceptance scenarios.",
+  "earlier_failures": [
+    "Initial 52-test discovery found a penny-sign assertion mismatch and a batch confirmation fixture failure. Subsequent focused groups above passed."
+  ],
+  "isolated_postgresql": {
+    "environment": "192.168.10.10 market isolated bounded pod",
+    "module": "test_settlement_funded_combinations_pg_http",
+    "run": 20,
+    "duration_seconds": 301.252,
+    "result": "passed",
+    "temporary_database_removed": true,
+    "source_archive_sha256": "8f7d527dec294a86f08b0bc8826d3b59d983f52f781bd86fceb8bd98a62caa51",
+    "coverage_limit": "Snapshot precedes platform-absorption version support and the premature-lock retry fix; follow-up required. Version-change resource receipts are seeded, not live upstream bank/resource operations."
+  },
+  "final_incremental_postgresql": {
+    "class": "test_settlement_funded_combinations_pg_http.VersionFundingPostgresHTTPTests",
+    "run": 8,
+    "duration_seconds": 92.790,
+    "result": "passed",
+    "source_archive_sha256": "299e7c98c28d735b82f7a238d95fbb14cae8b05c4ff09fb91605a7d03527c0e3",
+    "temporary_database_removed": true,
+    "temporary_test_pod_removed": true
+  },
+  "final_party_cost_discovery_group": {"run": 62, "result": "passed"},
+  "compatibility_patch_validation": {
+    "ordinary_cross_version_regression": {"run": 22, "result": "passed"},
+    "classification_discovery_funded_cost_group": {"run": 64, "passed": 62, "pg_only_skipped": 2},
+    "affected_flow_on_development_postgresql": {
+      "case": "test_settlement_batch_pg_http.CrossVersionCostPostgresHTTPTests.test_cross_version_cost_exception_http_approval_refresh_and_lock",
+      "run": 1,
+      "duration_seconds": 14.806,
+      "result": "passed",
+      "source_archive_sha256": "e9ce96f4f42d6ccfdbc7c3724821e86a10ad14e1e89e80e6a3c57878e4c7aab6",
+      "temporary_database_removed": true,
+      "temporary_test_pod_removed": true
+    },
+    "review_withdrawn_then_restored_after_verified_patch": true
+  },
+  "final_frontend_settlement_group": {"run": 94, "result": "passed"},
+  "synthetic_real_chrome_display_checks": {"run": 13, "result": "passed"},
+  "installed_schema": {
+    "position_kind_length": 30,
+    "transaction_kind_length": 30,
+    "funded_cost_and_version_funding_tables_exist": true
+  },
+  "installed_discovery_route": {"authenticated_missing_refund": 404, "anonymous_denied": 401},
+  "protected_order_unchanged": true,
+  "historical_billing_gaps_preserved": true,
+  "temporary_browser_tokens_removed": true,
+  "remaining": ["User frontend acceptance; real bank integration remains outside this test scope."],
+  "diagnostics": [
+    "An intermediate PG selector failed after its wrapper moved; wrapper restored and final eight-case PG group passed; temporary DB was removed on failure as well.",
+    "Initial installed browser run used an incorrect local token filename; corrected to platform.token and final ten readonly checks passed. Initial diagnostic output is retained separately.",
+    "Expanded ordinary cross-version cost regression exposed five classification failures after the initial release. Review was withdrawn, verified context-boundary classification was added, and all 22 regression tests passed before the compatibility release and final runtime/browser checks."
+  ],
+  "tasks": {
+    "CLR2-BE-003": "review",
+    "CLR2-QA-001": "review"
+  }
+}

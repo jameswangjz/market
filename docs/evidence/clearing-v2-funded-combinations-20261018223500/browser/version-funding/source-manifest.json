@@ -1,0 +1,17 @@
+{
+  "verification": "Actual Chrome, 13 read-only presentation checks passed; render tests 9 passed",
+  "scope": "Synthetic DTO fixture mounting actual Vue components; no backend/database writes or algorithm verification",
+  "source_sha256": {
+    "frontend/src/SettlementReportEvidence.vue": "e447afb73568a9c4d4ae8f9e23854ed9691467c93e2798ba65085cea8d5125e5",
+    "frontend/tests/settlement-funded-evidence.test.mjs": "2e2f63e47d272df1b3b44daaa2cf0adabb0480d9003e38470042495cdb1e4e1c",
+    "frontend/tests/fixtures/funded-combinations.js": "a598419e82db95f14f00c8ee50fac60d59e3255b4eef8089ddc1e2d52bbdeb88"
+  },
+  "new_cases": [
+    "VC original external payer return2: original source/proof/projection/policy; no payment inferred",
+    "VC internal absorption restoration2: internal direction, Chinese position label; not external payable, payment or buyer cash refund"
+  ],
+  "viewports": [1440, 390],
+  "page_horizontal_overflow": false,
+  "cleanup": "localhost8131 fixture stopped; no tokens created",
+  "build": "Not rerun for this incremental follow-up; browser loaded current SFC source through isolated Vite fixture"
+}

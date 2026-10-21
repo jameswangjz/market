@@ -1,6 +1,8 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import axios from "axios";
+import PasswordSecurity from "./PasswordSecurity.vue";
+import UserAccountMenu from "./UserAccountMenu.vue";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
@@ -32,6 +34,7 @@ import { canManageProviderSaas, canViewProductIntegration, createReadinessContro
 import { createDialogController } from "./dialogController.js";
 import LedgerComparison from "./LedgerComparison.vue";
 import SettlementFinanceWorkspace from "./SettlementFinanceWorkspace.vue";
+import SettlementRefundEvidence from "./SettlementRefundEvidence.vue";
 import { safeError, beneficiaryContextKey, createBeneficiaryDiscovery } from "./settlementFinance.js";
 import { useNotificationStream } from "./useNotificationStream.js";
 import { notificationScope, notificationScopeKey, notificationRequest } from "./notificationScope.js";
@@ -45,7 +48,7 @@ import { explicitOrderPayload } from "./orderClient.js";
 import { canDownloadApiCredential, downloadApiCredential } from "./apiCredentialDownload.js";
 import { registrationProductTypes, registrationPayload, splitOidcRedirectUris, isValidOidcRedirectUri, emptyVersionIntegration, loadRegistrationIntegrations, bindRegistrationVersions, saveRegistrationAttachments, deliveryForProductType } from "./productRegistration.js";
 import { canRenewSubscription, createSubscriptionSession, subscriptionDisplayStatus, termDisplayStatus, monthlyQuotaThousands, monthlyQuotaCalls, serverTimeNow } from "./subscriptionTerms.js";
-import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload } from "./orderWorkflow.js";
+import { canReviewProviderOrder, orderWorkflowActions, providerReviewPayload, isOfflineFulfillmentOrder, canUploadDeliveryAttachment, deliveryTransitionPayload, orderTypeLabel, orderServiceDates } from "./orderWorkflow.js";
 import { isNewFileOrder, canAccessBuyerDelivery, canAccessBuyerSaas, deliveryMethod, deliveryAccessPlaceholder, canDownloadDeliveryFile, createDeliveryAccessSession, createSaasListAccessSession } from "./deliveryAccess.js";
 import { canPreviewVersionChange, createVersionChangeSession } from "./versionChangeQuote.js";
 import { canReadVersionChangeHistory } from "./versionChangeExecution.js";
@@ -392,8 +395,8 @@ function closeOrder() {
 async function refreshVersionChangeContext() {
   const order = selectedOrder.value?.order;
   versionChangeSession.reset();
-  if (order) await openOrder(order);
-  await refreshData();
+  try { if (order) await openOrder(order); }
+  finally { await refreshData(); }
 }
 const orderProductFiles = ref({ download_limit: 0, items: [] });
 const saasOrderState = ref({ users: [], departments: [], operations: [] });
@@ -458,16 +461,16 @@ const options = (values, labels = statusLabels) => values.map(value => ({ value,
 const mainListFields = computed(() => ({
   products: [{ key: "name", label: "产品名称" }, { key: "catalog", label: "目录", options: productCatalogOptions.value }, { key: "provider", label: "提供方" }, { key: "product_type", label: "产品类型", options: options(["dataset", "api", "model", "saas", "training", "consulting", "custom"], typeLabels) }, { key: "status", label: "产品状态", options: options(Object.keys(productStatusOptions), productStatusOptions) }],
   orders: [{ key: "order_no", label: "订单ID / 订单号" }, { key: "product", label: "产品" }, { key: "provider", label: "提供方" }, { key: "buyer", label: "购买方" }, ...Object.entries(orderStatusOptions).map(([key, values]) => ({ key, label: { main_status: "主状态", payment_status: "支付状态", delivery_status: "交付状态", after_sales_status: "售后状态" }[key], options: options(values) }))],
-  tasks: [{ key: "task_id", label: "任务ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "assignee", label: "负责人" }, { key: "method", label: "交付方式", options: Object.keys(deliveryMethods).map(value => ({ value, label: methodLabel(value) })) }, { key: "delivery_mode", label: "模式", options: options(["automatic", "manual"], { automatic: "自动交付", manual: "人工交付" }) }, { key: "status", label: "任务状态", options: options(["preparing", "awaiting_start", "in_delivery", "pending_acceptance", "rectifying", "completed", "exception", "retrying"]) }, { key: "start", label: "SLA截止起日", type: "date" }, { key: "end", label: "SLA截止止日", type: "date" }],
+  tasks: [{ key: "task_id", label: "任务ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "assignee", label: "负责人" }, { key: "method", label: "交付方式", options: Object.keys(deliveryMethods).map(value => ({ value, label: methodLabel(value) })) }, { key: "delivery_mode", label: "模式", options: options(["automatic", "manual"], { automatic: "自动交付", manual: "人工交付" }) }, { key: "status", label: "任务状态", options: options(["preparing", "awaiting_effective", "awaiting_start", "in_delivery", "pending_acceptance", "rectifying", "completed", "exception", "retrying"]) }, { key: "start", label: "SLA截止起日", type: "date" }, { key: "end", label: "SLA截止止日", type: "date" }],
   aftersales: [{ key: "ticket_id", label: "工单ID" }, { key: "order_id", label: "订单ID / 订单号" }, { key: "product", label: "产品" }, { key: "provider", label: "提供方" }, { key: "buyer", label: "购买方" }, { key: "assignee", label: "负责人" }, { key: "status", label: "工单状态", options: options(Object.keys(afterSalesStatuses), afterSalesStatuses) }, { key: "priority", label: "优先级", options: options(["normal", "important", "urgent"], { normal: "普通", important: "重要", urgent: "紧急" }) }, { key: "start", label: "创建起日", type: "date" }, { key: "end", label: "创建止日", type: "date" }],
 }));
 const productCatalogOptions = ref([]);
 const productStatusOptions = { draft: "草稿", pending_review: "业务审核", quality_review: "质量审核", security_review: "安全审核", operation_review: "运营审核", pending_integration: "待接入验证", published: "已发布", rejected: "已拒绝", security_unpublished: "安全下架" };
 const deliveryMethods = { file: true, object_storage: true, api: true, model_api: true, tenant_access: true, training: true, consulting: true, custom: true };
 const orderStatusOptions = {
-  main_status: ["created", "pending_review", "pending_provider_review", "pending_payment", "pending_fulfillment", "awaiting_start", "fulfilling", "in_delivery", "pending_confirmation", "pending_acceptance", "rectifying", "completed", "cancelled", "closed", "refunded", "rejected"],
-  payment_status: ["unpaid", "paying", "paid", "refunding", "refunded", "cancelled"],
-  delivery_status: ["not_started", "awaiting_start", "preparing", "in_delivery", "retrying", "rectifying", "pending_acceptance", "accepted", "completed", "exception"],
+  main_status: ["created", "pending_review", "pending_provider_review", "pending_payment", "pending_fulfillment", "awaiting_start", "fulfilling", "in_delivery", "pending_confirmation", "pending_acceptance", "rectifying", "completed", "cancelled", "closed", "refunded", "refund_pending", "refund_completed", "refund_rejected", "rejected"],
+  payment_status: ["unpaid", "paying", "paid", "refunding", "refunded", "cancelled", "not_applicable"],
+  delivery_status: ["not_started", "awaiting_effective", "awaiting_start", "preparing", "in_delivery", "retrying", "rectifying", "pending_acceptance", "accepted", "completed", "exception", "revoked", "not_applicable"],
   after_sales_status: ["none", "processing", "resolved", "closed"],
 };
 async function queryMainList(key, reset = false) {
@@ -688,7 +691,6 @@ const emptyProductForm = () => ({
   description: "",
   usage_scenarios: "",
   delivery_method: "file",
-  upstream_url: "",
   application_url: "",
   integration_api_url: "",
   oidc_redirect_uris: [],
@@ -793,7 +795,13 @@ const statusLabels = {
   paid: "已支付",
   refunding: "退款中",
   refunded: "已退款",
+  refund_pending: "退款待处理",
+  refund_completed: "退款已完成",
+  refund_rejected: "退款已拒绝",
+  not_applicable: "不适用",
+  revoked: "已撤销",
   not_started: "未开始",
+  awaiting_effective: "待生效",
   awaiting_start: "待开始履约",
   rectifying: "整改中",
   preparing: "准备中",
@@ -838,12 +846,15 @@ const settlementLifecycleLabels = {
   finance_draft: "登记资金凭证草稿", finance_confirm: "复核资金凭证", finance_baseline_capture: "冻结清算资金基线", refund_final_baseline_review: "复核退款最终清算基线",
   finance_cost_exception_plan: "冻结成本例外冲回方案", finance_segment_funding_link: "关联版本变更经济段资金依据", bind_version_change_final_baseline: "绑定版本变更最终清算基线", project_version_change_final_baseline: "锁定前应用版本变更最终基线",
   approve_segment_cost_exception_refresh: "批准版本段成本例外并待刷新基线",
+  create_settlement_cost_exception: "申请不可返还成本例外", decide_settlement_cost_exception: "审批不可返还成本例外",
+  finance_funding_propose: "提出补差资金责任", finance_funding_decide: "审批补差资金责任", finance_funding_verify: "核验补差资金依据",
+  finance_multi_source_refund_capture: "冻结多来源退款清算基线", finance_multi_source_offset: "登记多来源退款抵扣",
   create_settlement_participant: "创建清算收益主体", configure_settlement_participants: "配置清算收益主体", export_settlement_reporting: "导出清算分析报表",
   create_settlement_annual_report: "创建年度清算报告草稿", export_settlement_annual_report: "导出年度清算报告", finalize_settlement_annual_report: "正式确认年度清算报告",
 };
 const settlementLifecycleFieldLabels = { status: "状态", net_amount: "净金额", gross_amount: "订单金额", cost_amount: "订单成本", profit_amount: "订单利润", distributable_profit: "可分配利润", refund_amount: "退款金额", platform_fee: "平台运营方", provider_share: "数据/服务提供方", service_share: "数据服务方", expert_fee: "专家", channel_fee: "渠道", batch_status: "批次状态", settlement_statuses: "清算单状态" };
 function settlementLifecycleAction(action) {
-  const code = typeof action === "string" && action.startsWith("configure_settlement_participants:") ? "configure_settlement_participants" : action;
+  const code = typeof action === "string" && /^(configure_settlement_participants|decide_settlement_cost_exception|finance_funding_decide|finance_funding_verify):/.test(action) ? action.split(":")[0] : action;
   return settlementLifecycleLabels[code] || action;
 }
 function settlementLifecycleValue(value, key) {
@@ -1229,22 +1240,16 @@ async function loadViewData(view) {
     slaOverview.value = sla.data;
   }
   if (view === "users") {
-    const [usersData, enterpriseData, personalData, memberData, departmentData, invitationData, myInvitationData] = await Promise.all([
+    const [usersData, enterpriseData, personalData, myInvitationData] = await Promise.all([
       loadIdentityList("users"),
       loadIdentityList("enterprises"),
       api
         .get("/admin/verifications/personal")
         .catch(() => ({ data: { items: [] } })),
-      api.get("/enterprise/members").catch(() => ({ data: { items: [] } })),
-      api.get("/enterprise/departments").catch(() => ({ data: { items: [] } })),
-      api.get("/enterprise/invitations").catch(() => ({ data: { items: [] } })),
       api.get("/enterprise/my-invitations").catch(() => ({ data: { items: [] } })),
     ]);
     if (!contextCurrent()) return;
     personalVerificationItems.value = personalData.data.items;
-    enterpriseMembers.value = memberData.data.items;
-    enterpriseDepartments.value = departmentData.data.items;
-    enterpriseInvitations.value = invitationData.data.items;
     myEnterpriseInvitations.value = myInvitationData.data.items;
   }
   if (view === "settings") {
@@ -1771,6 +1776,13 @@ async function transition(action) {
   const order = selectedOrder.value.order;
   orderActionSubmitting.value = true;
   try {
+    if (action === "service_retry") {
+      await api.post(`/orders/${encodeURIComponent(order.id)}/service-retry`);
+      notify("服务生效重试已提交");
+      try { if (selectedOrder.value?.order.id === order.id) await openOrder(order); }
+      finally { await refreshData(); }
+      return;
+    }
     let body = { action, reason: "工作台操作" };
     if (isOfflineFulfillmentOrder(order) && ["start_delivery", "submit_delivery", "accept_delivery", "reject_delivery"].includes(action)) {
       const title = nextActions(order).find(item => item[0] === action)?.[1];
@@ -2804,6 +2816,14 @@ function nextActions(order) {
   const actions = orderWorkflowActions(order, user.value, enterprise.value);
   if (canCreateAfterSales(order, user.value, enterprise.value?.id)) actions.push(["submit_after_sales", "发起售后"]);
   if (isOfflineFulfillmentOrder(order)) return actions;
+  if (order.service_activation_status) {
+    if (["retrying", "needs_manual"].includes(order.service_activation_status) &&
+      ["super_admin", "platform_operator", "delivery_monitor"].includes(user.value?.platform_role) &&
+      user.value?.is_active !== false && (!user.value?.activation_status || user.value.activation_status === "active")) {
+      actions.push(["service_retry", "重试服务生效"]);
+    }
+    return actions;
+  }
   if (["pending_provider_review", "pending_payment", "rejected", "cancelled", "closed"].includes(order.main_status)) return actions;
   if (order.main_status === "created")
     actions.push(["submit_review", "提交审核"]);
@@ -2915,6 +2935,7 @@ onUnmounted(() => {
             type="password"
             autocomplete="current-password" /></label
       ></template>
+      <PasswordSecurity v-if="!registerMode" />
       <p v-if="loginError" class="error-text">{{ loginError }}</p>
       <p v-if="activationHint" class="login-hint activation-hint">{{ activationHint }}</p>
       <button class="primary-btn full-btn" type="submit">
@@ -3029,13 +3050,9 @@ onUnmounted(() => {
             <p v-if="!notificationSummary.recent?.length" class="muted">暂无消息</p>
           </section>
           </div>
-          <div class="user-chip" role="button" tabindex="0" @click="showProfileContact = true">
-            <div class="avatar">{{ user.name?.slice(0, 1) }}</div>
-            <div class="user-chip-copy">
-              <strong>{{ user.name }}</strong
-              ><small>{{ currentConsoleRoleLabel }}</small>
-            </div>
-          </div>
+          <UserAccountMenu :name="user.name" :role-label="currentConsoleRoleLabel" @profile="showProfileContact = true">
+            <PasswordSecurity authenticated menu-item @changed="logout(); loginError = '密码已修改，请重新登录'" />
+          </UserAccountMenu>
           <label v-if="!user.platform_role && user.enterprise_memberships?.filter(item => item.status === 'active').length > 1" class="context-select-label">
             <span class="sr-only">当前企业</span>
             <select :value="enterprise?.id || ''" aria-label="当前企业" @change="selectEnterprise($event.target.value)">
@@ -3594,6 +3611,7 @@ onUnmounted(() => {
                     <td>
                       <span class="order-no">{{ order.order_no }}</span
                       ><small>{{ fmtDate(order.created_at) }}</small>
+                      <small>{{ orderTypeLabel(order) }}</small>
                     </td>
                     <td>
                       <template v-if="deliveryMethod(order) === 'saas' && canOpenDeliveryAccess(order)">
@@ -3607,6 +3625,10 @@ onUnmounted(() => {
                     <td>
                       <strong>{{ order.product_name }}</strong
                       ><small>{{ partyName(order, 'provider') }}</small>
+                      <small>版本：{{ order.product_version_code || '-' }}<template v-if="order.product_version_name"> · {{ order.product_version_name }}</template></small>
+                      <small>开始：{{ orderServiceDates(order, fmtDate).starts }}</small>
+                      <small>结束：{{ orderServiceDates(order, fmtDate).ends }}</small>
+                      <small>生效：{{ orderServiceDates(order, fmtDate).effective }}</small>
                     </td>
                     <td>{{ partyName(order, 'buyer') }}</td>
                     <td>
@@ -3705,29 +3727,27 @@ onUnmounted(() => {
                   售后工单 <small>{{ mainLists.aftersales.total }} 项</small>
                 </h3>
               </div>
-              <div class="after-sales-list">
-                <div
-                  v-for="item in afterSalesItems"
-                  :key="item.id"
-                  class="after-sales-item"
-                >
-                  <div>
-                    <button class="text-btn task-code" @click="selectedAfterSalesId = item.id">{{ item.ticket_no }}</button><strong>{{ item.type }}</strong
-                    ><small>{{ item.description }}</small>
-                    <small>产品：{{ item.product_name || '未记录' }} · 提供方：{{ partyName(item, 'provider') }} · 购买方：{{ partyName(item, 'buyer') }}</small>
-                    <small>订单：<button class="text-btn" @click="openOrder({ id: item.order_id })">{{ item.order_no || item.order_id }}</button> · 负责人：{{ item.assignee_name || item.assignee || '未分配' }} · 优先级：{{ { normal: '普通', important: '重要', urgent: '紧急' }[item.priority] || '未记录' }}</small>
-                  </div>
-                  <span
-                    :class="[
-                      'status-pill',
-                      ['completed', 'resolved'].includes(item.status) ? 'status-done' : ['force_closed', 'withdrawn', 'closed'].includes(item.status) ? 'status-todo' : 'status-in_progress',
-                    ]"
-                    >{{ ticketStatus(item.status) }}</span
-                  >
-                </div>
-              </div>
-              <div v-if="!afterSalesItems.length" class="empty-state">
-                <CheckCircle2 :size="28" /><span>暂无售后工单</span>
+              <div class="table-wrap">
+                <table class="data-table compact after-sales-table" aria-label="售后工单列表">
+                  <thead>
+                    <tr><th scope="col">工单号</th><th scope="col">订单号</th><th scope="col">产品</th><th scope="col">提供方</th><th scope="col">购买方</th><th scope="col">工单类型及说明</th><th scope="col">负责人</th><th scope="col">优先级</th><th scope="col">状态</th><th scope="col">创建时间</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in afterSalesItems" :key="item.id">
+                      <td><button class="text-btn task-code" @click="selectedAfterSalesId = item.id">{{ item.ticket_no }}</button></td>
+                      <td><button class="text-btn task-code" @click="openOrder({ id: item.order_id })">{{ item.order_no || item.order_id }}</button></td>
+                      <td>{{ item.product_name || '未记录' }}</td>
+                      <td>{{ partyName(item, 'provider') }}</td>
+                      <td>{{ partyName(item, 'buyer') }}</td>
+                      <td class="after-sales-description"><span>{{ item.type || '-' }}</span><small :title="item.description || ''">{{ item.description || '-' }}</small></td>
+                      <td>{{ item.assignee_name || item.assignee || '未分配' }}</td>
+                      <td>{{ { normal: '普通', important: '重要', urgent: '紧急' }[item.priority] || '未记录' }}</td>
+                      <td><span :class="['status-pill', ['completed', 'resolved'].includes(item.status) ? 'status-done' : ['force_closed', 'withdrawn', 'closed'].includes(item.status) ? 'status-todo' : 'status-in_progress']">{{ ticketStatus(item.status) }}</span></td>
+                      <td>{{ item.created_at ? fmtDate(item.created_at) : '-' }}</td>
+                    </tr>
+                    <tr v-if="!afterSalesItems.length"><td colspan="10"><div class="empty-state"><CheckCircle2 :size="28" /><span>暂无售后工单</span></div></td></tr>
+                  </tbody>
+                </table>
               </div>
               <PaginationControls :page="mainLists.aftersales.page" :page-size="mainLists.aftersales.page_size" :total="mainLists.aftersales.total" :busy="mainLists.aftersales.busy" label="售后工单分页" @page="pageMainList('aftersales', $event)" @size="pageMainList('aftersales', 1, $event)" />
             </div>
@@ -4469,6 +4489,16 @@ onUnmounted(() => {
           ><b>{{ fmtMoney(selectedOrder.order.amount) }}</b>
         </div>
         <RefundCenter v-if="canViewRefunds(user, enterprise?.id)" :key="`order-refunds:${selectedOrder.order.id}:${JSON.stringify(afterSalesScope)}`" :api="api" :user="user" :enterprise-id="enterprise?.id" :order="selectedOrder.order" :params="afterSalesScope" />
+        <section class="drawer-section" aria-label="订单类型及服务时间">
+          <dl class="subscription-summary">
+            <div><dt>订单类型</dt><dd>{{ orderTypeLabel(selectedOrder.order) }}</dd></div>
+            <div v-if="selectedOrder.order.related_order_no"><dt>原订单号</dt><dd>{{ selectedOrder.order.related_order_no }}</dd></div>
+            <div><dt>订单版本</dt><dd>{{ selectedOrder.order.product_version_code || '-' }}<template v-if="selectedOrder.order.product_version_name"> · {{ selectedOrder.order.product_version_name }}</template></dd></div>
+            <div><dt>服务开始时间</dt><dd>{{ orderServiceDates(selectedOrder.order, fmtDate).starts }}</dd></div>
+            <div><dt>服务结束时间</dt><dd>{{ orderServiceDates(selectedOrder.order, fmtDate).ends }}</dd></div>
+            <div><dt>服务生效时间</dt><dd>{{ orderServiceDates(selectedOrder.order, fmtDate).effective }}</dd></div>
+          </dl>
+        </section>
         <section class="drawer-section subscription-terms-panel" aria-label="订阅期限">
           <div class="drawer-section-title subscription-heading">
             <span>订阅期限</span>
@@ -4498,6 +4528,13 @@ onUnmounted(() => {
             <p v-if="!subscriptionState.item.terms.length" class="muted">暂无订阅期限</p>
           </template>
           <p v-else class="muted">此订单暂无订阅权益</p>
+          <div v-if="['upgrade', 'downgrade'].includes(selectedOrder.order.order_type) && Array.isArray(selectedOrder.order.service_segments)" class="subscription-table-wrap">
+            <table class="subscription-table">
+              <caption>关联服务期限</caption>
+              <thead><tr><th>原订单号</th><th>开始时间</th><th>结束时间</th></tr></thead>
+              <tbody><tr v-for="(segment, index) in selectedOrder.order.service_segments" :key="`${segment.order_id}-${index}`"><td>{{ segment.order_no || '-' }}</td><td>{{ segment.starts_at ? fmtDate(segment.starts_at) : '待交付确定' }}</td><td>{{ segment.ends_at ? fmtDate(segment.ends_at) : '待交付确定' }}</td></tr></tbody>
+            </table>
+          </div>
         </section>
         <VersionChangeExecution
           ref="versionChangeExecutionRef"
@@ -4536,6 +4573,13 @@ onUnmounted(() => {
             }}</strong>
           </div>
         </div>
+        <section v-if="selectedOrder.order.service_activation_status" class="drawer-section" aria-label="服务生效">
+          <dl class="subscription-summary">
+            <div><dt>服务生效</dt><dd>{{ ({ scheduled: '待生效检查', retrying: '重试中', needs_manual: '待人工处理', activation_verified: '生效已验证', active: '已生效', completed: '已结束' })[selectedOrder.order.service_activation_status] || '-' }}</dd></div>
+            <div><dt>尝试次数</dt><dd>{{ selectedOrder.order.service_activation_attempts ?? 0 }}</dd></div>
+          </dl>
+          <p v-if="selectedOrder.order.service_activation_error" class="danger-text" role="alert" style="overflow-wrap: anywhere">{{ selectedOrder.order.service_activation_error }}</p>
+        </section>
         <div class="drawer-section">
           <div class="drawer-section-title">可执行动作</div>
           <div class="action-list">
@@ -4818,7 +4862,7 @@ onUnmounted(() => {
           <label>每订单下载次数限制<input v-model.number="productForm.download_limit" type="number" min="0" step="1" /><small class="muted">0表示不限制</small></label>
         </div>
         <div v-if="['api', 'model_api'].includes(productForm.delivery_method)" class="form-grid">
-          <label class="wide">提供方后端访问URL<input v-model="productForm.upstream_url" :disabled="productForm.delivery_fields_locked" type="url" required placeholder="https://provider.example.com/api" /></label>
+          <label class="wide">API服务管理接口地址<input v-model="productForm.integration_api_url" :disabled="productForm.delivery_fields_locked" type="url" maxlength="500" required /></label>
         </div>
         <div v-if="productForm.delivery_method === 'tenant_access'" class="form-grid">
           <label>应用访问URL<input v-model="productForm.application_url" :disabled="productForm.delivery_fields_locked" type="url" required /></label>
@@ -5525,6 +5569,7 @@ onUnmounted(() => {
             <div><small>入账时间</small><strong>{{ settlementDetail.version_change.posted_at ? fmtDate(settlementDetail.version_change.posted_at) : '-' }}</strong></div>
           </div>
         </div>
+        <SettlementRefundEvidence :evidence="settlementDetail.refund_adjustment" />
         <div class="drawer-section"><div class="drawer-section-title">金额信息</div><div class="state-grid"><div><small>订单金额</small><strong>{{ fmtMoney(settlementDetail.amounts.gross_amount) }}</strong></div><div><small>订单成本</small><strong>{{ fmtMoney(settlementDetail.amounts.cost_amount) }}</strong></div><div><small>订单利润</small><strong>{{ fmtMoney(settlementDetail.amounts.profit_amount) }}</strong></div><div><small>退款金额</small><strong>{{ fmtMoney(settlementDetail.amounts.refund_amount) }}</strong></div><div><small>净收入</small><strong>{{ fmtMoney(settlementDetail.amounts.net_amount) }}</strong></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">五方清算比例和金额</div><div class="settlement-detail-participants"><div v-for="item in settlementDetail.participants" :key="item.participant_type"><span>{{ participantLabel(item.participant_type) }}</span><strong>{{ item.rate }}%</strong><b>{{ fmtMoney(item.amount) }}</b></div></div></div>
         <div class="drawer-section"><div class="drawer-section-title">清算单生命周期</div><div class="settlement-lifecycle"><div v-for="(event, index) in settlementDetail.lifecycle" :key="`${event.action}-${event.created_at}-${index}`"><span class="lifecycle-dot"></span><div class="settlement-lifecycle-event"><strong>{{ settlementLifecycleAction(event.action) }}</strong><small>{{ fmtDate(event.created_at) }} · {{ event.actor }}</small><p v-if="event.detail" class="lifecycle-detail">{{ event.detail }}</p><div v-if="settlementLifecycleFields(event).length" class="lifecycle-change-table"><div class="lifecycle-change-head"><span>字段</span><span>变更前</span><span>变更后</span></div><div v-for="field in settlementLifecycleFields(event)" :key="field.key" class="lifecycle-change-row"><span>{{ field.label }}</span><span>{{ field.before }}</span><strong>{{ field.after }}</strong></div></div></div></div><div v-if="!settlementDetail.lifecycle.length" class="muted">暂无生命周期审计记录</div></div></div>
@@ -5536,6 +5581,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.after-sales-table { min-width: 1120px; }
+.after-sales-table td { vertical-align: top; }
+.after-sales-table .task-code, .after-sales-table .status-pill { white-space: nowrap; }
+.after-sales-description { min-width: 180px; max-width: 280px; overflow-wrap: anywhere; }
+.after-sales-description small { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin-top: 4px; color: #86909c; font-size: 11px; line-height: 1.5; white-space: normal; }
 .report-filter-bar.beneficiary-selector { min-width: 0; margin: 12px 0 18px; padding: 0; border: 0; border-radius: 0; background: transparent; }
 .beneficiary-selector > label { display: flex; flex-direction: column; gap: 5px; width: 320px; max-width: 100%; min-width: 0; margin: 0; font-size: 12px; line-height: 18px; font-weight: 400; color: #4e5969; }
 .beneficiary-selector > label > select { box-sizing: border-box; width: 100%; min-width: 0; height: 34px; padding: 6px 8px; border: 1px solid #d9dde3; border-radius: 4px; background: #fff; color: #27313f; font-size: 12px; line-height: 20px; }

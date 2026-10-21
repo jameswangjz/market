@@ -1,0 +1,9 @@
+﻿{
+    "scope":  "live provider product download; GET only; no business state mutation",
+    "status":  "passed",
+    "checks":  [
+                   "Provider product action downloads schema2.0",
+                   "Downloaded file preserves OIDC and validation metadata without machine credentials",
+                   "Front-end documentation download is v1.3 with schema2.0"
+               ]
+}

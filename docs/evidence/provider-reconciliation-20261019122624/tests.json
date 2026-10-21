@@ -1,0 +1,11 @@
+{
+  "status": "passed",
+  "tests": 237,
+  "seconds": 63.627,
+  "command": "python -W ignore -m unittest test_saas_reconciliation test_saas_auto_delivery test_saas_sync_management test_version_change_resources test_refund_execution_resources test_mock_saas_reconciliation test_provider_entitlements test_subscription_terms test_mock_saas_oidc test_mock_saas_admin -q",
+  "python": "/tmp/settlement-finance-venv/bin/python",
+  "redis": "isolated Redis 7 through QUOTA_REDIS_SERVER and LD_LIBRARY_PATH",
+  "business_database_used": false,
+  "production_redis_used": false,
+  "scope": "Grouped lifecycle, refund, ownership, mock receipts and OIDC regression; not bank integration"
+}

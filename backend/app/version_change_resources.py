@@ -10,6 +10,8 @@ from sqlalchemy import select
 from .subscription_calendar import CalendarAnchor
 from .refund_segment_boundary import freeze_policy_switch
 from .refund_segment_store import boundary_periods, saas_switch_evidence
+from .saas_reconciliation import change_context, event_context
+from .api_auto_delivery import provider_periods, provider_operation, execute_provider
 
 
 def _quota_period_plan(combination, terms, snapshots, old_route_key, target_route_key, at):
@@ -172,6 +174,9 @@ def install(ns):
             fail('Version change subscription combination is invalid')
         delivery = combo.delivery_method
         if delivery in {'api', 'model_api'}:
+            guard = ns.get('api_auto_delivery', {}).get('assert_no_pending')
+            if callable(guard):
+                guard(db, combo.enterprise_id, combo.product_id)
             old = route_context(db, change, change.old_version_id, change.old_version_code)
             target = route_context(db, change, change.target_version_id, change.target_version_code)
             if old[3].id == target[3].id or old[3].route_key == target[3].route_key:
@@ -235,6 +240,32 @@ def install(ns):
                     old[3].route_key, target[3].route_key, change.created_at)
             except (TypeError, ValueError) as exc:
                 fail(str(exc))
+            source_order = db.get(ns['Order'], change.source_order_id)
+            source_term = next((term for term, order in term_rows if order.id == change.source_order_id), None)
+            if not source_order or not source_term:
+                fail('Version change provider source term is unavailable')
+            original_delivery = ns['subscription_terms']['effective_snapshot'](
+                db, source_order, source_term)['delivery']
+            target_delivery = snapshots.get(source_term.id, {}).get('delivery', {})
+            plan['provider'] = {}
+            for side, frozen_delivery, version_id, version_code in (
+                    ('target', target_delivery, change.target_version_id, change.target_version_code),
+                    ('original', original_delivery, change.old_version_id, change.old_version_code)):
+                endpoint = (frozen_delivery.get('integration_api_url') or '').strip()
+                if not endpoint:
+                    plan['provider'][side] = {'status': 'skipped_unmanaged', 'provider_synced': False}
+                    continue
+                rights = []
+                for row in plan['periods'][side]:
+                    row_delivery = next(value for term, value in original_terms if term.id == row['segment_id'])
+                    if side == 'target' and row['end_at'] > change.created_at.timestamp():
+                        row_delivery = snapshots[row['segment_id']]['delivery']
+                    rights.append(dict(row, quota_amount=row_delivery['quota']['quota_amount']))
+                plan['provider'][side] = provider_operation(ns, db, source_order, source_term, combo,
+                    endpoint=endpoint, periods=provider_periods(ns, db, rights) if endpoint else [],
+                    event_type='CHANGE', operation_key=f'version-change:{change.id}:{side}',
+                    version={'id': version_id, 'code': version_code}, change_id=change.id,
+                    direction='restore' if side == 'original' else ('downgrade' if change.kind == 'downgrade' else 'upgrade'))
             if ns.get('refund_segment_store'):
                 client = ns['apisix_policy_redis']()
                 try:
@@ -313,6 +344,14 @@ def install(ns):
                 oidc_client_id=clients[0].client_id,
                 config_fingerprint=accepted_config_fingerprint,
                 expires_at=datetime_identity(subscription.expires_at))
+            saved = json.loads(change.resource_plan_json or '{}')
+            if saved:
+                if 'reconciliation_context' in saved:
+                    plan['reconciliation_context'] = saved['reconciliation_context']
+            else:
+                plan['reconciliation_context'] = change_context(
+                    json.loads(change.quote_json or '{}'), source_order, plan['expires_at'],
+                    json.loads(getattr(change, 'prepared_json', None) or '[]'))
         else:
             fail('Unsupported subscription delivery method')
         encoded = json.dumps(plan, sort_keys=True, separators=(',', ':'))
@@ -521,17 +560,29 @@ def install(ns):
             ns['OIDCClient'].status == 'active'))
         if not mapping or not client:
             fail('SaaS admin or OIDC identity changed after resource preparation')
-        result = ns['saas_call'](config, 'CHANGE', {'tenant_id': plan['tenant_id'],
+        payload = {'tenant_id': plan['tenant_id'],
             'product_id': plan['product_id'], 'enterprise_id': plan['enterprise_id'],
             'subscription_id': subscription.id, 'to_version': version_code,
             'admin_user_id': plan['admin_user_id'], 'oidc_client_id': plan['oidc_client_id'],
-            'idempotency_key': idem, 'change_id': change.id, 'direction': direction})
+            'idempotency_key': idem, 'change_id': change.id, 'direction': direction}
+        if 'reconciliation_context' in plan:
+            payload['reconciliation_context'] = event_context(plan['reconciliation_context'],
+                event_id=idem, event_type='CHANGE', product_id=plan['product_id'],
+                enterprise_id=plan['enterprise_id'], subscription_id=subscription.id,
+                tenant_id=plan['tenant_id'])
+        result = ns['saas_call'](config, 'CHANGE', payload)
         if not isinstance(result, dict) or result.get('ret') != 0:
             fail('SaaS CHANGE was rejected')
-        status = ns['saas_call'](config, 'STATUS', {'tenant_id': plan['tenant_id'],
+        status_payload = {'tenant_id': plan['tenant_id'],
             'product_id': plan['product_id'], 'enterprise_id': plan['enterprise_id'],
             'subscription_id': subscription.id, 'admin_user_id': plan['admin_user_id'],
-            'oidc_client_id': plan['oidc_client_id'], 'change_id': change.id, 'direction': direction})
+            'oidc_client_id': plan['oidc_client_id'], 'change_id': change.id, 'direction': direction}
+        if 'reconciliation_context' in plan:
+            status_payload['reconciliation_context'] = event_context(plan['reconciliation_context'],
+                event_id=idem + ':STATUS', event_type='STATUS', product_id=plan['product_id'],
+                enterprise_id=plan['enterprise_id'], subscription_id=subscription.id,
+                tenant_id=plan['tenant_id'])
+        status = ns['saas_call'](config, 'STATUS', status_payload)
         if (not isinstance(status, dict) or status.get('ret') != 0
                 or status.get('tenant_id') != plan['tenant_id']
                 or status.get('product_id') != plan['product_id']
@@ -569,9 +620,24 @@ def install(ns):
         if plan.get('change_id') != change.id:
             fail('Resource plan belongs to another version change')
         if plan.get('kind') == 'api':
+            operation = plan.get('provider', {}).get(direction)
+            if operation is None:
+                # Historical resource plans carry only gateway evidence.
+                combo = db.get(ns['subscription_terms']['Combination'], change.combination_id)
+                source = db.get(ns['Order'], change.source_order_id)
+                term = db.scalar(select(ns['subscription_terms']['Term']).where(
+                    ns['subscription_terms']['Term'].order_id == source.id)) if source else None
+                if not combo or not source or not term:
+                    fail('Provider version change source is unavailable')
+                delivery = ns['subscription_terms']['effective_snapshot'](db, source, term)['delivery']
+                if delivery.get('integration_api_url'):
+                    fail('Configured version change lacks a frozen provider operation')
+                operation = {'status': 'skipped_unmanaged', 'provider_synced': False}
+            provider_evidence = execute_provider(ns, db, operation)
             redis = ns['apisix_policy_redis']()
             try:
                 evidence = api_apply(db, change, direction, plan, redis)
+                evidence = dict(evidence, provider=provider_evidence)
             finally:
                 close = getattr(redis, 'close', None)
                 if callable(close):
