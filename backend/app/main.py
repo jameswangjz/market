@@ -1075,7 +1075,7 @@ def verify_password(password: str, encoded: str) -> bool:
 
 def issue_token(user: User) -> str:
     issued = now()
-    return jwt.encode({"sub": user.id, "email": user.email, "iat": issued, "exp": issued + timedelta(hours=12)}, JWT_SECRET, algorithm="HS256")
+    return jwt.encode({"sub": user.id, "email": user.email, "pwd": hashlib.sha256(user.password_hash.encode()).hexdigest(), "iat": issued, "exp": issued + timedelta(hours=12)}, JWT_SECRET, algorithm="HS256")
 
 
 class LoginBody(BaseModel):
@@ -1824,6 +1824,11 @@ def current_user(credentials: HTTPAuthorizationCredentials | None = Depends(secu
     if (not user or not user.is_active or user.activation_status in {"disabled", "deleted", "expired"}
             or user.username == "ywsh" or user.platform_role == "business_reviewer"):
         raise HTTPException(401, "登录已失效")
+    password_security = globals().get("PasswordSecurity")
+    if password_security:
+        password_state = db.get(password_security, user.id)
+        if password_state and password_state.changed_at and payload.get("pwd") != hashlib.sha256(user.password_hash.encode()).hexdigest():
+            raise HTTPException(401, "密码已变更，请重新登录")
     return user
 
 
@@ -8167,3 +8172,7 @@ from .settlement_reporting import install as install_settlement_reporting
 settlement_parties = install_settlement_parties(globals())
 settlement_finance = install_settlement_finance(globals())
 settlement_reporting = install_settlement_reporting(globals())
+
+from .password_security import install as install_password_security
+
+password_security = install_password_security(globals())

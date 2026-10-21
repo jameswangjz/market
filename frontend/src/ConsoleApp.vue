@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import axios from "axios";
+import PasswordSecurity from "./PasswordSecurity.vue";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
@@ -2933,6 +2934,7 @@ onUnmounted(() => {
             type="password"
             autocomplete="current-password" /></label
       ></template>
+      <PasswordSecurity v-if="!registerMode" />
       <p v-if="loginError" class="error-text">{{ loginError }}</p>
       <p v-if="activationHint" class="login-hint activation-hint">{{ activationHint }}</p>
       <button class="primary-btn full-btn" type="submit">
@@ -2992,6 +2994,7 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="sidebar-bottom">
+        <PasswordSecurity authenticated @changed="logout(); loginError = '密码已修改，请重新登录'" />
         <a class="nav-item" href="/" @click.prevent="navigate('/')"><ShoppingCart :size="18" /><span v-if="!collapsed">公开商城</span></a>
         <button
           v-if="canAccessConsoleView(user, enterprise, 'settings')"
