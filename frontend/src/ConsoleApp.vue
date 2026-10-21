@@ -2994,7 +2994,7 @@ onUnmounted(() => {
         </button>
       </nav>
       <div class="sidebar-bottom">
-        <PasswordSecurity authenticated @changed="logout(); loginError = '密码已修改，请重新登录'" />
+        <PasswordSecurity authenticated @changed="logout(); loginError = '密码已修改，请重新登录'" :collapsed="collapsed" />
         <a class="nav-item" href="/" @click.prevent="navigate('/')"><ShoppingCart :size="18" /><span v-if="!collapsed">公开商城</span></a>
         <button
           v-if="canAccessConsoleView(user, enterprise, 'settings')"
