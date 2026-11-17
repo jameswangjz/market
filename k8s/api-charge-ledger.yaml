@@ -28,7 +28,7 @@ spec:
             limits: {cpu: '1', memory: 512Mi}
           startupProbe:
             exec:
-              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-heartbeat').stat().st_mtime < 90"]
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-alive').stat().st_mtime < 90"]
             periodSeconds: 5
             failureThreshold: 24
           readinessProbe:
@@ -37,6 +37,6 @@ spec:
             periodSeconds: 10
           livenessProbe:
             exec:
-              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-heartbeat').stat().st_mtime < 180"]
+              command: [python, -c, "import time; from pathlib import Path; assert 0 <= time.time()-Path('/tmp/api-charge-ledger-alive').stat().st_mtime < 180"]
             periodSeconds: 20
             failureThreshold: 3
