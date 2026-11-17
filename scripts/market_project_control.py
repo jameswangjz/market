@@ -189,8 +189,12 @@ class Controller:
 
     def stop(self):
         if self.state and self.state['phase'] == 'stopped':
-            if self.get('pods')['items']:
-                raise RuntimeError('Pods were started outside this tool; review saved state before stopping again')
+            self.validate()
+            current = self.get('deployment,statefulset,cronjob,pod')['items']
+            if any(item['kind'] == 'Pod' or
+                   (item['kind'] in KINDS and item['spec'].get('replicas', 1) != 0) or
+                   (item['kind'] == 'CronJob' and not item['spec'].get('suspend', False)) for item in current):
+                raise RuntimeError('Workloads were changed outside this tool; review the saved stop state')
             return
         if self.state is None:
             self.snapshot()
