@@ -18,6 +18,7 @@ test('component compiles and settings tab and component share super_admin guard'
   const console = readFileSync(new URL('../src/ConsoleApp.vue', import.meta.url), 'utf8');
   assert.match(console, /v-if="user.platform_role === 'super_admin'"[^\n]*系统维护/);
   assert.match(console, /systemSettingsTab === 'maintenance' && user.platform_role === 'super_admin'"><RedisMaintenance/);
+  assert.match(console, /requested === 'settings' && canAccessConsoleView\(user.value, enterprise.value, 'settings'\)/);
   assert.match(source, /<ActionDialog/);
 });
 test('mount only reads cache; no idle polling; a paused collector does not prevent resume/recovery', async () => {

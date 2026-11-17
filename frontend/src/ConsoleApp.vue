@@ -981,7 +981,8 @@ async function loadSession() {
     } else {
       const preferred = user.value.platform_role === 'finance_settlement' ? 'settlements' : user.value.platform_role === 'delivery_monitor' ? 'delivery' : 'overview';
       const requested = new URLSearchParams(window.location.search).get("view") || preferred;
-      activeView.value = visibleNav.value.some(item => item.key === requested) ? requested : visibleNav.value[0]?.key || 'users';
+      const settingsAllowed = requested === 'settings' && canAccessConsoleView(user.value, enterprise.value, 'settings');
+      activeView.value = settingsAllowed || visibleNav.value.some(item => item.key === requested) ? requested : visibleNav.value[0]?.key || 'users';
       await refreshData();
     }
   } catch {

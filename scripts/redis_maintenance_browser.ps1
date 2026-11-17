@@ -45,6 +45,8 @@ try {
     $origin=$BaseUrl|ConvertTo-Json -Compress
     Cdp 'Page.addScriptToEvaluateOnNewDocument' @{source="if(location.origin===$origin){localStorage.setItem('market_token',$encoded)}"}|Out-Null
     Cdp 'Page.navigate' @{url=($BaseUrl+'/console?view=settings')}|Out-Null
+    WaitJs '!![...document.querySelectorAll(".sidebar-bottom button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e")' 60
+    Js '[...document.querySelectorAll(".sidebar-bottom button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u8bbe\u7f6e").click();true'|Out-Null
     WaitJs '!![...document.querySelectorAll(".settings-tabs button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u7ef4\u62a4")' 60
     Js '[...document.querySelectorAll(".settings-tabs button")].find(b=>b.textContent.trim()==="\u7cfb\u7edf\u7ef4\u62a4").click();true'|Out-Null
     WaitJs 'document.querySelectorAll(".redis-actions button").length===4'
@@ -72,7 +74,7 @@ try {
     $result.failure='Bounded browser check failed; private exception suppressed'
     try { $result.safe_state=Js 'JSON.stringify({path:location.pathname,panel:!!document.querySelector(".redis-maintenance"),buttons:document.querySelectorAll(".redis-actions button").length,login:!!document.querySelector("input[type=password]")})' } catch {}
 } finally {
-    if($script:socket){try{Send-Cdp 'Browser.close' @{}|Out-Null}catch{}; $script:socket.Dispose()}
+    if($script:socket){try{Js 'localStorage.removeItem("market_token");true'|Out-Null}catch{}; try{Send-Cdp 'Browser.close' @{}|Out-Null}catch{}; $script:socket.Dispose()}
     if($script:chrome -and -not $script:chrome.HasExited){Stop-Process -Id $script:chrome.Id -Force -ErrorAction SilentlyContinue}
     if(Test-Path $profile){Remove-Item -LiteralPath $profile -Recurse -Force -ErrorAction SilentlyContinue}
     $token=$null; $encoded=$null
