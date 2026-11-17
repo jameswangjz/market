@@ -5,8 +5,7 @@ umask 077
 : "${IMAGE_TAG:?YYYYMMDDHHMMSS-GitSha required}"
 : "${PROVENANCE_SHA256:?trusted manifest digest required}"
 python3 scripts/trading_artifact_gate.py verify --commit "$GIT_SHA" --tag "$IMAGE_TAG" --manifest-sha256 "$PROVENANCE_SHA256"
-backup="/root/market/backups/redis-maintenance-console-$IMAGE_TAG"
-mkdir -m 700 "$backup"
+backup=$(mktemp -d "/root/market/backups/redis-maintenance-console-$IMAGE_TAG.XXXXXXXX")
 if kubectl -n market get deployment redis-maintenance-worker >/dev/null 2>&1; then
   echo 'Existing maintenance executor requires a reviewed upgrade, not this first-install script' >&2
   exit 1
@@ -23,7 +22,19 @@ nerdctl --namespace k8s.io build --build-arg "BASE_IMAGE=$api_base" -t "market-a
 nerdctl --namespace k8s.io build --build-arg "BASE_IMAGE=$web_base" -t "market-web:$IMAGE_TAG" -f frontend/Dockerfile.runtime frontend > "$backup/web-build.log" 2>&1
 nerdctl --namespace k8s.io build --build-arg "BASE_IMAGE=market-api:$IMAGE_TAG" -t "market-redis-maintenance:$IMAGE_TAG" -f k8s/Dockerfile.redis-maintenance . > "$backup/ops-build.log" 2>&1
 kubectl create --dry-run=client -f k8s/redis-maintenance.yaml -o json > "$backup/ops-template.json"
-python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); deployment=next(x for x in value["items"] if x["kind"]=="Deployment"); deployment["spec"]["template"]["spec"]["containers"][0]["image"]="market-redis-maintenance:"+sys.argv[2]; print(json.dumps(value))' "$backup/ops-template.json" "$IMAGE_TAG" > "$backup/ops-install.json"
+python3 - "$backup/ops-template.json" "$IMAGE_TAG" > "$backup/ops-install.json" <<'PY'
+import json,sys
+remaining=open(sys.argv[1]).read().strip()
+decoder=json.JSONDecoder()
+items=[]
+while remaining:
+    value,end=decoder.raw_decode(remaining)
+    items.extend(value['items'] if value.get('kind')=='List' else [value])
+    remaining=remaining[end:].lstrip()
+deployment=next(item for item in items if item['kind']=='Deployment')
+deployment['spec']['template']['spec']['containers'][0]['image']='market-redis-maintenance:'+sys.argv[2]
+print(json.dumps({'apiVersion':'v1','kind':'List','items':items}))
+PY
 created_ops=false
 rollback() {
   trap - ERR
