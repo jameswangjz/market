@@ -57,6 +57,14 @@ def supervised_cycle(ns, state, *, heartbeat=HEARTBEAT, status=STATUS, clock=tim
     temporary = status.with_suffix('.tmp')
     temporary.write_text(json.dumps(snapshot))
     temporary.replace(status)
+    publisher = ns.get('redis_maintenance', {}).get('collector_heartbeat')
+    if publisher and (state.get('published_status') != snapshot['status']
+                      or clock() - state.get('published_at', -100) >= 10):
+        try:
+            publisher(snapshot['status'], snapshot['error'])
+            state['published_status'], state['published_at'] = snapshot['status'], clock()
+        except Exception:
+            logger.warning('Collector health publication unavailable')
     return worked
 
 

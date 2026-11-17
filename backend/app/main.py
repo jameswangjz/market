@@ -8176,3 +8176,7 @@ settlement_reporting = install_settlement_reporting(globals())
 from .password_security import install as install_password_security
 
 password_security = install_password_security(globals())
+
+from .redis_maintenance import install as install_redis_maintenance
+
+redis_maintenance = install_redis_maintenance(globals())

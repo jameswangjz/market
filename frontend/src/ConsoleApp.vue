@@ -5,6 +5,7 @@ import PasswordSecurity from "./PasswordSecurity.vue";
 import UserAccountMenu from "./UserAccountMenu.vue";
 import MessageCenter from "./MessageCenter.vue";
 import MessageSettings from "./MessageSettings.vue";
+import RedisMaintenance from "./RedisMaintenance.vue";
 import ProductCategoriesSettings from "./ProductCategoriesSettings.vue";
 import ActionDialog from "./ActionDialog.vue";
 import PaginationControls from "./PaginationControls.vue";
@@ -3083,6 +3084,7 @@ onUnmounted(() => {
           <span></span>正在同步运营数据...
         </div>
         <div v-if="activeView === 'settings'" class="tabs settings-tabs">
+          <button v-if="user.platform_role === 'super_admin'" :class="{ active: systemSettingsTab === 'maintenance' }" type="button" @click="systemSettingsTab = 'maintenance'">系统维护</button>
           <button :class="{ active: systemSettingsTab === 'notifications' }" type="button" @click="systemSettingsTab = 'notifications'">通知与角色</button>
           <button :class="{ active: systemSettingsTab === 'product-categories' }" type="button" @click="systemSettingsTab = 'product-categories'">产品目录</button>
           <button :class="{ active: systemSettingsTab === 'message-center' }" type="button" @click="systemSettingsTab = 'message-center'">消息中心</button>
@@ -4161,6 +4163,7 @@ onUnmounted(() => {
             <PaginationControls :page="identityLists.enterprises.page" :page-size="identityLists.enterprises.page_size" :total="identityLists.enterprises.total" :busy="identityLists.enterprises.busy" label="企业分页" @page="pageIdentityList('enterprises', $event)" @size="pageIdentityList('enterprises', 1, $event)" />
           </div></template
         >
+        <template v-else-if="activeView === 'settings' && systemSettingsTab === 'maintenance' && user.platform_role === 'super_admin'"><RedisMaintenance /></template>
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'message-center'"><MessageSettings /></template>
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'product-categories'"><ProductCategoriesSettings /></template>
         <template v-else-if="activeView === 'settings' && systemSettingsTab === 'application-address'">
