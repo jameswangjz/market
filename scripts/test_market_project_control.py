@@ -64,11 +64,13 @@ class ProjectControlTests(unittest.TestCase):
 
     def test_start_restores_storage_before_source_and_opens_ingress_last(self):
         control = FakeController(['safe_sealed_resume_candidate', 'active_source_healthy'])
+        control.state['sealed_source_verified'] = True
         control.start()
         resume = control.calls.index(('maintenance', 'resume'))
         edges = next(i for i, call in enumerate(control.calls) if call[0] == 'scale' and call[1] == m.EDGES)
         self.assertGreater(edges, resume)
         self.assertEqual(control.state['phase'], 'running')
+        self.assertFalse(control.state['sealed_source_verified'])
         self.assertTrue(all(call[2] for call in control.calls if call[0] == 'scale'))
 
     def test_start_does_not_open_ingress_without_continuity(self):

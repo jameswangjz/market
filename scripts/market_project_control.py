@@ -234,6 +234,8 @@ class Controller:
         if not self.state:
             raise RuntimeError('No saved stop state; refusing to guess original replicas')
         self.validate()
+        # Once startup begins the old stop seal cannot authorize a later shutdown.
+        self.state['sealed_source_verified'] = False
         self.save('starting_storage')
         self.scale({'market-postgres', 'market-etcd', 'market-minio'}, restore=True, wait=True)
         self.scale({'market-redis'}, restore=True, wait=True)
