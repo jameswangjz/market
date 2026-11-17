@@ -164,21 +164,27 @@ class Controller:
                 digest = hashlib.file_digest(source, 'sha256').hexdigest()
             if digest == self.state.get('database_backup_sha256'):
                 return
-            raise RuntimeError('An unverified backup already exists; preserve it for manual review')
-        with path.open('xb') as output:
-            result = subprocess.run(['kubectl', '-n', NAMESPACE, 'exec', 'deployment/market-postgres', '--',
-                                     'pg_dump', '-U', 'market', '-d', 'market', '-Fc'], stdout=output,
-                                    stderr=subprocess.PIPE, timeout=300)
-        if result.returncode or not path.stat().st_size:
-            raise RuntimeError('Host database backup failed; core storage has not been stopped')
-        with path.open('rb') as source:
-            checked = subprocess.run(['kubectl', '-n', NAMESPACE, 'exec', '-i', 'deployment/market-postgres', '--',
-                                      'pg_restore', '--list'], stdin=source, stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.PIPE, timeout=60)
-        if checked.returncode:
-            raise RuntimeError('Backup archive validation failed; stop refused')
+        else:
+            with path.open('xb') as output:
+                result = subprocess.run(['kubectl', '-n', NAMESPACE, 'exec', 'deployment/market-postgres', '--',
+                                         'pg_dump', '-U', 'market', '-d', 'market', '-Fc'], stdout=output,
+                                        stderr=subprocess.PIPE, timeout=300)
+            if result.returncode or not path.stat().st_size:
+                raise RuntimeError('Host database backup failed; core storage has not been stopped')
+        pods = json.loads(self.command('get', 'pods', '-l', 'app=market-postgres', '-o', 'json'))['items']
+        pod = next(item for item in pods if item.get('status', {}).get('phase') == 'Running'
+                   and not item['metadata'].get('deletionTimestamp'))['metadata']['name']
+        remote = '/tmp/market-backup-check-' + uuid.uuid4().hex + '.dump'
+        try:
+            self.command('cp', str(path), pod + ':' + remote, '-c', 'postgres', timeout=180)
+            # Parse every archive section without connecting to a database or executing SQL.
+            self.command('exec', pod, '-c', 'postgres', '--', 'pg_restore',
+                         '--file=/dev/null', '--no-owner', '--no-privileges', remote, timeout=180)
+        finally:
+            self.command('exec', pod, '-c', 'postgres', '--', 'rm', '-f', '--', remote)
         with path.open('rb') as source:
             self.state['database_backup_sha256'] = hashlib.file_digest(source, 'sha256').hexdigest()
+        self.state['database_backup_validation'] = 'full archive parse; no database restore executed'
         self.save()
 
     def stop(self):
