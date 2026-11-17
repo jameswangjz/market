@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import axios from 'axios';
 import { RefreshCw, Archive, ArchiveRestore, ShieldAlert } from 'lucide-vue-next';
 import ActionDialog from './ActionDialog.vue';
+import { newRenewalRequestKey } from './subscriptionTerms.js';
 
 const snapshot = ref(null), tasks = ref([]), activeTask = ref(null), ownTask = ref(null);
 const busy = ref(false), loading = ref(false), error = ref(''), reason = ref(''), acceptGap = ref(false), dialog = ref(null);
@@ -59,7 +60,7 @@ async function submit(action) {
   if (!allowed(action)) return;
   const payload = { action, reason: reason.value.trim(), accept_gap: action === 'recover' && acceptGap.value };
   if (action !== 'inspect' && (!payload.reason || (action === 'recover' && !payload.accept_gap))) return;
-  if (!pending.value || JSON.stringify(pending.value.payload) !== JSON.stringify(payload)) pending.value = { payload, key: crypto.randomUUID() };
+  if (!pending.value || JSON.stringify(pending.value.payload) !== JSON.stringify(payload)) pending.value = { payload, key: newRenewalRequestKey() };
   busy.value = true; error.value = '';
   try {
     const { data } = await axios.post(`${endpoint}/tasks`, { ...pending.value.payload, idempotency_key: pending.value.key }, { headers: headers() });
@@ -90,7 +91,7 @@ onUnmounted(() => { disposed = true; if (timer !== null) clearInterval(timer); }
       <dt>维护执行器心跳</dt><dd>{{ snapshot?.executor_seen_at || '未报告' }}</dd>
     </dl>
     <p v-if="safeMaintenance" role="status">维护准备已成功且来源已封存，可按运维流程进行维护；完成后请刷新状态，再执行维护后恢复。</p>
-    <label>操作原因<textarea v-model="reason" rows="2" :disabled="busy" /></label>
+    <label>操作原因<textarea v-model="reason" rows="2" maxlength="1000" :disabled="busy" /></label>
     <label class="checkbox-line"><input v-model="acceptGap" type="checkbox" :disabled="busy" />我确认接受异常恢复可能产生的未知数据缺口</label>
     <div class="redis-actions"><button v-for="(label, action) in actions" :key="action" class="secondary-btn" type="button" :disabled="!allowed(action)" @click="request(action)"><component :is="actionIcons[action]" :size="15" />{{ label }}</button></div>
     <h2>最近维护任务</h2>

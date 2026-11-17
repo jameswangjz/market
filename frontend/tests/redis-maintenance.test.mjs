@@ -6,7 +6,7 @@ const source = readFileSync(new URL('../src/RedisMaintenance.vue', import.meta.u
 function harness({ get = async () => ({ data: { snapshot: null, tasks: [], active_task: null } }), post = async () => ({ data: { id: 'own', status: 'queued' } }) } = {}) {
   const calls = [], intervals = new Map(); let mount, unmount, counter = 0;
   const script = source.match(/<script setup>([\s\S]*?)<\/script>/)[1].replace(/^import .*;\n/gm, '');
-  const state = new Function('ref', 'computed', 'onMounted', 'onUnmounted', 'axios', 'localStorage', 'crypto', 'setInterval', 'clearInterval', `const RefreshCw={}, Archive={}, ArchiveRestore={}, ShieldAlert={}; ${script}; return {snapshot,tasks,activeTask,ownTask,error,reason,acceptGap,dialog,pending,fresh,allowed,request,confirm,load,safeMaintenance};`)(
+  const state = new Function('ref', 'computed', 'onMounted', 'onUnmounted', 'axios', 'localStorage', 'crypto', 'setInterval', 'clearInterval', `const RefreshCw={}, Archive={}, ArchiveRestore={}, ShieldAlert={}, newRenewalRequestKey=()=>crypto.randomUUID(); ${script}; return {snapshot,tasks,activeTask,ownTask,error,reason,acceptGap,dialog,pending,fresh,allowed,request,confirm,load,safeMaintenance};`)(
     value => ({ value }), fn => ({ get value() { return fn(); } }), fn => { mount = fn; }, fn => { unmount = fn; },
     { get: async (...args) => { calls.push(['get', ...args]); return get(...args); }, post: async (...args) => { calls.push(['post', ...args]); return post(...args); } },
     { getItem: () => 'token' }, { randomUUID: () => `key-${++counter}` }, (fn, ms) => { assert.equal(ms, 3000); intervals.set(1, fn); return 1; }, id => intervals.delete(id));
