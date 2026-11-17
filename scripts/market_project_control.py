@@ -134,7 +134,11 @@ class Controller:
             if selector.get('matchExpressions') or not selector.get('matchLabels'):
                 raise RuntimeError('Complex selectors require explicit stop verification')
             labels = ','.join(k + '=' + v for k, v in selector['matchLabels'].items())
-            self.command('wait', '--for=delete', 'pods', '-l', labels, '--timeout=330s')
+            deadline = time.monotonic() + 330
+            while json.loads(self.command('get', 'pods', '-l', labels, '-o', 'json'))['items']:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('Pod termination timed out for ' + item['metadata']['name'])
+                time.sleep(2)
 
     def maintenance(self, action):
         report = json.loads(self.command('exec', '-i', 'deployment/market-api', '--', 'env', 'PYTHONPATH=/app',
