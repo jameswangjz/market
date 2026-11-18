@@ -12,6 +12,10 @@ source_sha=$(git rev-parse HEAD)
 tag="$(TZ=UTC-8 date +%Y%m%d%H%M%S)-${source_sha:0:7}"
 base="$HARBOR_REGISTRY/$HARBOR_PROJECT"
 buildctl=${MARKET_BUILDCTL:-/tools/buildctl}
+if [[ -n ${MARKET_IMAGE_METADATA_DIR:-} && -e $MARKET_IMAGE_METADATA_DIR ]]; then
+  printf 'Metadata output directory already exists.\n' >&2
+  exit 1
+fi
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 export DOCKER_CONFIG="$work/docker"
@@ -36,6 +40,11 @@ build market-mock-api mock-api mock-api Dockerfile
 build market-mock-saas mock-saas mock-saas Dockerfile
 build market-redis-maintenance . k8s Dockerfile.redis-maintenance \
   --opt "build-arg:BASE_IMAGE=$base/market-api:$tag"
+
+if [[ -n ${MARKET_IMAGE_METADATA_DIR:-} ]]; then
+  mkdir -- "$MARKET_IMAGE_METADATA_DIR"
+  cp -- "$work"/market-*.json "$MARKET_IMAGE_METADATA_DIR/"
+fi
 
 printf 'Published Market release %s (commit %s)\n' "$tag" "$source_sha"
 for name in market-api market-web market-gateway market-mock-api market-mock-saas market-redis-maintenance; do
