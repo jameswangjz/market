@@ -1,11 +1,53 @@
 from pathlib import Path
 import unittest
+import tempfile
+import threading
 from unittest.mock import MagicMock, patch
 
-from app.api_charge_worker import process_once
+from app.api_charge_worker import process_once, supervised_cycle, error_code
+from app.online_delivery_worker import run_worker
 
 
 class ChargeWorkerTests(unittest.TestCase):
+    def test_blocked_cycle_removes_readiness_and_keeps_retrying_without_fake_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            heartbeat, status = Path(directory) / 'success', Path(directory) / 'status.json'
+            heartbeat.touch()
+            state = {}
+            with patch('app.api_charge_worker.process_once', side_effect=ValueError(
+                    'Managed financial source unavailable; explicit continuity review required')) as collect, \
+                    patch('app.api_charge_worker.logger') as log:
+                for _ in range(3):
+                    self.assertFalse(supervised_cycle({}, state, heartbeat=heartbeat, status=status, clock=lambda: 10))
+                self.assertFalse(heartbeat.exists())
+                self.assertEqual(collect.call_count, 3)
+                self.assertEqual(log.error.call_count, 1)
+                import json
+                self.assertEqual(json.loads(status.read_text())['error'], 'source_continuity_review_required')
+            with patch('app.api_charge_worker.process_once', return_value=False):
+                self.assertFalse(supervised_cycle({}, state, heartbeat=heartbeat, status=status))
+            self.assertTrue(heartbeat.exists())
+            self.assertIsNone(state['error'])
+            self.assertEqual(json.loads(status.read_text())['status'], 'ready')
+
+    def test_error_diagnostics_do_not_log_external_exception_secrets(self):
+        self.assertEqual(error_code(RuntimeError('redis://secret:password@host')), 'collection_dependency_error')
+        self.assertEqual(error_code(ValueError('untrusted event payload')), 'charge_evidence_invalid')
+
+    def test_continuity_pause_keeps_process_heartbeat_but_not_readiness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ready, alive, status = (Path(directory) / name for name in ('ready', 'alive', 'status.json'))
+            stopped = threading.Event()
+            def cycle():
+                result = supervised_cycle({}, {}, heartbeat=ready, status=status)
+                stopped.set()
+                return result
+            with patch('app.api_charge_worker.process_once', side_effect=ValueError(
+                    'Managed financial source unavailable; explicit continuity review required')):
+                run_worker(cycle, stopped, heartbeat=alive)
+            self.assertTrue(alive.exists())
+            self.assertFalse(ready.exists())
+
     def test_cursor_and_facts_commit_once_after_ingest(self):
         session = MagicMock()
         session.__enter__.return_value = session
@@ -41,6 +83,9 @@ class ChargeWorkerTests(unittest.TestCase):
             with patch('pathlib.Path.stat') as stat, patch('time.time', return_value=100):
                 stat.return_value.st_mtime = 90
                 exec(command, {})
+        self.assertIn('api-charge-ledger-alive', container['startupProbe']['exec']['command'][-1])
+        self.assertIn('api-charge-ledger-alive', container['livenessProbe']['exec']['command'][-1])
+        self.assertIn('api-charge-ledger-heartbeat', container['readinessProbe']['exec']['command'][-1])
 
     def test_deploy_starts_worker_only_after_api_schema_ready(self):
         source = (Path(__file__).resolve().parents[2] / 'scripts/deploy_trading_runtime.sh').read_text()

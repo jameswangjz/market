@@ -1,0 +1,9 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/redis_source_continuity.py /app/ops/redis_source_continuity.py
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MESSAGE_CENTER_DISABLE_BACKGROUND=true
+USER 1000:1000
+CMD ["python", "-m", "app.redis_maintenance_worker"]
