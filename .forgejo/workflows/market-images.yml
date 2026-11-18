@@ -1,0 +1,49 @@
+name: Build Market images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'gateway/**'
+      - 'mock-api/**'
+      - 'mock-saas/**'
+      - 'k8s/**'
+      - 'scripts/redis_source_continuity.py'
+      - 'scripts/publish_market_images.sh'
+      - '.forgejo/workflows/market-images.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: market-image-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: forgejo.repository == 'hxyl/OperationPlatform' && forgejo.ref == 'refs/heads/main'
+    runs-on: market-build
+    timeout-minutes: 60
+    steps:
+      - name: Check out the triggering commit
+        shell: bash
+        env:
+          CHECKOUT_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${CHECKOUT_TOKEN:=${FORGEJO_TOKEN:?missing Forgejo job token}}"
+          [[ "$FORGEJO_SHA" =~ ^[a-f0-9]{40}$ ]]
+          git init --quiet .
+          auth=$(printf 'x-access-token:%s' "$CHECKOUT_TOKEN" | base64 | tr -d '\n')
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="Authorization: Basic $auth" \
+            git fetch --quiet --depth 1 "${FORGEJO_SERVER_URL%/}/$FORGEJO_REPOSITORY.git" "$FORGEJO_SHA"
+          git checkout --quiet --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$FORGEJO_SHA"
+      - name: Build and push release images
+        shell: bash
+        env:
+          HARBOR_REGISTRY: ${{ vars.HARBOR_REGISTRY }}
+          HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+        run: bash scripts/publish_market_images.sh

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: market-forgejo-runner
+  namespace: market-ci
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: market-forgejo-runner}
+  template:
+    metadata:
+      labels: {app: market-forgejo-runner}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+        - name: buildkit-client
+          image: docker.io/moby/buildkit:v0.35.0-rootless
+          command: [sh, -ec, 'cp /usr/bin/buildctl /tools/buildctl; cat /etc/ssl/certs/ca-certificates.crt /ca/ca.crt > /tools/ca-bundle.crt']
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tools, mountPath: /tools}
+            - {name: harbor-ca, mountPath: /ca, readOnly: true}
+      containers:
+        - name: runner
+          image: data.forgejo.org/forgejo/runner:13.2.1
+          args: [forgejo-runner, daemon, --config, /runner/runner.json]
+          env:
+            - {name: BUILDKIT_HOST, value: 'tcp://127.0.0.1:1234'}
+            - {name: SSL_CERT_FILE, value: /tools/ca-bundle.crt}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts:
+            - {name: runner-config, mountPath: /runner, readOnly: true}
+            - {name: work, mountPath: /data}
+            - {name: tools, mountPath: /tools, readOnly: true}
+        - name: buildkit
+          image: docker.io/moby/buildkit:v0.35.0-rootless
+          args: [--addr, 'tcp://127.0.0.1:1234', --config, /builder/buildkitd.toml, --oci-worker-no-process-sandbox]
+          securityContext:
+            seccompProfile: {type: Unconfined}
+            appArmorProfile: {type: Unconfined}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi, ephemeral-storage: 2Gi}
+            limits: {cpu: '2', memory: 2500Mi, ephemeral-storage: 10Gi}
+          readinessProbe:
+            exec:
+              command: [buildctl, --addr, 'tcp://127.0.0.1:1234', debug, workers]
+            periodSeconds: 10
+          volumeMounts:
+            - {name: harbor-ca, mountPath: /ca, readOnly: true}
+            - {name: builder-config, mountPath: /builder, readOnly: true}
+            - {name: cache, mountPath: /home/user/.local/share/buildkit}
+      volumes:
+        - name: runner-config
+          secret: {secretName: market-forgejo-runner, defaultMode: 0440}
+        - name: harbor-ca
+          configMap: {name: market-harbor-ca}
+        - name: builder-config
+          configMap: {name: market-buildkit}
+        - name: work
+          emptyDir: {sizeLimit: 1Gi}
+        - name: tools
+          emptyDir: {sizeLimit: 100Mi}
+        - name: cache
+          emptyDir: {sizeLimit: 8Gi}

@@ -1,0 +1,77 @@
+externalURL: https://192.168.10.10:30443
+expose:
+  type: nodePort
+  tls:
+    enabled: true
+    certSource: secret
+    secret:
+      secretName: harbor-env1-tls
+  nodePort:
+    ports:
+      http:
+        nodePort: 30442
+      https:
+        nodePort: 30443
+
+existingSecretAdminPassword: harbor-env1-admin
+updateStrategy:
+  type: Recreate
+persistence:
+  resourcePolicy: keep
+  persistentVolumeClaim:
+    registry:
+      storageClass: local-path
+      size: 12Gi
+    jobservice:
+      jobLog:
+        storageClass: local-path
+        size: 1Gi
+    database:
+      storageClass: local-path
+      size: 2Gi
+    redis:
+      storageClass: local-path
+      size: 1Gi
+
+# The single development node shares its disk and memory with other projects.
+trivy:
+  enabled: false
+nginx:
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 128Mi}
+portal:
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+core:
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: '1', memory: 768Mi}
+jobservice:
+  maxJobWorkers: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 384Mi}
+registry:
+  relativeurls: true
+  registry:
+    resources:
+      requests: {cpu: 150m, memory: 128Mi}
+      limits: {cpu: '1', memory: 512Mi}
+  controller:
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 250m, memory: 256Mi}
+database:
+  maxIdleConns: 10
+  maxOpenConns: 50
+  internal:
+    resources:
+      requests: {cpu: 250m, memory: 256Mi}
+      limits: {cpu: '1', memory: 768Mi}
+redis:
+  internal:
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: 500m, memory: 384Mi}
