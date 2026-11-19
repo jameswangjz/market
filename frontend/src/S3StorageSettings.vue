@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { RefreshCw } from 'lucide-vue-next';
+import ActionDialog from './ActionDialog.vue';
 
 const props = defineProps({ api: { type: Object, required: true } });
 const saved = ref(null);
@@ -8,6 +9,7 @@ const form = reactive({ provider: 'minio', endpoint: '', secure: true, region: '
 const busy = ref('');
 const error = ref('');
 const message = ref('');
+const testDialog = ref(null);
 const canKeepCredentials = computed(() => saved.value?.credentials_configured &&
   form.provider === saved.value.provider && form.endpoint.trim().toLowerCase() === saved.value.endpoint.toLowerCase() && form.secure === saved.value.secure);
 
@@ -53,23 +55,42 @@ function payload() {
   return result;
 }
 
+function showTestResult(ok, message) {
+  testDialog.value = {
+    kind: 'notice',
+    title: ok ? '连接测试成功' : '连接测试失败',
+    message,
+    confirmText: '确定',
+  };
+}
+
 async function submit(action) {
+  if (busy.value) return;
+  const testing = action === 'test';
   error.value = '';
   message.value = '';
   let body;
-  try { body = payload(); } catch (err) { error.value = err.message; return; }
+  try {
+    body = payload();
+  } catch (err) {
+    if (testing) showTestResult(false, err.message);
+    else error.value = err.message;
+    return;
+  }
   busy.value = action;
   try {
-    if (action === 'test') {
+    if (testing) {
       const { data } = await props.api.post('/admin/settings/s3-storage/test', body);
-      message.value = data.message || '连接测试成功';
+      showTestResult(data.ok, data.message || '已完成连接测试');
     } else {
       const { data } = await props.api.patch('/admin/settings/s3-storage', body);
       reset(data);
       message.value = 'S3 存储已保存并启用';
     }
   } catch (err) {
-    error.value = errorMessage(err);
+    const detail = errorMessage(err);
+    if (testing) showTestResult(false, detail);
+    else error.value = detail;
   } finally {
     busy.value = '';
   }
@@ -112,6 +133,7 @@ onMounted(load);
       </fieldset>
     </form>
   </section>
+  <ActionDialog :dialog="testDialog" @submit="testDialog = null" @cancel="testDialog = null" />
 </template>
 
 <style scoped>

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { Check, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-vue-next";
 import axios from "axios";
+import { methodLabels } from "./mainList.js";
 
 const api = axios.create({ baseURL: "/api", headers: { Authorization: `Bearer ${localStorage.getItem("market_token") || ""}` } });
 const items = ref([]);
@@ -16,7 +17,13 @@ const editName = ref("");
 const editDeliveryMethod = ref("");
 const confirmDelete = ref("");
 const error = ref("");
-const children = computed(() => items.value.find(item => item.id === selected.value)?.children || []);
+const activeParent = computed(() => items.value.find(item => item.id === selected.value));
+const levels = computed(() => [
+  { label: "一级目录", child: false, rows: items.value },
+  { label: "二级目录", child: true, rows: activeParent.value?.children || [] },
+]);
+const deliveryOptions = ["file", "api", "model_api", "tenant_access", "training", "consulting", "custom"];
+const deliveryLabel = value => methodLabels[value] || value || "全部交付方式";
 async function load() {
   if (busy.value) return;
   busy.value = true; error.value = "";
@@ -59,28 +66,106 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="category-heading"><h2>产品目录</h2><button class="secondary-btn" :disabled="busy || saving" @click="load"><RefreshCw :size="16" />刷新</button></div>
-  <p v-if="error" class="form-error" role="alert">{{ error }}</p>
-  <section class="panel category-settings">
-    <div class="category-parent-list">
-      <div v-for="parent in items" :key="parent.id" class="category-parent" :class="{ active: selected === parent.id }">
-        <template v-if="editing === parent.id"><input v-model="editName" aria-label="编辑一级目录名称" maxlength="80" @click.stop /><button class="icon-btn" title="保存" aria-label="保存" :disabled="saving" @click="saveEdit(parent)"><Check :size="15" /></button><button class="icon-btn" title="取消" aria-label="取消" :disabled="saving" @click="cancelEdit"><X :size="15" /></button></template>
-        <template v-else><button class="category-name" @click="selected = parent.id">{{ parent.name }}</button><button class="icon-btn" title="编辑一级目录" aria-label="编辑一级目录" :disabled="saving" @click="beginEdit(parent)"><Pencil :size="14" /></button><button v-if="confirmDelete === parent.id" class="icon-btn confirm-delete" title="确认删除" aria-label="确认删除" :disabled="saving" @click="remove(parent.id)"><Check :size="15" /></button><button v-else class="icon-btn" title="删除一级目录" aria-label="删除一级目录" :disabled="saving" @click="confirmDelete = parent.id"><Trash2 :size="15" /></button><button v-if="confirmDelete === parent.id" class="icon-btn" title="取消删除" aria-label="取消删除" :disabled="saving" @click="confirmDelete = ''"><X :size="15" /></button></template>
-      </div>
-      <form class="category-add" @submit.prevent="add()"><input v-model="parentName" aria-label="一级目录名称" placeholder="新增一级目录" maxlength="80" /><button class="icon-btn" title="新增一级目录" aria-label="新增一级目录" :disabled="saving || !parentName.trim()"><Plus :size="17" /></button></form>
+  <div class="page-heading">
+    <div>
+      <div class="eyebrow">平台管理</div>
+      <h1>产品目录</h1>
     </div>
-    <div class="category-child-list">
-      <div class="panel-heading"><h3>{{ items.find(item => item.id === selected)?.name || '二级目录' }}</h3></div>
-      <div v-for="child in children" :key="child.id" class="category-child">
-        <template v-if="editing === child.id"><input v-model="editName" aria-label="编辑二级目录名称" maxlength="80" /><select v-model="editDeliveryMethod" aria-label="适用交付方式"><option value="">全部交付方式</option><option value="file">文件交付</option><option value="api">API 交付</option><option value="model_api">模型 API</option><option value="tenant_access">租户访问</option><option value="training">培训</option><option value="consulting">咨询</option><option value="custom">定制开发</option></select><button class="icon-btn" title="保存" aria-label="保存" :disabled="saving" @click="saveEdit(child)"><Check :size="15" /></button><button class="icon-btn" title="取消" aria-label="取消" :disabled="saving" @click="cancelEdit"><X :size="15" /></button></template>
-        <template v-else><span>{{ child.name }}</span><small>{{ child.delivery_method || '全部交付方式' }}</small><button class="icon-btn" title="编辑二级目录" aria-label="编辑二级目录" :disabled="saving" @click="beginEdit(child)"><Pencil :size="14" /></button><button v-if="confirmDelete === child.id" class="icon-btn confirm-delete" title="确认删除" aria-label="确认删除" :disabled="saving" @click="remove(child.id)"><Check :size="15" /></button><button v-else class="icon-btn" title="删除二级目录" aria-label="删除二级目录" :disabled="saving" @click="confirmDelete = child.id"><Trash2 :size="15" /></button><button v-if="confirmDelete === child.id" class="icon-btn" title="取消删除" aria-label="取消删除" :disabled="saving" @click="confirmDelete = ''"><X :size="15" /></button></template>
+    <button class="secondary-btn" type="button" :disabled="busy || saving" @click="load">
+      <RefreshCw :size="16" />刷新
+    </button>
+  </div>
+
+  <p v-if="error" class="error-text" role="alert">{{ error }}</p>
+  <div class="category-settings" :aria-busy="busy">
+    <section v-for="level in levels" :key="level.label" class="panel">
+      <div class="panel-heading">
+        <h3>{{ level.label }}</h3>
+        <span v-if="level.child && activeParent" class="muted">{{ activeParent.name }}</span>
       </div>
-      <form v-if="selected" class="category-add category-add-child" @submit.prevent="add(selected)"><input v-model="childName" aria-label="二级目录名称" placeholder="新增二级目录" maxlength="80" /><select v-model="deliveryMethod" aria-label="适用交付方式"><option value="">全部交付方式</option><option value="file">文件交付</option><option value="api">API 交付</option><option value="model_api">模型 API</option><option value="tenant_access">租户访问</option><option value="training">培训</option><option value="consulting">咨询</option><option value="custom">定制开发</option></select><button class="icon-btn" title="新增二级目录" aria-label="新增二级目录" :disabled="saving || !childName.trim()"><Plus :size="17" /></button></form>
-      <p v-if="selected && !children.length" class="muted">暂无二级目录</p>
-    </div>
-  </section>
+      <div class="table-wrap">
+        <table class="data-table category-table">
+          <thead>
+            <tr>
+              <th scope="col">目录名称</th>
+              <th v-if="level.child" scope="col">交付方式</th>
+              <th scope="col" class="category-action-cell">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in level.rows" :key="item.id" :class="{ selected: !level.child && selected === item.id }">
+              <td>
+                <input v-if="editing === item.id" v-model="editName" :aria-label="'编辑' + level.label + '名称'"
+                  maxlength="80" @keydown.enter.prevent="saveEdit(item)" />
+                <span v-else-if="level.child">{{ item.name }}</span>
+                <button v-else type="button" class="text-btn category-link" :aria-pressed="selected === item.id"
+                  @click="selected = item.id">{{ item.name }}</button>
+              </td>
+              <td v-if="level.child">
+                <select v-if="editing === item.id" v-model="editDeliveryMethod" aria-label="适用交付方式">
+                  <option value="">全部交付方式</option>
+                  <option v-for="value in deliveryOptions" :key="value" :value="value">{{ deliveryLabel(value) }}</option>
+                </select>
+                <span v-else>{{ deliveryLabel(item.delivery_method) }}</span>
+              </td>
+              <td class="category-action-cell">
+                <div class="action-list category-actions">
+                  <template v-if="editing === item.id">
+                    <button class="icon-btn" type="button" title="保存" aria-label="保存"
+                      :disabled="saving || !editName.trim()" @click="saveEdit(item)"><Check :size="15" /></button>
+                    <button class="icon-btn" type="button" title="取消" aria-label="取消"
+                      :disabled="saving" @click="cancelEdit"><X :size="15" /></button>
+                  </template>
+                  <template v-else-if="confirmDelete === item.id">
+                    <button class="icon-btn confirm-delete" type="button" title="确认删除" aria-label="确认删除"
+                      :disabled="saving" @click="remove(item.id)"><Check :size="15" /></button>
+                    <button class="icon-btn" type="button" title="取消删除" aria-label="取消删除"
+                      :disabled="saving" @click="confirmDelete = ''"><X :size="15" /></button>
+                  </template>
+                  <template v-else>
+                    <button class="icon-btn" type="button" :title="'编辑' + level.label" :aria-label="'编辑' + level.label"
+                      :disabled="saving" @click="beginEdit(item)"><Pencil :size="14" /></button>
+                    <button class="icon-btn" type="button" :title="'删除' + level.label" :aria-label="'删除' + level.label"
+                      :disabled="saving" @click="confirmDelete = item.id"><Trash2 :size="15" /></button>
+                  </template>
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!level.rows.length">
+              <td :colspan="level.child ? 3 : 2" class="muted">
+                {{ busy ? "正在加载…" : level.child && !activeParent ? "请先选择一级目录" : "暂无" + level.label }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <form v-if="!level.child || activeParent" class="category-add" @submit.prevent="add(level.child ? selected : '')">
+        <input v-if="level.child" v-model="childName" aria-label="二级目录名称" placeholder="新增二级目录" maxlength="80" />
+        <input v-else v-model="parentName" aria-label="一级目录名称" placeholder="新增一级目录" maxlength="80" />
+        <select v-if="level.child" v-model="deliveryMethod" aria-label="适用交付方式">
+          <option value="">全部交付方式</option>
+          <option v-for="value in deliveryOptions" :key="value" :value="value">{{ deliveryLabel(value) }}</option>
+        </select>
+        <button class="secondary-btn" type="submit"
+          :disabled="busy || saving || !(level.child ? childName : parentName).trim()"><Plus :size="15" />新增</button>
+      </form>
+    </section>
+  </div>
 </template>
 
 <style scoped>
-.category-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.category-heading h2{font-size:18px;margin:0}.category-settings{display:grid;grid-template-columns:minmax(220px, .8fr) minmax(320px, 1.4fr);gap:28px}.category-parent-list,.category-child-list{min-width:0}.category-parent,.category-child{display:flex;align-items:center;gap:8px;min-height:44px;border-bottom:1px solid var(--border,#e5e7eb)}.category-parent.active{background:var(--surface-muted,#f5f7f8)}.category-parent input,.category-child input{min-width:0;flex:1}.category-name{flex:1;text-align:left;border:0;background:none;padding:10px 12px;color:inherit;cursor:pointer}.category-child span{flex:1}.category-child small{color:var(--muted,#697586)}.category-add{display:flex;gap:8px;margin-top:12px}.category-add input,.category-add select{min-width:0;flex:1}.category-add-child{max-width:620px}.category-child select{max-width:165px;min-width:0}.confirm-delete{color:#b42318}.form-error{color:#b42318}@media(max-width:700px){.category-settings{grid-template-columns:1fr}}
+.category-settings { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
+.category-settings .panel { min-width: 0; }
+.category-table { min-width: 0; }
+.category-table :is(th, td) { padding: 8px 12px; }
+.category-table td:first-child { overflow-wrap: anywhere; }
+.category-table .selected td { background: #fff7f0; }
+.category-action-cell { width: 1%; text-align: right; }
+.category-actions { flex-wrap: nowrap; justify-content: flex-end; gap: 3px; }
+.category-link { padding: 0; text-align: left; overflow-wrap: anywhere; }
+.category-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.category-add :is(input, select) { flex: 1 1 130px; }
+.category-settings :is(input, select) { width: 100%; min-width: 90px; padding: 7px 9px; border: 1px solid #e5e6eb; border-radius: 6px; background: #fff; color: #1d2129; font-size: 12px; }
+.confirm-delete { color: #b42318; }
+@media (max-width: 1000px) { .category-settings { grid-template-columns: minmax(0, 1fr); } }
 </style>

@@ -67,7 +67,7 @@ onBeforeUnmount(() => {
         </label>
         <p v-if="error" id="action-dialog-error" class="error-text" role="alert"><CircleAlert :size="14" /> {{ error }}</p>
         <div class="modal-actions">
-          <button type="button" class="secondary-btn" @click="emit('cancel')">取消</button>
+          <button v-if="dialog.kind !== 'notice'" type="button" class="secondary-btn" @click="emit('cancel')">取消</button>
           <button type="submit" :class="['primary-btn', { 'action-dialog-danger': dialog.danger }]">{{ dialog.confirmText }}</button>
         </div>
       </form>
