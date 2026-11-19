@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  exec python3 -B scripts/market_database.py --help
+fi
+umask 077
+deployment_dir=$(mktemp -d)
+trap 'rm -rf -- "$deployment_dir"' EXIT
+BASE_MANIFEST="$deployment_dir/base.yaml"
+RENDERED_MANIFEST="$deployment_dir/market.yaml"
+DATABASE_SECRET="$deployment_dir/database-secret.yaml"
+DATABASE_MODE=$(python3 -B scripts/market_database.py --manifest k8s/all-in-one.yaml \
+  --output "$BASE_MANIFEST" --secret-output "$DATABASE_SECRET" "$@")
+echo "Database mode: ${DATABASE_MODE}"
+
 NAMESPACE=market
 # Existing ephemeral Redis must be migrated with a verified SAVE/seed procedure.
 if kubectl -n "$NAMESPACE" get deployment market-redis >/dev/null 2>&1; then
@@ -31,23 +45,24 @@ else
   exit 1
 fi
 
-RENDERED_MANIFEST="$(mktemp)"
-trap 'rm -f "$RENDERED_MANIFEST"' EXIT
 sed \
   -e "s#market-api:dev#market-api:${IMAGE_TAG}#g" \
   -e "s#market-web:dev#market-web:${IMAGE_TAG}#g" \
   -e "s#market-gateway:dev#market-gateway:${IMAGE_TAG}#g" \
   -e "s#market-mock-saas:dev#market-mock-saas:${IMAGE_TAG}#g" \
   -e "s#market-mock-api:dev#market-mock-api:${IMAGE_TAG}#g" \
-  k8s/all-in-one.yaml > "$RENDERED_MANIFEST"
+  "$BASE_MANIFEST" > "$RENDERED_MANIFEST"
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply --server-side -f "$DATABASE_SECRET"
 kubectl apply -f k8s/redis-persistence.yaml
 kubectl apply -f "$RENDERED_MANIFEST"
 kubectl apply -f k8s/apisix.yaml
 kubectl -n "$NAMESPACE" create configmap market-apisix-policy-plugin --from-file=market-gateway-quota.lua=k8s/market-gateway-quota.lua --from-file=market-gateway-oauth.lua=k8s/market-gateway-oauth.lua --from-file=market-sla-logger.lua=k8s/market-sla-logger.lua --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f k8s/monitoring.yaml
-kubectl -n "$NAMESPACE" rollout status deployment/market-postgres --timeout=180s
+if [[ "$DATABASE_MODE" == "internal-postgres" ]]; then
+  kubectl -n "$NAMESPACE" rollout status deployment/market-postgres --timeout=180s
+fi
 kubectl -n "$NAMESPACE" rollout status deployment/market-redis --timeout=180s
 kubectl -n "$NAMESPACE" rollout status deployment/market-clamav --timeout=300s
 kubectl -n "$NAMESPACE" rollout status deployment/market-etcd --timeout=180s

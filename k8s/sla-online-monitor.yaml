@@ -30,6 +30,7 @@ spec:
                 - configMapRef: {name: market-config}
                 - secretRef: {name: market-secrets}
               env:
+                - {name: DATABASE_URL, valueFrom: {secretKeyRef: {name: market-db-connection, key: DATABASE_URL}}}
                 - {name: PYTHONPATH, value: /app}
                 - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
                 - {name: SLA_PROBE_GATEWAY_ORIGIN, value: 'http://market-apisix:9080'}

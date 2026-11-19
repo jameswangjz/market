@@ -22,7 +22,6 @@ metadata:
   name: market-config
   namespace: market
 data:
-  DATABASE_URL: postgresql+psycopg://market:market-dev-password@market-postgres:5432/market
   MINIO_ENDPOINT: market-minio:9000
   MINIO_BUCKET: market-files
   REDIS_URL: redis://market-redis:6379/0
@@ -303,6 +302,7 @@ spec:
           ports: [{containerPort: 8000}]
           envFrom: [{configMapRef: {name: market-config}}]
           env:
+            - {name: DATABASE_URL, valueFrom: {secretKeyRef: {name: market-db-connection, key: DATABASE_URL}}}
             - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}
             - {name: APISIX_ADMIN_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: APISIX_ADMIN_KEY}}}
             - {name: MINIO_ACCESS_KEY, valueFrom: {secretKeyRef: {name: market-secrets, key: MINIO_ROOT_USER}}}
@@ -337,6 +337,8 @@ spec:
           imagePullPolicy: Never
           ports: [{containerPort: 8100}]
           envFrom: [{configMapRef: {name: market-config}}]
+          env:
+            - {name: DATABASE_URL, valueFrom: {secretKeyRef: {name: market-db-connection, key: DATABASE_URL}}}
           readinessProbe: {httpGet: {path: /health, port: 8100}, initialDelaySeconds: 8, periodSeconds: 5}
           livenessProbe: {httpGet: {path: /health, port: 8100}, initialDelaySeconds: 15, periodSeconds: 10}
 ---
