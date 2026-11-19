@@ -45,6 +45,7 @@ from .enterprise_console_scope import resolve_enterprise_membership, require_ent
 from .console_business_scope import resolve_business_scope, order_predicate, audit_predicate
 from .enterprise_settlement_scope import settlement_access, proposal_identity, require_counterparty, proposal_amounts, workflow_actions
 from . import settlement_finance_adapter
+from .object_storage import install as install_object_storage, open_storage
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./market.db")
@@ -4249,16 +4250,22 @@ def market_sensitive_patterns(text_value: str) -> list[dict[str, Any]]:
     return findings
 
 
-def read_product_sample(file_item: FileObject, raw_content: bytes | None = None) -> str:
-    if not MINIO_ENDPOINT or file_item.size <= 0:
+def read_product_sample(file_item: FileObject, raw_content: bytes | None = None, *, db=None) -> str:
+    if file_item.size <= 0:
         return ""
     if not (file_item.content_type.startswith("text/") or file_item.content_type in {"application/json", "application/csv", "application/xml"} or file_item.original_name.lower().endswith((".csv", ".json", ".jsonl", ".md", ".txt", ".xml", ".zip", ".tar", ".tgz", ".tar.gz", ".rar", ".7z"))):
         return ""
     response = None
     temp_path = None
+    if db is None:
+        with SessionLocal() as session:
+            storage = open_storage(session, globals(), required=False)
+    else:
+        storage = open_storage(db, globals(), required=False)
+    if storage is None:
+        return ""
     if raw_content is None:
-        client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
-        response = client.get_object(MINIO_BUCKET, file_item.object_name)
+        response = storage.client.get_object(storage.bucket, file_item.object_name)
     try:
         if raw_content is not None:
             sample = raw_content
@@ -4352,7 +4359,7 @@ def run_product_security_scan(product: Product, db: Session, actor: str) -> Prod
     file_findings = []
     for item in files:
         try:
-            sample = read_product_sample(item)
+            sample = read_product_sample(item, db=db)
             file_presidio_findings, file_presidio_status = (presidio_analyze(sample) if item.scan_status == "clean" and sample else ([], "not_scanned"))
             try:
                 stored_scan = json.loads(item.scan_report or "{}")
@@ -6115,12 +6122,10 @@ def upload_delivery_attachment(task_id: str, upload: UploadFile = File(...), des
     upload.file.seek(0)
     filename = upload.filename or "delivery-attachment"
     object_name = f"delivery/{order.id}/{task.id}/{secrets.token_hex(6)}-{filename}"
-    if not MINIO_ENDPOINT:
-        raise HTTPException(503, "文件存储服务未配置")
-    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
-    if not client.bucket_exists(MINIO_BUCKET):
-        client.make_bucket(MINIO_BUCKET)
-    client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
+    storage = open_storage(db, globals(), writing=True)
+    storage.ensure_bucket()
+    storage.client.put_object(storage.bucket, object_name, upload.file, length=size,
+                              content_type=upload.content_type or "application/octet-stream")
     file_item = FileObject(owner_id=user.id, object_name=object_name, original_name=filename, content_type=upload.content_type or "application/octet-stream", size=size, checksum=hasher.hexdigest(), file_role="delivery_attachment", version="", description=description, status="active", scan_status=scan_status, scan_report=scan_report, scanned_at=now())
     db.add(file_item)
     db.flush()
@@ -7803,11 +7808,11 @@ def upload_file(
         hasher.update(chunk)
     upload.file.seek(0)
     object_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{filename}"
-    if MINIO_ENDPOINT:
-        client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
-        if not client.bucket_exists(MINIO_BUCKET):
-            client.make_bucket(MINIO_BUCKET)
-        client.put_object(MINIO_BUCKET, object_name, upload.file, length=size, content_type=upload.content_type or "application/octet-stream")
+    storage = open_storage(db, globals(), writing=True, required=False)
+    if storage:
+        storage.ensure_bucket()
+        storage.client.put_object(storage.bucket, object_name, upload.file, length=size,
+                                  content_type=upload.content_type or "application/octet-stream")
     if file_role == "product_logo" and product_id:
         old_files = db.scalars(select(FileObject).where(FileObject.product_id == product_id, FileObject.file_role.in_(["product_logo", "product_logo_thumbnail"]), FileObject.status != "deleted")).all()
         for old_file in old_files:
@@ -7828,12 +7833,12 @@ def upload_file(
     db.flush()
     if file_role == "product_data" and scan_status == "clean":
         try:
-            sample = read_product_sample(item, content if size <= 100 * 1024 * 1024 else None)
+            sample = read_product_sample(item, content if size <= 100 * 1024 * 1024 else None, db=db)
             presidio_findings, presidio_status = presidio_analyze(sample) if sample else ([], "not_scanned")
             item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": presidio_status, "presidio_findings": presidio_findings, "sample_scanned": bool(sample)}, ensure_ascii=False)
         except Exception as exc:
             item.scan_report = json.dumps({"clamav_status": scan_status, "clamav_report": scan_report, "presidio_status": "error", "presidio_findings": [], "presidio_error": str(exc)[:240]}, ensure_ascii=False)
-    if file_role == "product_logo" and product_id and not lower_name.endswith(".svg") and MINIO_ENDPOINT:
+    if file_role == "product_logo" and product_id and not lower_name.endswith(".svg") and storage:
         try:
             with Image.open(BytesIO(content)) as image:
                 image = image.convert("RGBA")
@@ -7842,7 +7847,8 @@ def upload_file(
                 image.save(thumbnail_content, format="PNG", optimize=True)
                 thumbnail_bytes = thumbnail_content.getvalue()
             thumbnail_name = f"{user.id}/{now().strftime('%Y%m%d')}/{secrets.token_hex(6)}-{filename}.thumb.png"
-            client.put_object(MINIO_BUCKET, thumbnail_name, BytesIO(thumbnail_bytes), length=len(thumbnail_bytes), content_type="image/png")
+            storage.client.put_object(storage.bucket, thumbnail_name, BytesIO(thumbnail_bytes),
+                                      length=len(thumbnail_bytes), content_type="image/png")
             thumbnail = FileObject(owner_id=user.id, product_id=product_id, version_id=version_item.id if version_item else None, object_name=thumbnail_name, original_name=f"{filename}.thumb.png", content_type="image/png", size=len(thumbnail_bytes), checksum=hashlib.sha256(thumbnail_bytes).hexdigest(), file_role="product_logo_thumbnail", version=item.version, description="Logo缩略图", status="active", scan_status="clean", scan_report="由平台生成", scanned_at=now())
             db.add(thumbnail)
             db.flush()
@@ -7922,11 +7928,9 @@ def download_file(file_id: str, request: Request, order_id: str = "", enterprise
             if not provider_admin:
                 raise HTTPException(403, "只有所选企业的已验证管理员可以下载提供方产品文件")
             order = None
-    if not MINIO_ENDPOINT:
-        raise HTTPException(503, "文件存储服务未配置")
-    client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
+    storage = open_storage(db, globals())
     try:
-        response = client.get_object(MINIO_BUCKET, item.object_name)
+        response = storage.client.get_object(storage.bucket, item.object_name)
         content = response.read()
         response.close()
         response.release_conn()
@@ -7970,6 +7974,7 @@ def order_product_files(order_id: str, user: User = Depends(current_user), db: S
 from .message_center import install as install_message_center
 
 message_center = install_message_center(globals())
+install_object_storage(globals())
 
 from .settlement_metering import install as install_settlement_metering
 

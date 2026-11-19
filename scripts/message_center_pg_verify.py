@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import signal
+import sys
 import threading
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,8 @@ def require(condition, message):
 def load_center(path, engine, schema, *, services=None, return_context=False):
     spec = importlib.util.spec_from_file_location('isolated_message_center', path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with patch.object(sys, "path", [str(path.resolve().parents[1]), *sys.path]):
+        spec.loader.exec_module(module)
 
     class Base(DeclarativeBase):
         metadata = MetaData(schema=schema)

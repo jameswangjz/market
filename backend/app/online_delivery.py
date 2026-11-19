@@ -18,6 +18,7 @@ from .order_economics import money
 from .oidc_provider import NO_STORE
 from .saas_auto_delivery import install as install_saas_delivery
 from .api_auto_delivery import install as install_api_delivery
+from .object_storage import open_storage
 
 
 def install(ns):
@@ -68,17 +69,15 @@ def install(ns):
     def verify(db, order):
         eligible(order)
         rows = files(db, order)
-        if not ns['MINIO_ENDPOINT']:
-            raise HTTPException(503, '文件存储服务未配置')
-        client = ns['Minio'](ns['MINIO_ENDPOINT'], access_key=ns['MINIO_ACCESS_KEY'],
-            secret_key=ns['MINIO_SECRET_KEY'], secure=False)
+        storage = open_storage(db, ns)
+        client, bucket = storage.client, storage.bucket
         for item in rows:
             response = None
             try:
-                stat = client.stat_object(ns['MINIO_BUCKET'], item.object_name)
+                stat = client.stat_object(bucket, item.object_name)
                 if stat.size != item.size:
                     raise HTTPException(409, '持久化文件大小与登记快照不一致')
-                response = client.get_object(ns['MINIO_BUCKET'], item.object_name, offset=0, length=1)
+                response = client.get_object(bucket, item.object_name, offset=0, length=1)
                 if not response.read(1):
                     raise HTTPException(409, '持久化文件不可读取')
             except HTTPException:

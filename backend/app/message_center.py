@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, delete, func, select, text, update
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.object_storage import open_storage
 
 
 class BatchAction(BaseModel):
@@ -622,11 +623,6 @@ def install(ns):
         db.commit()
         return body
 
-    def object_store():
-        if not ns.get("MINIO_ENDPOINT"):
-            raise HTTPException(503, "附件存储未配置")
-        return ns["Minio"](ns["MINIO_ENDPOINT"], access_key=ns["MINIO_ACCESS_KEY"], secret_key=ns["MINIO_SECRET_KEY"], secure=False)
-
     @app.post("/api/notifications/attachments")
     def upload_attachment(upload: UploadFile = File(...), user=Depends(current_user), db=Depends(db_session), scope: Annotated[dict | None, Depends(business_scope)] = None):
         if scope is not None:
@@ -650,10 +646,9 @@ def install(ns):
             raise HTTPException(422 if state == "infected" else 503, "附件病毒扫描未通过")
         upload.file.seek(0)
         key = "notifications/" + user.id + "/" + secrets.token_hex(16)
-        client = object_store()
-        bucket = ns["MINIO_BUCKET"]
-        if not client.bucket_exists(bucket):
-            client.make_bucket(bucket)
+        storage = open_storage(db, ns, writing=True)
+        storage.ensure_bucket()
+        client, bucket = storage.client, storage.bucket
         client.put_object(bucket, key, upload.file, length=size, content_type="application/octet-stream")
         row = Attachment(owner_id=user.id, tenant_id=scope["enterprise_id"] if scope is not None else "",
             name=filename, object_name=key, size=size, content_type="application/octet-stream")
@@ -703,7 +698,8 @@ def install(ns):
         if not authorized:
             raise HTTPException(404, "附件不存在或没有访问权限")
         try:
-            response = object_store().get_object(ns["MINIO_BUCKET"], attachment.object_name)
+            storage = open_storage(db, ns)
+            response = storage.client.get_object(storage.bucket, attachment.object_name)
         except HTTPException:
             raise
         except Exception:
@@ -968,9 +964,11 @@ def install(ns):
                 db.execute(delete(Message).where(Message.id.in_(ids)))
             orphan = list(db.scalars(select(Attachment).where(Attachment.created_at < now() - timedelta(days=1),
                          ~Attachment.id.in_(select(MessageAttachment.attachment_id))).limit(100)))
-            for row in orphan:
-                object_store().remove_object(ns["MINIO_BUCKET"], row.object_name)
-                db.delete(row)
+            if orphan:
+                storage = open_storage(db, ns, writing=True)
+                for row in orphan:
+                    storage.client.remove_object(storage.bucket, row.object_name)
+                    db.delete(row)
             if ids or orphan:
                 audit(db, "notification-cleanup", "notification_retention_cleanup", "notification", category="ops",
                       after={"messages_removed": len(ids), "attachments_removed": len(orphan)})
