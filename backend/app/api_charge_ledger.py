@@ -4,7 +4,7 @@ import json
 import hashlib
 import re
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String, cast, func, select, text, tuple_
+from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, String, and_, cast, func, or_, select, text, tuple_
 from sqlalchemy.orm import mapped_column
 
 from .refund_planning import ChargeSummary, PlanUnavailable
@@ -28,12 +28,20 @@ def stream_position(value):
 def stream_position_sql(column, dialect):
     if dialect == 'postgresql':
         parts = (func.split_part(column, '-', 1), func.split_part(column, '-', 2))
-    elif dialect == 'sqlite':
+    elif dialect in {'sqlite', 'dm'}:
         separator = func.instr(column, '-')
         parts = (func.substr(column, 1, separator - 1), func.substr(column, separator + 1))
     else:
         raise ValueError('Unsupported charge ledger dialect')
     return tuple_(*(cast(part, Numeric(20, 0)) for part in parts))
+
+
+def after_stream_position(position, watermark, dialect):
+    if dialect == 'dm':
+        # DM does not accept ordered comparison of row constructors.
+        major, minor = position.clauses
+        return or_(major > watermark[0], and_(major == watermark[0], minor > watermark[1]))
+    return position > watermark
 
 
 def bounded_client(ns):
@@ -138,6 +146,9 @@ def install(ns):
             raise ValueError('Bounded ingest batch required')
         if db.bind.dialect.name == 'postgresql':
             db.execute(text('SELECT pg_advisory_xact_lock(723401830031)'))
+        elif db.bind.dialect.name == 'dm':
+            from .database_dameng import transaction_lock
+            transaction_lock(db.connection(), "api-charge-ledger")
         managed = sources['source_context'](db, client, allow_paused=_sealed)
         active_stream = managed[0] if managed else STREAM
         cursor = managed[1] if managed else db.scalar(select(Cursor).where(Cursor.stream == STREAM).with_for_update())
@@ -340,7 +351,10 @@ def install(ns):
                 return tail
 
             tail = source_tail()
-            position = stream_position_sql(func.coalesce(Charge.event_id, Charge.id), db.bind.dialect.name)
+            dialect = db.bind.dialect.name
+            position = stream_position_sql(func.coalesce(Charge.event_id, Charge.id), dialect)
+            after_watermark = after_stream_position(position, watermark, dialect)
+            after_boundary = after_stream_position(position, boundary, dialect)
             evidence = list(receipt_evidence) + ['charge-boundary:' + boundary_id,
                 'charge-cursor:' + cursor.last_id, 'charge-source:' + source_run_id]
             calls = 0
@@ -353,9 +367,9 @@ def install(ns):
                 owned = (Charge.order_id == row['order_id'], Charge.segment_id == row['segment_id'],
                          Charge.source_run_id == source_run_id, Charge.policy == POLICY)
                 stored = total()
-                if stored != total(*owned) or total(position > watermark):
+                if stored != total(*owned) or total(after_watermark):
                     unavailable()
-                before = total(*owned, position <= boundary)
+                before = total(*owned, ~after_boundary)
                 if before != row['used_at_switch']:
                     unavailable()
                 counter, coverage = period_keys(scope, key)
@@ -365,7 +379,7 @@ def install(ns):
                             or not re.fullmatch(r'\d+', current)))
                         or stored != int(current or 0)):
                     unavailable()
-                after = total(*owned, position > boundary)
+                after = total(*owned, after_boundary)
                 if row['segment_id'] == segment_id and future and stored:
                     unavailable()
                 if row['segment_id'] == segment_id:

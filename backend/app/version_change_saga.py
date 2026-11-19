@@ -59,7 +59,7 @@ def install(ns):
             CheckConstraint("kind IN ('upgrade','downgrade','no_payment')", name='ck_version_change_kind'),
             Index('uq_version_change_open_combination', 'combination_id', unique=True,
                   sqlite_where=text("status IN ('pending_payment','resource_pending','retrying','compensating','refund_pending','exception')"),
-                  postgresql_where=text("status IN ('pending_payment','resource_pending','retrying','compensating','refund_pending','exception')")),
+                  postgresql_where=text("status IN ('pending_payment','resource_pending','retrying','compensating','refund_pending','exception')")).ddl_if(dialect=("postgresql", "sqlite")),
         )
         id = Column(String(36), primary_key=True, default=lambda: secrets.token_hex(16))
         source_order_id = Column(ForeignKey('orders.id'), nullable=False, index=True)

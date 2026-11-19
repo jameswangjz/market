@@ -304,7 +304,7 @@ def install(ns):
         if ns.get('Settlement') is not None:
             query = query.join(ns['Settlement'], ns['Settlement'].id == model.settlement_id).where(
                 ns['Settlement'].status != 'superseded')
-        rows = db.scalars(query.order_by(model.settlement_id).with_for_update(of=model)
+        rows = db.scalars(query.order_by(model.settlement_id).with_for_update(of=model.settlement_id)
                           .execution_options(populate_existing=True)).all()
         adjustment = ns.get('VersionChangeAdjustment')
         revised = refund is not None and adjustment is not None and db.scalar(select(adjustment.id).where(
@@ -512,7 +512,7 @@ def install(ns):
         ids = sorted(r['reference_settlement_id'] for r in refs)
         # Shared ordered source locks serialize single and multi approval budgets.
         sources = {b.settlement_id: b for b in db.scalars(select(model).where(
-            model.settlement_id.in_(ids)).order_by(model.settlement_id).with_for_update(of=model)
+            model.settlement_id.in_(ids)).order_by(model.settlement_id).with_for_update(of=model.settlement_id)
             .execution_options(populate_existing=True))}
         frozen = []
         for ref in refs:

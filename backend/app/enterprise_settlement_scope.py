@@ -30,7 +30,7 @@ def settlement_access(ns, request, db, user, settlement_id, *, write=False):
         if batch_ids:
             db.scalars(select(batch).where(batch.id.in_(batch_ids)).order_by(batch.id).with_for_update()
                 .execution_options(populate_existing=True)).all()
-        item = db.scalar(query.with_for_update(of=settlement).execution_options(populate_existing=True))
+        item = db.scalar(query.with_for_update(of=settlement.id).execution_options(populate_existing=True))
         if item is None:
             raise HTTPException(404, "清算单不存在")
         current_batches = set(db.scalars(select(line.batch_id).where(line.settlement_id == item.id, line.status != "superseded")))
