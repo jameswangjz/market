@@ -1,4 +1,4 @@
-name: Build Market images
+name: Publish Market images and OCI release
 
 on:
   push:
@@ -12,6 +12,9 @@ on:
       - 'k8s/**'
       - 'scripts/redis_source_continuity.py'
       - 'scripts/publish_market_images.sh'
+      - 'scripts/market_release_bundle.py'
+      - 'scripts/verify_market_release.py'
+      - 'scripts/publish_market_release_bundle.sh'
       - '.forgejo/workflows/market-images.yml'
   workflow_dispatch:
 
@@ -39,9 +42,10 @@ jobs:
             git fetch --quiet --depth 1 "${FORGEJO_SERVER_URL%/}/$FORGEJO_REPOSITORY.git" "$FORGEJO_SHA"
           git checkout --quiet --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$FORGEJO_SHA"
-      - name: Build and push release images
+      - name: Build and verify the Market release
         shell: bash
         env:
+          MARKET_PUBLISH_OCI: '1'
           HARBOR_REGISTRY: ${{ vars.HARBOR_REGISTRY }}
           HARBOR_PROJECT: ${{ vars.HARBOR_PROJECT }}
           HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
