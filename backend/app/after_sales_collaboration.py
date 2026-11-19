@@ -12,7 +12,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import mapped_column
-from urllib3 import PoolManager, Timeout
+from urllib3 import Timeout
+
+from .object_storage import open_storage
 
 from .after_sales_workflow import ENDED
 
@@ -146,10 +148,8 @@ def install(ns, workflow):
             result.setdefault(event_id, []).append(attachment_out(db, row, names, files))
         return result
 
-    def storage_client():
-        return ns['Minio'](ns['MINIO_ENDPOINT'], access_key=ns['MINIO_ACCESS_KEY'],
-            secret_key=ns['MINIO_SECRET_KEY'], secure=False,
-            http_client=PoolManager(timeout=Timeout(connect=3, read=10, total=20), retries=False))
+    def storage_client(db, *, writing=False):
+        return open_storage(db, ns, writing=writing, timeout=Timeout(connect=3, read=10, total=20))
 
     def comment_out(db, row, names=None):
         names = names if names is not None else workflow['display_names'](db, [row.author_id])
@@ -267,13 +267,11 @@ def install(ns, workflow):
                 scan, report = ns['clamav_scan_stream'](upload.file, size, timeout_seconds=15)
                 if scan != 'clean':
                     raise HTTPException(400 if scan == 'infected' else 503, 'Attachment requires a clean virus scan')
-                if not ns['MINIO_ENDPOINT']:
-                    raise HTTPException(503, 'Object storage unavailable')
-                client = storage_client()
+                storage = storage_client(db, writing=True)
                 object_name = 'after-sales/' + ticket_id + '/' + secrets.token_hex(16)
                 upload.file.seek(0)
-                stored = client, object_name
-                client.put_object(ns['MINIO_BUCKET'], object_name, upload.file, length=size, content_type=mime)
+                stored = storage, object_name
+                storage.client.put_object(storage.bucket, object_name, upload.file, length=size, content_type=mime)
                 ticket, order = access(db, user, ticket_id, request, lock=True)
                 role, tenant = actor(db, user, order)
                 prior = replay(db, Attachment, user, operation_key, payload_hash, ticket)
@@ -299,7 +297,8 @@ def install(ns, workflow):
             if stored is not None:
                 db.rollback()
                 try:
-                    stored[0].remove_object(ns['MINIO_BUCKET'], stored[1])
+                    storage, object_name = stored
+                    storage.client.remove_object(storage.bucket, object_name)
                 except Exception:
                     logging.getLogger(__name__).warning(
                         'After-sales evidence object cleanup requires retry')
@@ -312,12 +311,10 @@ def install(ns, workflow):
         item = db.get(FileObject, row.file_id)
         if not item or item.status != 'active' or item.scan_status != 'clean':
             raise HTTPException(404, 'Usable attachment not found')
-        if not ns['MINIO_ENDPOINT']:
-            raise HTTPException(503, 'Object storage unavailable')
-        client = storage_client()
+        storage = storage_client(db)
         response = None
         try:
-            response = client.get_object(ns['MINIO_BUCKET'], item.object_name)
+            response = storage.client.get_object(storage.bucket, item.object_name)
             content = response.read(20 * 1024 * 1024 + 1)
             if len(content) > 20 * 1024 * 1024:
                 raise HTTPException(413, 'Stored attachment exceeds limit')

@@ -10,6 +10,8 @@ from PIL import Image
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
 
+from .object_storage import open_storage
+
 
 def _http_url(value):
     try:
@@ -209,13 +211,10 @@ def install(ns):
         item = thumbnail(db, product)
         if not item:
             raise HTTPException(404, "Logo not found")
-        if not ns["MINIO_ENDPOINT"]:
-            raise HTTPException(503, "File storage unavailable")
+        storage = open_storage(db, ns)
         response = None
         try:
-            client = ns["Minio"](ns["MINIO_ENDPOINT"], access_key=ns["MINIO_ACCESS_KEY"],
-                                  secret_key=ns["MINIO_SECRET_KEY"], secure=False)
-            response = client.get_object(ns["MINIO_BUCKET"], item.object_name)
+            response = storage.client.get_object(storage.bucket, item.object_name)
             content = response.read(1024 * 1024 + 1)
         except Exception as exc:
             raise HTTPException(404, "Logo not found") from exc
