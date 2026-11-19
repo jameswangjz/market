@@ -1,0 +1,38 @@
+FROM docker.io/fluxcd/flux-cli:v2.10.0@sha256:1a5178b1770052d6e88ab1c7c8434c5ac9bca8a8ab984dcaf6b9df31814ce9f2 AS flux
+
+FROM python:3.12-slim AS publish
+COPY --from=flux /usr/local/bin/flux /usr/local/bin/flux
+RUN pip install --no-cache-dir --index-url https://mirrors.aliyun.com/pypi/simple/ PyYAML==6.0.3
+WORKDIR /release
+COPY . .
+ARG MARKET_RELEASE_COMMIT
+ARG MARKET_RELEASE_VERSION
+ARG HARBOR_REGISTRY
+ARG HARBOR_PROJECT
+RUN --mount=type=tmpfs,target=/tmp \
+    --mount=type=secret,id=harbor-auth,required=true \
+    --mount=type=secret,id=harbor-ca,required=true <<'PUBLISH'
+set -eu
+umask 077
+python3 - <<'PYTHON'
+import base64
+import json
+import os
+
+with open("/run/secrets/harbor-auth", encoding="utf-8") as docker_config:
+    auth = json.load(docker_config)["auths"][os.environ["HARBOR_REGISTRY"]]["auth"]
+name, secret = base64.b64decode(auth).decode().split(":", 1)
+with open("/tmp/harbor-robot.json", "w", encoding="utf-8") as robot:
+    json.dump({"name": name, "secret": secret}, robot)
+PYTHON
+
+python3 market_release_bundle.py --manifest-dir k8s --metadata . --output /tmp/bundle \
+    --commit "$MARKET_RELEASE_COMMIT" --version "$MARKET_RELEASE_VERSION" \
+    --registry "$HARBOR_REGISTRY" --project "$HARBOR_PROJECT"
+mkdir /result
+bash publish_market_release_bundle.sh /tmp/bundle "$HARBOR_REGISTRY" "$HARBOR_PROJECT" \
+    /tmp/harbor-robot.json /run/secrets/harbor-ca > /result/oci-release.log
+PUBLISH
+
+FROM scratch
+COPY --from=publish /result/ /

@@ -121,9 +121,13 @@ def environment_refs(spec):
     return references
 
 
-def committed_manifest(repo, commit, filename):
-    content = subprocess.check_output(['git', '-C', str(repo), 'show', f'{commit}:k8s/{filename}'],
-                                      text=True, encoding='utf-8')
+def manifest_documents(args, filename):
+    if args.manifest_dir is not None:
+        content = (args.manifest_dir / filename).read_text(encoding='utf-8')
+    else:
+        content = subprocess.check_output(
+            ['git', '-C', str(args.repo), 'show', f'{args.commit}:k8s/{filename}'],
+            text=True, encoding='utf-8')
     return [value for value in yaml.safe_load_all(content) if value is not None]
 
 
@@ -137,7 +141,7 @@ def build(args):
         resources = []
         for file, kind, name in specs:
             if file not in cached:
-                cached[file] = committed_manifest(args.repo, args.commit, file)
+                cached[file] = manifest_documents(args, file)
             matches = [obj for obj in cached[file] if obj.get('kind') == kind
                        and obj.get('metadata', {}).get('name') == name]
             if len(matches) != 1:
@@ -188,8 +192,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('registry', 'project', 'commit', 'version'):
         parser.add_argument(f'--{name}', required=True)
-    for name in ('metadata', 'repo', 'output'):
+    for name in ('metadata', 'output'):
         parser.add_argument(f'--{name}', required=True, type=Path)
+    manifests = parser.add_mutually_exclusive_group(required=True)
+    manifests.add_argument('--repo', type=Path, help='Git repository containing the release commit')
+    manifests.add_argument('--manifest-dir', type=Path, help='k8s directory extracted from the release commit')
     args = parser.parse_args()
     try:
         build(args)

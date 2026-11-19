@@ -21,7 +21,7 @@ class ReleaseBundleTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
         version = '20261118203000-' + commit[:7]
-        self.args = argparse.Namespace(repo=root, commit=commit, version=version,
+        self.args = argparse.Namespace(repo=root, manifest_dir=None, commit=commit, version=version,
                                        registry='harbor.example:30443', project='market-ci-verify',
                                        metadata=path / 'images', output=path / 'bundle')
         self.args.metadata.mkdir()
@@ -46,6 +46,21 @@ class ReleaseBundleTests(unittest.TestCase):
                     for container in package.containers(package.pod_spec(obj)):
                         self.assertRegex(container['image'], r'@sha256:[a-f0-9]{64}$')
                         self.assertEqual(container['imagePullPolicy'], 'IfNotPresent')
+
+    def test_commit_snapshot_matches_packaging_from_git(self):
+        package.build(self.args)
+        snapshot = Path(self.temporary.name) / 'k8s'
+        snapshot.mkdir()
+        for filename in {entry[0] for entries in package.STAGES.values() for entry in entries}:
+            content = subprocess.check_output(
+                ['git', '-C', str(self.args.repo), 'show', f'{self.args.commit}:k8s/{filename}'])
+            (snapshot / filename).write_bytes(content)
+        snapshot_output = self.args.output.with_name('snapshot-bundle')
+        package.build(argparse.Namespace(
+            **{**vars(self.args), 'manifest_dir': snapshot, 'repo': None, 'output': snapshot_output}))
+        for file in self.args.output.rglob('*'):
+            if file.is_file():
+                self.assertEqual(file.read_bytes(), (snapshot_output / file.relative_to(self.args.output)).read_bytes())
 
     def test_missing_build_metadata_prevents_package_creation(self):
         (self.args.metadata / 'market-web.json').unlink()

@@ -14,6 +14,12 @@
 - 首次构建遇到 Python 公共仓库下载缓慢，API、网关和两个模拟服务在隔离构建副本中改用阿里云 PyPI 镜像，应用源码及声明的依赖版本来自上述提交。API 两次解析的38个包版本一致。构建日志和依赖源变更记录保存在环境1的 `/root/market/ops/ci-env1/first-release-1ec0ef7`。
 - 临时 BuildKit Pod 已清理。验证项目配额4 GiB，保留本次版本用于后续同步演练。
 
+## Forgejo 自动发布
+
+`main` 的 `Publish Market images and OCI release` 工作流先推送六个镜像，再使用同一次构建的 BuildKit 元数据和 Git 提交中的 Kubernetes 清单生成发布包。作业使用已有 Harbor 地址、项目和机器人凭据，将制品推送到 `market/market-release:<版本>`。工作流按制品摘要重新拉取并逐文件核对，成功日志包含 `OCI release payload re-pulled and verified`。
+
+打包工具在同一个 BuildKit Pod 中按 `k8s/ci/Dockerfile.release` 运行。仓库 CA 和机器人凭据由 BuildKit secret 挂载。K8S2 可先配置镜像和发布包的 Harbor 同步。Flux 部署前，使用目标 Harbor 的只读凭据确认发布包引用的镜像标签和摘要均已同步。
+
 ## 形成发布包
 
 六个镜像的标签沿用 `YYYYMMDDHHMMSS-GitSha`。构建脚本设置 `MARKET_IMAGE_METADATA_DIR` 时，在所有镜像推送成功后导出六份 BuildKit 元数据。`market_release_bundle.py` 从指定提交读取已纳入发布范围的 Kubernetes 清单，将镜像转换成 Harbor 摘要引用。
