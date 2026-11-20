@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: market-release-promotion
+  namespace: flux-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: market-release-promotion
+  namespace: flux-system
+rules:
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [ocirepositories]
+    resourceNames: [market-release]
+    verbs: [get, patch]
+  - apiGroups: [kustomize.toolkit.fluxcd.io]
+    resources: [kustomizations]
+    resourceNames: [market-api, market-workers, market-web, market-jobs]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [market-release-promotion-state]
+    verbs: [get, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    resourceNames: [market-release-promotion]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: market-release-promotion
+  namespace: flux-system
+subjects:
+  - kind: ServiceAccount
+    name: market-release-promotion
+    namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: market-release-promotion
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: market-release-promotion
+  namespace: flux-system
+spec:
+  schedule: "* * * * *"
+  timeZone: Etc/UTC
+  suspend: true
+  startingDeadlineSeconds: 45
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels: {app.kubernetes.io/name: market-release-promotion}
+    spec:
+      activeDeadlineSeconds: 110
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: market-release-promotion
+          restartPolicy: Never
+          terminationGracePeriodSeconds: 5
+          imagePullSecrets:
+            - name: market-harbor-pull
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: promote
+              image: REPLACE_WITH_PINNED_IMAGE
+              imagePullPolicy: IfNotPresent
+              command: [python, "-B", /promotion/promote_market_release.py]
+              env:
+                - {name: MARKET_REGISTRY, value: "192.168.10.17:30443"}
+                - {name: MARKET_TARGET_NAMESPACE, value: market}
+                - {name: MARKET_DB_TYPE, value: Postgres}
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: 500m, memory: 192Mi}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              volumeMounts:
+                - {name: scripts, mountPath: /promotion, readOnly: true}
+                - {name: harbor-auth, mountPath: /harbor/auth, readOnly: true}
+                - {name: harbor-ca, mountPath: /harbor/ca, readOnly: true}
+                - {name: temp, mountPath: /tmp}
+          volumes:
+            - name: scripts
+              configMap: {name: market-release-promotion-scripts}
+            - name: harbor-auth
+              secret: {secretName: market-harbor-pull, defaultMode: 416}
+            - name: harbor-ca
+              secret: {secretName: market-harbor-ca}
+            - name: temp
+              emptyDir: {sizeLimit: 32Mi}
