@@ -159,7 +159,7 @@ def install(ns):
         __table_args__ = (
             Index("ix_sla_gateway_scope_period", "product_id", "version_id", "entry_id", "completed_at"),
             Index("uq_sla_gateway_source_sequence", "producer_id", "window_slot", "sequence", unique=True,
-                  sqlite_where=text("sequence > 0"), postgresql_where=text("sequence > 0")),)
+                  sqlite_where=text("sequence > 0"), postgresql_where=text("sequence > 0")).ddl_if(dialect=("postgresql", "sqlite")),)
 
     def resolve(db, event):
         custom = ns.get("sla_gateway_event_scope")

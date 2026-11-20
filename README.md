@@ -20,11 +20,37 @@ npm run dev
 
 ## Kubernetes
 
+[完整部署手册](<docs/05 Market 独立部署手册-20261119175225.md>)覆盖独立安装、离线发布、数据库选型、验收与回退。
+
+安装前通过 `--db-type` 选择数据库。安装节点需有 Python 3 和 PyYAML。
+
+| 方式 | 参数 | 部署结果 |
+| --- | --- | --- |
+| 内置 PostgreSQL（默认） | 省略全部数据库参数，或只传 `--db-type Postgres` | 使用 `market` 命名空间的 `market-postgres:5432/market`，首次安装创建内置库 |
+| 指定 PostgreSQL | `--db-type Postgres` 加地址、用户名和密码文件 | 使用指定库。端口默认 5432，数据库名默认 `market` |
+| 指定达梦 | `--db-type Dameng` 加地址、用户名和密码文件 | 使用指定达梦实例与登录用户的 Schema，端口默认 5236 |
+
 ```bash
-GIT_SHA=$(git rev-parse --short=12 HEAD) bash scripts/deploy.sh
+# 默认内置 PostgreSQL
+bash scripts/deploy.sh --db-type Postgres
+
+# 指定 PostgreSQL
+bash scripts/deploy.sh --db-type Postgres --db-address pg.example:5432 \
+  --db-user market_app --db-password-file /secure/market-db-password --db-name market
+
+# 指定达梦
+bash scripts/deploy.sh --db-type Dameng --db-address dm.example:5236 \
+  --db-user MARKET_APP --db-password-file /secure/market-db-password
+
 kubectl -n market get pods
 kubectl -n market get svc market-web
 ```
+
+密码文件填写一行原始密码，权限建议为 `0600`。指定外部库时，地址、用户名和密码文件必须同时提供。安装器将连接配置写入 `market-db-connection` Secret。外部库需提前创建 PostgreSQL 数据库或达梦应用用户，并授予建表和应用运行权限。
+
+离线 Flux 安装使用 [站点配置生成器](scripts/render_market_env2.py)，在现有站点参数后追加上述相同的数据库选项，再应用生成的 `site-secrets.yaml`、`foundation.yaml` 和 `market-flux.yaml`。选择达梦时使用包含达梦驱动的新 OCI 发布包。
+
+这些选项面向新安装。已有部署切换数据库前需协调所有数据库客户端停机和数据迁移。选择外部库时，新建清单省略内置 PostgreSQL 资源，已有 PostgreSQL 和 PVC 保留。达梦模式的 Redis 维护前数据库备份仍需按达梦流程处理。
 
 部署脚本为本地镜像统一生成不可变标签：`YYYYMMDDHHMMSS-GitSha`。如果部署目录没有 Git 元数据，需显式传入 `GIT_SHA`，例如：`GIT_SHA=d39193140003 bash scripts/deploy.sh`。
 

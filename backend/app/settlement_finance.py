@@ -242,7 +242,12 @@ def install(ns):
         A transaction-scoped advisory lock covers cross-linked batch graphs.
         Re-check pg_locks rather than caching across savepoint rollbacks.
         """
-        if db.get_bind().dialect.name != 'postgresql':
+        dialect = db.get_bind().dialect.name
+        if dialect == 'dm':
+            from .database_dameng import transaction_lock
+            transaction_lock(db.connection(), "settlement-finance")
+            return
+        if dialect != 'postgresql':
             return
         unsigned = FINANCE_LOCK % (1 << 64)
         held = db.scalar(text("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid=pg_backend_pid() "
@@ -1397,7 +1402,7 @@ def install(ns):
             Settlement = ns['Settlement']
             rows = db.scalars(select(Baseline).join(Settlement, Settlement.id == Baseline.settlement_id).where(
                 Baseline.order_id == refund.order_id, Baseline.revenue > 0, Settlement.status != 'superseded')
-                .order_by(Baseline.settlement_id).with_for_update(of=Baseline)).all()
+                .order_by(Baseline.settlement_id).with_for_update(of=Baseline.settlement_id)).all()
             if not rows:
                 return dict(status='waiting', reason='final_baseline_missing')
             order = db.get(ns['Order'], refund.order_id)

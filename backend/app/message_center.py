@@ -278,7 +278,7 @@ def install(ns):
                 "email_status": email_job.status if email_job else "", "email_skip_reason": email_job.result if email_job and email_job.status == "skipped" else ""}
 
     def find(db, uid, rid, scope=None):
-        row = db.execute(base_query(uid, scope).where((Receipt.id == rid) | (Receipt.legacy_id == rid)).with_for_update(of=Receipt)).first()
+        row = db.execute(base_query(uid, scope).where((Receipt.id == rid) | (Receipt.legacy_id == rid)).with_for_update(of=Receipt.id)).first()
         if not row:
             raise HTTPException(404, "消息不存在或已过期")
         return row
@@ -367,7 +367,7 @@ def install(ns):
         if body.cutoff.tzinfo is None or body.cutoff > now():
             raise HTTPException(422, "截止时间必须包含时区且不能晚于当前时间")
         rows = db.execute(base_query(user.id, scope).where(Receipt.deleted_at.is_(None), Receipt.archived_at.is_(None),
-                                                  Receipt.created_at <= body.cutoff, unread_condition()).with_for_update(of=Receipt)).all()
+                                                  Receipt.created_at <= body.cutoff, unread_condition()).with_for_update(of=Receipt.id)).all()
         for receipt, message in rows:
             apply_action(db, user, receipt, message, "read")
         db.commit()
@@ -982,6 +982,10 @@ def install(ns):
         with ns["SessionLocal"]() as db:
             if db.bind.dialect.name == "postgresql" and not db.scalar(text("SELECT pg_try_advisory_xact_lock(72810421)")):
                 return {"status": "another_worker_scanning"}
+            if db.bind.dialect.name == "dm":
+                from app.database_dameng import transaction_lock
+                if not transaction_lock(db.connection(), "notification-scan", timeout=0):
+                    return {"status": "another_worker_scanning"}
             hook(db)
             db.commit()
             return {"status": "scanned"}

@@ -28,6 +28,7 @@ spec:
               envFrom:
                 - configMapRef: {name: market-config}
               env:
+                - {name: DATABASE_URL, valueFrom: {secretKeyRef: {name: market-db-connection, key: DATABASE_URL}}}
                 - {name: PYTHONPATH, value: /app}
                 - {name: MESSAGE_CENTER_DISABLE_BACKGROUND, value: 'true'}
                 - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: market-secrets, key: JWT_SECRET}}}

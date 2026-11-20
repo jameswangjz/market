@@ -21,7 +21,10 @@ def install(ns):
     def ensure_indexes():
         with ns['engine'].begin() as connection:
             for index in indexes:
-                connection.execute(CreateIndex(index, if_not_exists=True))
+                if connection.dialect.name == "dm":
+                    index.create(connection, checkfirst=True)
+                else:
+                    connection.execute(CreateIndex(index, if_not_exists=True))
 
     def date(value, name):
         if not value or not value.strip():

@@ -179,9 +179,12 @@ def build(args):
     included = {(obj['kind'], obj['metadata']['name']) for values in stages.values() for obj in values}
     references = {ref for values in stages.values() for obj in values if obj['kind'] in ('Deployment', 'CronJob')
                   for ref in environment_refs(pod_spec(obj))} - included
+    database_types = ['Postgres']
+    if ('Secret', 'market-db-connection') in references:
+        database_types.append('Dameng')
     release = {'schema': SCHEMA, 'version': args.version, 'commit': args.commit, 'git_source': SOURCE,
                'source_repository': source, 'images': digests, 'files_sha256': files,
-               'stages': stage_index(),
+               'stages': stage_index(), 'database_types': database_types,
                'environment_resources': [{'kind': kind, 'name': name} for kind, name in sorted(references)]}
     (args.output / 'release.json').write_text(json.dumps(release, sort_keys=True, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({'version': args.version, 'commit': args.commit, 'images': len(digests),

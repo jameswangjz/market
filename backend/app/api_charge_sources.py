@@ -71,6 +71,9 @@ def install(ns, hooks, run_id, stream, epoch, microseconds):
     def lock(db):
         if db.bind.dialect.name == 'postgresql':
             db.execute(text('SELECT pg_advisory_xact_lock(723401830031)'))
+        elif db.bind.dialect.name == 'dm':
+            from .database_dameng import transaction_lock
+            transaction_lock(db.connection(), "api-charge-ledger")
 
     def latest(db):
         return db.scalar(select(SourceGeneration).order_by(

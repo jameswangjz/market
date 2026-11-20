@@ -58,10 +58,13 @@ class Storage:
 
 
 def _lock(db, exclusive=False):
-    if db.get_bind().dialect.name != "postgresql":
-        return
-    lock = func.pg_advisory_xact_lock if exclusive else func.pg_advisory_xact_lock_shared
-    db.execute(select(lock(STORAGE_LOCK)))
+    dialect = db.get_bind().dialect.name
+    if dialect == "postgresql":
+        lock = func.pg_advisory_xact_lock if exclusive else func.pg_advisory_xact_lock_shared
+        db.execute(select(lock(STORAGE_LOCK)))
+    elif dialect == "dm":
+        from .database_dameng import transaction_lock
+        transaction_lock(db.connection(), "object-storage", shared=not exclusive)
 
 
 def _from_environment(ns):

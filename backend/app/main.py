@@ -40,6 +40,7 @@ from minio import Minio
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, and_, case, create_engine, func, inspect, or_, select, text, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from .enterprise_console_scope import resolve_enterprise_membership, require_enterprise_super_admin, require_enterprise_editor
 from .console_business_scope import resolve_business_scope, order_predicate, audit_predicate
@@ -59,7 +60,19 @@ CLAMAV_HOST = os.getenv("CLAMAV_HOST", "market-clamav")
 CLAMAV_PORT = int(os.getenv("CLAMAV_PORT", "3310"))
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
+engine_options = {}
+if make_url(DATABASE_URL).get_backend_name() == "dm":
+    # This DM driver/build pair can return fewer identity rows for a batch.
+    engine_options["use_insertmanyvalues"] = False
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True, **engine_options)
+if engine.dialect.name == "dm":
+    engine.dialect.insert_executemany_returning = False
+    engine.dialect.insert_executemany_returning_sort_by_parameter_order = False
+    # RETURNING INTO on this DM build cannot return multiple updated/deleted rows.
+    engine.dialect.update_returning = False
+    engine.dialect.delete_returning = False
+    from .database_dameng import install_transaction_locks
+    install_transaction_locks(engine)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
@@ -2389,17 +2402,24 @@ def repair_settlement_state_consistency():
 
 @app.on_event("startup")
 def startup():
+    dameng = engine.dialect.name == "dm"
     Base.metadata.create_all(engine)
-    ensure_product_metadata_schema()
+    if dameng:
+        from .database_dameng import ensure_indexes
+        ensure_indexes(engine)
+    else:
+        ensure_product_metadata_schema()
     product_categories["ensure_schema"](engine)
     with SessionLocal() as db:
         product_categories["seed"](db)
         db.commit()
-    ensure_review_and_file_schema()
+    if not dameng:
+        ensure_review_and_file_schema()
     ensure_gateway_version_schema()
     gateway_monitoring["ensure_schema"](engine)
-    with engine.begin() as connection:
-        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_application_grant_scope ON application_access_grants (enterprise_id, product_id, user_id)"))
+    if not dameng:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_application_grant_scope ON application_access_grants (enterprise_id, product_id, user_id)"))
     repair_settlement_state_consistency()
     with SessionLocal() as db:
         for product in db.scalars(select(Product)).all():
@@ -3895,12 +3915,18 @@ async def platform_oauth_revoke(request: Request, db: Session = Depends(db_sessi
     # Unknown or foreign tokens have the same response, without disclosing ownership.
     if claims.get("client_id") == client.client_id and claims.get("product_id") == client.product_id:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-        insert = pg_insert if db.bind.dialect.name == "postgresql" else sqlite_insert
-        db.execute(insert(OAuthRevokedToken).values(token_hash=token_hash, client_id=client.id,
-            expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc), created_at=now())
-            .on_conflict_do_nothing(index_elements=["token_hash"]))
+        values = dict(token_hash=token_hash, client_id=client.id,
+                      expires_at=datetime.fromtimestamp(claims["exp"], timezone.utc), created_at=now())
+        if db.bind.dialect.name == "dm":
+            from .database_dameng import transaction_lock
+            transaction_lock(db.connection(), f"oauth-revoke:{token_hash}")
+            if db.get(OAuthRevokedToken, token_hash) is None:
+                db.add(OAuthRevokedToken(**values))
+        else:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+            insert = pg_insert if db.bind.dialect.name == "postgresql" else sqlite_insert
+            db.execute(insert(OAuthRevokedToken).values(**values).on_conflict_do_nothing(index_elements=["token_hash"]))
         audit(db, client.client_id, "revoke_oauth_token", "oauth_client", client.id,
               "access token revoked")
         db.commit()
@@ -6665,10 +6691,13 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         key = "auto:" + hashlib.sha256(key.encode()).hexdigest()
     request_digest = hashlib.sha256(json.dumps({"cycle": body.cycle, "start": str(body.period_start), "end": str(body.period_end), "orders": sorted(set(body.order_ids)), "rule": body.rule_id}, sort_keys=True).encode()).hexdigest()
     connection = db.connection()
+    lock_scope = f"monthly:{body.period_start}:{body.period_end}" if body.cycle == "monthly" else key
     if connection.dialect.name == "postgresql":
-        lock_scope = f"monthly:{body.period_start}:{body.period_end}" if body.cycle == "monthly" else key
         lock_id = int.from_bytes(hashlib.sha256(lock_scope.encode()).digest()[:8], "big", signed=True)
         db.execute(select(func.pg_advisory_xact_lock(lock_id)))
+    elif connection.dialect.name == "dm":
+        from .database_dameng import transaction_lock
+        transaction_lock(connection, f"settlement-batch:{lock_scope}")
     elif connection.dialect.name == "sqlite" and not connection.connection.driver_connection.in_transaction:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
     existing = db.scalar(select(SettlementBatch).where(SettlementBatch.idempotency_key == key))
@@ -6729,9 +6758,11 @@ def create_settlement_batch(body: SettlementBatchBody, user: User = Depends(curr
         if not order or order.payment_status not in {"paid", "refunding", "refunded"}:
             continue
         prior_settlements = db.scalars(select(Settlement).where(Settlement.order_id == order.id, Settlement.is_refund.is_(False), Settlement.status != "superseded", Settlement.id.not_in(linked_version_change_ids)).order_by(Settlement.id).with_for_update().execution_options(populate_existing=True)).all()
-        finalized_ids = set(db.scalars(select(SettlementLine.settlement_id).join(SettlementBatch, SettlementBatch.id == SettlementLine.batch_id).where(
-            SettlementLine.settlement_id.in_([item.id for item in prior_settlements]), SettlementLine.status != "superseded",
-            or_(SettlementLine.status.in_(["confirmed", "paid"]), SettlementBatch.status.in_(["confirmed", "payment_processing", "partial_paid", "paid", "archived"])))).all())
+        finalized_ids = set()
+        if prior_settlements:
+            finalized_ids.update(db.scalars(select(SettlementLine.settlement_id).join(SettlementBatch, SettlementBatch.id == SettlementLine.batch_id).where(
+                SettlementLine.settlement_id.in_([item.id for item in prior_settlements]), SettlementLine.status != "superseded",
+                or_(SettlementLine.status.in_(["confirmed", "paid"]), SettlementBatch.status.in_(["confirmed", "payment_processing", "partial_paid", "paid", "archived"])))))
         finalized = next((item for item in prior_settlements if item.status in {"locked", "confirmed", "payment_processing", "partial_paid", "paid", "archived"} or item.id in finalized_ids), None)
         if finalized:
             audit(db, user.email, "skip_finalized_settlement_order", "settlement", finalized.settlement_no, "订单已有已完成清算，批次不重复生成", category="settlement", business_domain="settlement", order_id=order.id, risk_level="warning")
@@ -8185,3 +8216,8 @@ password_security = install_password_security(globals())
 from .redis_maintenance import install as install_redis_maintenance
 
 redis_maintenance = install_redis_maintenance(globals())
+
+if engine.dialect.name == "dm":
+    # Workers import the same mappings without running FastAPI's startup hooks.
+    from .database_dameng import prepare_metadata
+    prepare_metadata(Base.metadata)

@@ -352,7 +352,7 @@ def install(ns):
                 Order.snapshot_version == 1, Order.delivery_method_snapshot.in_(['file', 'tenant_access', 'api', 'model_api']),
                 Task.delivery_mode == 'automatic', Task.method == Order.delivery_method_snapshot,
                 Task.status.in_(['in_delivery', 'retrying']), Task.next_retry_at <= ns['now']())
-                .order_by(Task.next_retry_at, Task.id).with_for_update(skip_locked=True, of=Order)
+                .order_by(Task.next_retry_at, Task.id).with_for_update(skip_locked=True, of=Order.id)
                 .execution_options(populate_existing=True))
             if not order:
                 return False

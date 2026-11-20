@@ -186,7 +186,7 @@ def install(ns):
         at = utc(ns['now']())
         order = db.scalar(select(Order).join(State, State.order_id == Order.id).where(
             State.next_check_at <= at).order_by(State.next_check_at, Order.id)
-            .with_for_update(skip_locked=True, of=Order).execution_options(populate_existing=True))
+            .with_for_update(skip_locked=True, of=Order.id).execution_options(populate_existing=True))
         if order is None:
             return False
         state = db.get(State, order.id, with_for_update=True)
